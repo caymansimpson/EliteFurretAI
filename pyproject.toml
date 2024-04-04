@@ -1,0 +1,60 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "elitefurretai"
+version = "0.1.0"
+description = "EliteFurretAI is a multilayered project aiming to build a superhuman bot that plays VGC."
+readme = "README.md"
+requires-python = ">=3.7.0"
+license = { file = "LICENSE" }
+authors = [{ name = "Cayman Simpson", email = "cayman.simpson@gmail.com" }]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Information Technology",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Games/Entertainment :: Simulation",
+    "Topic :: Games/Entertainment :: Turn Based Strategy",
+    "Topic :: Internet",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dynamic = ["dependencies"]
+
+[project.urls]
+Repository = "https://github.com/caymansimpson/elitefurretai"
+Research = "https://docs.google.com/document/d/14menCHw8z06KJWZ5F_K-MjgWVo_b7PESR7RlG-em4ic/edit"
+
+[tool.black]
+line-length = 91
+
+[tool.isort]
+profile = "black"
+multi_line_output = 3
+
+[tool.pyright]
+include = ["src"]
+exclude = ["src/elitefurretai/evaluate", "data/static"]
+pythonVersion = "3.7"
+
+[tool.pytest.ini_options]
+minversion = "6.0"
+addopts = "-ra -q"
+testpaths = [
+    "unit_tests",
+    "src/elitefurretai/agents",
+    "src/elitefurretai/model_utils",
+    "src/elitefurretai/supervised_models",
+    "src/elitefurretai/utils",
+]
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }

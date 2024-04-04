@@ -1,0 +1,21 @@
+default_language_version:
+  python: python3.12.2
+repos:
+  - repo: https://github.com/ambv/black
+    rev: 24.4.2
+    hooks:
+      - id: black
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v1.2.3
+    hooks:
+      - id: flake8
+      - id: check-json
+      - id: check-xml
+      - id: check-yaml
+      - id: check-merge-conflict
+      - id: detect-private-key
+      - id: fix-encoding-pragma
+      - id: mixed-line-ending
+      - id: requirements-txt-fixer
+      - id: trailing-whitespace
+exclude: 'src/elitefurretai/evaluate*'

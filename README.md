@@ -1,5 +1,5 @@
 # EliteFurretAI
-**The goal of this project (EliteFurretAI) is to build a superhuman bot to play VGC**. It is not to further research, nor is it to build a theoretically sound approach -- the goal is to be the best that no one ever was.
+**The goal of this project (EliteFurretAI) is to build a superhuman bot to play Pokemon VGC**. It is not to further research, nor is it to build a theoretically sound approach -- the goal is to be the best that no one ever was!
 
 ![AI Pokeball](docs/images/aipokeball.png)
 
@@ -15,7 +15,14 @@
     - **Capacity** – CPU for generating training data, GPU for inference
     - **Human Training Data** – while not essential, this will accelerate training convergence by orders of magnitude, reduce capacity needs and accelerate our own internal learning speed tremendously. It will also help our bot transition to playing humans more easily.
 
-## Our Current Proposed Approach
+## Why the name EliteFurretAI?
+The ultimate goal of this work is to make Furret central to the VGC meta. Because Nintendo refuses to give Furret the buffs it desperately needs, only a superhuman AI will be able to build around this monster and use it in a way that unleashes its latent potential. This bot is the first step to doing so; once it can appropriately consume meta stats and accurately value starting positions, we can use it to start building teams.
+
+Eventually, we hope that a team built around and using Furret will be deserving of surpassing all Elite Fours, hence the name "EliteFurretAI".
+
+![OG Furret](docs/images/furret.png)
+
+## Current Proposed Approach
 From our analysis of avalailable literature, we’ve seen:
 - Model-free alone is unlikely to produce superhuman performance without the capacity that we don’t have available
 - Search is necessary for decision-time planning, and game abstractions are necessary to make search tractable
@@ -53,32 +60,40 @@ To build towards the above, we can separate development into 6 stages:
 
 **Stage I**: Advocate for external support
 - Obtain GPUs and CPUs to accelerate data generation and inference; evaluate costs and survey grants. Having multiple threads will allow for better decision-time planning as well.
-- Build a fast pokemon engine (supports RNG manipulation and simulation). This will be necessary for search during decision-time planning and will unblock self-play.
-- Build game engine utilities (inverse damage calculator, log interpreter, etc) to help our bot ingest the maximal amount of information to improve performance
+- Build basic VGC capabilities into existing libraries so that we can ingest data and simulate battles
+- Build game engine utilities (inverse damage calculator, log interpreter, etc) to help our bot ingest the maximal amount of information to improve performance, similar to how a human owuld
+- Build a module to calculate possible infostates using the above engine utilities
+- Build a data processor that takes in VGC Showdown data, and both formats/encodes it for NN input and computes meta stats on it.
 - Apply for human-based Training Data (ideally omniscient, but doesn’t necessarily need to be); as you can see above/below, the ability to predict the worldstate cascades into better predictions across every component of the agent
 
-**Stage II**: Build supervised networks
-- **Information Network**: Infostate + history → E[Worldstate]
-    - This is most important as if this can get accuracy of up to 95%+, we can transition from imperfect to perfect information games and save computation.
-    - There is a dependency on game engine utilities
-    - Needs to optimize for probability of information
-    - Should also be evaluated by how effective it is based on the # of potential histories one can have, and how many it can eliminate
-- **“Value” Network**: Infostate + E[Worldstate] → P(win)
-    - The higher the accuracy here, the less we need to search, meaning we will face less computational constraints
-    - This is not a truly valuable network because it isn’t sound (based on average policy across players), but we can try it for shits and giggles and see if it works like it did in FutreSightAI
-    - Note: this has a dependency on the Information Network accuracy
-- **Human Policy Network**: PBS + E[Worldstate] → P(action) over all opponent legal actions
-    - The higher the accuracy here, the less we need to search, meaning we will face less computational constraints
-    - Note: this has a dependency on the Information Network accuracy
+**Stage II**: Build supervised networks and test
+- Analyze VGC data
+- Build a module to train networks that builds off of our data processor. Networks:
+    - **Information Network**: Infostate + history → E[Worldstate]
+        - This is most important as if this can get accuracy of up to 95%+, we can transition from imperfect to perfect information games and save computation.
+        - There is a dependency on game engine utilities
+        - Needs to optimize for probability of information
+        - Should also be evaluated by how effective it is based on the # of potential histories one can have, and how many it can eliminate
+    - **“Value” Network**: Infostate + E[Worldstate] → P(win)
+        - The higher the accuracy here, the less we need to search, meaning we will face less computational constraints
+        - This is not a truly valuable network because it isn’t sound (based on average policy across players), but we can try it for shits and giggles and see if it works like it did in FutreSightAI
+        - Note: this has a dependency on the Information Network accuracy
+    - **Human Policy Network**: PBS + E[Worldstate] → P(action) over all opponent legal actions
+        - The higher the accuracy here, the less we need to search, meaning we will face less computational constraints
+        - Note: this has a dependency on the Information Network accuracy
+- Evaluate and analyze these networks and their performances
+- Test a model-free approach (eg. actor-critic) that uses these networks to abstract VGC
 
-**Stage III**: Test a FutureSightAI-like approach on VGC, just because I’m curious
-- Take top M likely worldstates, with probabilities of each
-    - Take top N<sub>-i</sub> opponent actions by likelihood (store likelihood)
-    - Simulate future states w/ chance using abstractions (let’s say C possible states from joint actions) using all top N<sub>-i</sub> actions
-    - Identify Top N<sub>i</sub> best response actions to opponent’s, and calculate probability they would be chosen
-- For each action, sum up the expected value across each worldstate, joint action and chance (M*N*C), incorporating probability they would be chosen (since opponent thinks we might play like this)
-- Take an action proportional to the expected value
-- Consider going one level deeper with more abstraction
+**Stage III**: Test a FutureSightAI-like approach on VGC, mostly just because I’m curious
+- Build a fast pokemon engine (supports RNG manipulation and simulation). This will be necessary for search during decision-time planning and will unblock self-play in further stages.
+- Build our agent! Basiclgorithmic design:
+    - Take top M likely worldstates, with probabilities of each
+        - Take top N<sub>-i</sub> opponent actions by likelihood (store likelihood)
+        - Simulate future states w/ chance using abstractions (let’s say C possible states from joint actions) using all top N<sub>-i</sub> actions
+        - Identify Top N<sub>i</sub> best response actions to opponent’s, and calculate probability they would be chosen
+    - For each action, sum up the expected value across each worldstate, joint action and chance (M*N*C), incorporating probability they would be chosen (since opponent thinks we might play like this)
+    - Take an action proportional to the expected value
+    - Consider going one level deeper with more abstraction
 
 **Step IV**: Train ESCHER on a smaller game, with self-play
 - Build game engine w/ abstractions (large amount of work)
@@ -96,7 +111,8 @@ To build towards the above, we can separate development into 6 stages:
 
 More details on this approach, thinking and understanding that led us to this development plan can be found [here](https://docs.google.com/document/d/14menCHw8z06KJWZ5F_K-MjgWVo_b7PESR7RlG-em4ic/edit).
 
-### Why the name EliteFurretAI?
-Eventually, this bot will make Furret central the VGC meta. Because Nintendo will not give Furret the buffs it desperately needs, only a superhuman AI will be able to derive the right team to build around this monster and unlease its latent potential.
-
-![OG Furret](docs/images/furret.png)
+## Contributors & Acknowledgements
+It's definitely greedy and presumptuous to acknowledge people before EliteFurretAI amounts to anything, but I do have a couple of people I want to call out that have been instrumental to even getting this project off the ground.
+- First and foremost, a huge shoutout to [hsahovic](https://github.com/hsahovic) both for building poke-env, but also teaching me quite a lot about how to code well
+- Second, a shoutout to [attraylor](https://github.com/attraylor) who brought me into the Pokemon AI community
+- Lastly, a big shoutout to [pre](https://github.com/scheibo) for being the engine that keeps the community going
