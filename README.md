@@ -48,6 +48,17 @@ Basic Foundation:
 
 **Increasing Problem Complexity:** Given the high degree of complexity of the properties VGC has, we believe we should start with more constrained problems, verify our approaches and gradually introduce complexities to overcome computational constraints.
 
+
+## Why the name EliteFurretAI?
+The ultimate goal of this work is to make Furret central to the VGC meta. Because Nintendo refuses to give Furret the buffs it desperately needs, only a superhuman AI will be able to build around this monster and use it in a way that unleashes its latent potential. This bot is the first step to doing so; once it can appropriately consume meta stats and accurately value starting positions, we can use it to start building teams.
+
+Eventually, we hope that this AI can be used to build and use a competitive team centered around Furret -- one that will be deserving of surpassing all Elite Fours, hence the name "EliteFurretAI".
+
+![OG Furret](docs/images/furret.png)
+
+Afterwards, we hope that we can integrate this AI into emulators.
+
+
 ## Stages of Development
 To build towards the above, we can separate development into 6 stages:
 
@@ -104,15 +115,6 @@ To build towards the above, we can separate development into 6 stages:
 
 More details on this approach, thinking and understanding that led us to this development plan can be found [here](https://docs.google.com/document/d/14menCHw8z06KJWZ5F_K-MjgWVo_b7PESR7RlG-em4ic/edit).
 
-
-## Why the name EliteFurretAI?
-The ultimate goal of this work is to make Furret central to the VGC meta. Because Nintendo refuses to give Furret the buffs it desperately needs, only a superhuman AI will be able to build around this monster and use it in a way that unleashes its latent potential. This bot is the first step to doing so; once it can appropriately consume meta stats and accurately value starting positions, we can use it to start building teams.
-
-Eventually, we hope that this AI can be used to build and use a competitive team centered around Furret -- one that will be deserving of surpassing all Elite Fours, hence the name "EliteFurretAI".
-
-![OG Furret](docs/images/furret.png)
-
-Afterwards, we hope that we can integrate this AI into emulators.
 
 ## Contributors & Acknowledgements
 It's definitely greedy and presumptuous to acknowledge people before EliteFurretAI amounts to anything, but I do have a couple of people I want to call out that have been instrumental to even getting this project off the ground.
