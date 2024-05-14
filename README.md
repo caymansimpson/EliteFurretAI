@@ -1,9 +1,9 @@
 # EliteFurretAI
-**The goal of this project (EliteFurretAI) is to build a superhuman bot to play Pokemon VGC**. It is not to further research, nor is it to build a theoretically sound approach -- the goal is to be the best that no one ever was!
+**The goal of this project is to build a superhuman bot to play Pokemon VGC**. It is not to further research, nor is it to build a theoretically sound approach -- the goal is to be the best that no one ever was. We will only contribute to research or take sound approaches if it will help us towards our ultimate goal.
 
 ![AI Pokeball](docs/images/aipokeball.png)
 
-### Summary
+### Summary of the VGC Problem Space
 - In the purest sense, **a VGC battle is an imperfect information zero-sum two player game with a very large simultaneous action space, complex game mechanics, a high degree of stochasticity and an effectively continuous state space**.
     - VGC is an incredibly difficult AI problem. The fact that there is a large pool of top players (and they’re hard to sort) demonstrates the difficulty of this problem even for humans.
 - After reading a wide array of literature, **we suggest we should tackle VGC directly** (instead of through Singles) because of the 40x action space, 3000x branching factor and the additional importance given to game interactions. These factors necessitate that an agent more deeply understands game mechanics and be more computationally efficient.
@@ -15,15 +15,8 @@
     - **Capacity** – CPU for generating training data, GPU for inference
     - **Human Training Data** – while not essential, this will accelerate training convergence by orders of magnitude, reduce capacity needs and accelerate our own internal learning speed tremendously. It will also help our bot transition to playing humans more easily.
 
-## Why the name EliteFurretAI?
-The ultimate goal of this work is to make Furret central to the VGC meta. Because Nintendo refuses to give Furret the buffs it desperately needs, only a superhuman AI will be able to build around this monster and use it in a way that unleashes its latent potential. This bot is the first step to doing so; once it can appropriately consume meta stats and accurately value starting positions, we can use it to start building teams.
-
-Eventually, we hope that a team built around and using Furret will be deserving of surpassing all Elite Fours, hence the name "EliteFurretAI".
-
-![OG Furret](docs/images/furret.png)
-
 ## Current Proposed Approach
-From our analysis of avalailable literature, we’ve seen:
+From our analysis of [avalailable literature](https://docs.google.com/document/d/14menCHw8z06KJWZ5F_K-MjgWVo_b7PESR7RlG-em4ic/edit#heading=h.p6dz1cv0mnpx), we’ve seen:
 - Model-free alone is unlikely to produce superhuman performance without the capacity that we don’t have available
 - Search is necessary for decision-time planning, and game abstractions are necessary to make search tractable
 - The behavior of VGC from a game-theoretic perspective is still unknown, and theory might not help the practical purposes of making a superhuman bot.
@@ -111,8 +104,18 @@ To build towards the above, we can separate development into 6 stages:
 
 More details on this approach, thinking and understanding that led us to this development plan can be found [here](https://docs.google.com/document/d/14menCHw8z06KJWZ5F_K-MjgWVo_b7PESR7RlG-em4ic/edit).
 
+
+## Why the name EliteFurretAI?
+The ultimate goal of this work is to make Furret central to the VGC meta. Because Nintendo refuses to give Furret the buffs it desperately needs, only a superhuman AI will be able to build around this monster and use it in a way that unleashes its latent potential. This bot is the first step to doing so; once it can appropriately consume meta stats and accurately value starting positions, we can use it to start building teams.
+
+Eventually, we hope that this AI can be used to build and use a competitive team centered around Furret -- one that will be deserving of surpassing all Elite Fours, hence the name "EliteFurretAI".
+
+![OG Furret](docs/images/furret.png)
+
+Afterwards, we hope that we can integrate this AI into emulators.
+
 ## Contributors & Acknowledgements
 It's definitely greedy and presumptuous to acknowledge people before EliteFurretAI amounts to anything, but I do have a couple of people I want to call out that have been instrumental to even getting this project off the ground.
 - First and foremost, a huge shoutout to [hsahovic](https://github.com/hsahovic) both for building poke-env, but also teaching me quite a lot about how to code well
 - Second, a shoutout to [attraylor](https://github.com/attraylor) who brought me into the Pokemon AI community
-- Lastly, a big shoutout to [pre](https://github.com/scheibo) for being the engine that keeps the community going
+- Lastly, a shoutout to [pre](https://github.com/scheibo) for being the engine that keeps the community going, and inspiring a new round of motivation to build AI right [this time](https://github.com/caymansimpson/reuniclusVGC/tree/main).
