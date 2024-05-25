@@ -182,15 +182,17 @@ class DataProcessor:
 
         return team
 
+    # TODO: implement stat reverse engineering
     @staticmethod
-    def pokemon_to_json(pokemon: Pokemon) -> Dict[str, Any]:
+    def pokemon_to_json(mon: Pokemon) -> Dict[str, Any]:
+        raise NotImplementedError
+
         return {
-            "name": pokemon.species,
-            "species": pokemon.species,
-            "item": pokemon.item,
-            "ability": pokemon.ability,
-            "moves": list(pokemon.moves.keys()),
-            # TODO: reverse engineer
+            "name": mon.species,
+            "species": mon.species,
+            "item": mon.item,
+            "ability": mon.ability,
+            "moves": list(mon.moves.keys()),
             "nature": "serious",
             "evs": {"hp": 255, "atk": 255, "def": 255, "spa": 255, "spd": 255, "spe": 255},
             "ivs": {"hp": 31, "atk": 31, "def": 31, "spa": 31, "spd": 31, "spe": 31},
@@ -198,6 +200,7 @@ class DataProcessor:
 
     @staticmethod
     def battle_to_json(battle: Union[Battle, DoubleBattle]) -> bytes:
+
         p1team = battle.team if battle.player_role == "p1" else battle.opponent_team
         p2team = battle.opponent_team if battle.player_role == "p1" else battle.team
 
@@ -221,8 +224,8 @@ class DataProcessor:
                 DataProcessor.pokemon_to_json(mon) for species, mon in p2team.items()
             ],
             "score": [
-                len(list(filter(lambda x: x[1].fainted, p1team.items()))),
-                len(list(filter(lambda x: x[1].fainted, p2team.items()))),
+                len(list(filter(lambda x: not x[1].fainted, p1team.items()))),
+                len(list(filter(lambda x: not x[1].fainted, p2team.items()))),
             ],
             "inputLog": None,
             "log": [

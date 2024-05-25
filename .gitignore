@@ -1,5 +1,8 @@
 # Mac
 .DS_Store
 .vscode
-.src/evaluate/*
-.data/static/*
+src/elitefurretai/scripts/*
+data/static/*
+data/database/*
+__pycache__/
+*.pyc

@@ -1,10 +1,12 @@
 # -*- coding: utf-8 -*-
 from unittest.mock import MagicMock
 
+import pytest
+
 from elitefurretai.model_utils.battle_data import BattleData
+from elitefurretai.model_utils.data_processor import DataProcessor
 
 
-# TODO: add non-anonymized data
 def test_battle_data(single_battle_json_anon):
     battle_data = BattleData(
         roomid="elitefurretai",
@@ -33,9 +35,17 @@ def test_battle_data(single_battle_json_anon):
     assert single_battle_json_anon["endType"] == battle_data.end_type
 
 
-def test_embed_team_preview():
-    raise NotImplementedError
+# Will fail once I implement, which is intended
+def test_embed_team_preview(double_battle_json):
+    with pytest.raises(NotImplementedError):
+        dp = DataProcessor(omniscient=True)
+        bd = dp._process_battle(double_battle_json, perspective="p1")
+        bd.embed_team_preview()
 
 
-def test_embed_turn():
-    raise NotImplementedError
+# Will fail once I implement, which is intended
+def test_embed_turn(double_battle_json):
+    with pytest.raises(NotImplementedError):
+        dp = DataProcessor(omniscient=True)
+        bd = dp._process_battle(double_battle_json, perspective="p1")
+        bd.embed_team_preview()

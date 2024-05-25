@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
-from typing import List, Union, overload
+import re
+from typing import Any, List, Optional, Sequence, Union, overload
 
 from poke_env.data import GenData
 from poke_env.environment.battle import Battle
@@ -15,8 +16,6 @@ This module holds several helper functions to determine the validity of moves.
 This is why it's named imprison, which prevents moves from being playable.
 """
 
-_TYPE_CHART = GenData(9).type_chart
-
 
 @overload
 def is_valid_order(order: BattleOrder, battle: Battle) -> bool:
@@ -28,6 +27,9 @@ def is_valid_order(order: DoubleBattleOrder, battle: DoubleBattle) -> bool:
     pass
 
 
+# A function that validates whether a move is valid to a battle or not. Note that this isn't truly
+# what could be valid to a showdown battle -- it is just used to restrict what our AI considers the
+# right "protocol", setting the standard and bounds for the AI. It uses strict "typing"
 def is_valid_order(
     order: Union[BattleOrder, DoubleBattleOrder], battle: Union[Battle, DoubleBattle]
 ) -> bool:
@@ -37,7 +39,7 @@ def is_valid_order(
     elif isinstance(order, BattleOrder) and isinstance(battle, Battle):
         return _is_valid_singles_order(order, battle)
     else:
-        raise ValueError("Invalid order or battle parameter types")
+        return False
 
 
 def _is_valid_singles_order(order: BattleOrder, battle: Battle) -> bool:
@@ -83,12 +85,16 @@ def _is_valid_doubles_order(double_order: DoubleBattleOrder, battle: DoubleBattl
     # Check each order individually
     for i, order in enumerate([double_order.first_order, double_order.second_order]):
 
-        # The order is only allowed to not exist if we're forced to switch out a pokemon or if one doesn't exist
+        # Check to see if we should be sending an order in the first place
+        if order is not None and not battle.active_pokemon[i]:
+            return False
+
+        # The order is only allowed to not exist if we're forced to switch out another pokemon or if one doesn't exist
         if order is None:
-            if not (battle.force_switch[1 - i] or battle.active_pokemon[i]):
+            if not (battle.force_switch[1 - i] or not battle.active_pokemon[i]):
                 return False
         elif order.order is None:
-            if not (battle.force_switch[1 - i] or battle.active_pokemon[i]):
+            if not (battle.force_switch[1 - i] or not battle.active_pokemon[i]):
                 return False
 
         # Check whether a switch is valid
@@ -98,15 +104,31 @@ def _is_valid_doubles_order(double_order: DoubleBattleOrder, battle: DoubleBattl
                 return False
 
             # Can't be switching out and tera/dynamax/mega/z-move at the same time
-            if order.mega or order.z_move or order.dynamax or order.terastallize:
+            if (
+                order.mega
+                or order.z_move
+                or order.dynamax
+                or order.terastallize
+                or order.move_target != 0
+            ):
                 return False
 
             # Can only switch to the right pokemon
-            if order.order not in battle.available_switches[i]:
+            if order.order.species not in map(
+                lambda x: x.species, battle.available_switches[i]
+            ):
                 return False
 
         # Check whether a move is valid
         elif isinstance(order.order, Move):
+
+            # Check if we're supposed to switch
+            if battle.force_switch[i]:
+                return False
+
+            # Check if we can use this move
+            if order.order.id not in map(lambda x: x.id, battle.available_moves[i]):
+                return False
 
             # Check to ensure we can tera/dynamax/mega-evolve/z-move if we choose to do so
             if order.dynamax and not battle.can_dynamax[i]:
@@ -118,8 +140,30 @@ def _is_valid_doubles_order(double_order: DoubleBattleOrder, battle: DoubleBattl
             elif order.z_move and not battle.can_z_move[i]:
                 return False
 
+            # Make sure you're targeting something on the opponent's side of the field with dynamax
+            if order.order.target == Target.ADJACENT_FOE or (
+                order.dynamax and order.order.base_power > 0
+            ):
+                if order.move_target in (
+                    DoubleBattle.EMPTY_TARGET_POSITION,
+                    DoubleBattle.POKEMON_1_POSITION,
+                    DoubleBattle.POKEMON_2_POSITION,
+                ):
+                    return False
+
+                # Trying to target an opponent pokemon that doesn't exist
+                if (
+                    order.move_target
+                    in (
+                        DoubleBattle.OPPONENT_1_POSITION,
+                        DoubleBattle.OPPONENT_2_POSITION,
+                    )
+                    and not battle.opponent_active_pokemon[order.move_target - 1]
+                ):
+                    return False
+
             # For moves that can target any pokemon on the field:
-            if order.order.target in (Target.ANY, Target.NORMAL):
+            elif order.order.target in (Target.ANY, Target.NORMAL):
 
                 # These moves need a target
                 if order.move_target == DoubleBattle.EMPTY_TARGET_POSITION:
@@ -160,13 +204,9 @@ def _is_valid_doubles_order(double_order: DoubleBattleOrder, battle: DoubleBattl
                 ):
                     return False
 
-            # Make sure you're targeting something on the opponent's side of the field
-            elif order.order.target == Target.ADJACENT_FOE:
-                if order.move_target in (
-                    DoubleBattle.EMPTY_TARGET_POSITION,
-                    DoubleBattle.POKEMON_1_POSITION,
-                    DoubleBattle.POKEMON_2_POSITION,
-                ):
+            # We arbitrarily say that self-targeting moves should have no target
+            elif order.order.target == Target.SELF:
+                if order.move_target != DoubleBattle.EMPTY_TARGET_POSITION:
                     return False
 
     # Check cases where orders could invalidate each other
@@ -193,28 +233,73 @@ def _is_valid_doubles_order(double_order: DoubleBattleOrder, battle: DoubleBattl
 
         # Check to see we're not switching to the same mon
         if (
-            double_order.first_order.order == double_order.second_order.order
-            and isinstance(double_order.first_order.order, Pokemon)
+            isinstance(double_order.first_order.order, Pokemon)
+            and isinstance(double_order.second_order.order, Pokemon)
+            and double_order.first_order.order.species
+            == double_order.second_order.order.species
         ):
+            return False
+
+        # Check to see if we're only supposed to force switch one mon, in which case one order should be None
+        if battle.force_switch[0] != battle.force_switch[1]:
             return False
 
     return True
 
 
-# Filters all orders to reasonable moves
+@overload
 def filter_to_reasonable_moves(
-    self, battle: DoubleBattle, orders: List[DoubleBattleOrder]
+    battle: Battle, orders: Sequence[BattleOrder]
+) -> List[BattleOrder]:
+    pass
+
+
+@overload
+def filter_to_reasonable_moves(
+    battle: DoubleBattle, orders: Sequence[DoubleBattleOrder]
+) -> List[DoubleBattleOrder]:
+    pass
+
+
+def filter_to_reasonable_moves(
+    battle: Union[Battle, DoubleBattle],
+    orders: Union[Sequence[BattleOrder], Sequence[DoubleBattleOrder]],
+) -> Union[List[BattleOrder], List[DoubleBattleOrder]]:
+    battle_format = battle.battle_tag.split("-")[1]
+    match = re.match("(gen[0-9])", battle_format)
+    if match is None:
+        raise ValueError(
+            "Could not parse gen from battle json's format: {format}".format(
+                format=battle_format
+            )
+        )
+    gen = int(match.groups()[0][-1])
+
+    if len(orders) == 0:
+        return []
+    elif isinstance(orders[0], BattleOrder) and isinstance(battle, Battle):
+        return _filter_to_reasonable_singles_moves(battle, orders, gen)
+    elif isinstance(orders[0], DoubleBattleOrder) and isinstance(battle, DoubleBattle):
+        return _filter_to_reasonable_doubles_moves(battle, orders, gen)
+    else:
+        raise ValueError("Invalid order or battle parameter types")
+
+
+# Filters all orders to reasonable moves; only implemented in Doubles
+def _filter_to_reasonable_doubles_moves(
+    battle: DoubleBattle, orders: Sequence[Any], gen: int
 ):
     """
     Filters moves to reasonable moves. This is a helper function to guide AI to not search unlikely moves.
 
     :param battle: the battle with which to evalute the reasonableness of moves
     :type battle: DoubleBattle
-    :param orders: the list of moves to check
-    :type orders: List[DoubleBattleOrder]
+    :param orders: the list of moves to check -- really a List of DoubleBattleOrder's
+    :type orders: Sequence[Any]
     :return: A list of tuples that contain reasonable orders
     :rtype: List[DoubleBattleOrder]
     """
+
     reasonable_moves = []
 
     for order in orders:
@@ -231,16 +316,16 @@ def filter_to_reasonable_moves(
         ):
             continue
 
-        if self._useless_self_boost(
+        if _useless_self_boost(
             order.first_order, battle.active_pokemon[0]
-        ) or self._useless_self_boost(order.second_order, battle.active_pokemon[1]):
+        ) or _useless_self_boost(order.second_order, battle.active_pokemon[1]):
             continue
-        if self._useless_battle_condition(
+        if _useless_battle_condition(
             battle, order.first_order
-        ) or self._useless_battle_condition(battle, order.second_order):
+        ) or _useless_battle_condition(battle, order.second_order):
             continue
-        if self._useless_self_hit(battle, order.first_order, 0) or self._useless_self_hit(
-            battle, order.second_order, 1
+        if _useless_self_hit(battle, order.first_order, 0, gen) or _useless_self_hit(
+            battle, order.second_order, 1, gen
         ):
             continue
 
@@ -250,7 +335,9 @@ def filter_to_reasonable_moves(
 
 
 # Return if the self-boost is inneffectual
-def _useless_self_boost(order: BattleOrder, mon: Pokemon):
+def _useless_self_boost(order: Optional[BattleOrder], mon: Optional[Pokemon]):
+    if order is None or mon is None:
+        return False
 
     if order and isinstance(order.order, Move):
 
@@ -268,7 +355,9 @@ def _useless_self_boost(order: BattleOrder, mon: Pokemon):
 
 
 # Return if side condition move is useless. This should eventually return False for everything when we learn better (e.g. Torkoal switch-ins)
-def _useless_battle_condition(battle, order: BattleOrder):
+def _useless_battle_condition(battle, order: Optional[BattleOrder]):
+    if order is None:
+        return False
 
     if not order or not isinstance(order.order, Move):
         return False
@@ -290,7 +379,9 @@ def _useless_battle_condition(battle, order: BattleOrder):
 
 # Method to help reduce state space (will eventually default to 0). Here's the cases in which a self-hit is valid:
 # Can default to False to eliminate self-hits, and True to not eliminate anything
-def _useless_self_hit(battle, order: BattleOrder, index: int):
+def _useless_self_hit(battle, order: Optional[BattleOrder], index: int, gen: int):
+    if order is None:
+        return False
 
     # Eliminate easy conditions in which this is not a useless self hit
     if not order or not isinstance(order.order, Move):
@@ -312,7 +403,7 @@ def _useless_self_hit(battle, order: BattleOrder, index: int):
         if (
             target_mon.item == "weaknesspolicy"
             and order.order.type.damage_multiplier(
-                *target_mon.types, type_chart=_TYPE_CHART
+                *target_mon.types, type_chart=GenData.from_gen(gen).type_chart
             )
             >= 2
         ):
@@ -367,3 +458,9 @@ def _useless_self_hit(battle, order: BattleOrder, index: int):
             return True
 
     return False
+
+
+def _filter_to_reasonable_singles_moves(
+    battle: Battle, orders: Sequence[BattleOrder], gen: int
+) -> List[BattleOrder]:
+    raise NotImplementedError("This function is not implemented for singles battles yet")

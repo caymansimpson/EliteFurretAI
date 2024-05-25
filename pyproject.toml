@@ -42,7 +42,7 @@ multi_line_output = 3
 
 [tool.pyright]
 include = ["src"]
-exclude = ["src/elitefurretai/evaluate", "data/static"]
+exclude = ["src/elitefurretai/scripts", "data/static", "data/database"]
 pythonVersion = "3.7"
 
 [tool.pytest.ini_options]

@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 import os.path
 from typing import Iterator
+from unittest.mock import MagicMock
 
-from poke_env.environment import PokemonType
+import pytest
+from poke_env.environment import Battle, ObservedPokemon, Pokemon, PokemonType
 
 from elitefurretai.model_utils.battle_data import BattleData
 from elitefurretai.model_utils.data_processor import DataProcessor
@@ -127,9 +129,70 @@ def test_process_battle_doubles(double_battle_json):
     assert len(bd3.p2_team[0].moves) == 0
 
 
-def test_pokemon_to_json(double_battle_json):
-    raise NotImplementedError
-
-
+# Will fail once I implement, which is intended
 def battle_to_json(double_battle_json):
-    raise NotImplementedError
+
+    def toPokemon(omon: ObservedPokemon) -> Pokemon:
+        mon = Pokemon(gen=6, species=omon.species)
+        mon.item = omon._item
+        mon.level = omon._level
+        mon.moves = omon._moves
+        mon.ability = omon._ability
+        mon._last_request["stats"] = omon._stats  # Broken right now
+        mon.gender = omon._gender
+        mon.shiny = omon._shiny
+        return mon
+
+    dp = DataProcessor(omniscient=True)
+    bd = dp._process_battle(double_battle_json, perspective="p1")
+
+    logger = MagicMock()
+    battle = Battle(double_battle_json, "test-player-b", logger, gen=6)
+    battle.team = {mon.species: toPokemon(mon) for mon in bd.p1_team}
+    battle.opponent_team = {mon.species: toPokemon(mon) for mon in bd.p2_team}
+    for turn in bd.observations:
+        battle.parse_message(bd.observations[turn])
+
+    with pytest.raises(NotImplementedError):
+        json = DataProcessor.battle_to_json(battle)
+
+        assert json["p1"] == double_battle_json["p1"]
+        assert json["p2"] == double_battle_json["p2"]
+        assert json["p2team"] == double_battle_json["p2team"]
+        assert json["winner"] == double_battle_json["winner"]
+        assert json["turns"] == double_battle_json["turns"]
+
+        assert json["p1team"][0]["species"] == double_battle_json["p1team"][0]["species"]
+        assert json["p1team"][0]["item"] == double_battle_json["p1team"][0]["item"]
+        assert json["p1team"][0]["moves"][0] == double_battle_json["p1team"][0]["moves"][0]
+        assert json["p1team"][0]["moves"][1] == double_battle_json["p1team"][0]["moves"][1]
+        assert json["p1team"][0]["moves"][2] == double_battle_json["p1team"][0]["moves"][2]
+        assert json["p1team"][0]["moves"][3] == double_battle_json["p1team"][0]["moves"][3]
+        assert json["p1team"][0]["level"] == double_battle_json["p1team"][0]["level"]
+
+        assert json["p1team"][0]["nature"] == double_battle_json["p1team"][0]["nature"]
+
+        assert (
+            json["p1team"][0]["evs"]["hp"] == double_battle_json["p1team"][0]["evs"]["hp"]
+        )
+        assert (
+            json["p1team"][0]["evs"]["atk"]
+            == double_battle_json["p1team"][0]["evs"]["atk"]
+        )
+        assert (
+            json["p1team"][0]["evs"]["def"]
+            == double_battle_json["p1team"][0]["evs"]["def"]
+        )
+        assert (
+            json["p1team"][0]["evs"]["spa"]
+            == double_battle_json["p1team"][0]["evs"]["spa"]
+        )
+        assert (
+            json["p1team"][0]["evs"]["spd"]
+            == double_battle_json["p1team"][0]["evs"]["spd"]
+        )
+
+        assert json["p1team"][1]["species"] == double_battle_json["p1team"][1]["species"]
+
+        for i, log in enumerate(json["logs"]):
+            assert log == double_battle_json["logs"][i]

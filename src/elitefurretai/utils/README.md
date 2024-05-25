@@ -1,9 +1,29 @@
 # Utils
 
 This folder contains general utilities for EliteFurretAI. So far, these include:
-1. **Frisk** -- a module that predicts the likelihood of opponent infostates. This will be implemented in multiple stages:
-    1. **Step I**: We will first just derive ranges for stats (agnostic of items); this will be implemented directly into poke-env. This will include calculating effective speed and attack/defense stats based on observable phenomena exposed by showdown.
-    2. **Step II**: We will pull in smogon stats to prune/build priors. For example, Max SpDef Amoonguss is more likely than a 0 SpDef Amoongus w/ Assault Vest. At this stage, we will return the likelihood of each mon's spread and item based on what we observe. The shortcoming is that this will be independent observations; smogon stats only has spreads on individual mons and not spreads of teams. Because Smogon stats are public, this will be publicly accessible
-    3. **Step III**: We will build a separately database based on raw data (dependent on anonymized showdown data availability) that will allow us to do prior-based inferences (e.g. likelihood that Incineroar has assault vest | team has Amoonguss). This will not be shareable, and thus
-    4. **Step IV**: Last step will be using opponent’s past actions (e.g. our PBS/history) to infer infostates using our value network when created. Because Pokemon is a two-player zerosum game, our oppponent's predicted value can be trivially inferred by our predicted value -- they sum to 0. We can calculate the probability of an infostate based on the probability an opponent was likely to make previous moves (derived from the value they'd get from those moves). As an example, if I'm going to hydro pump an Incineroar, they probably let the Incineroar take it if the only mon they in back is a Heatran. This step is a bit circular (our predicted value of a state depends on the likelihood of each infostate), so we’ll need to think about this a bit more deeply.
-2. **Imprison**: This module simply validates which moves are available moves we should pick from. It has simple logic that first validates whether a move will even work, and then there are also simple heuristics that eliminate moves that are unlikely to help (e.g. self-attacks if the move doesnt heal or activate weakness policy)
+1. **Foresight**: a module that calls a database built on raw data (dependent on anonymized showdown data availability) that will allow us to make usage-based inferences (e.g. likelihood that Incineroar has assault vest | observations). The database will not be sharable. `predict_vgc_team` will take in what the AI has observed about the opponent's pokemon (stored in `ObservedPokemon`) and return either the most common team that matches your observations, or a probability distribution of all teams that matches its observations. Probability distributions can then be used for probabilistic search for AI; the primary downside is that this method relies on having seen previous data. I have not yet tested this method's accuracy.
+2. **Imprison**: This module simply validates which moves are available moves we should pick from. It has simple logic that first validates whether a move will even work, and then there are also simple heuristics that eliminate moves that are unlikely to help (e.g. self-attacks if the move doesnt heal or activate weakness policy). Note that this is _not_ representative of what will pass the showdown protocol -- it is a stricter protocol syntax (relative to what Showdown accepts) that we will force the AI to use.
+3. **Frisk** -- a module that predicts the likelihood of opponent infostates. We will be using opponent’s past actions (e.g. our PBS/history) to infer infostates using our value network when created. Because Pokemon is a two-player zerosum game, our oppponent's predicted value can be trivially inferred by our predicted value -- they sum to 0. We can calculate the probability of an infostate based on the probability an opponent was likely to make previous moves (derived from the value they'd get from those moves). As an example, if I'm going to hydro pump an Incineroar, they probably let the Incineroar take it if the only mon they in back is a Heatran. This method is superior to Foresight's because it can make inferences using opponent's actions and make guesses on unseen data. This has yet to be implemented.
+
+For foresight, the database is structured as follows:
+
+| battle | team | pokemon | team_counts |
+| ------------- | ------------- | ------------- | ------------- |
+| battle_id (key) | team_id | mon_id (key) | team_id |
+| player1  | mon_id | species | format |
+| player2  | | gender | num |
+| elo1  | | tera_type |  |
+| elo2  | | item |  |
+| team1_id  | | hp |  |
+| team2_id  | | atk |  |
+| sent_team1_id  | | def |  |
+| sent_team2_id  | | spa |  |
+| result  | | spd |  |
+| score  | | spe |  |
+| format | | ability |  |
+| | | level |  |
+| | | shiny |  |
+| | | move1_id |  |
+| | | move2_id |  |
+| | | move3_id |  |
+| | | move3_id |  |
