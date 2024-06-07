@@ -5,8 +5,11 @@
 from dataclasses import dataclass
 from typing import Dict, List, Union
 
+from poke_env.environment.battle import Battle
+from poke_env.environment.double_battle import DoubleBattle
 from poke_env.environment.observation import Observation
 from poke_env.environment.observed_pokemon import ObservedPokemon
+from poke_env.environment.pokemon import Pokemon
 
 
 @dataclass
@@ -23,21 +26,30 @@ class BattleData:
     p1_team: List[ObservedPokemon]
     p2_team: List[ObservedPokemon]
 
+    p1_teampreview_team: List[ObservedPokemon]
+    p2_teampreview_team: List[ObservedPokemon]
+
     score: List[int]
     winner: str
     end_type: str
 
     observations: Dict[int, Observation]
 
-    def embed_team_preview(self) -> List[int]:
-        """
-        Returns a list of integers representing the team preview of the battle
-        """
+    @staticmethod
+    def to_battle(bd: "BattleData") -> Union[Battle, DoubleBattle]:
         raise NotImplementedError
 
-    def embed_turn(self, turn: int, perspective: str = "p1") -> List[int]:
-        """
-        Returns a list of integers representing the turn of the battle, from the
-        perspective of the player whose turn it is.
-        """
-        raise NotImplementedError
+    @staticmethod
+    def observed_pokemon_to_pokemon(omon: ObservedPokemon) -> Pokemon:
+        mon = Pokemon(gen=6, species=omon.species)
+        mon._item = omon.item
+        mon._level = omon.level
+        mon._moves = omon.moves
+        mon._ability = omon.ability
+        stats = omon.stats  # Broken right now; we don't stoer hp
+        if not mon._last_request:
+            mon._last_request = {}
+        mon._last_request["stats"] = stats
+        mon._gender = omon.gender
+        mon._shiny = omon.shiny
+        return mon

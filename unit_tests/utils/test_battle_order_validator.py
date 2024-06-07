@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 from poke_env.environment import Battle, DoubleBattle, Move, Pokemon, Status, Target
 from poke_env.player import BattleOrder, DoubleBattleOrder
 
-from elitefurretai.utils.imprison import is_valid_order
+from elitefurretai.utils.battle_order_validator import is_valid_order
 
 
 def test_is_valid_singles_order(example_singles_request):

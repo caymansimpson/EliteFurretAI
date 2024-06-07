@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 """This module returns probabilities of infostates, from information learned in battle logs.
-It is named foresight because it only knows what it has seen
 """
 
 import os.path
@@ -17,7 +16,7 @@ from poke_env.environment import (
 )
 
 
-class Foresight:
+class MetaDB:
 
     _DATABASE_DIR: str = "data/database"
 

@@ -7,7 +7,7 @@ import re
 
 # -*- coding: utf-8 -*-
 from logging import Logger
-from typing import Any, Dict, Iterator, List, Union
+from typing import Any, Dict, Iterator, List, Optional, Union
 
 import orjson
 from poke_env.data import GenData
@@ -27,6 +27,7 @@ class DataProcessor:
     _omniscient: bool = False
     _double_data: bool = False
     _gen_data: Dict[int, GenData] = {}
+    _write_tag: str = "eliteFurretAIGenerated"
 
     def __init__(self, omniscient: bool = False, double_data: bool = False):
         self._omniscient = omniscient
@@ -36,9 +37,9 @@ class DataProcessor:
         for filepath in files:
             with open(filepath, "r") as f:
                 json = orjson.loads(f.read())
-                yield self._process_battle(json, perspective="p1")
+                yield self.json_to_battledata(json, perspective="p1")
                 if self._double_data:
-                    yield self._process_battle(json, perspective="p2")
+                    yield self.json_to_battledata(json, perspective="p2")
 
     def load_data(self, files: List[str]) -> Dict[str, BattleData]:
         data = {}
@@ -47,9 +48,94 @@ class DataProcessor:
 
         return data
 
-    def _process_battle(
+    def json_to_battledata(
         self, battle_json: Dict[str, Any], perspective: str = "p1"
     ) -> BattleData:
+
+        # Generate battle from JSON file
+        battle = self.json_to_battle(battle_json, perspective)
+
+        # Create metadata from hash, may create collissions, but it's necessary
+        # without storing these directly in a DB
+        hashed_roomid = "battle-{format}{num}".format(
+            format=battle.format, num=hash(str(battle_json) + perspective)
+        )
+
+        # Load any necessary data
+        if battle.gen not in self._gen_data:
+            self._gen_data[battle.gen] = GenData.from_gen(battle.gen)
+
+        # Prepare variables
+        can_see_p1_team = perspective == "p1" or self._omniscient
+        can_see_p2_team = perspective == "p2" or self._omniscient
+        p1_team: List[ObservedPokemon] = []
+        p2_team: List[ObservedPokemon] = []
+        p1_teampreview_team: List[ObservedPokemon] = []
+        p2_teampreview_team: List[ObservedPokemon] = []
+
+        # If this module wrote the json
+        if battle_json.get(self._write_tag, False):
+
+            p1_teampreview_team = self._prepare_team(
+                battle_json.get("p1teampreviewteam", []), battle.gen, can_see_p1_team
+            )
+            p2_teampreview_team = self._prepare_team(
+                battle_json.get("p2teampreviewteam", []), battle.gen, can_see_p2_team
+            )
+            p1_team = self._prepare_team(
+                battle_json.get("p1team", []), battle.gen, can_see_p1_team
+            )
+            p2_team = self._prepare_team(
+                battle_json.get("p2team", []), battle.gen, can_see_p2_team
+            )
+
+        # If Showdown wrote the json
+        else:
+            p1_teampreview_team = self._prepare_team(
+                battle_json["p1team"], battle.gen, can_see_p1_team
+            )
+            p2_teampreview_team = self._prepare_team(
+                battle_json["p2team"], battle.gen, can_see_p2_team
+            )
+            for log in battle_json["inputLog"]:
+                if ">p1 team" in log:
+                    choices = map(
+                        lambda x: int(x) - 1, log.replace(">p1 team ", "").split(", ")
+                    )
+                    team = [battle_json["p1team"][choice] for choice in choices]
+                    p1_team = self._prepare_team(
+                        team_list=team, gen=battle.gen, omniscient=can_see_p1_team
+                    )
+                elif ">p2 team" in log:
+                    choices = map(
+                        lambda x: int(x) - 1, log.replace(">p2 team ", "").split(", ")
+                    )
+                    team = [battle_json["p2team"][choice] for choice in choices]
+                    p2_team = self._prepare_team(
+                        team_list=team, gen=battle.gen, omniscient=can_see_p2_team
+                    )
+
+        return BattleData(
+            roomid=battle_json.get("roomid", hashed_roomid),
+            format=battle_json["format"],
+            p1=battle_json["p1"],
+            p2=battle_json["p2"],
+            p1rating=battle_json["p1rating"],
+            p2rating=battle_json["p2rating"],
+            p1_teampreview_team=p1_teampreview_team,
+            p2_teampreview_team=p2_teampreview_team,
+            p1_team=p1_team,
+            p2_team=p2_team,
+            score=battle_json["score"],
+            winner=battle_json["winner"],
+            end_type=battle_json["endType"],
+            observations=battle.observations,
+        )
+
+    @staticmethod
+    def json_to_battle(
+        battle_json, perspective: str = "p1"
+    ) -> Union[Battle, DoubleBattle]:
         match = re.match("(gen[0-9])", str(battle_json.get("format")))
         if match is None:
             raise ValueError(
@@ -58,9 +144,6 @@ class DataProcessor:
                 )
             )
         gen = int(match.groups()[0][-1])
-
-        if gen not in self._gen_data:
-            self._gen_data[gen] = GenData(gen)
 
         battle = None
         if "vgc" in str(battle_json.get("format")) or "doubles" in str(
@@ -95,47 +178,33 @@ class DataProcessor:
             else:
                 battle.parse_message(split_message)
 
-        hashed_roomid = "battle-{format}{num}".format(
-            format=battle_json["format"], num=hash(str(battle_json) + perspective)
-        )
-
-        can_see_p1_team = perspective == "p1" or self._omniscient
-        can_see_p2_team = perspective == "p2" or self._omniscient
-
-        return BattleData(
-            roomid=battle_json.get("roomid", hashed_roomid),
-            format=battle_json["format"],
-            p1=battle_json["p1"],
-            p2=battle_json["p2"],
-            p1rating=battle_json["p1rating"],
-            p2rating=battle_json["p2rating"],
-            p1_team=self._prepare_team(
-                team_list=battle_json["p1team"], gen=gen, omniscient=can_see_p1_team
-            ),
-            p2_team=self._prepare_team(
-                team_list=battle_json["p2team"], gen=gen, omniscient=can_see_p2_team
-            ),
-            score=battle_json["score"],
-            winner=battle_json["winner"],
-            end_type=battle_json["endType"],
-            observations=battle.observations,
-        )
+        return battle
 
     def _prepare_team(
         self, team_list: List[Dict[str, Any]], gen: int, omniscient: bool = False
     ) -> List[ObservedPokemon]:
+
         team = []
-
         for mon_info in team_list:
-            species = mon_info["species"].lower().replace("-", "").replace(" ", "")
+            team.append(self._prepare_mon(mon_info, gen, omniscient))
 
-            ability = None
-            tera = None
-            item = None
-            moves = {}
-            stats = ObservedPokemon.initial_stats()
+        return team
 
-            if omniscient:
+    def _prepare_mon(
+        self, mon_info: Dict[str, Any], gen: int, omniscient: bool = False
+    ) -> ObservedPokemon:
+        species = mon_info["species"].lower().replace("-", "").replace(" ", "")
+
+        ability = None
+        tera = None
+        item = None
+        moves = {}
+        stats = ObservedPokemon.initial_stats()
+
+        if omniscient:
+            # Get stats if EliteFurretAI wrote the stats, otherwise use official data format
+            stats = mon_info.get("stats")
+            if stats is None:
                 stats = dict(
                     zip(
                         ["hp", "atk", "def", "spa", "spd", "spe"],
@@ -149,43 +218,41 @@ class DataProcessor:
                         ),
                     )
                 )
-                stats.pop("hp")  # Remove for now, since pokemon.stats doesnt have hp
 
-                # These are things we wouldn't know if we don't have omniscience
-                ability = mon_info["ability"]
-                if "teraType" in mon_info:
-                    tera = PokemonType.from_name(str(mon_info.get("teraType")))
-                item = mon_info["item"]
-                moves = {str(m): Move(m, gen=gen) for m in mon_info["moves"]}
+            # These are things we wouldn't know if we don't have omniscience
+            ability = mon_info["ability"]
+            if "teraType" in mon_info:
+                tera = PokemonType.from_name(str(mon_info.get("teraType")))
+            item = mon_info["item"]
+            moves = {str(m): Move(m, gen=gen) for m in mon_info["moves"]}
 
-            gender = None
-            if mon_info.get("gender", None) == "M":
-                gender = PokemonGender.MALE
-            elif mon_info.get("gender", None) == "F":
-                gender = PokemonGender.FEMALE
-            else:
-                gender = PokemonGender.NEUTRAL
+        gender = None
+        if mon_info.get("gender", None) == "M":
+            gender = PokemonGender.MALE
+        elif mon_info.get("gender", None) == "F":
+            gender = PokemonGender.FEMALE
+        else:
+            gender = PokemonGender.NEUTRAL
 
-            team.append(
-                ObservedPokemon(
-                    species=species,
-                    stats=stats,
-                    moves=moves,
-                    ability=ability,
-                    item=item,
-                    gender=gender,
-                    tera_type=tera,
-                    shiny=mon_info.get("shiny", None),
-                    level=mon_info["level"],
-                )
-            )
+        return ObservedPokemon(
+            species=species,
+            stats=stats,
+            moves=moves,
+            ability=ability,
+            item=item,
+            gender=gender,
+            tera_type=tera,
+            shiny=mon_info.get("shiny", None),
+            level=mon_info["level"],
+        )
 
-        return team
-
-    # TODO: implement stat reverse engineering
+    # Return -1 on evs and ivs, because it's near impossible to recreate stats in a time-efficient way
+    # Instead, I just write the stats directly
     @staticmethod
     def pokemon_to_json(mon: Pokemon) -> Dict[str, Any]:
-        raise NotImplementedError
+        stats: Dict[str, Optional[int]] = {"hp": mon.max_hp}
+        if mon.stats:
+            stats.update(mon.stats)
 
         return {
             "name": mon.species,
@@ -194,15 +261,26 @@ class DataProcessor:
             "ability": mon.ability,
             "moves": list(mon.moves.keys()),
             "nature": "serious",
-            "evs": {"hp": 255, "atk": 255, "def": 255, "spa": 255, "spd": 255, "spe": 255},
-            "ivs": {"hp": 31, "atk": 31, "def": 31, "spa": 31, "spd": 31, "spe": 31},
+            "evs": {"hp": -1, "atk": -1, "def": -1, "spa": -1, "spd": -1, "spe": -1},
+            "ivs": {"hp": -1, "atk": -1, "def": -1, "spa": -1, "spd": -1, "spe": -1},
+            "stats": stats,
         }
 
-    @staticmethod
-    def battle_to_json(battle: Union[Battle, DoubleBattle]) -> bytes:
+    # I write stats and teampreview differently
+    def battle_to_json(self, battle: Union[Battle, DoubleBattle]) -> bytes:
 
         p1team = battle.team if battle.player_role == "p1" else battle.opponent_team
         p2team = battle.opponent_team if battle.player_role == "p1" else battle.team
+        p1teampreviewteam = (
+            battle.teampreview_team
+            if battle.player_role == "p1"
+            else battle.opponent_teampreview_team
+        )
+        p2teampreviewteam = (
+            battle.opponent_teampreview_team
+            if battle.player_role == "p1"
+            else battle.teampreview_team
+        )
 
         json = {
             "winner": battle.player_username if battle.won else battle.opponent_username,
@@ -223,6 +301,14 @@ class DataProcessor:
             "p2team": [
                 DataProcessor.pokemon_to_json(mon) for species, mon in p2team.items()
             ],
+            "p1teampreviewteam": [
+                DataProcessor.pokemon_to_json(mon)
+                for species, mon in p1teampreviewteam.items()
+            ],
+            "p2teampreviewteam": [
+                DataProcessor.pokemon_to_json(mon)
+                for species, mon in p2teampreviewteam.items()
+            ],
             "score": [
                 len(list(filter(lambda x: not x[1].fainted, p1team.items()))),
                 len(list(filter(lambda x: not x[1].fainted, p2team.items()))),
@@ -240,6 +326,9 @@ class DataProcessor:
             ),
             "ladderError": False,
             "timestamp": datetime.datetime.now().strftime("%a %b %d %Y %H:%M:%S GMT%z"),
+            self._write_tag: True,
+            "format": battle.format,
+            "id": battle.battle_tag,
         }
 
         return orjson.dumps(json)

@@ -4,5 +4,5 @@
 src/elitefurretai/scripts/*
 data/static/*
 data/database/*
-__pycache__/
+__pycache__/*
 *.pyc

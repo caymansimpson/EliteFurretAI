@@ -3,11 +3,11 @@ from unittest.mock import MagicMock
 
 from poke_env.environment import Move, ObservedPokemon, PokemonGender, PokemonType
 
-from elitefurretai.utils.foresight import Foresight
+from elitefurretai.utils.meta_db import MetaDB
 
 
 def test_query():
-    f = Foresight("test_frisk.db", write=True)
+    f = MetaDB("test_frisk.db", write=True)
 
     # Set up database
     f.query("""DROP TABLE IF EXISTS team_gen9;""")
@@ -72,7 +72,7 @@ def test_query():
 
 
 def test_predict_vgc_team():
-    f = Foresight("test_frisk.db", write=True)
+    f = MetaDB("test_frisk.db", write=True)
 
     # Create database and data structures
     f.query("""DROP TABLE IF EXISTS team_gen9;""")
