@@ -16,7 +16,7 @@
     - **Human Training Data** – while not essential, this will accelerate training convergence by orders of magnitude, reduce capacity needs and accelerate our own internal learning speed tremendously. It will also help our bot transition to playing humans more easily.
 
 ## Current Proposed Approach
-From our synthesis of [avalailable literature](https://docs.google.com/document/d/14menCHw8z06KJWZ5F_K-MjgWVo_b7PESR7RlG-em4ic/edit#heading=h.p6dz1cv0mnpx), we’ve seen:
+From our synthesis of [available literature](https://docs.google.com/document/d/14menCHw8z06KJWZ5F_K-MjgWVo_b7PESR7RlG-em4ic/edit#heading=h.p6dz1cv0mnpx), we’ve seen:
 - Model-free alone is unlikely to produce superhuman performance without the capacity that we don’t have available
 - Search is necessary for decision-time planning, and game abstractions are necessary to make search tractable
 - The behavior of VGC from a game-theoretic perspective is still unknown, and theory might not help the practical purposes of making a superhuman bot.
