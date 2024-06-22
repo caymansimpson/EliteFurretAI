@@ -5,8 +5,6 @@
 from dataclasses import dataclass
 from typing import Dict, List, Union
 
-from poke_env.environment.battle import Battle
-from poke_env.environment.double_battle import DoubleBattle
 from poke_env.environment.observation import Observation
 from poke_env.environment.observed_pokemon import ObservedPokemon
 from poke_env.environment.pokemon import Pokemon
@@ -34,10 +32,6 @@ class BattleData:
     end_type: str
 
     observations: Dict[int, Observation]
-
-    @staticmethod
-    def to_battle(bd: "BattleData") -> Union[Battle, DoubleBattle]:
-        raise NotImplementedError
 
     @staticmethod
     def observed_pokemon_to_pokemon(omon: ObservedPokemon) -> Pokemon:

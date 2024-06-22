@@ -2,7 +2,7 @@
 .DS_Store
 .vscode
 src/elitefurretai/scripts/*
-data/static/*
+data/battles/*
 data/database/*
 __pycache__/*
 *.pyc

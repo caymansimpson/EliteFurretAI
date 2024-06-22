@@ -5,7 +5,7 @@
 # -*- coding: utf-8 -*-
 import pytest
 
-from elitefurretai.utils.infostate_network import InfostateNetwork
+from elitefurretai.battle_inference.infostate_network import InfostateNetwork
 
 
 # Will fail once I implement, which is intended

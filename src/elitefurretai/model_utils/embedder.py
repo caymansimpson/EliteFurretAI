@@ -58,6 +58,12 @@ class Embedder:
             abilities.update(mon["abilities"].values())
         self._knowledge["Ability"] = abilities
 
+        self._MOVE_LEN = 197
+        self._POKEMON_LEN = 2715
+        self._OPPONENT_POKEMON_LEN = 2715
+        self._TEAMPREVIEW_LEN = 100
+        self._DOUBLEBATTLE_LEN = 100
+
     def _prep(self, string) -> str:
         return string.lower().replace("_", " ")
 
@@ -68,7 +74,7 @@ class Embedder:
 
         # If the move is None or empty, return a negative array (filled w/ -1's)
         if move is None or move.is_empty:
-            return [-1] * 197
+            return [-1] * self._MOVE_LEN
 
         embeddings = []
 
@@ -228,7 +234,7 @@ class Embedder:
 
         # If the mon is None, return a negative array (filled w/ -1's)
         if mon is None:
-            return [-1] * 2715
+            return [-1] * self._POKEMON_LEN
 
         embeddings = []
 
@@ -256,7 +262,7 @@ class Embedder:
                 int(mon.must_recharge),
                 1 if mon.preparing else 0,
                 int(mon.is_dynamaxed),
-                int(mon.terastallized),
+                int(mon.is_terastallized),
             ]
         )
 
@@ -354,6 +360,7 @@ class Embedder:
         # Flatten all the lists into a Nx1 list
         return [item for sublist in embeddings for item in sublist]
 
+    # TODO: account for when opponent has <6 mons
     def embed_double_battle(self, battle: DoubleBattle) -> List[int]:
         """
         Returns a list of integers representing the state of the battle, at the beginning

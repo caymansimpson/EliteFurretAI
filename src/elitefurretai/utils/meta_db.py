@@ -169,6 +169,7 @@ class MetaDB:
         item = mon.item.lower() if mon.item else "NULL"
         gender = mon.gender.name.lower() if mon.gender else "NULL"
         tera_type = mon.tera_type.name.lower() if mon.tera_type else "NULL"
+        shiny = str(mon.shiny).upper() if mon.shiny else "NULL"
 
         # Because shiny isn't yet a battle-dependent characteristic, will leave this out of the
         # query for now. Will add it back in future generations if interactions depend on this
@@ -177,19 +178,18 @@ class MetaDB:
         clause = "\t\t\tpokemon.species = '{species}'".format(species=mon.species.lower())
         if mon.level:
             clause += "\n\t\t\tAND pokemon.level = {level}".format(level=mon.level)
-        if mon.ability != "":
+        if ability != "NULL":
             clause += "\n\t\t\tAND pokemon.ability = '{ability}'".format(ability=ability)
-        if mon.item:
+        if item != "NULL":
             clause += "\n\t\t\tAND pokemon.item = '{item}'".format(item=item)
-        if mon.gender:
+        if gender != "NULL":
             clause += "\n\t\t\tAND pokemon.gender = '{gender}'".format(gender=gender)
-        if mon.tera_type:
+        if tera_type != "NULL":
             clause += "\n\t\t\tAND pokemon.tera_type = '{teratype}'".format(
                 teratype=tera_type
             )
-
-        # if mon.shiny is not None:
-        #     clause += "\n\t\t\tAND pokemon.shiny = {shiny}".format(shiny=shiny)
+        if shiny != "NULL":
+            clause += "\n\t\t\tAND pokemon.shiny = {shiny}".format(shiny=shiny)
 
         # Have to compare every move against itself
         move_clause = []
