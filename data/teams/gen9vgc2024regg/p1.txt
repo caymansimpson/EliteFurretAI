@@ -1,0 +1,34 @@
+Miraidon @ Choice Scarf
+Ability: Hadron Engine
+Level: 50
+Tera Type: Ghost
+EVs: 252 Atk / 1 Def / 252 Spe
+Timid Nature
+- Discharge
+
+Iron Hands @ Flame Orb
+Ability: Quark Drive
+Level: 50
+Tera Type: Electric
+EVs: 252 HP / 1 Def / 252 SpD
+Calm Nature
+- Close Combat
+
+Grimmsnarl @ Leftovers
+Ability: Prankster
+Level: 50
+Tera Type: Fire
+EVs: 252 Atk / 1 SpD / 252 Spe
+Jolly Nature
+- Scary Face
+- Thunder Wave
+- Spirit Break
+
+Sandslash @ Choice Band
+Ability: Sand Rush
+Level: 50
+Tera Type: Electric
+EVs: 252 HP / 1 Def / 252 SpD
+Calm Nature
+- Bulldoze
+- Earthquake

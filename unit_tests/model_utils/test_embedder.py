@@ -32,7 +32,7 @@ def test_embed_move():
         moves.add(tuple(embedded_move))
 
 
-# TODO: test implementation on one pokemon
+# TODO: test implementation on one pokemon; from battle
 def test_embed_pokemon():
     embedder = Embedder()
 
@@ -42,6 +42,21 @@ def test_embed_pokemon():
     mons.add(tuple(none_mon))
     for mon in mon_generator():
         embedded_mon = embedder.embed_pokemon(mon)
+        assert len(embedded_mon) == len(none_mon)
+        assert tuple(embedded_mon) not in mons
+        mons.add(tuple(embedded_mon))
+
+
+# TODO: test implementation on one opponent pokemon; from battle
+def test_embed_oponent_pokemon():
+    embedder = Embedder()
+
+    # Test that every mon has the same length, and that each mon is different
+    none_mon = embedder.embed_pokemon(None)
+    mons = set()
+    mons.add(tuple(none_mon))
+    for mon in mon_generator():
+        embedded_mon = embedder.embed_opponent_pokemon(mon)
         assert len(embedded_mon) == len(none_mon)
         assert tuple(embedded_mon) not in mons
         mons.add(tuple(embedded_mon))

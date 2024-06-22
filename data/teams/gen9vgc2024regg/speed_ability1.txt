@@ -1,0 +1,39 @@
+Gardevoir @ Iron Ball
+Ability: Trace
+Level: 50
+Tera Type: Water
+EVs: 252 Atk / 1 SpD / 252 Spe
+Jolly Nature
+- Shadow Sneak
+- Future Sight
+- Misty Terrain
+
+Dusclops @ Leftovers
+Ability: Frisk
+Level: 50
+Tera Type: Ghost
+EVs: 252 HP / 1 SpD / 252 Spe
+Jolly Nature
+- Trick Room
+- Hex
+- Will-O-Wisp
+
+Drifblim @ Sitrus Berry
+Ability: Unburden
+Level: 50
+Tera Type: Bug
+EVs: 244 HP / 252 SpA / 1 SpD
+Modest Nature
+IVs: 20 Atk
+- Tailwind
+- Aerial Ace
+
+Bellossom @ Quick Claw
+Ability: Chlorophyll
+Level: 50
+Tera Type: Fire
+EVs: 252 Atk / 1 SpD / 252 Spe
+Jolly Nature
+- Sunny Day
+- Trailblaze
+- Grassy Terrain

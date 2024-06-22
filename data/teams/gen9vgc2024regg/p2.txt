@@ -1,0 +1,36 @@
+Hawlucha @ Electric Seed
+Ability: Unburden
+Level: 50
+Tera Type: Ghost
+EVs: 252 Atk / 1 Def / 252 Spe
+Timid Nature
+IVs: 0 Atk
+- Acrobatics
+
+Tyranitar @ Leftovers
+Ability: Sand Stream
+Level: 50
+Tera Type: Electric
+EVs: 252 HP / 1 Def / 252 SpD
+Calm Nature
+- Sandstorm
+- Bite
+
+Grimmsnarl @ Iron Ball
+Ability: Prankster
+Level: 50
+Tera Type: Fire
+EVs: 252 Atk / 1 SpD / 252 Spe
+Jolly Nature
+- Scary Face
+- Thunder Wave
+- Spirit Break
+
+Sandslash @ Choice Scarf
+Ability: Sand Rush
+Level: 50
+Tera Type: Electric
+EVs: 252 HP / 1 Def / 252 SpD
+Calm Nature
+- Bulldoze
+- Earthquake
