@@ -1,11 +1,11 @@
-Hawlucha @ Electric Seed
-Ability: Unburden
+Blastoise @ Electric Seed
+Ability: Torrent
 Level: 50
 Tera Type: Ghost
 EVs: 252 Atk / 1 Def / 252 Spe
 Timid Nature
 IVs: 0 Atk
-- Acrobatics
+- Seismic Toss
 
 Tyranitar @ Leftovers
 Ability: Sand Stream
@@ -13,8 +13,7 @@ Level: 50
 Tera Type: Electric
 EVs: 252 HP / 1 Def / 252 SpD
 Calm Nature
-- Sandstorm
-- Bite
+- Seismic Toss
 
 Grimmsnarl @ Iron Ball
 Ability: Prankster

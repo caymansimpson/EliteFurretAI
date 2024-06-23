@@ -1,34 +1,38 @@
-Miraidon @ Choice Scarf
-Ability: Hadron Engine
+Indeedee (M)
+Ability: Psychic Surge
 Level: 50
-Tera Type: Ghost
-EVs: 252 Atk / 1 Def / 252 Spe
-Timid Nature
-- Discharge
+EVs: 112 Atk
+IVs: 0 Atk
+- Trick Room
+- Substitute
+- Ally Switch
+- Magic Room
 
-Iron Hands @ Flame Orb
-Ability: Quark Drive
+Pelipper @ Aguav Berry
+Ability: Drizzle
 Level: 50
-Tera Type: Electric
-EVs: 252 HP / 1 Def / 252 SpD
-Calm Nature
-- Close Combat
+EVs: 100 Atk
+- Tailwind
+- U-turn
+- Hail
+- Whirlpool
 
-Grimmsnarl @ Leftovers
-Ability: Prankster
+Dusclops @ Quick Claw
+Ability: Pressure
 Level: 50
-Tera Type: Fire
-EVs: 252 Atk / 1 SpD / 252 Spe
-Jolly Nature
-- Scary Face
-- Thunder Wave
-- Spirit Break
+EVs: 176 Atk
+IVs: 0 Atk
+- Disable
+- Ally Switch
+- Trick
+- Mean Look
 
-Sandslash @ Choice Band
-Ability: Sand Rush
+Rillaboom @ Life Orb
+Ability: Grassy Surge
 Level: 50
-Tera Type: Electric
-EVs: 252 HP / 1 Def / 252 SpD
-Calm Nature
-- Bulldoze
-- Earthquake
+EVs: 152 Atk
+IVs: 0 Atk
+- Taunt
+- Uproar
+- U-turn
+- Frenzy Plant

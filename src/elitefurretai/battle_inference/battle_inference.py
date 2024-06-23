@@ -12,7 +12,6 @@ from elitefurretai.battle_inference.inference_utils import _DISCERNABLE_ITEMS, _
 from elitefurretai.battle_inference.speed_inference import SpeedInference
 
 
-# TODO: extend class to take into account aggressiveness of assumptions
 class BattleInference:
 
     def __init__(self, battle: Union[Battle, DoubleBattle]):

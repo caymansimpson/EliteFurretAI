@@ -4,9 +4,10 @@
 """
 
 import re
-from typing import List, Optional, Tuple
-from poke_env.environment.observed_pokemon import ObservedPokemon
+from typing import Dict, List, Optional, Tuple
+
 from poke_env.environment.observation import Observation
+from poke_env.environment.observed_pokemon import ObservedPokemon
 
 _DISCERNABLE_ITEMS = set(
     [
@@ -65,15 +66,20 @@ _flags = {
     "1.5spe": 0,
 }
 
-# TODO: add from analysis of logs; first we can go through top 50 pokemon and record theirs
-_ITEMS = set([])
-
 # Denoted by preStart in https://github.com/smogon/pokemon-showdown/blob/master/data/abilities.ts
 _PRIORITY_ACTIVATION_ABILITIES = ["As One", "Neutralizing Gas", "Unnerve", "Tera Shift"]
 
-_ITEMS_THAT_ACTIVATE_ON_SWITCH = ["Booster Energy", "Air Balloon"]
+_ITEM_MSGS_THAT_ACTIVATE_BEFORE_ATTACK = ["item: Quick Claw", "item: Custap Berry"]
 
-_ABILITIES_THAT_CAN_PUBLICLY_ACTIVATE_ABILITIES_OR_ITEMS = [
+_ITEMS_THAT_ACTIVATE_ON_SWITCH = [
+    "Booster Energy",
+    "Air Balloon",
+    "Grassy Seed",
+    "Electric Seed",
+    "Misty Seed",
+]
+
+_ABILITIES_THAT_CAN_PUBLICLY_ACTIVATE_ABILITIES_OR_ITEMS = {
     "Snow Warning",
     "Orachium Pulse",
     "Drought",
@@ -83,7 +89,7 @@ _ABILITIES_THAT_CAN_PUBLICLY_ACTIVATE_ABILITIES_OR_ITEMS = [
     "Grassy Surge",
     "Misty Surge",
     "Pyschic Surge",
-]
+}
 
 
 # Converts showdown message into dict key for self._mons
@@ -123,7 +129,7 @@ def is_ability_event(event: List[str]) -> bool:
 # ['', '-ability', 'p1b: Calyrex', 'As One']
 # ['', '-ability', 'p1b: Calyrex', 'Unnerve']
 # ['', '-ability', 'p2b: Weezing', 'Neutralizing Gas']
-def parse_ability(event: List[str]) -> Tuple[Optional[str], Optional[str]]:
+def get_ability_and_identifier(event: List[str]) -> Tuple[Optional[str], Optional[str]]:
     if event[-1] == "ability: Tera Shift":
         return "Tera Shift", get_pokemon_ident(event[-2])
     elif "[from] ability: Frisk" in event:
@@ -222,3 +228,141 @@ def copy_observation(obs: Observation) -> Observation:
         opponent_team=opp_team,
         events=events,
     )
+
+
+# Turns go through phases, and this function will split up the events from showdown logs into different segments
+# This will allow for easier parsing for various aspects of the game. The turns can be split
+# into the following segments:
+# ======== Player Actions ========
+# Switches ("switch") <- also includes events for ability/item activations upon switch
+# Tera/mega/dynamax/primal ("battle_mechanic")
+# Moves, by priority ("move")
+# Residuals ("residual")
+# ======== Start of Battle or Switching in after Faint ======== ("|upkeep")
+# Start of battle / end-of-turn switches for fainted mons (None)
+# Preturn switch ("preturn_switch") <- only includes events for ability/item activations upon switch
+def get_segments(events: List[List[str]]) -> Dict[str, List[List[str]]]:
+    indices, segments = {}, {}
+    last_segment = ""
+    i = 0
+
+    events = [event for event in events if len(event) > 1]
+
+    # If at the start of the battle, we move directly to the post-turn phase
+    if not any(map(lambda x: len(x) >= 2 and x[1] == "start", events)):
+        # We know there has to be a switch or a move; we go until we get there, but if we get a battle_mechanic,
+        # we stop
+        while (
+            i < len(events)
+            and events[i][1]
+            not in ["-terastallize", "-dynamax", "-mega", "-primal", "switch", "move"]
+            and events[i][-1] != "[upkeep]"
+            and events[i][-1] not in _ITEM_MSGS_THAT_ACTIVATE_BEFORE_ATTACK
+        ):
+            i += 1
+
+        # If we stop on a switch, we record the position
+        if i < len(events) and events[i][1] == "switch":
+            last_segment = "switch"
+            indices["switch"] = i
+
+        # We keep on going until we get to battle mechanics or moves (player actions)
+        while (
+            i < len(events)
+            and events[i][1] not in ["-terastallize", "-dynamax", "-mega", "move"]
+            and events[i][-1] != "[upkeep]"
+            and events[i][-1] not in _ITEM_MSGS_THAT_ACTIVATE_BEFORE_ATTACK
+        ):
+            i += 1
+
+        # If we stop on a battle_mechanic, we record the position
+        if i < len(events) and events[i][1] in ["-terastallize", "-dynamax", "-mega"]:
+            if last_segment != "":
+                segments[last_segment] = events[indices[last_segment] : i]
+            last_segment = "battle_mechanic"
+            indices["battle_mechanic"] = i
+
+        # Keep going until we get to a move, residuals or upkeep
+        while (
+            i < len(events)
+            and events[i][1] not in ["move", "", "upkeep"]
+            and events[i][-1] not in ["[upkeep]", "none"]
+            and events[i][-1] not in _ITEM_MSGS_THAT_ACTIVATE_BEFORE_ATTACK
+        ):
+            i += 1
+
+        # If we stop on a move, we record the position
+        if i < len(events) and (
+            events[i][1] == "move"
+            or events[i][-1] in _ITEM_MSGS_THAT_ACTIVATE_BEFORE_ATTACK
+        ):
+            if last_segment != "":
+                segments[last_segment] = events[indices[last_segment] : i]
+            last_segment = "move"
+            indices["move"] = i
+
+        # Keep going until we get to the post-move phase (the empty event)
+        while i < len(events) and events[i][1] != "":
+            i += 1
+
+        #  Once we hit the empty event, we record what we've gotten to
+        if i < len(events):
+            if last_segment != "":
+                segments[last_segment] = events[indices[last_segment] : i]
+            last_segment = ""
+            i += 1
+
+        # If we are find state upkeep, we should keep going until we're out
+        if i < len(events) and (
+            events[i][-1] in ["[upkeep]", "none"]
+            or events[i][1] in ["-sideend", "-fieldend", "-end"]
+        ):
+            while i < len(events) and (
+                events[i][-1] in ["[upkeep]", "none"]
+                or events[i][1] in ["-sideend", "-fieldend", "-end"]
+            ):
+                i += 1
+
+        # If after going through state upkeep, we're not at upkeep, this means we're at residuals
+        if i < len(events) and events[i][1] != "upkeep":
+            last_segment = "residual"
+            indices["residual"] = i
+
+        # Every turn has an upkeep, so we get to this checkpoint
+        while i < len(events) and events[i][1] != "upkeep":
+            i += 1
+
+        # Reset everything because we're at the checkpoint, ensuring we stop recording
+        # whatever we were. If there's no upkeep and we're at the end of events, it means
+        # the battle ended, and we shouldnt record last_segment="residual", which triggered above
+        # TODO: the last condition (commented out) might not trigger because I check to see if we have stuff to record
+        if (
+            last_segment != "" and indices[last_segment] != i
+        ):  # and events[i-1][1] not in ["win", "lose", "tie"]:
+            segments[last_segment] = events[indices[last_segment] : i]
+
+        last_segment = ""
+
+    # At this point, we could have a switches from fainted mons or end of turn
+    while i < len(events) and events[i][1] not in ["turn", "switch"]:
+        i += 1
+
+    # If we find a switch, we record it as a preturn_switch
+    if i < len(events) and events[i][1] == "switch":
+        last_segment = "preturn_switch"
+        indices["preturn_switch"] = i
+
+    # We go to the end of switches, because we cant read the order
+    while i < len(events) and events[i][1] == "switch":
+        i += 1
+
+    # If we found a preturn switch and there's something to record, record it til the end
+    # since this is the last segment
+    if (
+        events[-1][1] == "turn"
+        and last_segment == "preturn_switch"
+        and len(events) != i + 1
+    ):
+        segments["preturn_switch"] = events[i:-1]
+
+    return segments
