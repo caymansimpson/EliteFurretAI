@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""This module tracks pokemons' moves, stats and items inferences throughout a battle
+"""This module tracks pokemons' moves, stats and items to make speed inferences throughout a battle
 """
 
 from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
@@ -19,16 +19,15 @@ from elitefurretai.battle_inference.inference_utils import (
     _ABILITIES_THAT_CAN_PUBLICLY_ACTIVATE_ABILITIES_OR_ITEMS,
     _ITEMS_THAT_ACTIVATE_ON_SWITCH,
     _PRIORITY_ACTIVATION_ABILITIES,
-    get_pokemon_ident,
-    is_ability_event,
-    parse_ability,
     copy_observation,
+    get_ability_and_identifier,
+    get_pokemon_ident,
+    get_segments,
+    is_ability_event,
 )
 
 
 # TODO: extend class to take into account aggressiveness of assumptions
-# TODO: test on actual data to see when/where I make wrong assumptions
-# Companion class to BattleInference that handles Speed parsing
 class SpeedInference:
 
     def __init__(self, battle: Union[Battle, DoubleBattle], mons: Dict[str, Any]):
@@ -63,7 +62,7 @@ class SpeedInference:
 
                 sc = (
                     obs.side_conditions
-                    if mon_ident.startswith("p1")
+                    if mon_ident.startswith(self._battle.player_role or "p1")
                     else obs.opponent_side_conditions
                 )
 
@@ -84,17 +83,17 @@ class SpeedInference:
 
     # Returns a Tuple of (mon_ident, speed_multiplier, ability) from an ability event
     # eg ['', '-weather', 'Sandstorm', '[from] ability: Sand Stream', '[of] p1b: Tyranitar']
-    def _get_ident_and_multiplier_from_ability_event(
+    def _parse_ability_event(
         self, event: List[str], obs: Observation
     ) -> Tuple[str, Optional[float], Optional[str]]:
 
-        ability, mon_ident = parse_ability(event)
+        ability, mon_ident = get_ability_and_identifier(event)
         if mon_ident is None:
             raise ValueError(f"We couldnt find the mon_ident and ability for {event}")
 
         mon = (
             obs.team[mon_ident]
-            if mon_ident.startswith("p1")
+            if mon_ident.startswith(self._battle.player_role or "p1")
             else obs.opponent_team[mon_ident]
         )
         if mon is None:
@@ -104,7 +103,7 @@ class SpeedInference:
 
         sc = (
             obs.side_conditions
-            if mon_ident.startswith("p1")
+            if mon_ident.startswith(self._battle.player_role or "p1")
             else obs.opponent_side_conditions
         )
 
@@ -142,21 +141,25 @@ class SpeedInference:
         """
         speed_orders: List[List[Tuple[str, float]]] = []
 
-        # So that I can mutate it as the turn goes on
+        # I copy the observation so that I can modify it in place as battle mechanics update
+        # Switches ("switch") <- also includes events for ability/item activations upon switch
+        # Tera/mega/dynamax/primal ("battle_mechanic")
+        # Moves, by priority ("move")
+        # Residuals ("residual")
+        # ======== Start of Battle or Switching in after Faint ======== ("|upkeep")
+        # Start of battle / end-of-turn switches for fainted mons (None)
+        # Preturn switch ("preturn_switch") <- only includes events for ability/item activations upon switch
         obs = copy_observation(observation)
+        segments = get_segments(obs.events)
 
-        # If first turn, order of priority abilities, abilities and then items tells you things
-        # TODO: think about whether this also applies when two mon are ko'd and we have to start the next turn?
-        # ^ Theyre similar, but we don't read switch orders at the beginning of a turn
-        if any(map(lambda x: x[1] == "start", obs.events)):
+        if "preturn_switch" in segments:
+            events = segments["preturn_switch"]
 
             # Go through events to get priority ability activations first
             priority_ability_order = []
-            for event in obs.events:
+            for event in events:
                 if event[-1].replace("ability: ", "") in _PRIORITY_ACTIVATION_ABILITIES:
-                    mon_ident, multiplier, ability = (
-                        self._get_ident_and_multiplier_from_ability_event(event, obs)
-                    )
+                    mon_ident, multiplier, ability = self._parse_ability_event(event, obs)
                     priority_ability_order.append((mon_ident, multiplier))
 
             speed_orders.append(priority_ability_order)
@@ -168,7 +171,7 @@ class SpeedInference:
             ability_order = []
 
             # Go through each event in the turn; assumes there is not a None in obs.events
-            iterator = iter(obs.events)
+            iterator = iter(events)
             event = next(iterator, None)
             while event is not None:
 
@@ -177,56 +180,47 @@ class SpeedInference:
                     break
 
                 # Otherwise, this time ignore priority abilities or non-ability messages
-                if (
+                if not (
                     is_ability_event(event)
                     and event[-1].replace("ability: ", "")
                     not in _PRIORITY_ACTIVATION_ABILITIES
                 ):
-                    mon_ident, multiplier, ability = (
-                        self._get_ident_and_multiplier_from_ability_event(event, obs)
-                    )
+                    event = next(iterator, None)
+                else:
+                    mon_ident, multiplier, ability = self._parse_ability_event(event, obs)
                     ability_order.append((mon_ident, multiplier))
 
                     # If the ability triggers a field or a weather, this could trigger both abilities and items.
                     # First we update our observation class, and then we get activated orders of events.
                     # This method also iterates through obs.events, so we continue afterwards to not iterate twice
-                    # TODO: need to make a copy of observation
                     if ability in _ABILITIES_THAT_CAN_PUBLICLY_ACTIVATE_ABILITIES_OR_ITEMS:
-                        if (
-                            event[1] == "-fieldstart"
-                        ):  # TODO: UPDATE TERRAINS; cant just add
+                        if event[1] == "-fieldstart":
+                            obs.fields = {
+                                field: turn
+                                for field, turn in obs.fields.items()
+                                if not field.is_terrain
+                            }
                             obs.fields[Field.from_showdown_message(event[2])] = 5
-                        elif (
-                            event[1] == "-weather"
-                        ):  # TODO: UPDATE WEATHers; cant just add
+                        elif event[1] == "-weather":
+                            obs.weather = {}
                             obs.weather[Weather.from_showdown_message(event[2])] = 5
-
                         speed_orders.append(
                             self._get_activations_from_weather_or_terrain(obs, iterator)
                         )
                         continue
 
-                event = next(iterator, None)
-
             speed_orders.append(ability_order)
 
-            # TODO: need to figure out how to segment these into chapters
             # Now look at items -- only protosynthesis and air balloon for now
             if event and event[-1] in _ITEMS_THAT_ACTIVATE_ON_SWITCH:
                 while event:
                     if event[-1] in _ITEMS_THAT_ACTIVATE_ON_SWITCH:
-                        mon_ident, multiplier, ability = (
-                            self._get_ident_and_multiplier_from_ability_event(event, obs)
+                        mon_ident, multiplier, ability = self._parse_ability_event(
+                            event, obs
                         )
                         ability_order.append((mon_ident, multiplier))
 
                     event = next(iterator, None)
-
-        else:
-            # switch, tera/mega/dynamax, moves by priority, residuals orders
-            for event_array in obs.events:
-                print("\tnormal battle:  ", event_array)
-                # residuals: https://www.smogon.com/forums/threads/ultra-sun-ultra-moon-battle-mechanics-research-read-post-2.3620030/page-11#post-8264465
 
         # Now I have to clean speed_orders (eg if I have two events from the same mon in a row, or if I have only one event
         # or if I have already stored an equivalent equation), or if there is a None speed multiplier
