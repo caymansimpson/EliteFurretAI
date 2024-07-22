@@ -80,6 +80,8 @@ def _is_valid_singles_order(order: BattleOrder, battle: Battle) -> bool:
         return False
 
 
+# TODO: Sometimes I get ['', 'error', "[Invalid choice] Can't move: You need a switch response"]
+# TODO: ['', 'error', "[Invalid choice] There's nothing to choose"]
 def _is_valid_doubles_order(double_order: DoubleBattleOrder, battle: DoubleBattle) -> bool:
 
     # Check each order individually

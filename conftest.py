@@ -72,3 +72,14 @@ def edgecase_logs():
                 continue
             events.append(orjson.loads(clean_logs(line)))
         return events
+
+
+@fixture
+def uturn_logs():
+    with open(os.path.join(FIXTURE_DIR, "uturn_logs.txt")) as f:
+        events = []
+        for line in f.read().split("\n"):
+            if len(line.strip()) == 0:
+                continue
+            events.append(orjson.loads(clean_logs(line)))
+        return events

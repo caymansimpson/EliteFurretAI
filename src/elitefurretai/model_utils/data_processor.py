@@ -278,10 +278,10 @@ class DataProcessor:
         p1teampreviewteam = (
             battle.teampreview_team
             if battle.player_role == "p1"
-            else battle.opponent_teampreview_team
+            else battle.teampreview_opponent_team
         )
         p2teampreviewteam = (
-            battle.opponent_teampreview_team
+            battle.teampreview_opponent_team
             if battle.player_role == "p1"
             else battle.teampreview_team
         )

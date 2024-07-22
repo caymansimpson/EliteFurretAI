@@ -361,6 +361,8 @@ class Embedder:
         return [item for sublist in embeddings for item in sublist]
 
     # TODO: account for when opponent has <6 mons
+    # TODO: might need to pull in player information so that we have the ability to remember
+    # our teampreview team so AI might learn how to fake out other players
     def embed_double_battle(self, battle: DoubleBattle) -> List[int]:
         """
         Returns a list of integers representing the state of the battle, at the beginning
@@ -387,7 +389,10 @@ class Embedder:
 
             # Record whether a pokemon is active, or whether it has been brought, could have been brought or isnt brought
             # This is VGC specific; can implement using battle.format to make a variable w/ required # of pokemon length
-            seen = int(mon.species in battle.teampreview_opponent_team.keys())
+            seen = int(
+                mon.species
+                in set(map(lambda x: x.species, battle.teampreview_opponent_team))
+            )
             if seen == 0 and len(battle.opponent_team) == 4:
                 seen = -1
             active = int(
