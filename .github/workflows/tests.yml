@@ -1,0 +1,61 @@
+name: Run tests
+on:
+  push:
+    branches:
+      - "master"
+  pull_request:
+    branches:
+      - "master"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    strategy:
+      matrix:
+        version: ['3.8', '3.9', '3.10', '3.11']
+
+    steps:
+      - name: Checkout repository code
+        uses: actions/checkout@v4
+
+      # Setup Python (faster than using Python container)
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.version }}
+
+      - name: Install dev dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run tests
+        run: PYTHONPATH=src pytest -x --cov=src/poke_env unit_tests/
+
+      - name: Convert coverage to XML
+        run: coverage xml
+
+      - name: Upload coverage report to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          file: coverage.xml
+
+      - name: Build package
+        run: |
+          pip install build
+          python -m build
+
+      - name: Install built package
+        run: pip install --force-reinstall dist/*.whl
+
+      - name: Remove source
+        run: rm -rf ./src
+
+      - name: Run package-based tests
+        run: pytest -x unit_tests/

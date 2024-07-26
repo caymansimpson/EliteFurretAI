@@ -13,6 +13,7 @@ from elitefurretai.battle_inference.inference_utils import _DISCERNABLE_ITEMS, _
 from elitefurretai.battle_inference.speed_inference import SpeedInference
 
 
+# TODO: need to give up all calculations until I identify a zoroark
 class BattleInference:
 
     def __init__(self, battle: Union[Battle, DoubleBattle]):

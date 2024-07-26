@@ -10,6 +10,11 @@ from typing import Dict, List, Optional, Tuple, Union
 from poke_env.environment.battle import Battle
 from poke_env.environment.double_battle import DoubleBattle
 from poke_env.environment.pokemon import Pokemon
+from poke_env.environment.effect import Effect
+from poke_env.environment.field import Field
+from poke_env.environment.move import Move
+from poke_env.environment.pokemon_type import PokemonType
+from poke_env.environment.move_category import MoveCategory
 
 _DISCERNABLE_ITEMS = set(
     [
@@ -101,7 +106,6 @@ THIRD_BLOCK_RESIDUALS = {
     "Toxic Orb",
 }
 
-# ['', '-start', 'p1b: Wo-Chien', 'perish3', '[silent]']
 RESIDUALS_WITH_OWN_PRIORITY = {
     "Aqua Ring",
     "Ingrain",
@@ -261,6 +265,59 @@ def get_ability_and_identifier(event: List[str]) -> Tuple[Optional[str], Optiona
         return event[3], get_pokemon_ident(event[2])
     else:
         return None, None
+
+
+def get_priority_and_identifier(
+    event: List[str], battle: Union[Battle, DoubleBattle]
+) -> Tuple[str, Optional[str]]:
+
+    mon_ident = get_pokemon_ident(event[2])
+
+    # Removing positional data cuz of skill swap
+    mon_ident = mon_ident[:2] + mon_ident[3:]
+
+    mon = get_pokemon(mon_ident, battle)
+    move = Move(re.sub("[^a-zA-Z]", "", event[3].lower()), battle.gen)
+
+    # First set our priority to the move's
+    priority = move.priority
+
+    # Next, check abilities, assuming that mons will have a priority-affecting ability
+    # Also check the actual ability in case of skillswap
+    if (
+        "galewings" in mon.possible_abilities or "galewings" == mon.ability
+    ) and move.type == PokemonType.FLYING:
+        priority += 1
+    elif (
+        "prankster" in mon.possible_abilities or "prankster" == mon.ability
+    ) and move.category == MoveCategory.STATUS:
+        priority += 1
+    elif ("triage" in mon.possible_abilities or "triage" == mon.ability) and move.heal > 0:
+        priority += 3
+    elif (
+        "myceliummight" in mon.possible_abilities or "myceliummight" == mon.ability
+    ) and move.category == MoveCategory.STATUS:
+        priority = None
+
+    # Next, check edge cases:
+    elif (
+        len(event) > 3
+        and event[3] == "Grassy Glide"
+        and Field.GRASSY_TERRAIN in battle.fields
+    ):
+        priority = 1
+
+    # Override if my place in the priority bracket is overriden
+    if (
+        Effect.QUASH in mon.effects
+        or Effect.AFTER_YOU in mon.effects
+        or Effect.QUICK_CLAW in mon.effects
+        or Effect.CUSTAP_BERRY in mon.effects
+        or Effect.DANCER in mon.effects
+    ):
+        priority = None
+
+    return (mon_ident, priority)
 
 
 # Takes in an event and returns the residual and the identifier of the mon who triggered the residual
