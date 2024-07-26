@@ -1,0 +1,67 @@
+Chien-Pao @ Focus Sash  
+Ability: Sword of Ruin  
+Level: 50  
+Tera Type: Dark  
+EVs: 252 Atk / 4 Def / 252 Spe  
+Adamant Nature  
+- Icicle Crash  
+- Crunch  
+- Sucker Punch  
+- Protect  
+
+Dragapult @ Choice Band  
+Ability: Clear Body  
+Level: 61  
+Tera Type: Ghost  
+EVs: 252 Atk / 4 Def / 252 Spe  
+Jolly Nature  
+- Dragon Darts  
+- Phantom Force  
+- Tera Blast  
+- Sucker Punch  
+
+Heatran @ Assault Vest  
+Ability: Flash Fire  
+Level: 70  
+Shiny: Yes  
+Tera Type: Grass  
+EVs: 244 HP / 4 Def / 236 SpA / 12 SpD / 12 Spe  
+Modest Nature  
+IVs: 0 Atk  
+- Heat Wave  
+- Flash Cannon  
+- Earth Power  
+- Tera Blast  
+
+Farigiraf @ Rocky Helmet  
+Ability: Armor Tail  
+Level: 50  
+Tera Type: Fairy  
+EVs: 252 HP / 236 Def / 4 SpA / 4 SpD / 12 Spe  
+Modest Nature  
+IVs: 0 Atk  
+- Psychic  
+- Dazzling Gleam  
+- Trick Room  
+- Imprison  
+
+Rillaboom @ Sitrus Berry  
+Ability: Grassy Surge  
+Level: 50  
+Tera Type: Poison  
+EVs: 252 HP / 116 Atk / 76 Def / 52 SpD / 12 Spe  
+Adamant Nature  
+- Wood Hammer  
+- Stomping Tantrum  
+- Fake Out  
+- Protect  
+
+Urshifu-Rapid-Strike @ Choice Scarf  
+Ability: Unseen Fist  
+Tera Type: Water  
+EVs: 28 HP / 156 Atk / 4 Def / 68 SpD / 252 Spe  
+Adamant Nature  
+- Surging Strikes  
+- Close Combat  
+- U-turn  
+- Aqua Jet  
