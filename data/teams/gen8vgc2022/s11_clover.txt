@@ -1,0 +1,68 @@
+Kyurem-Black @ Power Herb  
+Ability: Teravolt  
+Level: 50  
+Shiny: Yes  
+EVs: 180 HP / 164 Atk / 4 Def / 68 SpD / 92 Spe  
+Adamant Nature  
+- Breaking Swipe  
+- Freeze Shock  
+- Fusion Bolt  
+- Dragon Dance  
+
+Clefairy @ Eviolite  
+Ability: Friend Guard  
+Level: 50  
+Shiny: Yes  
+EVs: 236 HP / 180 Def / 4 SpA / 84 SpD / 4 Spe  
+Bold Nature  
+- Dazzling Gleam  
+- Helping Hand  
+- Follow Me  
+- Protect  
+
+Landorus-Therian @ Lum Berry  
+Ability: Intimidate  
+Level: 50  
+Shiny: Yes  
+EVs: 84 HP / 212 Atk / 4 Def / 4 SpD / 204 Spe  
+Jolly Nature  
+- Earthquake  
+- Swords Dance  
+- Rock Slide  
+- Fly  
+
+Umbreon @ Leftovers  
+Ability: Inner Focus  
+Level: 50  
+Shiny: Yes  
+EVs: 252 HP / 156 Def / 4 SpA / 92 SpD / 4 Spe  
+Bold Nature  
+IVs: 0 Atk  
+- Foul Play  
+- Moonlight  
+- Snarl  
+- Yawn  
+
+Charizard-Gmax @ Life Orb  
+Ability: Solar Power  
+Level: 50  
+Shiny: Yes  
+Gigantamax: Yes  
+EVs: 44 HP / 52 Def / 156 SpA / 4 SpD / 252 Spe  
+Timid Nature  
+- Heat Wave  
+- Scorching Sands  
+- Air Slash  
+- Protect  
+
+Torkoal @ Sitrus Berry  
+Ability: Drought  
+Level: 50  
+Shiny: Yes  
+EVs: 212 HP / 196 SpA / 100 SpD  
+Quiet Nature  
+IVs: 0 Spe  
+- Eruption  
+- Burning Jealousy  
+- Yawn  
+- Protect  

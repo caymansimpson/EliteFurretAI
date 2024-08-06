@@ -9,12 +9,12 @@ from typing import Dict, List, Optional, Tuple, Union
 
 from poke_env.environment.battle import Battle
 from poke_env.environment.double_battle import DoubleBattle
-from poke_env.environment.pokemon import Pokemon
 from poke_env.environment.effect import Effect
 from poke_env.environment.field import Field
 from poke_env.environment.move import Move
-from poke_env.environment.pokemon_type import PokemonType
 from poke_env.environment.move_category import MoveCategory
+from poke_env.environment.pokemon import Pokemon
+from poke_env.environment.pokemon_type import PokemonType
 
 _DISCERNABLE_ITEMS = set(
     [
