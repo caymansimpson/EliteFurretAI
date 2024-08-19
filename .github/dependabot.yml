@@ -7,9 +7,9 @@ updates:
     time: "10:00"
   open-pull-requests-limit: 10
   reviewers:
-  - hsahovic
+  - caymansimpson
   assignees:
-  - hsahovic
+  - caymansimpson
   labels:
   - dependencies
   allow:
