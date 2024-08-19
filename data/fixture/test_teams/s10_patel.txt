@@ -1,0 +1,61 @@
+Zacian @ Rusted Sword  
+Ability: Intrepid Sword  
+Level: 50  
+EVs: 204 HP / 172 Atk / 4 Def / 4 SpD / 124 Spe  
+Jolly Nature  
+- Iron Head  
+- Close Combat  
+- Substitute  
+- Protect  
+
+Regieleki @ Assault Vest  
+Ability: Transistor  
+Level: 50  
+EVs: 164 HP / 68 Def / 156 SpA / 92 SpD / 28 Spe  
+Modest Nature  
+IVs: 0 Atk  
+- Electro Ball  
+- Electroweb  
+- Volt Switch  
+- Thunderbolt  
+
+Rillaboom @ Life Orb  
+Ability: Grassy Surge  
+Level: 50  
+EVs: 108 HP / 252 Atk / 132 Def / 4 SpD / 12 Spe  
+Adamant Nature  
+- Fake Out  
+- Grassy Glide  
+- U-turn  
+- Protect  
+
+Volcarona @ Grassy Seed  
+Ability: Flame Body  
+Level: 50  
+EVs: 124 HP / 116 Def / 36 SpA / 4 SpD / 228 Spe  
+Modest Nature  
+IVs: 0 Atk  
+- Quiver Dance  
+- Protect  
+- Giga Drain  
+- Heat Wave  
+
+Gothitelle @ Iapapa Berry  
+Ability: Shadow Tag  
+Level: 50  
+EVs: 252 HP / 172 Def / 4 SpA / 76 SpD / 4 Spe  
+Calm Nature  
+- Fake Out  
+- Helping Hand  
+- Hypnosis  
+- Psychic  
+
+Mienshao @ Focus Sash  
+Ability: Inner Focus  
+Level: 50  
+EVs: 4 HP / 252 Atk / 252 Spe  
+Jolly Nature  
+- Close Combat  
+- Rock Slide  
+- Wide Guard  
+- Feint  
