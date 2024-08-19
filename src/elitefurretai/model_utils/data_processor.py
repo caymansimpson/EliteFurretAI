@@ -306,12 +306,10 @@ class DataProcessor:
                 DataProcessor.pokemon_to_json(mon) for species, mon in p2team.items()
             ],
             "p1teampreviewteam": [
-                DataProcessor.pokemon_to_json(mon)
-                for species, mon in p1teampreviewteam.items()
+                DataProcessor.pokemon_to_json(mon) for mon in p1teampreviewteam
             ],
             "p2teampreviewteam": [
-                DataProcessor.pokemon_to_json(mon)
-                for species, mon in p2teampreviewteam.items()
+                DataProcessor.pokemon_to_json(mon) for mon in p2teampreviewteam
             ],
             "score": [
                 len(list(filter(lambda x: not x[1].fainted, p1team.items()))),

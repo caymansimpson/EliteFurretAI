@@ -372,7 +372,7 @@ class Embedder:
 
         # Add each of our mons to embeddings. We want to add even our teampreview pokemon because
         # our opponent may make moves dependent on this information
-        for species, mon in battle.teampreview_team.items():
+        for mon in battle.teampreview_team:
             embeddings.append(self.embed_pokemon(mon))
 
             # Record whether a pokemon is active, or whether it has been brought

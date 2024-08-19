@@ -57,6 +57,7 @@ def test_is_valid_singles_order(example_singles_request):
     assert not is_valid_order(None, battle)
 
 
+# TODO: make faster
 # This tests all possible orders for a double battle, and their validity under major conditions
 # It tests 2v2, force_switch, trapped and 1v1 scenarios. This method really demonstrates how
 # much more complicated VGC is as a game

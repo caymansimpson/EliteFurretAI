@@ -9,12 +9,12 @@ from typing import Dict, List, Optional, Tuple, Union
 
 from poke_env.environment.battle import Battle
 from poke_env.environment.double_battle import DoubleBattle
-from poke_env.environment.pokemon import Pokemon
 from poke_env.environment.effect import Effect
 from poke_env.environment.field import Field
 from poke_env.environment.move import Move
-from poke_env.environment.pokemon_type import PokemonType
 from poke_env.environment.move_category import MoveCategory
+from poke_env.environment.pokemon import Pokemon
+from poke_env.environment.pokemon_type import PokemonType
 
 _DISCERNABLE_ITEMS = set(
     [
@@ -60,20 +60,6 @@ _DISCERNABLE_ITEMS = set(
 )
 
 _MEGASTONES_THAT_CAN_PUBLICLY_ACTIVATE_ABILITIES_OR_ITEMS = {"charizarditey", "alakazite"}
-
-_flags = {
-    "has_status_move": False,
-    "last_move": None,
-    "num_moves_since_switch": 0,
-    "num_moved": 0,
-    "1.2atk": 0,
-    "1.5atk": 0,
-    "1.2spa": 0,
-    "1.5spa": 0,
-    "1.5def": 0,
-    "1.5spd": 0,
-    "1.5spe": 0,
-}
 
 # From https://github.com/search?q=repo%3Asmogon%2Fpokemon-showdown+residualorder&type=code
 FIRST_BLOCK_RESIDUALS = {
@@ -164,17 +150,37 @@ _ABILITIES_THAT_CAN_PUBLICLY_ACTIVATE_ABILITIES_OR_ITEMS = {
 }
 
 
+# In Showdown, Weezing-Galar --> Weezing; Calyrex-Ice --> Calyrex
+def get_showdown_identifier(mon: Pokemon, player_role: Optional[str]) -> str:
+    if player_role is None:
+        raise ValueError(
+            "Trying to get identifier when player_role is none; for pokemon "
+            + str(Pokemon)
+        )
+
+    dex_entry = mon._data.pokedex[mon.species]
+    if re.match("^[a-z]+$", dex_entry["baseSpecies"]) is None:
+        return player_role + ": " + dex_entry.get("baseSpecies")
+    else:
+        return player_role + ": " + dex_entry.get("name")
+
+
 # Converts showdown message into dict key for self._mons
-# "[of] p2a: Gardevoir" --> "p2a: Gardevoir"
-# "p2a: Gardevoir" --> "p2a: Gardevoir"
-def get_pokemon_ident(pokemon_str: str) -> str:
+# "[of] p2a: Gardevoir" --> "p2: Gardevoir"
+# "p2a: Gardevoir" --> "p2: Gardevoir"
+def standardize_pokemon_ident(pokemon_str: str) -> str:
     groups = re.findall(r"(\[of\]\s)?(p[1-2][a-z]):\s(.*)", pokemon_str)
     if len(groups) == 0:
         raise ValueError("Unable to parse pokemon ident from " + pokemon_str)
+    elif groups[0][1].endswith("a") or groups[0][1].endswith("b"):
+        return groups[0][1][:2] + ": " + groups[0][2].lower().title()
+    else:
+        return groups[0][1] + ": " + groups[0][2].lower().title()
 
-    return groups[0][1] + ": " + groups[0][2].lower().title()
 
-
+# Gets pokemon from a battle given a pokemon identifier; battle.team stores "p1: Furret"
+# But this method will get: "p1a: Furret", "p1: Furret", "furret" from either our team
+# or the opponent's
 def get_pokemon(mon_ident: str, battle: Union[Battle, DoubleBattle]) -> Pokemon:
     if mon_ident in battle.team:
         return battle.team[mon_ident]
@@ -185,13 +191,6 @@ def get_pokemon(mon_ident: str, battle: Union[Battle, DoubleBattle]) -> Pokemon:
     elif mon_ident[:2] + mon_ident[3:] in battle.opponent_team:
         return battle.opponent_team[mon_ident[:2] + mon_ident[3:]]
 
-    for mon in battle.teampreview_opponent_team:
-        if (
-            mon.species
-            == "".join(char for char in mon_ident.split(": ")[1] if char.isalnum()).lower()
-        ):
-            return mon
-
     raise ValueError(
         f"Couldn't get a pokemon with ident {mon_ident} from \n"
         + f"\tOur team: {battle.team}"
@@ -200,16 +199,53 @@ def get_pokemon(mon_ident: str, battle: Union[Battle, DoubleBattle]) -> Pokemon:
     )
 
 
-# Loads a battle to the specified turn; if turn is None, will initialize the battle
-def load_battle(
+# Note that this doesn't copy objects like Dicts
+def copy_pokemon(orig: Pokemon, gen: int) -> Pokemon:
+    mon = Pokemon(gen, species=orig.species)
+    mon._active = orig._active
+    mon._current_hp = orig._current_hp
+    mon._effects = orig._effects
+    mon._first_turn = orig._first_turn
+    mon._gender = orig._gender
+    mon._level = orig._level
+    mon._max_hp = orig._max_hp
+    mon._moves = {k: v for k, v in orig._moves.items()}
+    mon._must_recharge = orig._must_recharge
+    mon._ability = orig._ability
+    mon._preparing_target = orig._preparing_target
+    mon._preparing_move = orig._preparing_move
+    mon._protect_counter = orig._protect_counter
+    mon._revealed = orig._revealed
+    mon._shiny = orig._shiny
+    mon._status_counter = orig._status_counter
+    mon._terastallized_type = orig._terastallized_type
+
+    mon.item = orig.item
+    mon.status = orig.status
+    mon.stats = {k: v for k, v in orig.stats.items()}
+    mon.boosts = {k: v for k, v in orig.boosts.items()}
+
+    return mon
+
+
+# Copies a battle and loads it to the specified turn; if turn is None, will initialize the battle
+def copy_battle(
     battle: Union[Battle, DoubleBattle], turn: Optional[int] = None
 ) -> Union[Battle, DoubleBattle]:
+
     b = DoubleBattle(
         battle.battle_tag,
         battle.player_username,
         logging.getLogger(battle.player_username),
         gen=battle.gen,
     )
+
+    # The way this is called right now (in SpeedInference init), we don't have team populated
+    # so this next line is useless
+    b.team = {ident: copy_pokemon(mon, battle.gen) for ident, mon in battle.team.items()}
+    b.teampreview_team = battle.teampreview_team
+    b._opponent_username = battle._opponent_username
+    b._players = battle._players
 
     if turn:
         for i in range(0, turn):
@@ -245,36 +281,42 @@ def is_ability_event(event: List[str]) -> bool:
 # Takes in an event and returns the abillity and the identifier of the mon who triggered the ability
 # See unit_tests for examples
 def get_ability_and_identifier(event: List[str]) -> Tuple[Optional[str], Optional[str]]:
-    if event[-1] == "ability: Tera Shift":
-        return "Tera Shift", get_pokemon_ident(event[-2])
-    elif "[from] ability: Frisk" in event:
-        return "Frisk", get_pokemon_ident(event[-2])
-    elif event[-1] == "ability: Protosynthesis":
-        return "Protosynthesis", get_pokemon_ident(event[-2])
-    elif event[2] == "ability: Forewarn":
-        return "Forewarn", get_pokemon_ident(event[1])
-    elif event[-1] == "[from] ability: Costar":
-        return "Costar", get_pokemon_ident(event[1])
+    if len(event) > 2 and event[-1] == "ability: Tera Shift":
+        return "Tera Shift", standardize_pokemon_ident(event[-2])
+    elif len(event) > 1 and "[from] ability: Frisk" in event:
+        return "Frisk", standardize_pokemon_ident(event[-1])
+    elif len(event) > 2 and "ability: Protosynthesis" in event:
+        return "Protosynthesis", standardize_pokemon_ident(event[2])
+    elif len(event) > 2 and "ability: Quark Drive" in event:
+        return "Quark Drive", standardize_pokemon_ident(event[2])
+    elif len(event) > 3 and event[3] == "ability: Forewarn":
+        return "Forewarn", standardize_pokemon_ident(event[2])
+    elif len(event) > 2 and event[-1] == "[from] ability: Costar":
+        return "Costar", standardize_pokemon_ident(event[2])
     elif event[-1] == "[from] ability: Curious Medicine":
-        return "Curious Medicine", get_pokemon_ident(event[-1])
-    elif event[1] in ["-weather", "-fieldstart"] and event[-2].startswith(
-        "[from] ability: "
+        return "Curious Medicine", standardize_pokemon_ident(event[-1])
+    elif (
+        len(event) > 2
+        and event[1] in ["-weather", "-fieldstart"]
+        and event[-2].startswith("[from] ability: ")
     ):
-        return event[-2].replace("[from] ability: ", ""), get_pokemon_ident(event[-1])
-    elif event[1] == "-ability":
-        return event[3], get_pokemon_ident(event[2])
+        return event[-2].replace("[from] ability: ", ""), standardize_pokemon_ident(
+            event[-1]
+        )
+    elif len(event) > 3 and event[1] == "-ability":
+        return event[3], standardize_pokemon_ident(event[2])
     else:
         return None, None
 
 
+# Gets priority and identifier of mon making the move for an event returned by showdown.
+# returns None if the priority shouldn't be read (e.g. a move is moved to the first/last
+# in its priority bracket)
 def get_priority_and_identifier(
     event: List[str], battle: Union[Battle, DoubleBattle]
-) -> Tuple[str, Optional[str]]:
+) -> Tuple[str, Optional[int]]:
 
-    mon_ident = get_pokemon_ident(event[2])
-
-    # Removing positional data cuz of skill swap
-    mon_ident = mon_ident[:2] + mon_ident[3:]
+    mon_ident = standardize_pokemon_ident(event[2])
 
     mon = get_pokemon(mon_ident, battle)
     move = Move(re.sub("[^a-zA-Z]", "", event[3].lower()), battle.gen)
@@ -285,14 +327,18 @@ def get_priority_and_identifier(
     # Next, check abilities, assuming that mons will have a priority-affecting ability
     # Also check the actual ability in case of skillswap
     if (
-        "galewings" in mon.possible_abilities or "galewings" == mon.ability
-    ) and move.type == PokemonType.FLYING:
+        ("galewings" in mon.possible_abilities or "galewings" == mon.ability)
+        and move.type == PokemonType.FLYING
+        and mon.current_hp_fraction == 1.0
+    ):
         priority += 1
     elif (
         "prankster" in mon.possible_abilities or "prankster" == mon.ability
     ) and move.category == MoveCategory.STATUS:
         priority += 1
-    elif ("triage" in mon.possible_abilities or "triage" == mon.ability) and move.heal > 0:
+    elif (
+        "triage" in mon.possible_abilities or "triage" == mon.ability
+    ) and move.heal + move.drain > 0:
         priority += 3
     elif (
         "myceliummight" in mon.possible_abilities or "myceliummight" == mon.ability
@@ -300,11 +346,7 @@ def get_priority_and_identifier(
         priority = None
 
     # Next, check edge cases:
-    elif (
-        len(event) > 3
-        and event[3] == "Grassy Glide"
-        and Field.GRASSY_TERRAIN in battle.fields
-    ):
+    elif move.id == "grassyglide" and Field.GRASSY_TERRAIN in battle.fields:
         priority = 1
 
     # Override if my place in the priority bracket is overriden
@@ -312,8 +354,13 @@ def get_priority_and_identifier(
         Effect.QUASH in mon.effects
         or Effect.AFTER_YOU in mon.effects
         or Effect.QUICK_CLAW in mon.effects
+        or Effect.QUICK_DRAW in mon.effects
         or Effect.CUSTAP_BERRY in mon.effects
         or Effect.DANCER in mon.effects
+        or mon.item == "laggingtail"
+        or mon.item == "fullincense"
+        or mon.ability == "stall"
+        or move.id == "pursuit"
     ):
         priority = None
 
@@ -326,31 +373,33 @@ def get_residual_and_identifier(event: List[str]) -> Tuple[Optional[str], Option
     if event is None:
         return None, None
     elif event[-2] == "[from] Leech Seed":
-        return "Leech Seed", get_pokemon_ident(event[2])
+        return "Leech Seed", standardize_pokemon_ident(event[2])
     elif event[1] == "-ability":
-        return event[3], get_pokemon_ident(event[2])
+        return event[3], standardize_pokemon_ident(event[2])
     elif event[1] == "-end" and event[-2] == "Slow Start":
-        return "Slow Start", get_pokemon_ident(event[2])
+        return "Slow Start", standardize_pokemon_ident(event[2])
     elif event[-1] == "ability: Healer":
-        return "Healer", get_pokemon_ident(event[2])
+        return "Healer", standardize_pokemon_ident(event[2])
     elif event[-1] == "ability: Cud Chew":
-        return "Cud Chew", get_pokemon_ident(event[2])
+        return "Cud Chew", standardize_pokemon_ident(event[2])
     elif event[-1] in ["perish0", "perish1", "perish2", "perish3"]:
-        return "Perish Song", get_pokemon_ident(event[2])
+        return "Perish Song", standardize_pokemon_ident(event[2])
     elif event[-1].startswith("[from] ability:"):
-        return event[-1].replace("[from] ability: ", ""), get_pokemon_ident(event[2])
+        return event[-1].replace("[from] ability: ", ""), standardize_pokemon_ident(
+            event[2]
+        )
     elif event[-1].startswith("[from] item:"):
-        return event[-1].replace("[from] item: ", ""), get_pokemon_ident(event[2])
+        return event[-1].replace("[from] item: ", ""), standardize_pokemon_ident(event[2])
     elif event[-1].startswith("[from] "):
-        return event[-1].replace("[from] ", ""), get_pokemon_ident(event[2])
+        return event[-1].replace("[from] ", ""), standardize_pokemon_ident(event[2])
     elif event[-2].startswith("[from] move: "):
-        return event[-2].replace("[from] move: ", ""), get_pokemon_ident(event[2])
+        return event[-2].replace("[from] move: ", ""), standardize_pokemon_ident(event[2])
     else:
         return None, None
 
 
-# Turns go through phases, and this function will split up the events from showdown logs into different segments
-# This will allow for easier parsing for various aspects of the game. The turns can be split
+# Turns go through phases, and this function will split up the events from showdown logs into different
+# segments. This will allow for easier parsing for various aspects of the game. The turns can be split
 # into the following segments:
 # ======= Start
 # Inititalization ("init") <- messages before turn actually starts
