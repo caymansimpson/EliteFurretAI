@@ -18,10 +18,10 @@ from poke_env.environment import (
 )
 
 from elitefurretai.battle_inference.inference_utils import (
-    _ABILITIES_THAT_CAN_PUBLICLY_ACTIVATE_ABILITIES_OR_ITEMS,
-    _ITEMS_THAT_ACTIVATE_ON_SWITCH,
-    _MEGASTONES_THAT_CAN_PUBLICLY_ACTIVATE_ABILITIES_OR_ITEMS,
-    _PRIORITY_ACTIVATION_ABILITIES,
+    ABILITIES_THAT_CAN_PUBLICLY_ACTIVATE_ABILITIES_OR_ITEMS,
+    ITEMS_THAT_ACTIVATE_ON_SWITCH,
+    MEGASTONES_THAT_CAN_PUBLICLY_ACTIVATE_ABILITIES_OR_ITEMS,
+    PRIORITY_ACTIVATION_ABILITIES,
     FIRST_BLOCK_RESIDUALS,
     SECOND_BLOCK_RESIDUALS,
     THIRD_BLOCK_RESIDUALS,
@@ -274,7 +274,7 @@ class SpeedInference:
 
         # Go through priority abilities
         while i < len(events) and (
-            events[i][-1].replace("ability: ", "") in _PRIORITY_ACTIVATION_ABILITIES
+            events[i][-1].replace("ability: ", "") in PRIORITY_ACTIVATION_ABILITIES
             or events[i][1] == "detailschange"
             or events[i][1] == "-heal"
         ):
@@ -297,7 +297,7 @@ class SpeedInference:
         # Now we look for abilities, both priority abilities and regular abilities
         last_moved, last_multipliers = None, None
         while i < len(events) and (
-            is_ability_event(events[i]) or events[i][-1] in _ITEMS_THAT_ACTIVATE_ON_SWITCH
+            is_ability_event(events[i]) or events[i][-1] in ITEMS_THAT_ACTIVATE_ON_SWITCH
         ):
             ability, mon_ident = None, None
             if is_ability_event(events[i]):
@@ -317,7 +317,7 @@ class SpeedInference:
             last_multipliers = self._save_multipliers()
 
             # If the ability triggers a field or a weather, this could trigger both abilities and items
-            if ability in _ABILITIES_THAT_CAN_PUBLICLY_ACTIVATE_ABILITIES_OR_ITEMS:
+            if ability in ABILITIES_THAT_CAN_PUBLICLY_ACTIVATE_ABILITIES_OR_ITEMS:
                 activations, num_traversed = self._get_activations_from_weather_or_terrain(
                     events, i
                 )
@@ -358,7 +358,7 @@ class SpeedInference:
                 if (
                     events[i][1] == "-mega"
                     and events[i][-1]
-                    in _MEGASTONES_THAT_CAN_PUBLICLY_ACTIVATE_ABILITIES_OR_ITEMS
+                    in MEGASTONES_THAT_CAN_PUBLICLY_ACTIVATE_ABILITIES_OR_ITEMS
                 ):
                     activations, num_traversed = (
                         self._get_activations_from_weather_or_terrain(events, i)
@@ -641,7 +641,7 @@ class SpeedInference:
                 # If the ability triggers a field or a weather, this could trigger both abilities and items.
                 # First we update our observation class, and then we get activated orders of events.
                 # This method also iterates through obs.events, so we continue afterwards to not iterate twice
-                if ability in _ABILITIES_THAT_CAN_PUBLICLY_ACTIVATE_ABILITIES_OR_ITEMS:
+                if ability in ABILITIES_THAT_CAN_PUBLICLY_ACTIVATE_ABILITIES_OR_ITEMS:
                     order, num_traversed = self._get_activations_from_weather_or_terrain(
                         events, i
                     )
@@ -662,7 +662,7 @@ class SpeedInference:
 
         # Ensure we were called correctly
         ability, mon_ident = get_ability_and_identifier(events[i])
-        if ability not in _ABILITIES_THAT_CAN_PUBLICLY_ACTIVATE_ABILITIES_OR_ITEMS:
+        if ability not in ABILITIES_THAT_CAN_PUBLICLY_ACTIVATE_ABILITIES_OR_ITEMS:
             raise ValueError(
                 "_get_activations_from_weather_or_terrain was not passed the right parameter."
                 + "it should always be passed the index of the event that could possibly activate "

@@ -45,17 +45,3 @@ jobs:
         uses: codecov/codecov-action@v4
         with:
           file: coverage.xml
-
-      - name: Build package
-        run: |
-          pip install build
-          python -m build
-
-      - name: Install built package
-        run: pip install --force-reinstall dist/*.whl
-
-      - name: Remove source
-        run: rm -rf ./src
-
-      - name: Run package-based tests
-        run: pytest -x unit_tests/

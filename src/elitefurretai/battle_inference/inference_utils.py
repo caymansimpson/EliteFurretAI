@@ -16,7 +16,7 @@ from poke_env.environment.move_category import MoveCategory
 from poke_env.environment.pokemon import Pokemon
 from poke_env.environment.pokemon_type import PokemonType
 
-_DISCERNABLE_ITEMS = set(
+DISCERNABLE_ITEMS = set(
     [
         "choiceband",
         "choicescarf",
@@ -59,7 +59,7 @@ _DISCERNABLE_ITEMS = set(
     ]
 )
 
-_MEGASTONES_THAT_CAN_PUBLICLY_ACTIVATE_ABILITIES_OR_ITEMS = {"charizarditey", "alakazite"}
+MEGASTONES_THAT_CAN_PUBLICLY_ACTIVATE_ABILITIES_OR_ITEMS = {"charizarditey", "alakazite"}
 
 # From https://github.com/search?q=repo%3Asmogon%2Fpokemon-showdown+residualorder&type=code
 FIRST_BLOCK_RESIDUALS = {
@@ -125,11 +125,11 @@ RESIDUALS_WITH_OWN_PRIORITY = {
 }
 
 # Denoted by preStart in https://github.com/smogon/pokemon-showdown/blob/master/data/abilities.ts
-_PRIORITY_ACTIVATION_ABILITIES = ["As One", "Neutralizing Gas", "Unnerve", "Tera Shift"]
+PRIORITY_ACTIVATION_ABILITIES = ["As One", "Neutralizing Gas", "Unnerve", "Tera Shift"]
 
 MSGS_THAT_ACTIVATE_BEFORE_ATTACK = ["confusion", "slp", "par", "frz", "recharge", "flinch"]
 
-_ITEMS_THAT_ACTIVATE_ON_SWITCH = [
+ITEMS_THAT_ACTIVATE_ON_SWITCH = [
     "Booster Energy",
     "Air Balloon",
     "Grassy Seed",
@@ -137,7 +137,7 @@ _ITEMS_THAT_ACTIVATE_ON_SWITCH = [
     "Misty Seed",
 ]
 
-_ABILITIES_THAT_CAN_PUBLICLY_ACTIVATE_ABILITIES_OR_ITEMS = {
+ABILITIES_THAT_CAN_PUBLICLY_ACTIVATE_ABILITIES_OR_ITEMS = {
     "Snow Warning",
     "Orachium Pulse",
     "Drought",
