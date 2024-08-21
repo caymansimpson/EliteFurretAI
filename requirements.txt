@@ -1,1 +1,2 @@
+-e https://github.com/caymansimpson/poke-env.git
 orjson
