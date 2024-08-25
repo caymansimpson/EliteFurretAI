@@ -1,2 +1,2 @@
--e https://github.com/caymansimpson/poke-env.git
+git+https://github.com/caymansimpson/poke-env.git
 orjson
