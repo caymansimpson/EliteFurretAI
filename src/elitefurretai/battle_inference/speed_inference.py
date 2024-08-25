@@ -373,19 +373,10 @@ class SpeedInference:
 
         return orders
 
-    # Right now, we only look at orders of moves, and not at things that can activate or trigger because of them,
-    # just due to the sheer complexity of VGC. Assumes abilities that affect priority
-    # Logic to find priority sourced from here: https://bulbapedia.bulbagarden.net/wiki/Priority
-    # Examples:
-    # ['', '-activate', 'p2a: Oricorio', 'ability: Dancer']
-    # ['', 'move', 'p2a: Sableye', 'Quash', 'p1b: Volcarona']
-    # ['', 'move', 'p2a: Sableye', 'After You', 'p1b: Volcarona']
-    # ['', '-activate', 'p1a: Farigiraf', 'item: Quick Claw'], ['', 'move', 'p1a: Farigiraf', 'Mean Look', 'p2a: Drednaw']
-    # ['', 'cant', 'p2a: Ting-Lu', 'par']
-    # ['', 'cant', 'p2a: Ting-Lu', 'slp']
-    # ['', 'cant', 'p2a: Ting-Lu', 'frz']
-    # ['', 'cant', 'p2a: Ting-Lu', 'recharge']
-    # ['', -damage', 'p1a: Raichu', '92/120', '[from] confusion']
+    # Right now, we only look at orders of moves, and not at things that can activate or
+    # trigger because of them, just due to the sheer complexity of VGC (eg bulldoze boost
+    # triggering) Assumes abilities that affect priority.  Logic to find priority sourced
+    # from here: https://bulbapedia.bulbagarden.net/wiki/Priority
     def _parse_move(
         self, events: List[List[str]]
     ) -> List[List[Tuple[str, Optional[float]]]]:
