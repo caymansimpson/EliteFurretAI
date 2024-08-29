@@ -13,17 +13,11 @@ Here, we are going to build modules which we'll use to train our various models,
 
 ## Classes in this folder
 1. `BattleData` -- a dataclass that stores all relevant information about a Battle. This class can be used to recreate battle objects turn-by-turn. This class is meant to expedite model-training, by storing info from the json, and being able to convert it into training data (it's a read-only class)
-2. `DataProcessor` -- takes in showdown data (via json returned from showdown, ingested into poke-env) and converts these to BattleData classes.
+2. `DataProcessor` -- takes in either self-play data, showdown data or anonymized showdown data and converts them into a `BattleData` that can be used for training. Also supports reading and writing compressed `BattleData` for storage.
+3. `Embedder` -- prepares a battlestate for input into a neural network by translating the state into a series of integers
+4. `ModelTrainer` -- TBD; will generate labels and training data for BattleData objects. Should contain abstract (create_labels... )
 
-## How BattleData, JSON logs and Battle work
-We store battle data recorded in Json in either of two formats:
-1. Anonymized Showdown data
-2. Our own version of data, which is similar to Showdown data with four exceptions:
-    - We dont store nature/iv/ev, just the mon's raw stats
-    - We store teampreview teams directly instead of through inputlogs
-    - We don't record inputlogs
-    - We mark each one we wrote with `eliteFurretAIGenerated`
-
-We use `DataProcessor.json_to_battle:` to convert JSONs to battle. We use this to process the json objects and turn them into `BattleData` which can be used by models for learning
-
-In self-play, we can use `DataProcessor.battle_to_json` to convert our battles to json for storage/training.
+# How ModelTrainer works
+- battledata_to_training
+- battledata_to_inference
+- omniscient or non-omniscient data

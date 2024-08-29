@@ -12,6 +12,10 @@ from poke_env.environment.pokemon import Pokemon
 
 @dataclass
 class BattleData:
+    SOURCE_EFAI = "elitefurretai"
+    SOURCE_SHOWDOWN_ANON = "showdown_anon"
+    SOURCE_SHOWDOWN = "showdown"
+
     roomid: str
     format: str
 
@@ -21,17 +25,29 @@ class BattleData:
     p1rating: Union[int, Dict[str, int]]
     p2rating: Union[int, Dict[str, int]]
 
+    # Not always four when unobservable information
     p1_team: List[ObservedPokemon]
     p2_team: List[ObservedPokemon]
 
     p1_teampreview_team: List[ObservedPokemon]
     p2_teampreview_team: List[ObservedPokemon]
 
-    score: List[int]
+    score: List[int]  # Represents non-fainted mons at end of battle for each player
     winner: str
     end_type: str
 
+    # Turn --> Observation for that turn; these are from the perspective of one player
+    # and so arent omniscient. But with the information from p1_teampreview_team and p1_team
+    # we can reconstruct a battle with omnscience (we need both teampreview and team because
+    # gender, if not explicitly assigned, will be generated at random)
     observations: Dict[int, Observation]
+
+    inputs: List[str]
+
+    # Where the log initially came from. Can be any of the class
+    # variables. If showdown_anon, we don't get requests. If showdown,
+    # it's incomplete information
+    source: str
 
     @staticmethod
     def observed_pokemon_to_pokemon(omon: ObservedPokemon) -> Pokemon:
@@ -40,10 +56,14 @@ class BattleData:
         mon._level = omon.level
         mon._moves = omon.moves
         mon._ability = omon.ability
-        stats = omon.stats  # Broken right now; we don't stoer hp
-        if not mon._last_request:
-            mon._last_request = {}
-        mon._last_request["stats"] = stats
+        mon._terastallized_type = omon.tera_type
+
+        mon._stats = {}
+        if omon.stats:
+            for stat in omon.stats:
+                if isinstance(omon.stats[stat], int):
+                    mon._stats[stat] = omon.stats[stat]  # pyright: ignore
+
         mon._gender = omon.gender
         mon._shiny = omon.shiny
         return mon

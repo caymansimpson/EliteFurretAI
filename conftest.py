@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
 import os
+import pickle
 
 import orjson
 from pytest import fixture
 
-FIXTURE_DIR = os.path.join("data/fixture")
+FIXTURE_DIR = os.path.join(os.path.dirname(os.path.realpath(__file__)), "data/fixture")
 
 
 @fixture
@@ -83,3 +84,15 @@ def uturn_logs():
                 continue
             events.append(orjson.loads(clean_logs(line)))
         return events
+
+
+@fixture
+def vgc_battle_p1():
+    with open(os.path.join(FIXTURE_DIR, "vgcp1battle.pickle"), "rb") as f:
+        return pickle.loads(f.read())
+
+
+@fixture
+def vgc_battle_p2():
+    with open(os.path.join(FIXTURE_DIR, "vgcp2battle.pickle"), "rb") as f:
+        return pickle.loads(f.read())
