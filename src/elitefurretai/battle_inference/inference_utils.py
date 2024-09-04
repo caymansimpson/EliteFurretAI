@@ -15,6 +15,9 @@ from poke_env.environment.move import Move
 from poke_env.environment.move_category import MoveCategory
 from poke_env.environment.pokemon import Pokemon
 from poke_env.environment.pokemon_type import PokemonType
+from poke_env.environment.side_condition import SideCondition
+from poke_env.environment.status import Status
+from poke_env.environment.weather import Weather
 
 DISCERNABLE_ITEMS = set(
     [
@@ -149,6 +152,8 @@ ABILITIES_THAT_CAN_PUBLICLY_ACTIVATE_ABILITIES_OR_ITEMS = {
     "Pyschic Surge",
 }
 
+SANDSTORM_IMMUNE_TYPES = {PokemonType.ROCK, PokemonType.STEEL, PokemonType.GROUND}
+
 
 # In Showdown, Weezing-Galar --> Weezing; Calyrex-Ice --> Calyrex
 def get_showdown_identifier(mon: Pokemon, player_role: Optional[str]) -> str:
@@ -169,6 +174,10 @@ def get_showdown_identifier(mon: Pokemon, player_role: Optional[str]) -> str:
 # "[of] p2a: Gardevoir" --> "p2: Gardevoir"
 # "p2a: Gardevoir" --> "p2: Gardevoir"
 def standardize_pokemon_ident(pokemon_str: str) -> str:
+    # Check if event is already standardized
+    if pokemon_str.startswith("p1: ") or pokemon_str.startswith("p2: "):
+        return pokemon_str
+
     groups = re.findall(r"(\[of\]\s)?(p[1-2][a-z]):\s(.*)", pokemon_str)
     if len(groups) == 0:
         raise ValueError("Unable to parse pokemon ident from " + pokemon_str)
@@ -240,13 +249,24 @@ def copy_battle(
         gen=battle.gen,
     )
 
-    # The way this is called right now (in SpeedInference init), we don't have team populated
-    # so this next line is useless
-    b.team = {ident: copy_pokemon(mon, battle.gen) for ident, mon in battle.team.items()}
-    b.teampreview_team = battle.teampreview_team
+    # Copy player information we have
+    b._player_role = battle._player_role
     b._opponent_username = battle._opponent_username
     b._players = battle._players
 
+    # Copy all Pokemon fields we have
+    b.team = {ident: copy_pokemon(mon, battle.gen) for ident, mon in battle.team.items()}
+    b.teampreview_team = {mon for mon in battle.teampreview_team}
+    b._teampreview_opponent_team = {mon for mon in battle._teampreview_opponent_team}
+    if battle.opponent_role is not None:
+        b._opponent_team = {
+            get_showdown_identifier(mon, battle.opponent_role): copy_pokemon(
+                mon, battle.gen
+            )
+            for mon in battle._teampreview_opponent_team
+        }
+
+    # Catch battle up
     if turn:
         for i in range(0, turn):
             for event in battle.observations[i].events:
@@ -264,6 +284,204 @@ def update_battle(battle: Union[Battle, DoubleBattle], event: List[str]):
             battle.tied()
         else:
             battle.parse_message(event)
+
+
+# Returns true if immunity to Sandstorm
+def has_sandstorm_immunity(mon: Pokemon) -> bool:
+    if mon.type_1 in SANDSTORM_IMMUNE_TYPES or mon.type_2 in SANDSTORM_IMMUNE_TYPES:
+        return True
+
+    elif mon.ability in ["sandforce", "sandrush", "sandveil", "magicguard", "overcoat"]:
+        return True
+
+    elif mon.ability is None and (
+        "sandforce" in mon.possible_abilities
+        or "sandrush" in mon.possible_abilities
+        or "sandveil" in mon.possible_abilities
+        or "magicguard" in mon.possible_abilities
+        or "overcoat" in mon.possible_abilities
+    ):
+        return True
+
+    elif mon.item == "safetygoggles":
+        return True
+
+    else:
+        return False
+
+
+# Returns true if immunity to flinching
+def has_flinch_immunity(mon: Pokemon) -> bool:
+    if mon.ability in ["shielddust", "innerfocus"]:
+        return True
+    elif mon.ability is None and (
+        "shielddust" in mon.possible_abilities or "innerfocus" in mon.possible_abilities
+    ):
+        return True
+    elif mon.item == "covertcloak":
+        return True
+    else:
+        return False
+
+
+# Returns whether a Pokemon is immune to psn/brn/par
+def has_status_immunity(
+    ident: str, status: Status, battle: Union[Battle, DoubleBattle]
+) -> bool:
+    if battle.opponent_role is None:
+        return False
+
+    mon = get_pokemon(ident, battle)
+
+    # Already have a status
+    if mon.status is not None or Effect.SUBSTITUTE in mon.effects:
+        return True
+
+    # Immune to all statuses from field conditions
+    elif Field.MISTY_TERRAIN in battle.fields or SideCondition.SAFEGUARD in (
+        battle.opponent_side_conditions
+        if ident.startswith(battle.opponent_role)
+        else battle.side_conditions
+    ):
+        return True
+
+    # Ability is immune
+    elif Weather.SUNNYDAY in battle.weather and mon.ability == "leafguard":
+        return True
+    elif (
+        Weather.SUNNYDAY in battle.weather
+        and mon.ability is None
+        and "leafguard" in mon.possible_abilities
+    ):
+        return True
+
+    # Ability is immune
+    elif mon.ability in ["comatose", "goodasgold", "purifyingsalt", "shieldsdown"]:
+        return True
+    elif mon.ability is None and (
+        "comatose" in mon.possible_abilities
+        or "goodasgold" in mon.possible_abilities
+        or "purifyingsalt" in mon.possible_abilities
+        or "shieldsdown" in mon.possible_abilities
+    ):
+        return True
+
+    # Check poison immunities
+    elif status in [Status.PSN, Status.TOX]:
+        if mon.ability == "immunity":
+            return True
+        elif mon.ability is None and "immunity" in mon.possible_abilities:
+            return True
+        elif mon.type_1 in {PokemonType.POISON, PokemonType.STEEL} or mon.type_2 in {
+            PokemonType.POISON,
+            PokemonType.STEEL,
+        }:
+            return True
+
+    # Check burn immunities
+    elif status == Status.BRN:
+        if mon.ability in ["waterveil", "waterbubble"]:
+            return True
+        elif mon.ability is None and (
+            "waterveil" in mon.possible_abilities
+            or "waterbubble" in mon.possible_abilities
+        ):
+            return True
+        elif PokemonType.FIRE in [mon.type_1, mon.type_2]:
+            return True
+
+    # Check paralysis immunities
+    elif status == Status.PAR:
+        if PokemonType.ELECTRIC in [mon.type_1, mon.type_2]:
+            return True
+
+    # Check Sleep immunities
+    elif status == Status.SLP:
+        if mon.ability in ["insomnia", "vitalspirit", "naturalcure", "sweetveil"]:
+            return True
+        elif mon.ability is None and (
+            "insomnia" in mon.possible_abilities
+            or "vitalspirit" in mon.possible_abilities
+            or "sweetveil" in mon.possible_abilities
+        ):
+            return True
+        elif Effect.SWEET_VEIL in mon.effects:
+            return True
+        elif Field.ELECTRIC_TERRAIN in battle.fields:
+            return True
+        elif any(
+            map(
+                lambda x: x is not None and Effect.UPROAR in x.effects,
+                battle.all_active_pokemons,
+            )
+        ):
+            return True
+
+    # Check Freeze immunities
+    elif status == Status.FRZ:
+        if PokemonType.ICE in [mon.type_1, mon.type_2]:
+            return True
+        elif mon.item == "covertcloak":
+            return True
+        elif mon.ability in ["shielddust", "magmaarmor"]:
+            return True
+        elif mon.ability is None and (
+            "shielddust" in mon.possible_abilities
+            or "magmaarmor" in mon.possible_abilities
+        ):
+            return True
+        elif Weather.SUNNYDAY in battle.weather:
+            return True
+    return False
+
+
+# Returns whether a Pokemon is immune to the effects of Rage Powder
+def has_rage_powder_immunity(mon: Pokemon) -> bool:
+    if PokemonType.GRASS in [mon.type_1, mon.type_2]:
+        return True
+
+    elif mon.ability in ["sniper", "overcoat", "stalwart", "propellertail"]:
+        return True
+
+    elif mon.ability is None and (
+        "sniper" in mon.possible_abilities
+        or "overcoat" in mon.possible_abilities
+        or "stalwart" in mon.possible_abilities
+        or "propellertail" in mon.possible_abilities
+    ):
+        return True
+
+    elif mon.item == "safetygoggles":
+        return True
+
+    return False
+
+
+# Assumes a mon that could be levitating has it
+def is_grounded(mon_ident: str, battle: Union[Battle, DoubleBattle]) -> bool:
+    mon = get_pokemon(mon_ident, battle)
+    if Field.GRAVITY in battle.fields:
+        return True
+
+    elif mon.item == "ironball":
+        return True
+
+    elif mon.ability == "levitate":
+        return False
+
+    elif mon.ability is None and "levitate" in mon.possible_abilities:
+        return False
+
+    elif mon.item == "airballoon":
+        return False
+
+    elif mon.type_1 == PokemonType.FLYING or mon.type_2 == PokemonType.FLYING:
+        return False
+
+    elif Effect.MAGNET_RISE in mon.effects:
+        return False
+
+    return True
 
 
 # Tells you whether an event is ability-related
@@ -327,21 +545,27 @@ def get_priority_and_identifier(
     # Next, check abilities, assuming that mons will have a priority-affecting ability
     # Also check the actual ability in case of skillswap
     if (
-        ("galewings" in mon.possible_abilities or "galewings" == mon.ability)
+        (
+            ("galewings" in mon.possible_abilities and mon.ability is None)
+            or "galewings" == mon.ability
+        )
         and move.type == PokemonType.FLYING
         and mon.current_hp_fraction == 1.0
     ):
         priority += 1
     elif (
-        "prankster" in mon.possible_abilities or "prankster" == mon.ability
+        ("prankster" in mon.possible_abilities and mon.ability is None)
+        or "prankster" == mon.ability
     ) and move.category == MoveCategory.STATUS:
         priority += 1
     elif (
-        "triage" in mon.possible_abilities or "triage" == mon.ability
+        ("triage" in mon.possible_abilities and mon.ability is None)
+        or "triage" == mon.ability
     ) and move.heal + move.drain > 0:
         priority += 3
     elif (
-        "myceliummight" in mon.possible_abilities or "myceliummight" == mon.ability
+        ("myceliummight" in mon.possible_abilities and mon.ability is None)
+        or "myceliummight" == mon.ability
     ) and move.category == MoveCategory.STATUS:
         priority = None
 

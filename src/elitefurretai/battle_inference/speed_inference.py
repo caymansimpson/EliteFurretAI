@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """This module makes speed inferences throughout a battle by tracking pokemons' moves, stats and items.
-It even can even ecastablish whether a mon has choice scarf. This object is a companion class to BattleInference
+It even can even establish whether a mon has choice scarf. This object is a companion class to BattleInference
 """
 
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -39,6 +39,12 @@ from elitefurretai.battle_inference.inference_utils import (
 
 
 class SpeedInference:
+    __slots__ = (
+        "_battle",
+        "_opponent_mons",
+        "_orders",
+        "_v",
+    )
 
     # We share flags from opponent mons with BattleInference, and we need to keep a copy of the battle state
     # because we need to recreate the turn and conditions of the turn to parse speeds
@@ -82,7 +88,7 @@ class SpeedInference:
             self._debug("beginning_of_turn_state")
 
         if self._v >= 3:
-            self._debug("segments")
+            self._debug("segments", segments)
 
         # I don't parse the order of activations (right now: Quick Claw and Quick Draw) because of the nicheness
         if "activation" in segments:
@@ -257,29 +263,65 @@ class SpeedInference:
     def _parse_preturn_switch(
         self, events: List[List[str]]
     ) -> List[List[Tuple[str, Optional[float]]]]:
+
         orders: List[List[Tuple[str, Optional[float]]]] = []
-        (
-            last_moved,
-            last_multipliers,
-        ) = (
-            None,
-            None,
-        )
+        last_moved = None
+        last_multipliers = None
         i = 0
 
-        # Go through the switches, since we can't actually anything from switches
-        while i < len(events) and events[i][1] == "switch":
-            update_battle(self._battle, events[i])
-            i += 1
+        # preturn_switch can be infinite if you switch in mons and they die (edge-case). Example:
+        # ['', 'switch', 'p1a: Smeargle', 'Smeargle, L50, M, tera:Rock', '32/130'],
+        # ['', '-damage', 'p1a: Smeargle', '0 fnt', '[from] Spikes'],
+        # ['', 'faint', 'p1a: Smeargle'],
+        # ['', ''],
+        # ['', 'switch', 'p1a: Raichu', 'Raichu, L50, F', '60/135'],
+        # ['', '-damage', 'p1a: Raichu', '27/135', '[from] Spikes']
+        while i < len(events):
 
-        # Go through priority abilities
-        while i < len(events) and (
-            events[i][-1].replace("ability: ", "") in PRIORITY_ACTIVATION_ABILITIES
-            or events[i][1] == "detailschange"
-            or events[i][1] == "-heal"
-        ):
-            ability, mon_ident = get_ability_and_identifier(events[i])
-            if ability:
+            # If we hit the edge-case above, we should go until we start again
+            while i < len(events) and events[i][1] not in ["switch"]:
+                update_battle(self._battle, events[i])
+                i += 1
+
+            # Go through the switches, since we can't actually anything from switches
+            while i < len(events) and events[i][1] in ["switch"]:
+                update_battle(self._battle, events[i])
+                i += 1
+
+            # Go through priority abilities
+            while i < len(events) and (
+                events[i][-1].replace("ability: ", "") in PRIORITY_ACTIVATION_ABILITIES
+                or events[i][1] == "detailschange"
+                or events[i][1] == "-heal"
+            ):
+                ability, mon_ident = get_ability_and_identifier(events[i])
+                if ability:
+                    if last_moved and last_multipliers and mon_ident:
+                        orders.append(
+                            [
+                                (last_moved, last_multipliers[last_moved]),
+                                (mon_ident, last_multipliers[mon_ident]),
+                            ]
+                        )
+
+                    last_moved = mon_ident
+                    last_multipliers = self._save_multipliers()
+
+                update_battle(self._battle, events[i])
+                i += 1
+
+            # Now we look for abilities, both priority abilities and regular abilities
+            last_moved, last_multipliers = None, None
+            while i < len(events) and (
+                is_ability_event(events[i])
+                or events[i][-1] in ITEMS_THAT_ACTIVATE_ON_SWITCH
+            ):
+                ability, mon_ident = None, None
+                if is_ability_event(events[i]):
+                    ability, mon_ident = get_ability_and_identifier(events[i])
+                else:
+                    mon_ident = standardize_pokemon_ident(events[i][2])
+
                 if last_moved and last_multipliers and mon_ident:
                     orders.append(
                         [
@@ -291,43 +333,18 @@ class SpeedInference:
                 last_moved = mon_ident
                 last_multipliers = self._save_multipliers()
 
-            update_battle(self._battle, events[i])
-            i += 1
+                # If the ability triggers a field or a weather, this could trigger both abilities and items
+                if ability in ABILITIES_THAT_CAN_PUBLICLY_ACTIVATE_ABILITIES_OR_ITEMS:
+                    activations, num_traversed = (
+                        self._get_activations_from_weather_or_terrain(events, i)
+                    )
+                    if len(activations) > 0:
+                        orders += activations
+                    i += num_traversed
+                else:
+                    update_battle(self._battle, events[i])
 
-        # Now we look for abilities, both priority abilities and regular abilities
-        last_moved, last_multipliers = None, None
-        while i < len(events) and (
-            is_ability_event(events[i]) or events[i][-1] in ITEMS_THAT_ACTIVATE_ON_SWITCH
-        ):
-            ability, mon_ident = None, None
-            if is_ability_event(events[i]):
-                ability, mon_ident = get_ability_and_identifier(events[i])
-            else:
-                mon_ident = standardize_pokemon_ident(events[i][2])
-
-            if last_moved and last_multipliers and mon_ident:
-                orders.append(
-                    [
-                        (last_moved, last_multipliers[last_moved]),
-                        (mon_ident, last_multipliers[mon_ident]),
-                    ]
-                )
-
-            last_moved = mon_ident
-            last_multipliers = self._save_multipliers()
-
-            # If the ability triggers a field or a weather, this could trigger both abilities and items
-            if ability in ABILITIES_THAT_CAN_PUBLICLY_ACTIVATE_ABILITIES_OR_ITEMS:
-                activations, num_traversed = self._get_activations_from_weather_or_terrain(
-                    events, i
-                )
-                if len(activations) > 0:
-                    orders += activations
-                i += num_traversed
-            else:
-                update_battle(self._battle, events[i])
-
-            i += 1
+                i += 1
 
         return orders
 
@@ -394,7 +411,9 @@ class SpeedInference:
                 mon_ident, priority = get_priority_and_identifier(event, self._battle)
 
                 # We can't find a priority, it means we can skip and not record anything
-                # since a priority of None means we can't interpret the priority
+                # since a priority of None means we can't interpret the priority. We don't want
+                # to reset the priority though, because of abilities like Dancer which don't
+                # disturb other moves in the same priority bracket
                 if priority is None:
                     pass
 
@@ -747,22 +766,22 @@ class SpeedInference:
         multipliers: Dict[str, Optional[float]] = {}
         if isinstance(self._battle, DoubleBattle):
             for mon in self._battle.active_pokemon:
-                if mon:
+                if mon is not None:
                     key = get_showdown_identifier(mon, self._battle.player_role)
                     multipliers[key] = self._generate_multiplier(key)
 
             for mon in self._battle.opponent_active_pokemon:
-                if mon:
+                if mon is not None:
                     key = get_showdown_identifier(mon, self._battle.opponent_role)
                     multipliers[key] = self._generate_multiplier(key)
         else:
             mon = self._battle.active_pokemon
-            if mon:
+            if mon is not None:
                 key = get_showdown_identifier(mon, self._battle.player_role)
                 multipliers[key] = self._generate_multiplier(key)
 
             opp_mon = self._battle.opponent_active_pokemon
-            if opp_mon:
+            if opp_mon is not None:
                 opp_key = get_showdown_identifier(opp_mon, self._battle.opponent_role)
                 multipliers[opp_key] = self._generate_multiplier(opp_key)
 
@@ -783,7 +802,9 @@ class SpeedInference:
     # readability of the main bulk of code, given we will likely have to revisit in future generations
     def _debug(self, key: str, arg: Any = None):
         if key == "beginning_of_turn_state":
-            print(f"Turn # {self._battle.turn} is starting with the following conditions:")
+            print(
+                f"\nTurn # {self._battle.turn} in SpeedInference is starting with the following conditions:"
+            )
             if isinstance(self._battle.active_pokemon, list):
                 print(
                     f"\tMy Active Mon:  {list(map(lambda x: x.name if x else 'None', self._battle.active_pokemon))}"

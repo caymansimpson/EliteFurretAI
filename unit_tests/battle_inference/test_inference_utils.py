@@ -2,7 +2,17 @@
 from unittest.mock import MagicMock
 
 import pytest
-from poke_env.environment import DoubleBattle, Effect, Field, Move, Pokemon
+from poke_env.environment import (
+    DoubleBattle,
+    Effect,
+    Field,
+    Move,
+    Pokemon,
+    PokemonType,
+    SideCondition,
+    Status,
+    Weather,
+)
 
 from elitefurretai.battle_inference.inference_utils import (
     get_ability_and_identifier,
@@ -11,7 +21,12 @@ from elitefurretai.battle_inference.inference_utils import (
     get_residual_and_identifier,
     get_segments,
     get_showdown_identifier,
+    has_flinch_immunity,
+    has_rage_powder_immunity,
+    has_sandstorm_immunity,
+    has_status_immunity,
     is_ability_event,
+    is_grounded,
     standardize_pokemon_ident,
 )
 
@@ -1095,3 +1110,403 @@ def test_get_showdown_identifier():
 
     with pytest.raises(ValueError):
         get_showdown_identifier(furret, None)
+
+
+def test_has_status_immunity():
+    gen = 9
+    battle = DoubleBattle("tag", "username", MagicMock(), gen=gen)
+    battle.player_role = "p1"
+    furret = Pokemon(gen=9, species="furret")
+    furret._active = True
+    battle.team = {"p1: Furret": furret}
+    battle._active_pokemon = battle.team
+    battle._weather = {}
+
+    # no status ability
+    assert not has_status_immunity("p1: Furret", Status.SLP, battle)
+    assert not has_status_immunity("p1: Furret", Status.FRZ, battle)
+    assert not has_status_immunity("p1: Furret", Status.PSN, battle)
+    assert not has_status_immunity("p1: Furret", Status.BRN, battle)
+    assert not has_status_immunity("p1: Furret", Status.TOX, battle)
+
+    # already has status
+    furret._status = Status.PAR
+    assert has_status_immunity("p1: Furret", Status.SLP, battle)
+    assert has_status_immunity("p1: Furret", Status.FRZ, battle)
+    assert has_status_immunity("p1: Furret", Status.PSN, battle)
+    assert has_status_immunity("p1: Furret", Status.BRN, battle)
+    assert has_status_immunity("p1: Furret", Status.TOX, battle)
+
+    furret._status = None
+    furret._effects = {Effect.SUBSTITUTE}
+    assert has_status_immunity("p1: Furret", Status.SLP, battle)
+    assert has_status_immunity("p1: Furret", Status.FRZ, battle)
+    assert has_status_immunity("p1: Furret", Status.PSN, battle)
+    assert has_status_immunity("p1: Furret", Status.BRN, battle)
+    assert has_status_immunity("p1: Furret", Status.TOX, battle)
+
+    # shields down/comatose/good as gold/purifying salt -> all
+    furret._effects = {}
+    furret._ability = "shieldsdown"
+    assert has_status_immunity("p1: Furret", Status.SLP, battle)
+    assert has_status_immunity("p1: Furret", Status.FRZ, battle)
+    assert has_status_immunity("p1: Furret", Status.PSN, battle)
+    assert has_status_immunity("p1: Furret", Status.BRN, battle)
+    assert has_status_immunity("p1: Furret", Status.TOX, battle)
+
+    furret._ability = "goodasgold"
+    assert has_status_immunity("p1: Furret", Status.SLP, battle)
+    assert has_status_immunity("p1: Furret", Status.FRZ, battle)
+    assert has_status_immunity("p1: Furret", Status.PSN, battle)
+    assert has_status_immunity("p1: Furret", Status.BRN, battle)
+    assert has_status_immunity("p1: Furret", Status.TOX, battle)
+
+    furret._ability = "comatose"
+    assert has_status_immunity("p1: Furret", Status.SLP, battle)
+    assert has_status_immunity("p1: Furret", Status.FRZ, battle)
+    assert has_status_immunity("p1: Furret", Status.PSN, battle)
+    assert has_status_immunity("p1: Furret", Status.BRN, battle)
+    assert has_status_immunity("p1: Furret", Status.TOX, battle)
+
+    furret._ability = "goodasgold"
+    assert has_status_immunity("p1: Furret", Status.SLP, battle)
+    assert has_status_immunity("p1: Furret", Status.FRZ, battle)
+    assert has_status_immunity("p1: Furret", Status.PSN, battle)
+    assert has_status_immunity("p1: Furret", Status.BRN, battle)
+    assert has_status_immunity("p1: Furret", Status.TOX, battle)
+
+    furret._ability = "purifyingsalt"
+    assert has_status_immunity("p1: Furret", Status.SLP, battle)
+    assert has_status_immunity("p1: Furret", Status.FRZ, battle)
+    assert has_status_immunity("p1: Furret", Status.PSN, battle)
+    assert has_status_immunity("p1: Furret", Status.BRN, battle)
+    assert has_status_immunity("p1: Furret", Status.TOX, battle)
+
+    furret._ability = None
+    furret._possible_abilities = ["goodasgold", "frisk"]
+    assert has_status_immunity("p1: Furret", Status.SLP, battle)
+    assert has_status_immunity("p1: Furret", Status.FRZ, battle)
+    assert has_status_immunity("p1: Furret", Status.PSN, battle)
+    assert has_status_immunity("p1: Furret", Status.BRN, battle)
+    assert has_status_immunity("p1: Furret", Status.TOX, battle)
+
+    furret._ability = "magicguard"
+    furret._possible_abilities = ["goodasgold", "magicuard"]
+    assert not has_status_immunity("p1: Furret", Status.SLP, battle)
+
+    furret._ability = None
+    furret._possible_abilities = ["leafguard", "frisk"]
+    assert not has_status_immunity("p1: Furret", Status.SLP, battle)
+
+    battle._weather = {Weather.SUNNYDAY: 1}
+    assert has_status_immunity("p1: Furret", Status.SLP, battle)
+
+    furret._ability = "frisk"
+    assert not has_status_immunity("p1: Furret", Status.SLP, battle)
+
+    battle._fields = {Field.MISTY_TERRAIN: 1}
+    assert has_status_immunity("p1: Furret", Status.SLP, battle)
+    assert has_status_immunity("p1: Furret", Status.FRZ, battle)
+    assert has_status_immunity("p1: Furret", Status.PSN, battle)
+    assert has_status_immunity("p1: Furret", Status.BRN, battle)
+    assert has_status_immunity("p1: Furret", Status.TOX, battle)
+
+    battle._fields = {}
+    assert not has_status_immunity("p1: Furret", Status.PSN, battle)
+    battle._side_conditions = {SideCondition.SAFEGUARD: 1}
+    assert has_status_immunity("p1: Furret", Status.PSN, battle)
+    battle._side_conditions = {}
+
+    furret._type_2 = PokemonType.POISON
+    assert has_status_immunity("p1: Furret", Status.PSN, battle)
+    assert has_status_immunity("p1: Furret", Status.TOX, battle)
+    assert not has_status_immunity("p1: Furret", Status.BRN, battle)
+
+    furret._type_2 = PokemonType.STEEL
+    assert has_status_immunity("p1: Furret", Status.PSN, battle)
+    assert has_status_immunity("p1: Furret", Status.TOX, battle)
+    assert not has_status_immunity("p1: Furret", Status.BRN, battle)
+
+    furret._type_2 = None
+    furret._ability = "immunity"
+    assert has_status_immunity("p1: Furret", Status.PSN, battle)
+    assert has_status_immunity("p1: Furret", Status.TOX, battle)
+    assert not has_status_immunity("p1: Furret", Status.BRN, battle)
+    furret._ability = "frisk"
+
+    furret._type_2 = PokemonType.ELECTRIC
+    assert has_status_immunity("p1: Furret", Status.PAR, battle)
+    assert not has_status_immunity("p1: Furret", Status.PSN, battle)
+
+    furret._type_2 = PokemonType.FIRE
+    assert has_status_immunity("p1: Furret", Status.BRN, battle)
+    assert not has_status_immunity("p1: Furret", Status.PAR, battle)
+
+    furret._type_2 = None
+    furret._ability = "waterveil"
+    assert has_status_immunity("p1: Furret", Status.BRN, battle)
+    assert not has_status_immunity("p1: Furret", Status.PAR, battle)
+
+    furret._ability = "waterbubble"
+    assert has_status_immunity("p1: Furret", Status.BRN, battle)
+    assert not has_status_immunity("p1: Furret", Status.PAR, battle)
+
+    furret._ability = "sweetveil"
+    assert has_status_immunity("p1: Furret", Status.SLP, battle)
+    assert not has_status_immunity("p1: Furret", Status.PAR, battle)
+
+    furret._ability = "frisk"
+    furret._effects = {Effect.SWEET_VEIL: 1}
+    assert has_status_immunity("p1: Furret", Status.SLP, battle)
+    assert not has_status_immunity("p1: Furret", Status.PAR, battle)
+
+    furret._effects = {}
+    furret._ability = "insomnia"
+    assert has_status_immunity("p1: Furret", Status.SLP, battle)
+    assert not has_status_immunity("p1: Furret", Status.PAR, battle)
+
+    furret._ability = "vitalspirit"
+    assert has_status_immunity("p1: Furret", Status.SLP, battle)
+    assert not has_status_immunity("p1: Furret", Status.PAR, battle)
+
+    furret._ability = "frisk"
+    assert not has_status_immunity("p1: Furret", Status.SLP, battle)
+
+    battle._fields = {Field.ELECTRIC_TERRAIN: 1}
+    assert has_status_immunity("p1: Furret", Status.SLP, battle)
+    assert not has_status_immunity("p1: Furret", Status.PSN, battle)
+
+    battle._fields = {}
+    furret._effects = {Effect.UPROAR: 1}
+    battle._active_pokemon = {"p1a": furret}
+    assert has_status_immunity("p1: Furret", Status.SLP, battle)
+    assert not has_status_immunity("p1: Furret", Status.PSN, battle)
+
+    furret._effects = {}
+    sentret = Pokemon(gen=9, species="sentret")
+    sentret._active = True
+    sentret._effects = {Effect.UPROAR: 1}
+    battle._team["p1: Sentret"] = sentret
+    battle._active_pokemon = {"p1a": furret, "p1b": sentret}
+    assert has_status_immunity("p1: Furret", Status.SLP, battle)
+    assert not has_status_immunity("p1: Furret", Status.PSN, battle)
+
+    sentret._effects = {}
+    assert not has_status_immunity("p1: Furret", Status.SLP, battle)
+
+    # battle still has sunnyday
+    assert has_status_immunity("p1: Furret", Status.FRZ, battle)
+    assert not has_status_immunity("p1: Furret", Status.PSN, battle)
+
+    battle._weather = {}
+    assert not has_status_immunity("p1: Furret", Status.FRZ, battle)
+
+    furret._type_2 = PokemonType.ICE
+    assert has_status_immunity("p1: Furret", Status.FRZ, battle)
+    assert not has_status_immunity("p1: Furret", Status.PSN, battle)
+
+    furret._type_2 = None
+    furret._ability = "magmaarmor"
+    assert has_status_immunity("p1: Furret", Status.FRZ, battle)
+    assert not has_status_immunity("p1: Furret", Status.PSN, battle)
+
+    furret._ability = "frisk"
+    furret._item = "covertcloak"  # freezing only happens as a secondary effect
+    assert has_status_immunity("p1: Furret", Status.FRZ, battle)
+    assert not has_status_immunity("p1: Furret", Status.PSN, battle)
+
+    furret._item = None
+    furret._ability = "shielddust"
+    assert has_status_immunity("p1: Furret", Status.FRZ, battle)
+    assert not has_status_immunity("p1: Furret", Status.PSN, battle)
+
+
+def test_has_flinch_immunity():
+    furret = Pokemon(gen=9, species="furret")
+
+    furret._ability = "frisk"
+    assert not has_flinch_immunity(furret)
+
+    furret._ability = "innerfocus"
+    assert has_flinch_immunity(furret)
+
+    furret._ability = "shielddust"
+    assert has_flinch_immunity(furret)
+
+    furret._ability = None
+    furret._possible_abilities = ["frisk", "innerfocus"]
+    assert has_flinch_immunity(furret)
+
+    furret._ability = "frisk"
+    assert not has_flinch_immunity(furret)
+
+    furret.item = "covertcloak"
+    assert has_flinch_immunity(furret)
+
+
+# def has_sandstorm_immunity(mon: Pokemon) -> bool:
+def test_has_sandstorm_immunity():
+    furret = Pokemon(gen=9, species="furret")
+
+    assert not has_sandstorm_immunity(furret)
+
+    furret._type_2 = PokemonType.ROCK
+    assert has_sandstorm_immunity(furret)
+
+    furret._type_2 = PokemonType.GROUND
+    assert has_sandstorm_immunity(furret)
+
+    furret._type_2 = PokemonType.STEEL
+    assert has_sandstorm_immunity(furret)
+
+    furret._type_2 = PokemonType.FAIRY
+    assert not has_sandstorm_immunity(furret)
+
+    furret.item = "safetygoggles"
+    assert has_sandstorm_immunity(furret)
+
+    furret.item = "unknown_item"
+    assert not has_sandstorm_immunity(furret)
+
+    furret._ability = "magicguard"
+    assert has_sandstorm_immunity(furret)
+
+    furret._ability = None
+    furret._possible_abilities = ["frisk", "magicguard"]
+    assert has_sandstorm_immunity(furret)
+
+    furret._ability = "overcoat"
+    assert has_sandstorm_immunity(furret)
+
+    furret._ability = None
+    furret._possible_abilities = ["frisk", "overcoat"]
+    assert has_sandstorm_immunity(furret)
+
+    furret._ability = "sandforce"
+    assert has_sandstorm_immunity(furret)
+
+    furret._ability = None
+    furret._possible_abilities = ["frisk", "sandforce"]
+    assert has_sandstorm_immunity(furret)
+
+    furret._ability = "frisk"
+    assert not has_sandstorm_immunity(furret)
+
+    furret._ability = "sandrush"
+    assert has_sandstorm_immunity(furret)
+
+    furret._ability = None
+    furret._possible_abilities = ["frisk", "sandrush"]
+    assert has_sandstorm_immunity(furret)
+
+    furret._ability = "frisk"
+    assert not has_sandstorm_immunity(furret)
+
+    furret._ability = "sandveil"
+    assert has_sandstorm_immunity(furret)
+
+    furret._ability = "frisk"
+    assert not has_sandstorm_immunity(furret)
+
+    furret._ability = None
+    furret._possible_abilities = ["frisk", "sandveil"]
+    assert has_sandstorm_immunity(furret)
+
+
+# def has_rage_powder_immunity(mon: Pokemon) -> bool:
+def test_has_rage_powder_immunity():
+    furret = Pokemon(gen=9, species="furret")
+
+    assert not has_rage_powder_immunity(furret)
+
+    furret._type_2 = PokemonType.GRASS
+    assert has_rage_powder_immunity(furret)
+
+    furret._type_2 = None
+    furret.item = "safetygoggles"
+    assert has_rage_powder_immunity(furret)
+
+    furret.item = None
+    assert not has_rage_powder_immunity(furret)
+
+    furret._ability = "stalwart"
+    assert has_rage_powder_immunity(furret)
+
+    furret._ability = None
+    furret._possible_abilities = ["frisk", "stalwart"]
+    assert has_rage_powder_immunity(furret)
+
+    furret._ability = "frisk"
+    assert not has_rage_powder_immunity(furret)
+
+    furret._ability = "sniper"
+    assert has_rage_powder_immunity(furret)
+
+    furret._ability = None
+    furret._possible_abilities = ["frisk", "sniper"]
+    assert has_rage_powder_immunity(furret)
+
+    furret._ability = "frisk"
+    assert not has_rage_powder_immunity(furret)
+
+    furret._ability = "overcoat"
+    assert has_rage_powder_immunity(furret)
+
+    furret._ability = None
+    furret._possible_abilities = ["frisk", "overcoat"]
+    assert has_rage_powder_immunity(furret)
+
+    furret._ability = "frisk"
+    assert not has_rage_powder_immunity(furret)
+
+    furret._ability = "propellertail"
+    assert has_rage_powder_immunity(furret)
+
+    furret._ability = None
+    furret._possible_abilities = ["frisk", "propellertail"]
+    assert has_rage_powder_immunity(furret)
+
+    furret._ability = "frisk"
+    assert not has_rage_powder_immunity(furret)
+
+
+# def is_grounded(mon_ident: str, battle: Union[Battle, DoubleBattle]) -> bool:
+def test_is_grounded():
+    gen = 9
+    battle = DoubleBattle("tag", "username", MagicMock(), gen=gen)
+    furret = Pokemon(gen=9, species="furret")
+    battle.team = {"p1: Furret": furret}
+    assert is_grounded("p1: Furret", battle)
+
+    furret._type_2 = PokemonType.FLYING
+    assert not is_grounded("p1: Furret", battle)
+
+    furret._type_2 = None
+    furret._ability = "levitate"
+    assert not is_grounded("p1: Furret", battle)
+
+    furret._ability = None
+    furret._possible_abilities = ["frisk", "levitate"]
+    assert not is_grounded("p1: Furret", battle)
+
+    furret._ability = "frisk"
+    assert is_grounded("p1: Furret", battle)
+
+    furret._effects = {Effect.MAGNET_RISE: 1}
+    assert not is_grounded("p1: Furret", battle)
+
+    furret._effects = {}
+    furret.item = "airballoon"
+    assert not is_grounded("p1: Furret", battle)
+
+    battle._fields = {Field.GRAVITY: 1}
+    assert is_grounded("p1: Furret", battle)
+
+    furret._ability = "levitate"
+    assert is_grounded("p1: Furret", battle)
+
+    battle._fields = {}
+    assert not is_grounded("p1: Furret", battle)
+
+    furret.item = "ironball"
+    assert is_grounded("p1: Furret", battle)

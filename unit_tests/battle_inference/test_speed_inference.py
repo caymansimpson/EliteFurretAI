@@ -138,6 +138,21 @@ def test_parse_preturn_switch():
     assert [("p2: Calyrex", 1.0), ("p1: Terapagos", 1.0)] in orders
     assert [("p1: Terapagos", 1.0), ("p1: Weezing", 1.0)] in orders
 
+    # Ensure I parse things right; this was a bug
+    si = generate_speed_inference()
+    events = [
+        ["", "switch", "p1a: Smeargle", "Smeargle, L50, M, tera:Rock", "32/130"],
+        ["", "-damage", "p1a: Smeargle", "0 fnt", "[from] Spikes"],
+        ["", "faint", "p1a: Smeargle"],
+        ["", ""],
+        ["", "switch", "p1a: Raichu", "Raichu, L50, F", "60/135"],
+        ["", "-damage", "p1a: Raichu", "27/135", "[from] Spikes"],
+    ]
+    orders = si.clean_orders(si._parse_preturn_switch(events))
+    assert not any(map(lambda x: x and x.species == "smeargle", si._battle.active_pokemon))
+    assert any(map(lambda x: x and x.species == "raichu", si._battle.active_pokemon))
+    assert len(orders) == 0
+
 
 # Too lazy to test mega that might trigger some other series of abilities
 def test_parse_battle_mechanic():
@@ -309,12 +324,32 @@ def test_parse_move():
     ]
     orders = si.clean_orders(si._parse_move(events))
     assert [("p1: Volcarona", 1.0), ("p1: Furret", 1.0)] in orders
-
-    # TODO: the three following should be true, but because we don't properly handle effects,
-    # DANCER doesn't get removed after Oricorio moves, and we still get None priority
+    # TODO: need to fix Oricorio Dancer abilities first
     # assert [('p1: Furret', 1.0), ('p2: Sentret', 1.0)] in orders
     # assert [('p2: Sentret', 1.0), ('p2: Oricorio', 1.5)] in orders
     # assert len(orders) == 3
+
+    si = generate_speed_inference()
+    si._battle.parse_message(
+        ["", "switch", "p2b: Smeargle", "Smeargle, L50, F", "167/167"]
+    )
+    si._battle.parse_message(
+        ["", "switch", "p1a: Tyranitar", "Tyranitar, L50, F", "167/167 par"]
+    )
+    si._battle.parse_message(
+        ["", "switch", "p2a: Tyranitar", "Tyranitar, L50, F", "167/167"]
+    )
+    events = [
+        ["", "move", "p2b: Smeargle", "U-turn", "p1a: Tyranitar"],
+        ["", "-supereffective", "p1a: Tyranitar"],
+        ["", "-damage", "p1a: Tyranitar", "81/175 par"],
+        ["", "cant", "p1a: Tyranitar", "par"],
+        ["", "move", "p2a: Tyranitar", "Dragon Tail", "p2b: Smeargle"],
+        ["", "-damage", "p2b: Smeargle", "0 fnt"],
+        ["", "faint", "p2b: Smeargle"],
+    ]
+    orders = si.clean_orders(si._parse_move(events))
+    assert len(orders) == 0
 
 
 def test_parse_residual():
