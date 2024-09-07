@@ -4,13 +4,13 @@ from unittest.mock import MagicMock
 from poke_env.data.gen_data import GenData
 from poke_env.environment import DoubleBattle, Observation, Pokemon, PokemonType
 
-from elitefurretai.battle_inference.battle_inference import BattleInference
-from elitefurretai.battle_inference.inference_utils import (
+from elitefurretai.inference.battle_inference import BattleInference
+from elitefurretai.inference.inference_utils import (
     copy_pokemon,
     get_pokemon,
     get_showdown_identifier,
 )
-from elitefurretai.battle_inference.item_inference import ItemInference
+from elitefurretai.inference.item_inference import ItemInference
 
 
 def generate_item_inference():

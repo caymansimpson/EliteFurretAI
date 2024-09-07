@@ -15,7 +15,7 @@ from poke_env.environment import (
 )
 from poke_env.teambuilder.constant_teambuilder import ConstantTeambuilder
 
-from elitefurretai.battle_inference.speed_inference import SpeedInference, get_pokemon
+from elitefurretai.inference.speed_inference import SpeedInference, get_pokemon
 
 
 def generate_speed_inference():

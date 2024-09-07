@@ -21,7 +21,7 @@ from poke_env.environment.pokemon_type import PokemonType
 from poke_env.player import Player
 from poke_env.stats import compute_raw_stats
 
-from elitefurretai.battle_inference.inference_utils import get_showdown_identifier
+from elitefurretai.inference.inference_utils import get_showdown_identifier
 from elitefurretai.model_utils.battle_data import BattleData
 
 

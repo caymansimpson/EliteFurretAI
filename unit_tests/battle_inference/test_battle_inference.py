@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 from unittest.mock import MagicMock
 
-from elitefurretai.battle_inference.battle_inference import BattleInference
+from elitefurretai.inference.battle_inference import BattleInference
 
 
 def test_battle_inference():

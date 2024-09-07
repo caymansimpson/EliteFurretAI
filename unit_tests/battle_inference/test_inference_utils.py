@@ -14,7 +14,7 @@ from poke_env.environment import (
     Weather,
 )
 
-from elitefurretai.battle_inference.inference_utils import (
+from elitefurretai.inference.inference_utils import (
     get_ability_and_identifier,
     get_pokemon,
     get_priority_and_identifier,

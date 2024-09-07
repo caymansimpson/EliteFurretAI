@@ -17,7 +17,7 @@ from poke_env.environment import (
     Weather,
 )
 
-from elitefurretai.battle_inference.inference_utils import (
+from elitefurretai.inference.inference_utils import (
     ABILITIES_THAT_CAN_PUBLICLY_ACTIVATE_ABILITIES_OR_ITEMS,
     FIRST_BLOCK_RESIDUALS,
     ITEMS_THAT_ACTIVATE_ON_SWITCH,

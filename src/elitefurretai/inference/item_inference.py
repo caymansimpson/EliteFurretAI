@@ -21,7 +21,7 @@ from poke_env.environment import (
     Weather,
 )
 
-from elitefurretai.battle_inference.inference_utils import (
+from elitefurretai.inference.inference_utils import (
     copy_battle,
     get_pokemon,
     get_segments,
@@ -144,15 +144,21 @@ class ItemInference:
                         )
                     ):
                         index = (
-                            0 if Effect.RAGE_POWDER in active_pokemon[0].effects else 1
+                            0
+                            if active_pokemon[0]
+                            and Effect.RAGE_POWDER in active_pokemon[0].effects
+                            else 1
                         )  # pyright: ignore
 
                         # If the actor targets the non rage-powdered mon and doesnt have immunity, it has safetygoggles
-                        if (
+                        if active_pokemon[index] is None:
+                            pass
+                        elif (
                             target
                             != get_showdown_identifier(
-                                active_pokemon[index], self._battle.player_role
-                            )  # pyright: ignore
+                                active_pokemon[index],  # pyright: ignore
+                                self._battle.player_role,
+                            )
                             and not has_rage_powder_immunity(
                                 get_pokemon(actor, self._battle)
                             )
@@ -167,8 +173,9 @@ class ItemInference:
                         elif (
                             target
                             != get_showdown_identifier(
-                                active_pokemon[index], self._battle.player_role
-                            )  # pyright: ignore
+                                active_pokemon[index],  # pyright: ignore
+                                self._battle.player_role,
+                            )
                             and not has_rage_powder_immunity(
                                 get_pokemon(actor, self._battle)
                             )

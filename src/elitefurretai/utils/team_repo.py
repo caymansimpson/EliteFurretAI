@@ -10,39 +10,44 @@ from contextlib import contextmanager
 from typing import Dict, KeysView
 
 
-# TODO: can convert them into json and add team parsing/format information, with properties?
 class TeamRepo:
 
     def __init__(
         self,
         filepath: str = "data/teams",
-        verbose: bool = False,
         showdown_path: str = "../pokemon-showdown",
+        validate: bool = False,
+        verbose: bool = False,
     ):
         self._teams: Dict[str, Dict[str, str]] = {}
+        self._verbose = verbose
 
+        directories = set()
         for format_folder in os.listdir(filepath):
-            format_name = format_folder
             folder_path = os.path.join(filepath, format_folder)
 
             if os.path.isdir(folder_path):
                 if verbose:
-                    print(f"format: {format_name}")
-                if format not in self._teams:
-                    self._teams[format_name] = {}
+                    print(f"format: {format_folder}")
+                if format_folder not in self._teams:
+                    self._teams[format_folder] = {}
+                directories.add(folder_path)
 
-                filenames = os.listdir(folder_path)
-                for filename in filenames:
-                    team_path = os.path.join(filepath, format_folder, filename)
-                    if verbose:
-                        print(team_path)
-                    with open(team_path, "r") as f:
-                        team_string = f.read()
-                        self._teams[format_name][
-                            os.path.basename(team_path).replace(".txt", "")
-                        ] = team_string
-                    self.validate_team(team_string, format_name, verbose, showdown_path)
-                print(format_name)
+        for directory in directories:
+            filenames = os.listdir(directory)
+            for filename in filenames:
+                team_path = os.path.join(directory, filename)
+                frmt = os.path.basename(directory)
+
+                if verbose:
+                    print(team_path)
+
+                with open(team_path, "r") as f:
+                    team_string = f.read()
+                    self._teams[frmt][filename.replace(".txt", "")] = team_string
+
+                if validate:
+                    self.validate_team(team_string, frmt, showdown_path)
 
     @staticmethod
     @contextmanager
@@ -58,7 +63,6 @@ class TeamRepo:
         self,
         team: str,
         format: str,
-        verbose: bool = False,
         showdown_path: str = "../pokemon-showdown",
     ) -> bool:
 
@@ -75,7 +79,7 @@ class TeamRepo:
                 )
                 packed_team = result.stdout.strip()
             except subprocess.CalledProcessError as e:
-                if verbose:
+                if self._verbose:
                     print(f"Error packing team: {e}")
                     print(f"Error output: {e.stderr}")
                 return False
@@ -88,10 +92,10 @@ class TeamRepo:
                     capture_output=True,
                     check=True,
                 )
-                if verbose:
+                if self._verbose:
                     print(result.stdout)
             except subprocess.CalledProcessError as e:
-                if verbose:
+                if self._verbose:
                     print(f"Error validating team: {e}")
                     print(f"Format: {format}")
                     print(f"Team (packed): {packed_team}")

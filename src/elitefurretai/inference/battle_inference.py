@@ -9,9 +9,9 @@ from poke_env.data.gen_data import GenData
 from poke_env.environment import Battle, DoubleBattle, Pokemon
 from poke_env.stats import compute_raw_stats
 
-from elitefurretai.battle_inference.inference_utils import get_showdown_identifier
-from elitefurretai.battle_inference.item_inference import ItemInference
-from elitefurretai.battle_inference.speed_inference import SpeedInference
+from elitefurretai.inference.inference_utils import get_showdown_identifier
+from elitefurretai.inference.item_inference import ItemInference
+from elitefurretai.inference.speed_inference import SpeedInference
 
 _FLAGS = {
     "has_status_move": False,
@@ -104,6 +104,27 @@ class BattleInference:
                 self._observed_turns.add(i)
 
                 self._last_observed_turn = i
+
+    def get_flags(self, mon_ident: str) -> Dict[str, Any]:
+        """
+        :return: The all the flags inferred from our battle observations
+        :rtype: Dict[str, Any]
+        """
+
+        if self._abort:
+            return {}
+
+        if self._battle.opponent_role is None:
+            raise ValueError(
+                "Battle must be initialized before inference; we have no opponent role"
+            )
+
+        if mon_ident not in self._opponent_mons:
+            raise KeyError(
+                f"Can't find {mon_ident} in self._mons. Keys: {list(self._opponent_mons.keys())}"
+            )
+
+        return self._opponent_mons[mon_ident]
 
     def get_item(self, mon_ident: str) -> Optional[str]:
         """

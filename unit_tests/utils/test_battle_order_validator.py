@@ -8,6 +8,30 @@ from poke_env.player import BattleOrder, DoubleBattleOrder
 from elitefurretai.utils.battle_order_validator import is_valid_order
 
 
+# Create helper functions to represent BattleOrder and DobuleBattleOrder; this will allow us to store
+# DoubleBattleOrders in a set, which enables faster lookup when looking for comparisons
+def repr_bo(bo: BattleOrder):
+    if bo is None:
+        return "There is no order"
+    main = "None"
+    if isinstance(bo.order, Pokemon):
+        main = bo.order.species
+    elif isinstance(bo.order, Move):
+        main = bo.order.id
+    return (
+        main
+        + str(bo.mega)
+        + str(bo.z_move)
+        + str(bo.dynamax)
+        + str(bo.terastallize)
+        + str(bo.move_target)
+    )
+
+
+def repr_dbo(dbo: DoubleBattleOrder):
+    return hash(repr_bo(dbo.first_order) + repr_bo(dbo.second_order))
+
+
 def test_is_valid_singles_order(example_singles_request):
     logger = MagicMock()
     battle = Battle("battle-gen8singlesou-1", "username", logger, gen=8)
@@ -60,27 +84,7 @@ def test_is_valid_singles_order(example_singles_request):
 # This tests all possible orders for a double battle, and their validity under major conditions
 # It tests 2v2, force_switch, trapped and 1v1 scenarios. This method really demonstrates how
 # much more complicated VGC is as a game
-# TODO: add speed testing to understand how to speed this up
 def test_is_valid_doubles_order(example_doubles_request):
-
-    # Create helper functions to represent BattleOrder and DobuleBattleOrder; this will allow us to store
-    # DoubleBattleOrders in a set, which enables faster lookup when looking for comparisons
-    def repr_bo(bo: BattleOrder) -> str:
-        if bo is None:
-            return "None"
-        return "BattleOrder({o}, mega={m}, z_move={z}, dynamax={d}, terastallize={t}, move_target={mt})".format(
-            o=bo.order if bo.order else "None",
-            m=bo.mega,
-            z=bo.z_move,
-            d=bo.dynamax,
-            t=bo.terastallize,
-            mt=bo.move_target,
-        )
-
-    def repr_dbo(dbo: DoubleBattleOrder) -> str:
-        return "DoubleBattleOrder(\n\tFirst Order: {first}\n\tSecond Order: {second}\n)".format(
-            first=repr_bo(dbo.first_order), second=repr_bo(dbo.second_order)
-        )
 
     # Initiate battle and create an opponent team
     logger = MagicMock()
@@ -229,11 +233,19 @@ def test_is_valid_doubles_order(example_doubles_request):
             if isinstance(move1.order, Pokemon) and move1.order == move2.order:
                 continue
 
+            if (
+                str(DoubleBattleOrder(move1, move2))
+                == "/choose switch mrrime, switch thundurus"
+            ):
+                print("AAAAAA")
             valid_moves.add(repr_dbo(DoubleBattleOrder(move1, move2)))
 
     # Go through all orders
     for dbo in doublebattleorders:
         if repr_dbo(dbo) in valid_moves:
+            if not is_valid_order(dbo, battle):
+                print("a", dbo)
+                print("b", str(dbo))
             assert is_valid_order(dbo, battle)
         else:
             assert not is_valid_order(dbo, battle)
