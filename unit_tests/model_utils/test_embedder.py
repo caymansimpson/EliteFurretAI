@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
+from unittest.mock import MagicMock
+
 from poke_env.data import GenData
-from poke_env.environment import Move, Pokemon, PokemonType, Status
+from poke_env.environment import DoubleBattle, Move, Pokemon, PokemonType, Status
 
 from elitefurretai.model_utils.embedder import Embedder
 
@@ -34,8 +36,8 @@ def test_featurize_move():
     # Test each implemented feature is working properly
     emb = embedder.featurize_move(Move("icywind", gen=9))
     assert emb["accuracy"] == 0.95
-    assert emb["base_power"] == 55
-    assert emb["current_pp"] == 24
+    assert emb["base_power"] == 55 / 100.0
+    assert emb["current_pp"] == 1
 
     emb = embedder.featurize_move(Move("seismictoss", gen=9))
     assert emb["damage"] == 50
@@ -169,10 +171,12 @@ def test_featurize_pokemon(vgc_battle_p1):
     furret._status = Status.SLP
     furret._terastallized_type = PokemonType.DARK
     emb = embedder.featurize_pokemon(furret)
-    assert "MOVE:0" in emb
-    assert "MOVE:1" in emb
-    assert "MOVE:2" in emb
-    assert "MOVE:3" in emb
+
+    # We have move embeddings
+    assert any(map(lambda x: x.startswith("MOVE:0:"), emb))
+    assert any(map(lambda x: x.startswith("MOVE:1:"), emb))
+    assert any(map(lambda x: x.startswith("MOVE:2:"), emb))
+    assert any(map(lambda x: x.startswith("MOVE:3:"), emb))
 
     # We don't record runaway, which is Furret's ability here
     for key in emb:
@@ -185,15 +189,15 @@ def test_featurize_pokemon(vgc_battle_p1):
     assert emb["ITEM:lifeorb"] == 0
     assert emb["ITEM:heavydutyboots"] == 0
     assert emb["current_hp_fraction"] == 0.13125
-    assert emb["level"] == 50
-    assert emb["weight"] == 32.5
+    assert emb["level"] == 50 / 100.0
+    assert emb["weight"] == 32.5 / 100.0
     assert emb["is_terastallized"] == 0
-    assert emb["STAT:hp"] == 160
-    assert emb["STAT:atk"] == 128
-    assert emb["STAT:def"] == 84
-    assert emb["STAT:spa"] == 66
-    assert emb["STAT:spd"] == 67
-    assert emb["STAT:spe"] == 156
+    assert emb["STAT:hp"] == 160 / 100.0
+    assert emb["STAT:atk"] == 128 / 100.0
+    assert emb["STAT:def"] == 84 / 100.0
+    assert emb["STAT:spa"] == 66 / 100.0
+    assert emb["STAT:spd"] == 67 / 100.0
+    assert emb["STAT:spe"] == 156 / 100.0
     assert emb["BOOST:accuracy"] == 0
     assert emb["BOOST:atk"] == 0
     assert emb["BOOST:spa"] == 0
@@ -205,7 +209,6 @@ def test_featurize_pokemon(vgc_battle_p1):
     assert emb["STATUS: FNT"] == 0
     assert emb["TYPE:ROCK"] == 0
     assert emb["TYPE:FIRE"] == 0
-    assert emb["TYPE:STELLAR"] == 0
     assert emb["TYPE:ICE"] == 0
     assert emb["TYPE:BUG"] == 0
     assert emb["TYPE:NORMAL"] == 1
@@ -240,10 +243,12 @@ def test_featurize_oponent_pokemon(vgc_battle_p1):
 
     smeargle = vgc_battle_p1.opponent_team["p2: Smeargle"]
     emb = embedder.featurize_opponent_pokemon(smeargle)
-    assert "MOVE:0" in emb
-    assert emb["MOVE:0"]["STATUS:PAR"] == 1  # Nuzzle
-    assert "MOVE:1" in emb
-    assert emb["MOVE:1"]["current_pp"] == -1  # Dont know it
+
+    assert any(map(lambda x: x.startswith("MOVE:0:"), emb))
+    assert any(map(lambda x: x.startswith("MOVE:1:"), emb))
+
+    assert emb["MOVE:0:STATUS:PAR"] == 1  # Nuzzle
+    assert emb["MOVE:1:current_pp"] == -1  # Dont know it
     assert emb["ABILITY:thermalexchange"] == 0
     assert emb["ABILITY:immunity"] == 0
     assert emb["ABILITY:punkrock"] == 0
@@ -259,23 +264,23 @@ def test_featurize_oponent_pokemon(vgc_battle_p1):
 
     # Fainted
     assert emb["current_hp_fraction"] == 0
-    assert emb["level"] == 50
-    assert emb["weight"] == 58
+    assert emb["level"] == 50 / 100.0
+    assert emb["weight"] == 58 / 100.0
     assert emb["is_terastallized"] == 1
 
     # no battle_inference
-    assert emb["STAT_MIN:hp"] == 103
-    assert emb["STAT_MAX:hp"] == 178
-    assert emb["STAT_MIN:atk"] == 22
-    assert emb["STAT_MAX:atk"] == 79
-    assert emb["STAT_MIN:def"] == 36
-    assert emb["STAT_MAX:def"] == 95
-    assert emb["STAT_MIN:spa"] == 22
-    assert emb["STAT_MAX:spa"] == 79
-    assert emb["STAT_MIN:spd"] == 45
-    assert emb["STAT_MAX:spd"] == 106
-    assert emb["STAT_MIN:spe"] == 72
-    assert emb["STAT_MAX:spe"] == 139
+    assert emb["STAT_MIN:hp"] == 103 / 100.0
+    assert emb["STAT_MAX:hp"] == 178 / 100.0
+    assert emb["STAT_MIN:atk"] == 22 / 100.0
+    assert emb["STAT_MAX:atk"] == 79 / 100.0
+    assert emb["STAT_MIN:def"] == 36 / 100.0
+    assert emb["STAT_MAX:def"] == 95 / 100.0
+    assert emb["STAT_MIN:spa"] == 22 / 100.0
+    assert emb["STAT_MAX:spa"] == 79 / 100.0
+    assert emb["STAT_MIN:spd"] == 45 / 100.0
+    assert emb["STAT_MAX:spd"] == 106 / 100.0
+    assert emb["STAT_MIN:spe"] == 72 / 100.0
+    assert emb["STAT_MAX:spe"] == 139 / 100.0
     assert emb["BOOST:accuracy"] == 0
     assert emb["BOOST:atk"] == 0
     assert emb["BOOST:def"] == 0
@@ -304,3 +309,81 @@ def test_featurize_turn(vgc_battle_p1):
 
     for feature in vec:
         assert isinstance(feature, float)
+
+
+def test_simplify_features(vgc_battle_p1):
+    embedder = Embedder()
+    emb = embedder.featurize_double_battle(vgc_battle_p1)
+
+    simple_emb = embedder.simplify_features(emb)
+    simple_vec = embedder.feature_dict_to_vector(simple_emb)
+
+    for feature in simple_vec:
+        assert isinstance(feature, float)
+
+    assert len(simple_emb) < len(emb)
+
+
+def test_featurize_teampreview(example_vgc_teampreview_request):
+    logger = MagicMock()
+    battle = DoubleBattle("tag", "elitefurretai", logger, gen=9)
+
+    # Initiate battle
+    messages = [
+        ["", "init", "battle"],
+        ["", "title", "elitefurretai vs. CustomPlayer 1"],
+        ["", "j", "☆elitefurretai"],
+        ["", "j", "☆CustomPlayer 1"],
+        ["", "gametype", "doubles"],
+        ["", "player", "p1", "elitefurretai", "266", ""],
+        ["", "player", "p2", "CustomPlayer 1", "265", ""],
+        ["", "teamsize", "p1", "5"],
+        ["", "teamsize", "p2", "5"],
+        ["", "gen", "9"],
+        ["", "tier", "[Gen 9] VGC 2024 Reg G"],
+        ["", "rule", "Species Clause: Limit one of each Pokémon"],
+        ["", "rule", "Item Clause: Limit 1 of each item"],
+        ["", "clearpoke"],
+        ["", "poke", "p1", "Delibird, L50, F", ""],
+        ["", "poke", "p1", "Raichu, L50, F", ""],
+        ["", "poke", "p1", "Tyranitar, L50, F", ""],
+        ["", "poke", "p1", "Smeargle, L50, M", ""],
+        ["", "poke", "p1", "Furret, L50, F", ""],
+        ["", "poke", "p2", "Delibird, L50, F", ""],
+        ["", "poke", "p2", "Raichu, L50, F", ""],
+        ["", "poke", "p2", "Tyranitar, L50, F", ""],
+        ["", "poke", "p2", "Smeargle, L50, F", ""],
+        ["", "poke", "p2", "Furret, L50, M", ""],
+        ["", "teampreview", "4"],
+    ]
+    for msg in messages:
+        battle.parse_message(msg)
+
+    # Parse Teampreview request
+    battle.parse_request(example_vgc_teampreview_request)
+
+    # Need to add teampreview since Teampreview team is usually registered in Player
+    battle.teampreview_team = set(battle.team.values())
+
+    embedder = Embedder()
+    emb = embedder.featurize_double_battle(battle)
+
+    for key in emb:
+        if "active" in key or "sent" in key or "revealed" in key:
+            if emb[key] != 0:
+                print(key)
+            assert emb[key] == 0
+        elif "TRAPPED" in key:
+            assert emb[key] == 0
+        elif "FORCE_SWITCH" in key:
+            assert emb[key] == 0
+        elif "FIELD" in key:
+            assert emb[key] == 0
+        elif "SIDE_CONDITION" in key:
+            assert emb[key] == 0
+        elif "WEATHER" in key:
+            assert emb[key] == 0
+
+    assert emb["teampreview"] == 1
+    assert emb["turn"] == 0
+    assert emb["bias"] == 1

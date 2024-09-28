@@ -1,20 +1,23 @@
-Furret @ Black Sludge
-Ability: Frisk
+Smeargle @ Black Sludge
+Ability: Moody
 Level: 50
 Tera Type: Ghost
 EVs: 252 Atk / 1 Def / 252 Spe
 Timid Nature
 IVs: 0 Atk
-- Quick Attack
-- Helping Hand
+- Salt Cure
+- Grassy Terrain
+- Soak
+- Toxic
 
-Kyogre @ Flame Orb
-Ability: Drizzle
+Tyranitar @ Flame Orb
+Ability: Sand Stream
 Level: 50
 Tera Type: Electric
 EVs: 252 HP / 1 Def / 252 SpD
 Calm Nature
-- Water Spout
+- Sandstorm
+- Bite
 
 Grimmsnarl @ Leftovers
 Ability: Prankster

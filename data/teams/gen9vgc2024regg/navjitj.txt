@@ -1,0 +1,59 @@
+Farigiraf @ Safety Goggles
+Ability: Armor Tail
+Level: 50
+Tera Type: Steel
+EVs: 1 HP
+- Foul Play
+- Helping Hand
+- Trick Room
+- Psychic
+
+Landorus @ Life Orb
+Ability: Sheer Force
+Level: 50
+Tera Type: Poison
+EVs: 1 HP
+- Protect
+- Sludge Bomb
+- Earth Power
+- Sandsear Storm
+
+Calyrex-Ice @ Clear Amulet
+Ability: As One (Glastrier)
+Level: 50
+Tera Type: Water
+EVs: 1 HP
+- Trick Room
+- Glacial Lance
+- Protect
+- High Horsepower
+
+Ogerpon-Cornerstone @ Cornerstone Mask
+Ability: Sturdy
+Level: 50
+Tera Type: Rock
+EVs: 1 HP
+- Ivy Cudgel
+- Follow Me
+- Power Whip
+- Spiky Shield
+
+Urshifu-Rapid-Strike @ Mystic Water
+Ability: Unseen Fist
+Level: 50
+Tera Type: Normal
+EVs: 1 HP
+- Detect
+- Close Combat
+- Surging Strikes
+- Aqua Jet
+
+Regieleki @ Focus Sash
+Ability: Transistor
+Level: 50
+Tera Type: Electric
+EVs: 1 HP
+- Protect
+- Electroweb
+- Thunderbolt
+- Volt Switch

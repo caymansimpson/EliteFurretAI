@@ -1,8 +1,10 @@
 # Mac
 .DS_Store
 .vscode
-src/elitefurretai/scripts/*
 data/battles/*
 data/database/*
+data/models/*
 __pycache__/*
 *.pyc
+src/elitefurretai/scripts/print_battle_debug.py
+coverage.xml

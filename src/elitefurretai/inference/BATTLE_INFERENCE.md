@@ -7,7 +7,7 @@ This folder contains the class that does Battle Inference for VGC. Development o
    - Attack/Defense -- it will do reverse damage calculation to infer opponent's spreads
    - Item -- it will infer opponent's items (right now: safetygoggles, heavydutyboots, lightclay and covertcloak) and keep track of whether choice/assaultvest are possible. It does not yet keep track of every item possibility (but can be easily extended to do so).
 
-**SpeedInference**: This module infers an opponent's speed. Using it's undertanding of game mechanics and Showdown message protocol, it assembles orders of logs, creating a Linear Programming problem to solve for opponent's speeds. It will also infer choicescarf.
+**SpeedInference**: This module infers an opponent's speed. Using it's undertanding of game mechanics and Showdown message protocol, it assembles orders of logs, creating a Linear Programming problem to solve for opponent's speeds. It will also infer choicescarf. Note of an edge-case: it will not infer choicescarf if a mon's speed is in the realm of possibility (e.g. the unlikely scenario where a mon has no speed investment and has choicescarf, such that a jolly + 252 speed EV has the same speed). It will correctly identify it though if the mon demonstrates it's not scarf.
 
 **ItemInference**: This module infers an opponent's items (at least most). Using it's undertanding of game mechanics and Showdown message protocol, it infers based on what _didn't_ happen, what item a pokemon may have (since Showdown already exposes when something does happen, what item caused that event). Right now, it supports inferring lightclay, heavydutyboots, safetygoggles and covertcloak. It will also track whether assaultvest and choice items are plausible.
 

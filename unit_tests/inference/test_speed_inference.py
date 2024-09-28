@@ -351,6 +351,32 @@ def test_parse_move():
     orders = si.clean_orders(si._parse_move(events))
     assert len(orders) == 0
 
+    si = generate_speed_inference()
+    si._battle.parse_message(
+        ["", "switch", "p1b: Delibird", "Delibird, L50, F", "167/167"]
+    )
+    si._battle.parse_message(
+        ["", "switch", "p1a: Tyranitar", "Tyranitar, L50, F", "167/167"]
+    )
+    si._battle.parse_message(
+        ["", "switch", "p2a: Gardevoir", "Gardevoir, L50, F", "167/167"]
+    )
+    si._battle.parse_message(
+        ["", "switch", "p2b: Bellossom", "Bellossom, L50, F", "167/167"]
+    )
+    events = [
+        ["", "move", "p1b: Delibird", "Spikes", "p2a: Gardevoir"],
+        ["", "-sidestart", "p2: speed_ability1", "Spikes"],
+        ["", "move", "p2a: Gardevoir", "Future Sight", "p2b: Bellossom"],
+        ["", "-start", "p2a: Gardevoir", "move: Future Sight"],
+        ["", "move", "p1a: Tyranitar", "Dragon Tail", "p1b: Delibird"],
+        ["", "-damage", "p1b: Delibird", "75/100"],
+        ["", "drag", "p1b: Raichu", "Raichu, L50, F, tera:Ground", "95/100"],
+    ]
+    orders = si.clean_orders(si._parse_move(events))
+    assert len(orders) == 1
+    assert [("p1: Delibird", 1.0), ("p2: Gardevoir", 1.0)] in orders
+
 
 def test_parse_residual():
     si = generate_speed_inference()

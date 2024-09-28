@@ -5,7 +5,7 @@ Tera Type: Ghost
 EVs: 252 Atk / 1 Def / 252 Spe
 Timid Nature
 IVs: 0 Atk
-- Seismic Toss
+- Hydro Pump
 
 Tyranitar @ Leftovers
 Ability: Sand Stream
@@ -13,7 +13,7 @@ Level: 50
 Tera Type: Electric
 EVs: 252 HP / 1 Def / 252 SpD
 Calm Nature
-- Seismic Toss
+- Rock Slide
 
 Grimmsnarl @ Iron Ball
 Ability: Prankster

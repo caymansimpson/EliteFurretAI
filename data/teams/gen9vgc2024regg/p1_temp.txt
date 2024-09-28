@@ -1,35 +1,39 @@
-Indeedee (M)
+Indeedee (M) @ Leftovers
 Ability: Psychic Surge
 Level: 50
+Tera Type: Psychic
 EVs: 112 Atk
 IVs: 0 Atk
 - Trick Room
 - Substitute
-- Ally Switch
-- Magic Room
+- Trick
+- Skill Swap
 
 Pelipper @ Aguav Berry
 Ability: Drizzle
 Level: 50
+Tera Type: Water
 EVs: 100 Atk
 - Tailwind
 - U-turn
-- Hail
+- Snowscape
 - Whirlpool
 
 Dusclops @ Quick Claw
 Ability: Pressure
 Level: 50
+Tera Type: Ghost
 EVs: 176 Atk
 IVs: 0 Atk
 - Disable
-- Ally Switch
+- Curse
 - Trick
 - Mean Look
 
 Rillaboom @ Life Orb
 Ability: Grassy Surge
 Level: 50
+Tera Type: Grass
 EVs: 152 Atk
 IVs: 0 Atk
 - Taunt

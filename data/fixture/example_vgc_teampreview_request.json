@@ -1,0 +1,91 @@
+{
+    "teamPreview": true,
+    "maxChosenTeamSize": 4,
+    "side": {
+        "name": "elitefurretai",
+        "id": "p1",
+        "pokemon": [
+            {
+                "ident": "p1: Delibird",
+                "details": "Delibird, L50, F",
+                "condition": "120/120",
+                "active": true,
+                "stats": {"atk": 75, "def": 65, "spa": 85, "spd": 65, "spe": 95},
+                "moves": ["fakeout", "icywind", "spikes", "substitute"],
+                "baseAbility": "vitalspirit",
+                "item": "safetygoggles",
+                "pokeball": "pokeball",
+                "ability": "vitalspirit",
+                "commanding": false,
+                "reviving": false,
+                "teraType": "Steel",
+                "terastallized": ""
+            },
+            {
+                "ident": "p1: Raichu",
+                "details": "Raichu, L50, F",
+                "condition": "135/135",
+                "active": true,
+                "stats": {"atk": 110, "def": 75, "spa": 110, "spd": 100, "spe": 130},
+                "moves": ["lightscreen", "fakeout", "reflect", "nuzzle"],
+                "baseAbility": "static",
+                "item": "lightclay",
+                "pokeball": "pokeball",
+                "ability": "static",
+                "commanding": false,
+                "reviving": false,
+                "teraType": "Ground",
+                "terastallized": ""
+            },
+            {
+                "ident": "p1: Tyranitar",
+                "details": "Tyranitar, L50, F",
+                "condition": "175/175",
+                "active": false,
+                "stats": {"atk": 154, "def": 130, "spa": 115, "spd": 120, "spe": 81},
+                "moves": ["bulldoze", "dragontail", "stealthrock"],
+                "baseAbility": "sandstream",
+                "item": "heavydutyboots",
+                "pokeball": "pokeball",
+                "ability": "sandstream",
+                "commanding": false,
+                "reviving": false,
+                "teraType": "Psychic",
+                "terastallized": ""
+            },
+            {
+                "ident": "p1: Smeargle",
+                "details": "Smeargle, L50, F",
+                "condition": "130/130",
+                "active": false,
+                "stats": {"atk": 40, "def": 55, "spa": 40, "spd": 65, "spe": 95},
+                "moves": ["uturn", "icywind", "ragepowder", "spikes"],
+                "baseAbility": "moody",
+                "item": "covertcloak",
+                "pokeball": "pokeball",
+                "ability": "moody",
+                "commanding": false,
+                "reviving": false,
+                "teraType": "Rock",
+                "terastallized": ""
+            },
+            {
+                "ident": "p1: Furret",
+                "details": "Furret, L50, M",
+                "condition": "160/160",
+                "active": false,
+                "stats": {"atk": 96, "def": 84, "spa": 65, "spd": 75, "spe": 110},
+                "moves": ["followme", "doubleedge"],
+                "baseAbility": "frisk",
+                "item": "leftovers",
+                "pokeball": "pokeball",
+                "ability": "frisk",
+                "commanding": false,
+                "reviving": false,
+                "teraType": "Rock",
+                "terastallized": ""
+            }
+        ]
+    },
+    "rqid": 2
+}

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""This module defines a random players baseline
+"""This module processes various forms of data and prepares them for learning
 """
 
 import pickle

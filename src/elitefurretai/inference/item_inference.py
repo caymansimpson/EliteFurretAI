@@ -3,6 +3,7 @@
 This object is a companion class to BattleInference.
 """
 
+import inspect
 from typing import Any, Dict, List, Union
 
 from poke_env.data.gen_data import GenData
@@ -104,106 +105,10 @@ class ItemInference:
 
         # Reset mons flags on switch-in, check for heavydutyboots
         # Check for covert cloak and safetygoggles
+        # TODO: check knockoff and trick or fling or move that consumes items and set flags accordingly
+        # Knock off, switcheroo, trick, fling,
         if "move" in segments:
-            i = 0
-            while i < len(segments["move"]):
-                if segments["move"][i][1] == "move":
-                    self._update_move_tracking(segments["move"], i)
-
-                    move = Move(to_id_str(segments["move"][i][3]), self._battle.gen)
-                    actor = standardize_pokemon_ident(segments["move"][i][2])
-                    target = (
-                        standardize_pokemon_ident(segments["move"][i][4])
-                        if segments["move"][i][-1] != "[still]"
-                        else ""
-                    )
-                    active_pokemon = self._battle.active_pokemon
-
-                    # Check for covert cloak if an eligible move is made against an opponent
-                    if (
-                        len(move.secondary) > 0
-                        and move.secondary[0].get("chance", 0) == 100
-                        and target in self._opponent_mons
-                    ):
-                        # Goes ahead and looks for covert cloak
-                        self._check_covert_cloak(segments["move"], i)
-
-                    # Check for safetygoggles if we have a mon that has a rage powder effect and two mons out on the field;
-                    # not implemented for singles
-                    if (
-                        isinstance(active_pokemon, list)
-                        and actor.startswith(self._battle.opponent_role)
-                        and all(
-                            map(lambda x: x is not None and not x.fainted, active_pokemon)
-                        )
-                        and any(
-                            map(
-                                lambda x: x and Effect.RAGE_POWDER in x.effects,
-                                active_pokemon,
-                            )
-                        )
-                    ):
-                        index = (
-                            0
-                            if active_pokemon[0]
-                            and Effect.RAGE_POWDER in active_pokemon[0].effects
-                            else 1
-                        )  # pyright: ignore
-
-                        # If the actor targets the non rage-powdered mon and doesnt have immunity, it has safetygoggles
-                        if active_pokemon[index] is None:
-                            pass
-                        elif (
-                            target
-                            != get_showdown_identifier(
-                                active_pokemon[index],  # pyright: ignore
-                                self._battle.player_role,
-                            )
-                            and not has_rage_powder_immunity(
-                                get_pokemon(actor, self._battle)
-                            )
-                            and get_pokemon(actor, self._battle).item
-                            in {None, GenData.UNKNOWN_ITEM, "safetygoggles"}
-                            and not move.id == "snipeshot"
-                            and move.target in [Target.ANY, Target.NORMAL]
-                        ):
-                            self._opponent_mons[actor]["can_be_choice"] = False
-                            self._opponent_mons[actor]["item"] = "safetygoggles"
-                            self._battle.opponent_team[actor].item = "safetygoggles"
-                        elif (
-                            target
-                            != get_showdown_identifier(
-                                active_pokemon[index],  # pyright: ignore
-                                self._battle.player_role,
-                            )
-                            and not has_rage_powder_immunity(
-                                get_pokemon(actor, self._battle)
-                            )
-                            and not move.id == "snipeshot"
-                            and move.target in [Target.ANY, Target.NORMAL]
-                        ):
-                            raise ValueError(
-                                f"Found safetygoggles for {actor}, but it already has an item {get_pokemon(actor, self._battle).item}"
-                            )
-
-                # Check for heavydutyboots and reset tracking on switches; from pivot moves
-                # This method updates iteration counter and parses batttle messages
-                elif segments["move"][i][1] in ["switch", "drag"] and segments["move"][i][
-                    2
-                ].startswith(self._battle.opponent_role):
-
-                    end = i + 1
-                    while end < len(segments["move"]) and segments["move"][end][1] not in [
-                        "switch",
-                        "drag",
-                        "move",
-                    ]:
-                        end += 1
-
-                    self._check_opponent_switch(segments["move"][i:end])
-
-                update_battle(self._battle, segments["move"][i])
-                i += 1
+            self._handle_moves(segments)
 
         if "state_upkeep" in segments:
             for event in segments["state_upkeep"]:
@@ -238,45 +143,181 @@ class ItemInference:
             for event in segments["turn"]:
                 update_battle(self._battle, event)
 
-            # At the end of the turn, check for status moves; eliminates assault vest
-            for ident in self._opponent_mons:
-                if ident in self._battle.opponent_team:
-                    for move in self._battle.opponent_team[ident].moves.values():
-                        if move.category == MoveCategory.STATUS:
-                            self._opponent_mons[ident]["has_status_move"] = True
+            self._handle_end_of_turn()
 
-                    if self._opp_has_item(ident):
-                        item = self._battle.opponent_team[ident].item
-                        self._opponent_mons[ident]["item"] = item
-                        if item is not None and not item.startswith("choice"):
-                            self._opponent_mons[ident]["can_be_choice"] = False
+    def _handle_moves(self, segments: Dict[str, List[List[str]]]):
+        i = 0
+        while i < len(segments["move"]):
 
-            # At end of the turn, remove all the screens that have been removed from the battle
-            for ident in self._opponent_mons:
-                for sc in [item for item in self._opponent_mons[ident]["screens"]]:
-                    if sc not in self._battle.opponent_side_conditions:
-                        self._opponent_mons[ident]["screens"].remove(sc)
+            event = segments["move"][i]
 
-            # At end of turn, check battle for screen turns. If there's a screen that lasts longer than 5,
-            # we should figure out who used it and then set them as lightclay
-            for sc, turn_started in self._battle.opponent_side_conditions.items():
-                # If the screen lasts longer than 5 turns, we find the pokemon that
-                # set the screen and give them light clay.
-                if self._battle.turn - turn_started > 5:
-                    for ident in self._opponent_mons:
-                        if sc in self._opponent_mons[ident]["screens"]:
-                            if self._battle.opponent_team[ident].item in {
-                                None,
-                                GenData.UNKNOWN_ITEM,
-                                "lightclay",
-                            }:
-                                self._opponent_mons[ident]["can_be_choice"] = False
-                                self._opponent_mons[ident]["item"] = "lightclay"
-                                self._battle.opponent_team[ident].item = "lightclay"
-                            else:
-                                raise ValueError(
-                                    f"We found lightclay but {ident} has {self._battle.opponent_team[ident].item}"
+            # An opponent is given an tem
+            if event[1] == "-item" and event[2].startswith(self._battle.opponent_role):
+                ident = standardize_pokemon_ident(event[2])
+                item = to_id_str(event[3])
+                self._opponent_mons[ident]["item"] = item
+
+                # Reset flags if Choice is being switched
+                if item.startswith("choice"):
+                    self._opponent_mons[ident]["can_be_choice"] = True
+                    self._opponent_mons[ident]["last_move"] = None
+
+            # An opponent loses an item
+            elif event[1] == "-enditem" and event[2].startswith(
+                self._battle.opponent_role
+            ):
+                ident = standardize_pokemon_ident(event[2])
+                self._opponent_mons[ident]["item"] = None
+                self._opponent_mons[ident]["can_be_choice"] = False
+
+            # Someone uses a move
+            elif event[1] == "move":
+                self._update_move_tracking(segments["move"], i)
+
+                # Get Move details
+                move = Move(to_id_str(event[3]), self._battle.gen)
+                actor = standardize_pokemon_ident(event[2])
+                target = None
+                if (
+                    event[-1] != "[still]"
+                    and len(event) >= 5
+                    and event[4] not in [None, "null"]
+                ):
+                    target = standardize_pokemon_ident(event[4])
+                active_pokemon = self._battle.active_pokemon
+
+                # Check for covert cloak if an eligible move is made against an opponent
+                if (
+                    len(move.secondary) > 0
+                    and move.secondary[0].get("chance", 0) == 100
+                    and target in self._opponent_mons
+                ):
+                    # Goes ahead and looks for covert cloak
+                    self._check_covert_cloak(segments["move"], i)
+
+                # Check for safetygoggles if we have a mon that has a rage powder effect and two mons out on the field;
+                # not implemented for singles
+                if (
+                    isinstance(active_pokemon, list)
+                    and actor.startswith(self._battle.opponent_role)
+                    and all(map(lambda x: x and not x.fainted, active_pokemon))
+                    and any(
+                        map(
+                            lambda x: x and Effect.RAGE_POWDER in x.effects, active_pokemon
+                        )
+                    )
+                ):
+                    index = 1
+                    if (
+                        active_pokemon[0]
+                        and Effect.RAGE_POWDER in active_pokemon[0].effects
+                    ):  # pyright: ignore
+                        index = 0
+
+                    # If the actor targets the non rage-powdered mon and doesnt have immunity, it has safetygoggles
+                    if active_pokemon[index] is None:
+                        pass
+                    elif (
+                        target
+                        and target
+                        != get_showdown_identifier(
+                            active_pokemon[index], self._battle.player_role
+                        )  # pyright: ignore
+                        and not has_rage_powder_immunity(get_pokemon(actor, self._battle))
+                        and get_pokemon(actor, self._battle).item
+                        in [None, GenData.UNKNOWN_ITEM, "safetygoggles"]
+                        and (
+                            not move.id == "snipeshot"
+                            and move.target in [Target.ANY, Target.NORMAL]
+                        )
+                    ):
+                        self._opponent_mons[actor]["can_be_choice"] = False
+                        self._opponent_mons[actor]["item"] = "safetygoggles"
+                        self._battle.opponent_team[actor].item = "safetygoggles"
+                    elif (
+                        target
+                        and target
+                        != get_showdown_identifier(
+                            active_pokemon[index], self._battle.player_role
+                        )  # pyright: ignore
+                        and not has_rage_powder_immunity(get_pokemon(actor, self._battle))
+                        and (
+                            not move.id == "snipeshot"
+                            and move.target in [Target.ANY, Target.NORMAL]
+                        )
+                    ):
+                        raise ValueError(
+                            f"Found safetygoggles for {actor}, but it already has an item {get_pokemon(actor, self._battle).item}",
+                            self._battle,
+                            {
+                                name: value
+                                for name, value in inspect.getmembers(
+                                    self._battle.opponent_team[actor]
                                 )
+                                if not name.startswith("__") or inspect.isfunction(value)
+                            },
+                        )
+
+            # Check for heavydutyboots and reset tracking on switches; from pivot moves
+            # This method updates iteration counter and parses batttle messages
+            elif event[1] in ["switch", "drag"] and event[2].startswith(
+                self._battle.opponent_role
+            ):
+
+                end = i + 1
+                while end < len(segments["move"]) and segments["move"][end][1] not in [
+                    "switch",
+                    "drag",
+                    "move",
+                ]:
+                    end += 1
+
+                self._check_opponent_switch(segments["move"][i:end])
+
+            update_battle(self._battle, event)
+            i += 1
+
+    def _handle_end_of_turn(self):
+        # At the end of the turn, check for status moves; eliminates assault vest
+        for ident in self._opponent_mons:
+            if ident in self._battle.opponent_team:
+                for move in self._battle.opponent_team[ident].moves.values():
+                    if move.category == MoveCategory.STATUS:
+                        self._opponent_mons[ident]["has_status_move"] = True
+
+                if self._opp_has_item(ident):
+                    item = self._battle.opponent_team[ident].item
+                    self._opponent_mons[ident]["item"] = item
+                    if item is not None and not item.startswith("choice"):
+                        self._opponent_mons[ident]["can_be_choice"] = False
+
+        # At end of the turn, remove all the screens that have been removed from the battle
+        for ident in self._opponent_mons:
+            for sc in [item for item in self._opponent_mons[ident]["screens"]]:
+                if sc not in self._battle.opponent_side_conditions:
+                    self._opponent_mons[ident]["screens"].remove(sc)
+
+        # At end of turn, check battle for screen turns. If there's a screen that lasts longer than 5,
+        # we should figure out who used it and then set them as lightclay
+        for sc, turn_started in self._battle.opponent_side_conditions.items():
+            # If the screen lasts longer than 5 turns, we find the pokemon that
+            # set the screen and give them light clay.
+            if self._battle.turn - turn_started > 5:
+                for ident in self._opponent_mons:
+                    if sc in self._opponent_mons[ident]["screens"]:
+                        if self._battle.opponent_team[ident].item in {
+                            None,
+                            GenData.UNKNOWN_ITEM,
+                            "lightclay",
+                        }:
+                            self._opponent_mons[ident]["can_be_choice"] = False
+                            self._opponent_mons[ident]["item"] = "lightclay"
+                            self._battle.opponent_team[ident].item = "lightclay"
+                        else:
+                            raise ValueError(
+                                f"We found lightclay but {ident} has {self._battle.opponent_team[ident].item}",
+                                self._battle,
+                            )
 
     # Reset mons flags on switch-in, check for heavydutyboots
     # Doesnt actually iterate, and we need to pass it just the relevant events
@@ -285,13 +326,17 @@ class ItemInference:
     # the battle state after the switch
     def _check_opponent_switch(self, events: List[List[str]]):
         if self._battle.opponent_role is None or self._battle.player_role is None:
-            raise ValueError("Cannot check opponent switches without roles")
+            raise ValueError(
+                "Cannot check opponent switches without roles",
+                self._battle,
+            )
 
         if events[0][1] not in ["switch", "drag"] or not events[0][2].startswith(
             self._battle.opponent_role
         ):
             raise ValueError(
-                f"Expected switch event of opponent mon, but got {events[0]} instead"
+                f"Expected switch event of opponent mon, but got {events[0]} instead",
+                self._battle,
             )
 
         ident = standardize_pokemon_ident(events[0][2])
@@ -358,7 +403,17 @@ class ItemInference:
             GenData.UNKNOWN_ITEM,
             "heavydutyboots",
         }:
-            raise ValueError(f"We found Heavy Duty Boots but {ident} has {mon.item}")
+            raise ValueError(
+                f"We found Heavy Duty Boots but {ident} has {mon.item}",
+                self._battle,
+                {
+                    name: value
+                    for name, value in inspect.getmembers(
+                        self._battle.opponent_team[ident]
+                    )
+                    if not name.startswith("__")
+                },
+            )
         elif has_heavy_duty_boots:
             self._opponent_mons[ident]["can_be_choice"] = False
             self._opponent_mons[ident]["item"] = "heavydutyboots"
@@ -367,7 +422,10 @@ class ItemInference:
     # Updates move tracking; checks for choice items, and looks for screen_setting
     def _update_move_tracking(self, events: List[List[str]], i: int):
         if self._battle.opponent_role is None or self._battle.player_role is None:
-            raise ValueError("Cannot update move tracking without roles")
+            raise ValueError(
+                "Cannot update move tracking without roles",
+                self._battle,
+            )
 
         ident = standardize_pokemon_ident(events[i][2])
         if ident.startswith(self._battle.opponent_role):
@@ -375,8 +433,11 @@ class ItemInference:
             self._opponent_mons[ident]["num_moved"] += 1
             self._opponent_mons[ident]["num_moves_since_switch"] += 1
 
-            # Check choice
-            if self._opponent_mons[ident]["last_move"] not in [events[i][3], None]:
+            # Check choice; mon can struggle if out of PP or Disabled
+            if (
+                self._opponent_mons[ident]["last_move"] not in [events[i][3], None]
+                and events[i][3] != "Struggle"
+            ):
                 self._opponent_mons[ident]["can_be_choice"] = False
                 self._opponent_mons[ident]["last_move"] = events[i][3]
 
@@ -395,7 +456,10 @@ class ItemInference:
     # I have not tested it with this yet
     def _check_covert_cloak(self, events: List[List[str]], i: int):
         if self._battle.opponent_role is None or self._battle.player_role is None:
-            raise ValueError("Cannot check for covert cloak without roles")
+            raise ValueError(
+                "Cannot check for covert cloak without roles",
+                self._battle,
+            )
 
         move = Move(to_id_str(events[i][3]), self._battle.gen)
 
@@ -410,7 +474,9 @@ class ItemInference:
             or target not in self._opponent_mons
         ):
             raise ValueError(
-                f"Checking for Covert Cloak {events[i]}, but the event shouldn't trigger checking"
+                f"Checking for Covert Cloak {events[i]}, but the event shouldn't trigger checking",
+                self._battle,
+                events,
             )
 
         # Get what effect we should be looking for to trigger based on the move
@@ -426,7 +492,7 @@ class ItemInference:
         # boosts, status and some volatileStatuses. We check for switches too to
         # handle the eject button/wimp out edge case
         end = i + 1
-        while end < len(events) and events[end][1] not in ["move", "switch"]:
+        while end < len(events) and events[end][1] not in ["move", "switch", "drag"]:
             end += 1
 
         # Not implementing healblock from psychicnoise or syrupbomb or dynamicpunch
@@ -440,13 +506,26 @@ class ItemInference:
         if key == "boosts":
 
             # We go through every opponent mon and check if they got hit, and if they did, we
-            # check if they got the secondary effect (or fainted)
+            # check if they got the secondary effect (or fainted). We go until we don't
             idents = []
-            for j in range(i, end):
+            j = i
+            while j <= end and events[j][1] in [
+                "-damage",
+                "-boost",
+                "-unboost",
+                "-resisted",
+                "-immune",
+                "faint",
+                "-supereffective",
+                "-crit",
+                "-miss",
+            ]:
                 if events[j][1] == "-damage" and events[j][2].startswith(
                     self._battle.opponent_role
                 ):
                     idents.append(standardize_pokemon_ident(events[j][2]))
+
+                # We look back one event to ensure an ability (eg Stamina) or item doesn't trigger a boost
                 elif events[j][1] in ["-boost", "-unboost"] and events[j][2].startswith(
                     self._battle.opponent_role
                 ):
@@ -455,6 +534,8 @@ class ItemInference:
                     self._battle.opponent_role
                 ):
                     idents.remove(standardize_pokemon_ident(events[j][2]))
+
+                j += 1
 
             # This means that we get an ident that took damage, but didn't get a (un)boost
             if len(idents) > 0:
@@ -467,7 +548,16 @@ class ItemInference:
                     self._battle.opponent_team[idents[0]].item = "covertcloak"
                 else:
                     raise ValueError(
-                        f"We found Covert Cloak but {idents[0]} has {self._battle.opponent_team[idents[0]].item}"
+                        f"We found Covert Cloak but {idents[0]} has {self._battle.opponent_team[idents[0]].item}",
+                        self._battle,
+                        events,
+                        {
+                            name: value
+                            for name, value in inspect.getmembers(
+                                self._battle.opponent_team[idents[0]]
+                            )
+                            if not name.startswith("__")
+                        },
                     )
 
         # Check to see if someone has been damaged and if there is no status. If there is no status
@@ -491,13 +581,31 @@ class ItemInference:
                 self._battle.opponent_team[target].item = "covertcloak"
             else:
                 raise ValueError(
-                    f"We found Covert Cloak but {target} has {self._battle.opponent_team[target].item}"
+                    f"We found Covert Cloak but {target} has {self._battle.opponent_team[target].item}",
+                    self._battle,
+                    events,
+                    {
+                        name: value
+                        for name, value in inspect.getmembers(
+                            self._battle.opponent_team[target]
+                        )
+                        if not name.startswith("__")
+                    },
                 )
 
         # |-start|p1a: Amoonguss|Salt Cure
-        elif key == "saltcure" and not any(
-            events[j][1] in ["-start", "faint"] and events[j][-1] == "Salt Cure"
-            for j in range(i, end)
+        elif (
+            key == "saltcure"  # Salt Cure was used
+            and events[i + 1][1] == "-damage"
+            and events[i + 1][2] == target  # It hits
+            and not any(
+                events[j][1] in ["-start", "faint"] and events[j][-1] == "Salt Cure"
+                for j in range(i, end)
+            )  # we didn't faint or salt cure didnt activate
+            and Effect.SALT_CURE
+            not in self._battle.opponent_team[
+                target
+            ].effects  # we already didn't have salt cure
         ):
             if (
                 not self._opp_has_item(target)
@@ -508,7 +616,16 @@ class ItemInference:
                 self._battle.opponent_team[target].item = "covertcloak"
             else:
                 raise ValueError(
-                    f"We found Covert Cloak but {target} has {self._battle.opponent_team[target].item}"
+                    f"We found Covert Cloak but {target} has {self._battle.opponent_team[target].item}",
+                    self._battle,
+                    events,
+                    {
+                        name: value
+                        for name, value in inspect.getmembers(
+                            self._battle.opponent_team[target]
+                        )
+                        if not name.startswith("__")
+                    },
                 )
 
         # |move|p2b: Smeargle|Fake Out|p1b: Urshifu
@@ -553,7 +670,16 @@ class ItemInference:
                         self._battle.opponent_team[target].item = "covertcloak"
                     else:
                         raise ValueError(
-                            f"We found Covert Cloak but {target} has {self._battle.opponent_team[target].item}"
+                            f"We found Covert Cloak but {target} has {self._battle.opponent_team[target].item}",
+                            self._battle,
+                            events,
+                            {
+                                name: value
+                                for name, value in inspect.getmembers(
+                                    self._battle.opponent_team[target]
+                                )
+                                if not name.startswith("__")
+                            },
                         )
 
                     return
@@ -561,7 +687,9 @@ class ItemInference:
     # Goes through residuals and looks for mons who should be hit by sandstorm, but aren't
     def _check_residuals_for_safety_goggles(self, events: List[List[str]]):
         if self._battle.opponent_role is None:
-            raise ValueError("Cannot check for SafetyGoggles without an opponent role")
+            raise ValueError(
+                "Cannot check for SafetyGoggles without an opponent role", self._battle
+            )
 
         # If there's no sandstorm, we just go through our events; nothing to check
         elif Weather.SANDSTORM not in self._battle.weather:
@@ -609,7 +737,9 @@ class ItemInference:
             elif len(opp_actives) > 1:
                 # This technically could happen if we trick SafetyGoogles, and had another Safetygoggles during a sandstorm
                 raise ValueError(
-                    f"Only at max one expected pokemon can not be affected by Sandstorm, but got {opp_actives}"
+                    f"Only at max one expected pokemon can not be affected by Sandstorm, but got {opp_actives}",
+                    self._battle,
+                    events,
                 )
             elif (
                 len(opp_actives) == 1
@@ -617,12 +747,21 @@ class ItemInference:
                 and self._battle.opponent_team[opp_actives[0]].item != "safetygoggles"
             ):
                 raise ValueError(
-                    f"We found SafetyGoggles but {opp_actives[0]} has {self._battle.opponent_team[opp_actives[0]].item}"
+                    f"We found SafetyGoggles but {opp_actives[0]} has {self._battle.opponent_team[opp_actives[0]].item}",
+                    self._battle,
+                    events,
+                    {
+                        name: value
+                        for name, value in inspect.getmembers(
+                            self._battle.opponent_team[opp_actives[0]]
+                        )
+                        if not name.startswith("__")
+                    },
                 )
 
         elif isinstance(self._battle.opponent_active_pokemon, Pokemon):
 
-            # Singles; requirement are different and simpler
+            # Singles; requirement are different and simpler. Haven't tested!
             if (
                 self._battle.opponent_active_pokemon is not None
                 and not has_sandstorm_immunity(self._battle.opponent_active_pokemon)

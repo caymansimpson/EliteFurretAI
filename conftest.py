@@ -33,6 +33,12 @@ def example_doubles_request():
 
 
 @fixture
+def example_vgc_teampreview_request():
+    with open(os.path.join(FIXTURE_DIR, "example_vgc_teampreview_request.json")) as f:
+        return orjson.loads(f.read())
+
+
+@fixture
 def example_singles_request():
     with open(os.path.join(FIXTURE_DIR, "example_singles_request.json")) as f:
         return orjson.loads(f.read())

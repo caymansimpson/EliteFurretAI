@@ -20,14 +20,14 @@ _FLAGS = {
     "item": GenData.UNKNOWN_ITEM,
     "num_moves_since_switch": 0,
     "num_moved": 0,
+    "screens": [],
+    # Currently not checked, since we don't have a reverse damage calculator
     "1.2atk": 0,
     "1.5atk": 0,
     "1.2spa": 0,
     "1.5spa": 0,
     "1.5def": 0,
     "1.5spd": 0,
-    "1.5spe": 0,
-    "screens": [],
 }
 
 
@@ -90,7 +90,8 @@ class BattleInference:
         """
         if self._battle.opponent_role is None:
             raise ValueError(
-                "Battle must be initialized before inference; we have no opponent role"
+                "Battle must be initialized before inference; we have no opponent role",
+                self._battle,
             )
 
         if self._abort:
@@ -116,12 +117,14 @@ class BattleInference:
 
         if self._battle.opponent_role is None:
             raise ValueError(
-                "Battle must be initialized before inference; we have no opponent role"
+                "Battle must be initialized before inference; we have no opponent role",
+                self._battle,
             )
 
         if mon_ident not in self._opponent_mons:
             raise KeyError(
-                f"Can't find {mon_ident} in self._mons. Keys: {list(self._opponent_mons.keys())}"
+                f"Can't find {mon_ident} in self._mons. Keys: {list(self._opponent_mons.keys())}",
+                self._battle,
             )
 
         return self._opponent_mons[mon_ident]
@@ -138,12 +141,14 @@ class BattleInference:
 
         if self._battle.opponent_role is None:
             raise ValueError(
-                "Battle must be initialized before inference; we have no opponent role"
+                "Battle must be initialized before inference; we have no opponent role",
+                self._battle,
             )
 
         if mon_ident not in self._opponent_mons:
             raise KeyError(
-                f"Can't find {mon_ident} in self._mons. Keys: {list(self._opponent_mons.keys())}"
+                f"Can't find {mon_ident} in self._mons. Keys: {list(self._opponent_mons.keys())}",
+                self._battle,
             )
 
         if (
@@ -166,17 +171,20 @@ class BattleInference:
 
         if self._battle.opponent_role is None:
             raise ValueError(
-                "Battle must be initialized before inference; we have no opponent role"
+                "Battle must be initialized before inference; we have no opponent role",
+                self._battle,
             )
 
         if mon_ident not in self._opponent_mons:
             raise KeyError(
-                f"Can't find {mon_ident} in self._mons. Keys: {list(self._opponent_mons.keys())}"
+                f"Can't find {mon_ident} in self._mons. Keys: {list(self._opponent_mons.keys())}",
+                self._battle,
             )
 
         if stat not in self._opponent_mons[mon_ident]:
             raise KeyError(
-                f"{stat} is not a stat that we store. Keys: {self._opponent_mons[mon_ident].keys()}"
+                f"{stat} is not a stat that we store. Keys: {self._opponent_mons[mon_ident].keys()}",
+                self._battle,
             )
 
         return self._opponent_mons[mon_ident][stat]
@@ -189,16 +197,18 @@ class BattleInference:
         """
 
         if self._abort:
-            raise ValueError("BattleInference was not properly initalized")
+            raise ValueError("BattleInference was not properly initalized", self._battle)
 
         if self._battle.opponent_role is None:
             raise ValueError(
-                "Battle must be initialized before inference; we have no opponent role"
+                "Battle must be initialized before inference; we have no opponent role",
+                self._battle,
             )
 
         if mon_ident not in self._opponent_mons:
             raise KeyError(
-                f"Can't find {mon_ident} in self._mons. Keys: {list(self._opponent_mons.keys())}"
+                f"Can't find {mon_ident} in self._mons. Keys: {list(self._opponent_mons.keys())}",
+                self._battle,
             )
 
         return self._opponent_mons[mon_ident]["can_be_choice"]
@@ -211,16 +221,18 @@ class BattleInference:
         """
 
         if self._abort:
-            raise ValueError("BattleInference was not properly initalized")
+            raise ValueError("BattleInference was not properly initalized", self._battle)
 
         if self._battle.opponent_role is None:
             raise ValueError(
-                "Battle must be initialized before inference; we have no opponent role"
+                "Battle must be initialized before inference; we have no opponent role",
+                self._battle,
             )
 
         if mon_ident not in self._opponent_mons:
             raise KeyError(
-                f"Can't find {mon_ident} in self._mons. Keys: {list(self._opponent_mons.keys())}"
+                f"Can't find {mon_ident} in self._mons. Keys: {list(self._opponent_mons.keys())}",
+                self._battle,
             )
 
         return not self._opponent_mons[mon_ident]["has_status_move"]

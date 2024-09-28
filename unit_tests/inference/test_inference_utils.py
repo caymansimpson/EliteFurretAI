@@ -495,7 +495,6 @@ def test_get_segments(residual_logs, edgecase_logs, uturn_logs):
     )
 
     segments = get_segments(edgecase_logs[15])
-    print(segments)
     assert segments["activation"][0] == [
         "",
         "-activate",
@@ -715,7 +714,6 @@ def test_get_segments(residual_logs, edgecase_logs, uturn_logs):
     assert len(segments) == 5
 
     segments = get_segments(uturn_logs[1])
-    print(segments)
     assert segments["switch"][0] == ["", "switch", "p1b: Chi-Yu", "Chi-Yu, L50", "162/162"]
     assert segments["switch"][-1] == ["", "-item", "p1b: Chi-Yu", "Air Balloon"]
     assert segments["battle_mechanic"] == [
@@ -737,6 +735,48 @@ def test_get_segments(residual_logs, edgecase_logs, uturn_logs):
         "6/100 brn",
         "[from] brn",
     ]
+
+    logs = [
+        ["", "switch", "p2b: Bellossom", "Bellossom, L50, F", "150/150"],
+        ["", "-damage", "p2b: Bellossom", "132/150", "[from] Stealth Rock"],
+        ["", "move", "p1b: Delibird", "Spikes", "p2a: Gardevoir"],
+        ["", "-sidestart", "p2: speed_ability1", "Spikes"],
+        ["", "move", "p2a: Gardevoir", "Future Sight", "p2b: Bellossom"],
+        ["", "-start", "p2a: Gardevoir", "move: Future Sight"],
+        ["", "move", "p1a: Tyranitar", "Dragon Tail", "p1b: Delibird"],
+        ["", "-damage", "p1b: Delibird", "75/100"],
+        ["", "drag", "p1b: Raichu", "Raichu, L50, F, tera:Ground", "95/100"],
+        ["", ""],
+        ["", "-weather", "none"],
+        ["", "-end", "p1b: Raichu", "move: Future Sight"],
+        ["", "-damage", "p1b: Raichu", "19/100"],
+        ["", "-enditem", "p1b: Raichu", "Red Card", "[of] p2a: Gardevoir"],
+        ["", "-damage", "p1a: Tyranitar", "58/100 brn", "[from] brn"],
+        ["", "-damage", "p2a: Gardevoir", "40/143 brn", "[from] brn"],
+        ["", "upkeep"],
+        ["", "drag", "p2a: Dusclops", "Dusclops, L50, M", "62/147"],
+        ["", "-damage", "p2a: Dusclops", "44/147", "[from] Stealth Rock"],
+        ["", "-damage", "p2a: Dusclops", "26/147", "[from] Spikes"],
+        ["", "turn", "6"],
+    ]
+    segments = get_segments(logs)
+    assert (
+        len(
+            set(segments.keys())
+            & set(
+                [
+                    "activation",
+                    "switch",
+                    "battle_mechanic",
+                    "move",
+                    "state_upkeep",
+                    "residual",
+                    "preturn_switch",
+                ]
+            )
+        )
+        == 4
+    )
 
 
 def test_get_residual_and_identifier():

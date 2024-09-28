@@ -33,6 +33,7 @@ from elitefurretai.inference.inference_utils import (
     get_segments,
     get_showdown_identifier,
     is_ability_event,
+    print_battle,
     standardize_pokemon_ident,
     update_battle,
 )
@@ -197,7 +198,7 @@ class SpeedInference:
                 self._debug("lpproblem", problem)
 
             # Solve our set of linear equations (using an arbitrary solver, with no command line output)
-            problem.solve(pulp.PULP_CBC_CMD(msg=False))
+            problem.solve(solver=pulp.apis.SCIP_PY(msg=False))
 
             # Flag for whether we can update our speed tracking
             success = False
@@ -221,7 +222,7 @@ class SpeedInference:
                         and variables[mon_ident].upBound
                     ):
                         variables[mon_ident].upBound = int(variables[mon_ident].upBound * 1.5)  # type: ignore
-                        problem.solve(pulp.PULP_CBC_CMD(msg=False))
+                        problem.solve(solver=pulp.apis.SCIP_PY(msg=False))
 
                         # We found our choice scarf mon! We should record success and update the mon
                         if pulp.LpStatus[problem.status] == "Optimal":
@@ -244,7 +245,8 @@ class SpeedInference:
                     self._debug("solution_found")
             else:
                 raise ValueError(
-                    f"Got Pulp status of {pulp.LpStatus[problem.status]}. Pulp setup: {problem}"
+                    f"Got Pulp status of {pulp.LpStatus[problem.status]}. Pulp setup: {problem}",
+                    self._battle,
                 )
 
             # If we got success, we should record the solved speeds
@@ -437,13 +439,22 @@ class SpeedInference:
                         priority_orders += temp_orders
                         temp_orders = []
 
+                    # TODO: bug here; im pretty sure we're not keeping active pokemon up-to-date
+                    # right, which is messing with save_multipliers, stored in last_multipliers
                     if last_moved and last_multipliers:
-                        priority_orders.append(
-                            [
-                                (last_moved, last_multipliers[last_moved]),
-                                (mon_ident, last_multipliers[mon_ident]),
-                            ]
-                        )
+                        try:
+                            priority_orders.append(
+                                [
+                                    (last_moved, last_multipliers[last_moved]),
+                                    (mon_ident, last_multipliers[mon_ident]),
+                                ]
+                            )
+                        except KeyError as e:
+
+                            print("In Last Multipliers and had a Key Error")
+                            print(e)
+                            print("Last Battle:")
+                            print(print_battle(self._battle))
 
                     # Now update our tracking
                     last_priority = priority
@@ -598,7 +609,12 @@ class SpeedInference:
                     raise ValueError(
                         f"We can't find a mon in our actives: {actives} "
                         + f"or opponent actives: {opp_actives} for the switch {events[i]}. "
-                        + "This shouldn't happen!"
+                        + "This shouldn't happen!",
+                        self._battle.active_pokemon,
+                        self._battle.opponent_active_pokemon,
+                        self._battle.team,
+                        self._battle.opponent_team,
+                        events,
                     )
 
                 # We grab the mon_ident, but without position information
@@ -676,7 +692,8 @@ class SpeedInference:
             raise ValueError(
                 "_get_activations_from_weather_or_terrain was not passed the right parameter."
                 + "it should always be passed the index of the event that could possibly activate "
-                + "other abilities or items"
+                + "other abilities or items",
+                self._battle,
             )
 
         # Set up tracking variables
@@ -763,6 +780,7 @@ class SpeedInference:
     # Supposed to be called at speed-order decision time (when we decide who goes next); this function
     # records all the speed multipliers that are at this moment so we can get what the calculation was
     def _save_multipliers(self) -> Dict[str, Optional[float]]:
+
         multipliers: Dict[str, Optional[float]] = {}
         if isinstance(self._battle, DoubleBattle):
             for mon in self._battle.active_pokemon:
@@ -774,6 +792,7 @@ class SpeedInference:
                 if mon is not None:
                     key = get_showdown_identifier(mon, self._battle.opponent_role)
                     multipliers[key] = self._generate_multiplier(key)
+
         else:
             mon = self._battle.active_pokemon
             if mon is not None:
@@ -797,7 +816,7 @@ class SpeedInference:
                 if tup[0] == mon_ident:
                     order[i] = (mon_ident, tup[1] * mult)
 
-    # I use this horrendous coding style because debugging can be quite tricky with LP and Showdown; it can
+    # I use this horrendous code because debugging can be quite tricky with LP and Showdown; it can
     # be unclear whether the problem is with the parsing or the LP, and this allows for more easy future
     # readability of the main bulk of code, given we will likely have to revisit in future generations
     def _debug(self, key: str, arg: Any = None):

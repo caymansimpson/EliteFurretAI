@@ -1,0 +1,40 @@
+Tyranitar @ Eject Button
+Ability: Sand Stream
+Level: 50
+Tera Type: Psychic
+EVs: 1 HP
+- Bulldoze
+- Dragon Tail
+- Stealth Rock
+- Rock Slide
+
+Smeargle @ Covert Cloak
+Ability: Moody
+Level: 50
+Tera Type: Rock
+EVs: 1 HP
+- U-turn
+- Triple Axel
+- Rage Powder
+- Spikes
+
+Raichu @ Red Card
+Ability: Static
+Level: 50
+Tera Type: Ground
+EVs: 1 HP
+- Volt Switch
+- Fake Out
+- Encore
+- Nuzzle
+
+Delibird @ Safety Goggles
+Ability: Vital Spirit
+Level: 50
+Tera Type: Steel
+EVs: 1 HP
+IVs: 0 Atk
+- Baton Pass
+- Icy Wind
+- Spikes
+- Destiny Bond
