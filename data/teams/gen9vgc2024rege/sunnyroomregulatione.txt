@@ -1,0 +1,76 @@
+仙度瑞拉 (Indeedee-F) @ Psychic Seed
+Ability: Psychic Surge
+Level: 50
+Shiny: Yes
+Tera Type: Fire
+EVs: 252 HP / 252 Def / 4 SpD
+Relaxed Nature
+IVs: 0 Atk / 0 Spe
+- Trick Room
+- Dazzling Gleam
+- Follow Me
+- Helping Hand
+
+黑馬王子 (Armarouge) (M) @ Mind Plate
+Ability: Flash Fire
+Level: 50
+Shiny: Yes
+Tera Type: Grass
+EVs: 252 HP / 4 Def / 252 SpA
+Quiet Nature
+IVs: 0 Atk / 0 Spe
+- Heat Wave
+- Expanding Force
+- Trick Room
+- Protect
+
+白雪公主 (Hatterene) @ Life Orb
+Ability: Magic Bounce
+Level: 50
+Shiny: Yes
+Tera Type: Water
+EVs: 212 HP / 44 Def / 252 SpA
+Quiet Nature
+IVs: 0 Atk / 0 Spe
+- Psychic
+- Trick Room
+- Dazzling Gleam
+- Protect
+
+熊熊遇見妳 (Ursaluna) (M) @ Flame Orb
+Ability: Guts
+Level: 50
+Shiny: Yes
+Tera Type: Normal
+EVs: 252 HP / 252 Atk / 4 SpD
+Brave Nature
+IVs: 0 Spe
+- Headlong Rush
+- Facade
+- Swords Dance
+- Protect
+
+睡美人來囉 (Lilligant-Hisui) @ Focus Sash
+Ability: Chlorophyll
+Level: 50
+Shiny: Yes
+Tera Type: Ghost
+EVs: 4 HP / 252 Atk / 252 Spe
+Jolly Nature
+- Solar Blade
+- Sleep Powder
+- Close Combat
+- After You
+
+金色忍者龜 (Torkoal) (M) @ Choice Specs
+Ability: Drought
+Level: 50
+Shiny: Yes
+Tera Type: Fire
+EVs: 252 HP / 4 Def / 252 SpA
+Quiet Nature
+IVs: 0 Atk / 0 Spe
+- Eruption
+- Heat Wave
+- Flamethrower
+- Earth Power

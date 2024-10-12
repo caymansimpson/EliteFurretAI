@@ -1,0 +1,68 @@
+Latias @ Rocky Helmet
+Ability: Levitate
+Level: 50
+Tera Type: Poison
+EVs: 220 HP / 84 Def / 4 SpA / 12 SpD / 188 Spe
+Timid Nature
+IVs: 0 Atk
+- Recover
+- Mist Ball
+- Icy Wind
+- Tailwind
+
+Incineroar @ Figy Berry
+Ability: Intimidate
+Level: 50
+Tera Type: Grass
+EVs: 244 HP / 4 Atk / 156 Def / 76 SpD / 28 Spe
+Impish Nature
+- Flare Blitz
+- Parting Shot
+- Fake Out
+- Knock Off
+
+Amoonguss @ Sitrus Berry
+Ability: Regenerator
+Level: 50
+Tera Type: Water
+EVs: 236 HP / 236 Def / 4 SpA / 4 SpD / 28 Spe
+Bold Nature
+IVs: 0 Atk
+- Protect
+- Rage Powder
+- Spore
+- Pollen Puff
+
+Landorus @ Life Orb
+Ability: Sheer Force
+Level: 50
+Tera Type: Poison
+EVs: 68 HP / 4 Def / 196 SpA / 4 SpD / 236 Spe
+Modest Nature
+IVs: 0 Atk
+- Protect
+- Earth Power
+- Substitute
+- Sludge Bomb
+
+Kingambit @ Black Glasses
+Ability: Defiant
+Level: 50
+Tera Type: Dark
+EVs: 204 HP / 116 Atk / 20 Def / 4 SpD / 164 Spe
+Adamant Nature
+- Protect
+- Kowtow Cleave
+- Swords Dance
+- Sucker Punch
+
+Urshifu-Rapid-Strike @ Mystic Water
+Ability: Unseen Fist
+Level: 50
+Tera Type: Water
+EVs: 140 HP / 76 Atk / 4 Def / 124 SpD / 164 Spe
+Adamant Nature
+- Detect
+- Surging Strikes
+- Close Combat
+- Aqua Jet

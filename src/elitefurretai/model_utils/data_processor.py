@@ -111,21 +111,24 @@ class DataProcessor:
             self._gen_data[p1_battle.gen] = GenData.from_gen(p1_battle.gen)
 
         # Add Teampreview information; not recorded in battle.team
+        # and construct team
+        p1_team: List[ObservedPokemon] = []
         for tp_mon in p1_battle.teampreview_team:
-            mon = p1_battle.team[get_showdown_identifier(tp_mon, "p1")]
-            mon._terastallized_type = tp_mon.tera_type
+            if get_showdown_identifier(tp_mon, "p1") in p1_battle.team:
+                mon = p1_battle.team[get_showdown_identifier(tp_mon, "p1")]
+                mon._terastallized_type = tp_mon.tera_type
+                mon.stats = tp_mon.stats
+                p1_team.append(ObservedPokemon.from_pokemon(mon))
 
+        p2_team: List[ObservedPokemon] = []
         for tp_mon in p2_battle.teampreview_team:
-            mon = p2_battle.team[get_showdown_identifier(tp_mon, "p2")]
-            mon._terastallized_type = tp_mon.tera_type
+            if get_showdown_identifier(tp_mon, "p2") in p2_battle.team:
+                mon = p2_battle.team[get_showdown_identifier(tp_mon, "p2")]
+                mon._terastallized_type = tp_mon.tera_type
+                mon.stats = tp_mon.stats
+                p2_team.append(ObservedPokemon.from_pokemon(mon))
 
-        # Prepare variables
-        p1_team: List[ObservedPokemon] = [
-            ObservedPokemon.from_pokemon(mon) for ident, mon in p1_battle.team.items()
-        ]
-        p2_team: List[ObservedPokemon] = [
-            ObservedPokemon.from_pokemon(mon) for ident, mon in p2_battle.team.items()
-        ]
+        # Prepare teampreview
         p1_teampreview_team: List[ObservedPokemon] = [
             ObservedPokemon.from_pokemon(mon) for mon in p1_battle.teampreview_team
         ]

@@ -1,0 +1,68 @@
+Incineroar @ Sitrus Berry
+Ability: Intimidate
+Level: 50
+Tera Type: Grass
+EVs: 244 HP / 4 Atk / 156 Def / 76 SpD / 28 Spe
+Impish Nature
+- Knock Off
+- Flare Blitz
+- Parting Shot
+- Fake Out
+
+Urshifu-Rapid-Strike @ Mystic Water
+Ability: Unseen Fist
+Level: 50
+Tera Type: Water
+EVs: 140 HP / 156 Atk / 4 Def / 4 SpD / 204 Spe
+Adamant Nature
+- Detect
+- Surging Strikes
+- Aqua Jet
+- Close Combat
+
+Rillaboom @ Assault Vest
+Ability: Grassy Surge
+Level: 50
+Tera Type: Grass
+EVs: 252 HP / 196 Atk / 60 Spe
+Adamant Nature
+- Grassy Glide
+- Wood Hammer
+- U-turn
+- Fake Out
+
+Raging Bolt @ Leftovers
+Ability: Protosynthesis
+Level: 50
+Tera Type: Fairy
+EVs: 244 HP / 76 Def / 108 SpA / 4 SpD / 76 Spe
+Modest Nature
+IVs: 0 Atk
+- Protect
+- Thunderclap
+- Calm Mind
+- Dragon Pulse
+
+Tornadus @ Focus Sash
+Ability: Prankster
+Level: 50
+Tera Type: Ghost
+EVs: 4 HP / 252 SpA / 252 Spe
+Timid Nature
+IVs: 0 Atk
+- Protect
+- Bleakwind Storm
+- Tailwind
+- Sunny Day
+
+Landorus @ Life Orb
+Ability: Sheer Force
+Level: 50
+Tera Type: Poison
+EVs: 4 HP / 12 Def / 236 SpA / 4 SpD / 252 Spe
+Timid Nature
+IVs: 0 Atk
+- Protect
+- Earth Power
+- Sludge Bomb
+- Sandsear Storm

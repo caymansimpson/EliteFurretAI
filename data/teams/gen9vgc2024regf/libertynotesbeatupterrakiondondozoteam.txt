@@ -1,0 +1,67 @@
+Whimsicott (M) @ Covert Cloak
+Ability: Prankster
+Level: 50
+Tera Type: Fire
+EVs: 252 HP / 6 SpA / 252 Spe
+Timid Nature
+IVs: 1 Atk
+- Energy Ball
+- Tailwind
+- Sunny Day
+- Beat Up
+
+Terrakion @ Clear Amulet
+Ability: Justified
+Tera Type: Grass
+EVs: 6 HP / 252 Atk / 252 Spe
+Jolly Nature
+IVs: 21 SpA
+- Rock Slide
+- Close Combat
+- Upper Hand
+- Protect
+
+Dondozo (F) @ Leftovers
+Ability: Unaware
+Level: 65
+Tera Type: Flying
+EVs: 6 HP / 252 Atk / 252 Spe
+Adamant Nature
+- Wave Crash
+- Earthquake
+- Tera Blast
+- Protect
+
+Tatsugiri-Stretchy (F) @ Ability Shield
+Ability: Commander
+Level: 50
+Tera Type: Steel
+EVs: 6 Def / 252 SpA / 252 Spe
+Timid Nature
+IVs: 17 Atk
+- Draco Meteor
+- Muddy Water
+- Helping Hand
+- Protect
+
+Flutter Mane @ Booster Energy
+Ability: Protosynthesis
+Shiny: Yes
+Tera Type: Stellar
+EVs: 230 HP / 4 Def / 188 SpA / 4 SpD / 84 Spe
+Timid Nature
+IVs: 8 Atk
+- Moonblast
+- Shadow Ball
+- Icy Wind
+- Protect
+
+Chi-Yu @ Focus Sash
+Ability: Beads of Ruin
+Tera Type: Fire
+EVs: 6 HP / 252 SpA / 252 Spe
+Modest Nature
+- Heat Wave
+- Snarl
+- Overheat
+- Protect

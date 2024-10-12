@@ -1,0 +1,64 @@
+Tornadus (M) @ Covert Cloak
+Ability: Prankster
+Level: 83
+Tera Type: Ghost
+EVs: 252 HP / 40 Def / 40 SpA / 6 SpD / 172 Spe
+Modest Nature
+IVs: 29 Atk
+- Bleakwind Storm
+- Rain Dance
+- Tailwind
+- Protect
+
+Urshifu-Rapid-Strike (M) @ Choice Scarf
+Ability: Unseen Fist
+Tera Type: Water
+EVs: 44 HP / 156 Atk / 4 Def / 94 SpD / 212 Spe
+Adamant Nature
+- Surging Strikes
+- Aqua Jet
+- U-turn
+- Close Combat
+
+ビッグジュン (Rillaboom) (M) @ Assault Vest
+Ability: Grassy Surge
+Tera Type: Grass
+EVs: 252 HP / 196 Atk / 38 Def / 4 SpD / 20 Spe
+Adamant Nature
+- Wood Hammer
+- Grassy Glide
+- Fake Out
+- U-turn
+
+BBざえもん (Archaludon) (F) @ Leftovers
+Ability: Stamina
+Level: 72
+Tera Type: Fairy
+EVs: 252 HP / 80 Def / 138 SpD / 40 Spe
+Bold Nature
+- Electro Shot
+- Draco Meteor
+- Body Press
+- Protect
+
+ステラちゃん (Flutter Mane) @ Sitrus Berry
+Ability: Protosynthesis
+Level: 89
+Tera Type: Stellar
+EVs: 228 HP / 132 Def / 38 SpA / 4 SpD / 108 Spe
+Modest Nature
+IVs: 30 Atk
+- Dazzling Gleam
+- Moonblast
+- Protect
+- Tera Blast
+
+Entei @ Life Orb
+Ability: Inner Focus
+Tera Type: Normal
+EVs: 250 HP / 252 Atk / 4 Def / 4 SpD
+Adamant Nature
+- Sacred Fire
+- Extreme Speed
+- Protect
+- Stomping Tantrum

@@ -1,0 +1,37 @@
+Tyranitar @ Eject Button
+Ability: Sand Stream
+Level: 50
+Tera Type: Psychic
+EVs: 1 HP
+- Bulldoze
+- Dragon Tail
+- Stealth Rock
+- Rock Slide
+
+Smeargle @ Covert Cloak
+Ability: Moody
+Level: 50
+Tera Type: Rock
+EVs: 1 HP
+- U-turn
+- Triple Axel
+- Rage Powder
+- Spikes
+
+Best Bud (Pikachu) @ Light Ball
+Ability: Static
+Level: 50
+Tera Type: Electric
+EVs: 4 HP / 252 SpA / 252 Spe
+Modest Nature
+IVs: 0 Atk
+- Thunder
+- Nasty Plot
+
+gagaga (Zamazenta-Crowned) @ Rusted Shield
+Ability: Dauntless Shield
+Level: 50
+Tera Type: Fighting
+EVs: 252 Atk / 252 Spe
+Adamant Nature
+- Behemoth Bash

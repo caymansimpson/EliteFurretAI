@@ -1,0 +1,72 @@
+Tornadus (M) @ Yache Berry
+Ability: Prankster
+Level: 77
+Shiny: Yes
+Tera Type: Steel
+EVs: 244 HP / 84 Def / 4 SpA / 4 SpD / 172 Spe
+Timid Nature
+IVs: 0 Atk
+- Bleakwind Storm
+- Tailwind
+- Rain Dance
+- Scary Face
+
+Urshifu (F) @ Black Glasses
+Ability: Unseen Fist
+Level: 50
+Tera Type: Poison
+EVs: 204 HP / 252 Atk / 4 Def / 12 SpD / 36 Spe
+Adamant Nature
+IVs: 15 SpA
+- Wicked Blow
+- Close Combat
+- Sucker Punch
+- Detect
+
+Catchu (Incineroar) (F) @ Sitrus Berry
+Ability: Intimidate
+Level: 65
+Shiny: Yes
+Tera Type: Water
+EVs: 244 HP / 108 Def / 156 SpD
+Impish Nature
+IVs: 18 SpA
+- Flare Blitz
+- Knock Off
+- Fake Out
+- Parting Shot
+
+Landorus (M) @ Life Orb
+Ability: Sheer Force
+Tera Type: Poison
+EVs: 4 HP / 4 Def / 246 SpA / 4 SpD / 252 Spe
+Timid Nature
+- Sandsear Storm
+- Sludge Bomb
+- Earth Power
+- Protect
+
+Flutter Mane @ Choice Specs
+Ability: Protosynthesis
+Level: 91
+Shiny: Yes
+Tera Type: Fairy
+EVs: 52 HP / 100 Def / 100 SpA / 4 SpD / 252 Spe
+Timid Nature
+IVs: 16 Atk
+- Dazzling Gleam
+- Shadow Ball
+- Moonblast
+- Perish Song
+
+Ogerpon-Wellspring (F) @ Wellspring Mask
+Ability: Water Absorb
+Level: 50
+Tera Type: Water
+EVs: 252 HP / 76 Atk / 132 Def / 12 SpD / 36 Spe
+Adamant Nature
+IVs: 20 SpA
+- Ivy Cudgel
+- Horn Leech
+- Follow Me
+- Spiky Shield

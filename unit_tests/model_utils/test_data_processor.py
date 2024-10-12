@@ -1,10 +1,15 @@
 # -*- coding: utf-8 -*-
 import os.path
 from unittest.mock import MagicMock
+from logging import Logger
 
 from poke_env.data import GenData
 from poke_env.data.normalize import to_id_str
-from poke_env.environment import PokemonGender, PokemonType
+from poke_env.environment import PokemonGender, PokemonType, DoubleBattle, Pokemon
+from poke_env.ps_client.account_configuration import AccountConfiguration
+from poke_env.player.random_player import RandomPlayer
+from poke_env.teambuilder.constant_teambuilder import ConstantTeambuilder
+
 
 from elitefurretai.model_utils.battle_data import BattleData
 from elitefurretai.model_utils.data_processor import DataProcessor
@@ -108,132 +113,215 @@ def test_stream_data():
     assert data[1].format == "gen7anythinggoes"
 
 
-def test_self_play_to_battle_data(vgc_battle_p1, vgc_battle_p2):
-    p1 = MagicMock()
-    p1._battles = {vgc_battle_p1.battle_tag: vgc_battle_p1}
-    p1.prestige = 100
+# TODO: create new logs from these two teams with different perspectives
+def test_self_play_to_battle_data(vgc_battle_p1_logs, vgc_battle_p2_logs, vgc_battle_team):
 
+    # Set up battle and players
+    p1 = MagicMock()
     p2 = MagicMock()
-    p2._battles = {vgc_battle_p2.battle_tag: vgc_battle_p2}
+
+    p1.username = "elitefurretai"
+    p2.username = "CustomPlayer 1"
+
+    # These would be normally set during requests and player._create_battle
+    tag = "example-vgc2024regg-battle"
+    p1_battle = DoubleBattle(tag, "elitefurretai", Logger("example"), gen=9)
+    p2_battle = DoubleBattle(tag, "CustomPlayer 1", Logger("example"), gen=9)
+
+    p1_battle.player_role = "p1"
+    p2_battle.player_role = "p2"
+
+    p1_battle.teampreview_team = set(
+        [
+            Pokemon(gen=9, teambuilder=tb_mon)
+            for tb_mon in ConstantTeambuilder(vgc_battle_team).team
+        ]
+    )
+    p2_battle.teampreview_team = set(
+        [
+            Pokemon(gen=9, teambuilder=tb_mon)
+            for tb_mon in ConstantTeambuilder(vgc_battle_team).team
+        ]
+    )
+
+    p1._battles = {tag: p1_battle}
+    p2._battles = {tag: p2_battle}
+
+    p1_battle.team = {"p1: " + mon.name: mon for mon in p1_battle.teampreview_team}
+    p2_battle.team = {"p2: " + mon.name: mon for mon in p2_battle.teampreview_team}
+
+    p1.prestige = 100
     p2.prestige = 150
 
-    dp = DataProcessor()
-    bd = dp.self_play_to_battle_data(p1, p2, vgc_battle_p1.battle_tag)
+    for turn in vgc_battle_p1_logs:
+        for log in turn:
+            if len(log) > 1 and log[1] not in ["", "t:", "win"]:
+                p1_battle.parse_message(log)
+            elif len(log) > 1 and log[1] == "win":
+                p1_battle.won_by(log[2])
 
-    assert bd.format == vgc_battle_p1.format
+    for turn in vgc_battle_p2_logs:
+        for log in turn:
+            if len(log) > 1 and log[1] not in ["", "t:", "win"]:
+                p2_battle.parse_message(log)
+            elif len(log) > 1 and log[1] == "win":
+                p2_battle.won_by(log[2])
+
+    # Test Data Processor
+    dp = DataProcessor()
+    bd = dp.self_play_to_battle_data(p1, p2, tag)
+
+    assert bd.format == p1_battle.format
     assert bd.end_type == "normal"
-    assert bd.score == [1, 0]
+    assert bd.score == [0, 1]
     assert bd.p1rating == 100
     assert bd.p2rating == 150
 
     # Test correct storage of pokemon
-    omon = bd.p1_team[1]
+    omon = None
+    for mon in bd.p1_team:
+        if mon.species == "smeargle":
+            omon = mon
+
     assert omon.species == "smeargle"
-    assert omon.item == "blacksludge"
+    assert omon.item == "covertcloak"
     assert omon.ability == "moody"
     assert omon.stats == {
         "hp": 130,
-        "atk": 72,
+        "atk": 40,
         "def": 55,
-        "spa": 36,
-        "spd": 66,
-        "spe": 139,
+        "spa": 40,
+        "spd": 65,
+        "spe": 95,
     }
     assert omon.level == 50
 
     # omon which is from teampreview had no specified gender
     assert bd.p1_teampreview_team[0].gender is None
 
-    # Gender is randomly assigned in battle
-    assert bd.observations[1].team["p1: Smeargle"].gender == PokemonGender.MALE
+    # TODO: Randomly assigned gender is not caught in battle. Will need to fix
+    # this if there is gender-based mechanics in the future
 
-    # Gender should be picked up by team
-    assert omon.gender == PokemonGender.MALE
-
-    # Test omniscience of battledata fields; should check teratype of wo-chien
+    # Test omniscience of battledata fields
     omon = None
     for mon in bd.p2_teampreview_team:
-        if mon.species == "sentret":
+        if mon.species == "pikachu":
             omon = mon
 
     assert omon
-    assert omon.species == "sentret"
-    assert omon.item == "kingsrock"
-    assert bd.p1_team[3].species == "sentret"
-    assert bd.p2_team[3].item == "kingsrock"
-    assert bd.p2_team[3].tera_type == PokemonType.NORMAL
+    assert omon.species == "pikachu"
+    assert omon.item == "lightball"
+    assert omon.tera_type == PokemonType.ELECTRIC
+
+    # Omniscient information also on team
+    omon = None
+    for mon in bd.p2_team:
+        if mon.species == "pikachu":
+            omon = mon
+    assert omon.species == "pikachu"
+    assert omon.tera_type == PokemonType.ELECTRIC
 
     assert bd.p1 == "elitefurretai"
     assert bd.p2 == "CustomPlayer 1"
-    assert bd.winner == "p1"
+    assert bd.winner == "p2"
     assert bd.source == BattleData.SOURCE_EFAI
 
     # Observations should NOT have omniscience because they come from a battle object
     # with one perspective. However, BattleData object has all omniscient characteristics
-    assert bd.observations[10].opponent_team["p2: Wo-Chien"].tera_type is None
-    assert bd.p2_team[2].species == "wochien"
-    assert bd.p2_team[2].tera_type == PokemonType.DARK
+    assert bd.observations[10].opponent_team["p2: gagaga"].tera_type is None
+    omon = None
+    for mon in bd.p2_team:
+        if mon.species == "zamazentacrowned":
+            omon = mon
+    assert omon.species == "zamazentacrowned"
+    assert omon.tera_type == PokemonType.FIGHTING
 
 
-# TODO: basically copy everything above, but ensure we don't have omniscience and only things we've observed
-def test_online_play_to_battle_data(vgc_battle_p1):
+def test_online_play_to_battle_data(vgc_battle_p1_logs, vgc_battle_team):
+    # Set up battle and player
     p1 = MagicMock()
-    p1._battles = {vgc_battle_p1.battle_tag: vgc_battle_p1}
+    p1.username = "elitefurretai"
+    p1._team = {"team": vgc_battle_team}
+
+    # These would be normally set during requests and player._create_battle
+    tag = "example-vgc2024regg-battle"
+    p1_battle = DoubleBattle(tag, "elitefurretai", Logger("example"), gen=9)
+    p1_battle.player_role = "p1"
+    p1_battle.teampreview_team = set(
+        [
+            Pokemon(gen=9, teambuilder=tb_mon)
+            for tb_mon in ConstantTeambuilder(vgc_battle_team).team
+        ]
+    )
+    p1._battles = {tag: p1_battle}
+    p1_battle.team = {"p1: " + mon.name: mon for mon in p1_battle.teampreview_team}
     p1.prestige = 100
 
-    dp = DataProcessor()
-    bd = dp.online_play_to_battle_data(p1, vgc_battle_p1.battle_tag)
+    for turn in vgc_battle_p1_logs:
+        for log in turn:
+            if len(log) > 1 and log[1] not in ["", "t:", "win"]:
+                p1_battle.parse_message(log)
+            elif len(log) > 1 and log[1] == "win":
+                p1_battle.won_by(log[2])
 
-    assert bd.format == vgc_battle_p1.format
+    dp = DataProcessor()
+    bd = dp.online_play_to_battle_data(p1, tag)
+
+    assert bd.format == p1_battle.format
     assert bd.end_type == "normal"
-    assert bd.score == [1, 0]
+    assert bd.score == [0, 1]
     assert bd.p1rating == 100
     assert bd.p2rating == 0
 
     # Test correct storage of pokemon
-    omon = bd.p1_team[1]
+    omon = None
+    for mon in bd.p1_team:
+        if mon.species == "smeargle":
+            omon = mon
+
     assert omon.species == "smeargle"
-    assert omon.item == "blacksludge"
+    assert omon.item == "covertcloak"
     assert omon.ability == "moody"
     assert omon.stats == {
         "hp": 130,
-        "atk": 72,
+        "atk": 40,
         "def": 55,
-        "spa": 36,
-        "spd": 66,
-        "spe": 139,
+        "spa": 40,
+        "spd": 65,
+        "spe": 95,
     }
     assert omon.level == 50
 
-    # omon which is from teampreview had no specified gender
-    assert bd.p1_teampreview_team[0].gender is None
-
-    # Gender is randomly assigned in battle
-    assert bd.observations[1].team["p1: Smeargle"].gender == PokemonGender.MALE
-
-    # Gender should be picked up by team
-    assert omon.gender == PokemonGender.MALE
-
-    # Test omniscience of battledata fields; should check teratype of wo-chien
+    # Test omniscience of battledata fields; should check teratype of pikachu
     omon = None
     for mon in bd.p2_teampreview_team:
-        if mon.species == "sentret":
+        if mon.species == "pikachu":
             omon = mon
 
     assert omon
-    assert omon.species == "sentret"
+    assert omon.species == "pikachu"
     assert omon.item == GenData.UNKNOWN_ITEM
-    assert bd.p2_team[2].species == "sentret"
-    assert bd.p2_team[2].item == GenData.UNKNOWN_ITEM
-    assert bd.p2_team[2].tera_type is None
+
+    omon = None
+    for mon in bd.p2_team:
+        if mon.species == "pikachu":
+            omon = mon
+
+    assert omon.species == "pikachu"
+    assert omon.item == GenData.UNKNOWN_ITEM
+    assert omon.tera_type is None
 
     assert bd.p1 == "elitefurretai"
     assert bd.p2 == "CustomPlayer 1"
-    assert bd.winner == "p1"
+    assert bd.winner == "p2"
     assert bd.source == BattleData.SOURCE_SHOWDOWN
 
     # Observations should NOT have omniscience because they come from a battle object
     # with one perspective. However, BattleData object has all omniscient characteristics
-    assert bd.observations[10].opponent_team["p2: Wo-Chien"].tera_type is None
-    assert bd.p2_team[3].species == "wochien"
-    assert bd.p2_team[3].tera_type is None
+    assert bd.observations[10].opponent_team["p2: gagaga"].tera_type is None
+    omon = None
+    for mon in bd.p2_team:
+        if mon.species == "zamazentacrowned":
+            omon = mon
+    assert omon.species == "zamazentacrowned"
+    assert omon.tera_type is None

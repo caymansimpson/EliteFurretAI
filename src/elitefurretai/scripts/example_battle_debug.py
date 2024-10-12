@@ -21,6 +21,7 @@ from poke_env.ps_client.server_configuration import ServerConfiguration
 from poke_env.teambuilder.teambuilder import Teambuilder
 
 from elitefurretai.model_utils.data_processor import DataProcessor
+from elitefurretai.inference.inference_utils import battle_to_str
 
 
 class CustomPlayer(RandomPlayer):
@@ -79,13 +80,10 @@ class CustomPlayer(RandomPlayer):
         )
 
         if self.username == "elitefurretai":
-            for turn in battle.observations:
-                print()
-                print("=====TURN: ", turn)
-                print(battle.observations[turn].events)
+            print(battle_to_str(battle))
 
-        with open(address, "w") as f:
-            f.write(DataProcessor.battle_to_json(battle))
+        # with open(address, "w") as f:
+        #     f.write(DataProcessor.battle_to_json(battle))
 
 
 async def main():

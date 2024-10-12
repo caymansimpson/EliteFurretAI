@@ -1,0 +1,66 @@
+Dragonite @ Choice Band
+Ability: Inner Focus
+Level: 50
+Tera Type: Normal
+EVs: 196 HP / 204 Atk / 108 Spe
+Adamant Nature
+- Extreme Speed
+- Ice Spinner
+- Outrage
+- Stomping Tantrum
+
+Chien-Pao @ Focus Sash
+Ability: Sword of Ruin
+Level: 50
+Tera Type: Stellar
+EVs: 252 Atk / 4 Def / 252 Spe
+Adamant Nature
+- Protect
+- Icicle Crash
+- Sacred Sword
+- Sucker Punch
+
+Urshifu-Rapid-Strike @ Mystic Water
+Ability: Unseen Fist
+Level: 50
+Tera Type: Water
+EVs: 140 HP / 156 Atk / 4 Def / 4 SpD / 204 Spe
+Adamant Nature
+- Detect
+- Surging Strikes
+- Aqua Jet
+- Close Combat
+
+Rillaboom @ Assault Vest
+Ability: Grassy Surge
+Level: 50
+Tera Type: Grass
+EVs: 252 HP / 196 Atk / 60 Spe
+Adamant Nature
+- Grassy Glide
+- Wood Hammer
+- Fake Out
+- U-turn
+
+Metagross @ Life Orb
+Ability: Clear Body
+Level: 50
+Tera Type: Steel
+EVs: 252 HP / 196 Atk / 52 Def / 4 SpD / 4 Spe
+Adamant Nature
+- Protect
+- Psychic Fangs
+- Bullet Punch
+- Stomping Tantrum
+
+Farigiraf @ Rocky Helmet
+Ability: Armor Tail
+Level: 50
+Tera Type: Fairy
+EVs: 236 HP / 236 Def / 4 SpA / 28 SpD / 4 Spe
+Bold Nature
+IVs: 0 Atk
+- Dazzling Gleam
+- Psychic Noise
+- Helping Hand
+- Trick Room

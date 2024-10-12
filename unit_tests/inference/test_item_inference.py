@@ -17,30 +17,31 @@ def generate_item_inference():
     gen = 9
     battle = DoubleBattle("tag", "username", MagicMock(), gen=gen)
     battle._players = [{"username": "elitefurretai"}, {"username": "joeschmoe"}]
-
-    # Initiate teh battle with what I need
-    ii = ItemInference(battle=battle, opponent_mons={})
-    ii._battle.player_role = "p1"
+    battle.player_role = "p1"
     tp = {
         Pokemon(gen=gen, species="Furret"),
         Pokemon(gen=gen, species="Raichu"),
         Pokemon(gen=gen, species="Tyranitar"),
         Pokemon(gen=gen, species="Shuckle"),
     }
-    ii._battle._teampreview_opponent_team = {copy_pokemon(mon, gen) for mon in tp}
-    ii._battle.teampreview_team = {copy_pokemon(mon, gen) for mon in tp}
-    ii._battle.team = {
+    battle._teampreview_opponent_team = {copy_pokemon(mon, gen) for mon in tp}
+    battle.teampreview_team = {copy_pokemon(mon, gen) for mon in tp}
+    battle.team = {
         get_showdown_identifier(mon, "p1"): copy_pokemon(mon, gen) for mon in tp
     }
-    ii._battle._opponent_team = {
+    battle._opponent_team = {
         get_showdown_identifier(mon, "p2"): copy_pokemon(mon, gen) for mon in tp
     }
 
-    # Add opponent_mons
-    ii._opponent_mons = {
-        ident: BattleInference.load_opponent_set(mon)
-        for ident, mon in ii._battle._opponent_team.items()
-    }
+    # Initiate teh battle with what I need
+    bi = BattleInference(battle)
+    ii = ItemInference(battle=battle, inferences=bi)
+
+    # # Add opponent_mons
+    # bi._opponent_mons = {
+    #     ident: BattleInference.load_opponent_set(mon)
+    #     for ident, mon in ii._battle._opponent_team.items()
+    # }
     return ii
 
 
@@ -166,7 +167,7 @@ def test_check_items_can_be_choice():
         ["", "turn", "1"],
     ]
     ii.check_items(Observation(events=events))
-    assert ii._opponent_mons["p2: Furret"]["can_be_choice"]
+    assert ii._inferences.get_flag("p2: Furret", "can_be_choice")
 
     new_events = [
         ["", "move", "p2a: Furret", "Last Resort", "p1b: Raichu"],
@@ -174,14 +175,14 @@ def test_check_items_can_be_choice():
         ["", "turn", "2"],
     ]
     ii.check_items(Observation(events=new_events))
-    assert ii._opponent_mons["p2: Furret"]["can_be_choice"]
+    assert ii._inferences.get_flag("p2: Furret", "can_be_choice")
 
     newer_events = [
         ["", "move", "p2a: Furret", "Agility", "p2a: Furret"],
         ["", "-boost", "p2a: Furret", "spe", "2"],
     ]
     ii.check_items(Observation(events=newer_events))
-    assert not ii._opponent_mons["p2: Furret"]["can_be_choice"]
+    assert not ii._inferences.get_flag("p2: Furret", "can_be_choice")
 
 
 def test_check_items_can_have_assault_vest():
@@ -193,7 +194,7 @@ def test_check_items_can_have_assault_vest():
         ["", "turn", "1"],
     ]
     ii.check_items(Observation(events=events))
-    assert not ii._opponent_mons["p2: Furret"]["has_status_move"]
+    assert not ii._inferences.get_flag("p2: Furret", "has_status_move")
 
     new_events = [
         ["", "move", "p2a: Furret", "Last Resort", "p1b: Raichu"],
@@ -201,7 +202,7 @@ def test_check_items_can_have_assault_vest():
         ["", "turn", "2"],
     ]
     ii.check_items(Observation(events=new_events))
-    assert not ii._opponent_mons["p2: Furret"]["has_status_move"]
+    assert not ii._inferences.get_flag("p2: Furret", "has_status_move")
 
     newer_events = [
         ["", "move", "p2a: Furret", "Agility", "p2a: Furret"],
@@ -209,7 +210,7 @@ def test_check_items_can_have_assault_vest():
         ["", "turn", "3"],
     ]
     ii.check_items(Observation(events=newer_events))
-    assert ii._opponent_mons["p2: Furret"]["has_status_move"]
+    assert ii._inferences.get_flag("p2: Furret", "has_status_move")
 
     newest_events = [
         ["", "move", "p2a: Furret", "Quick Attack", "p1b: Raichu"],
@@ -217,7 +218,7 @@ def test_check_items_can_have_assault_vest():
         ["", "turn", "3"],
     ]
     ii.check_items(Observation(events=newest_events))
-    assert ii._opponent_mons["p2: Furret"]["has_status_move"]
+    assert ii._inferences.get_flag("p2: Furret", "has_status_move")
 
 
 def test_check_items_heavy_duty_boots():

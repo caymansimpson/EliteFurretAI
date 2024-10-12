@@ -1,0 +1,66 @@
+Excadrill @ Clear Amulet
+Ability: Sand Rush
+Level: 50
+Tera Type: Dragon
+EVs: 116 Atk / 140 Def / 252 Spe
+Adamant Nature
+- Protect
+- High Horsepower
+- Rock Slide
+- Swords Dance
+
+Tyranitar @ Assault Vest
+Ability: Sand Stream
+Level: 50
+Tera Type: Grass
+EVs: 44 HP / 204 Atk / 4 Def / 4 SpD / 252 Spe
+Adamant Nature
+- Rock Slide
+- Low Kick
+- Assurance
+- Tera Blast
+
+Ogerpon-Wellspring (F) @ Wellspring Mask
+Ability: Water Absorb
+Level: 50
+Tera Type: Water
+EVs: 252 HP / 76 Atk / 20 Def / 4 SpD / 156 Spe
+Adamant Nature
+- Spiky Shield
+- Ivy Cudgel
+- Horn Leech
+- Follow Me
+
+Tornadus @ Rocky Helmet
+Ability: Prankster
+Level: 50
+Tera Type: Ghost
+EVs: 188 HP / 140 Def / 4 SpA / 4 SpD / 172 Spe
+Timid Nature
+IVs: 0 Atk
+- Bleakwind Storm
+- Tailwind
+- Sandstorm
+- Sunny Day
+
+Dragonite @ Choice Band
+Ability: Inner Focus
+Level: 50
+Tera Type: Normal
+EVs: 196 HP / 204 Atk / 108 Spe
+Adamant Nature
+- Extreme Speed
+- Stomping Tantrum
+- Outrage
+- Aqua Jet
+
+Chien-Pao @ Life Orb
+Ability: Sword of Ruin
+Level: 50
+Tera Type: Stellar
+EVs: 12 HP / 236 Atk / 4 Def / 4 SpD / 252 Spe
+Adamant Nature
+- Protect
+- Ice Spinner
+- Sacred Sword
+- Sucker Punch

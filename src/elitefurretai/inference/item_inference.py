@@ -35,26 +35,28 @@ from elitefurretai.inference.inference_utils import (
     standardize_pokemon_ident,
     update_battle,
 )
+from elitefurretai.inference.battle_inference import BattleInference
 
 
 class ItemInference:
     __slots__ = (
         "_battle",
-        "_opponent_mons",
+        "_inferences",
         "_v",
+        "_last_event",
     )
 
-    # We share flags from opponent mons with BattleInference, and we need to keep a copy of the battle state
-    # because we need to recreate the turn and conditions of the turn to parse speeds
+    # We need to keep a copy of the battle state because we need to recreate the turn and conditions of the turn to parse speeds
     def __init__(
         self,
         battle: Union[Battle, DoubleBattle],
-        opponent_mons: Dict[str, Any],
+        inferences: BattleInference,
         verbose: int = 0,
     ):
-        self._opponent_mons: Dict[str, Any] = opponent_mons
+        self._inferences: BattleInference = inferences
         self._battle = copy_battle(battle)
         self._v = verbose
+        self._last_event = 0
 
     def check_items(self, observation: Observation):
         """
@@ -68,7 +70,7 @@ class ItemInference:
         if self._battle.opponent_role is None or self._battle.player_role is None:
             return
 
-        segments = get_segments(observation.events)
+        segments = get_segments(observation.events[self._last_event :])
 
         if "init" in segments:
             for event in segments["init"]:
@@ -139,11 +141,18 @@ class ItemInference:
                 update_battle(self._battle, segments["preturn_switch"][i])
                 i += 1
 
+        # If we see a turn, that means we're done with the observation and
+        # we can reset last_event
         if "turn" in segments:
             for event in segments["turn"]:
                 update_battle(self._battle, event)
+            self._last_event = 0
 
-            self._handle_end_of_turn()
+        # If there's no turn, this method likely got called in the middle of
+        # a turn, in a force_switch situation. So we save where we are so that
+        # we can continue parsing from there
+        else:
+            self._last_event = len(obs.events)
 
     def _handle_moves(self, segments: Dict[str, List[List[str]]]):
         i = 0
@@ -155,20 +164,20 @@ class ItemInference:
             if event[1] == "-item" and event[2].startswith(self._battle.opponent_role):
                 ident = standardize_pokemon_ident(event[2])
                 item = to_id_str(event[3])
-                self._opponent_mons[ident]["item"] = item
+                self._inferences.set_flag(ident, "item", item)
 
                 # Reset flags if Choice is being switched
                 if item.startswith("choice"):
-                    self._opponent_mons[ident]["can_be_choice"] = True
-                    self._opponent_mons[ident]["last_move"] = None
+                    self._inferences.set_flag(ident, "can_be_choice", True)
+                    self._inferences.set_flag(ident, "last_move", None)
 
             # An opponent loses an item
             elif event[1] == "-enditem" and event[2].startswith(
                 self._battle.opponent_role
             ):
                 ident = standardize_pokemon_ident(event[2])
-                self._opponent_mons[ident]["item"] = None
-                self._opponent_mons[ident]["can_be_choice"] = False
+                self._inferences.set_flag(ident, "item", None)
+                self._inferences.set_flag(ident, "can_be_choice", False)
 
             # Someone uses a move
             elif event[1] == "move":
@@ -190,7 +199,7 @@ class ItemInference:
                 if (
                     len(move.secondary) > 0
                     and move.secondary[0].get("chance", 0) == 100
-                    and target in self._opponent_mons
+                    and target in self._battle.opponent_team
                 ):
                     # Goes ahead and looks for covert cloak
                     self._check_covert_cloak(segments["move"], i)
@@ -231,8 +240,8 @@ class ItemInference:
                             and move.target in [Target.ANY, Target.NORMAL]
                         )
                     ):
-                        self._opponent_mons[actor]["can_be_choice"] = False
-                        self._opponent_mons[actor]["item"] = "safetygoggles"
+                        self._inferences.set_flag(actor, "can_be_choice", False)
+                        self._inferences.set_flag(actor, "item", "safetygoggles")
                         self._battle.opponent_team[actor].item = "safetygoggles"
                     elif (
                         target
@@ -279,23 +288,25 @@ class ItemInference:
 
     def _handle_end_of_turn(self):
         # At the end of the turn, check for status moves; eliminates assault vest
-        for ident in self._opponent_mons:
+        for ident in self._battle.opponent_team:
             if ident in self._battle.opponent_team:
                 for move in self._battle.opponent_team[ident].moves.values():
                     if move.category == MoveCategory.STATUS:
-                        self._opponent_mons[ident]["has_status_move"] = True
+                        self._inferences.set_flag(ident, "has_status_move", True)
 
                 if self._opp_has_item(ident):
                     item = self._battle.opponent_team[ident].item
-                    self._opponent_mons[ident]["item"] = item
+                    self._inferences.set_flag(ident, "item", item)
                     if item is not None and not item.startswith("choice"):
-                        self._opponent_mons[ident]["can_be_choice"] = False
+                        self._inferences.set_flag(ident, "can_be_choice", False)
 
         # At end of the turn, remove all the screens that have been removed from the battle
-        for ident in self._opponent_mons:
-            for sc in [item for item in self._opponent_mons[ident]["screens"]]:
+        for ident in self._battle.opponent_team:
+            for sc in [item for item in self._inferences.get_flag(ident, "screens")]:
                 if sc not in self._battle.opponent_side_conditions:
-                    self._opponent_mons[ident]["screens"].remove(sc)
+                    screens = self._inferences.get_flag(ident, "screens")
+                    screens.remove(sc)
+                    self._inferences.set_flag(ident, "screens", screens)
 
         # At end of turn, check battle for screen turns. If there's a screen that lasts longer than 5,
         # we should figure out who used it and then set them as lightclay
@@ -303,15 +314,15 @@ class ItemInference:
             # If the screen lasts longer than 5 turns, we find the pokemon that
             # set the screen and give them light clay.
             if self._battle.turn - turn_started > 5:
-                for ident in self._opponent_mons:
-                    if sc in self._opponent_mons[ident]["screens"]:
+                for ident in self._battle.opponent_team:
+                    if sc in self._inferences.get_flag(ident, "screens"):
                         if self._battle.opponent_team[ident].item in {
                             None,
                             GenData.UNKNOWN_ITEM,
                             "lightclay",
                         }:
-                            self._opponent_mons[ident]["can_be_choice"] = False
-                            self._opponent_mons[ident]["item"] = "lightclay"
+                            self._inferences.set_flag(ident, "can_be_choice", False)
+                            self._inferences.set_flag(ident, "item", "lightclay")
                             self._battle.opponent_team[ident].item = "lightclay"
                         else:
                             raise ValueError(
@@ -343,8 +354,8 @@ class ItemInference:
         mon = get_pokemon(ident, self._battle)
 
         # Reset mon flags
-        self._opponent_mons[ident]["num_moves_since_switch"] = 0
-        self._opponent_mons[ident]["last_move"] = None
+        self._inferences.set_flag(ident, "num_moves_since_switch", 0)
+        self._inferences.set_flag(ident, "last_move", None)
 
         immune_to_spikes = (
             not is_grounded(ident, self._battle)
@@ -415,8 +426,8 @@ class ItemInference:
                 },
             )
         elif has_heavy_duty_boots:
-            self._opponent_mons[ident]["can_be_choice"] = False
-            self._opponent_mons[ident]["item"] = "heavydutyboots"
+            self._inferences.set_flag(ident, "can_be_choice", False)
+            self._inferences.set_flag(ident, "item", "heavydutyboots")
             self._battle.opponent_team[ident].item = "heavydutyboots"
 
     # Updates move tracking; checks for choice items, and looks for screen_setting
@@ -430,27 +441,33 @@ class ItemInference:
         ident = standardize_pokemon_ident(events[i][2])
         if ident.startswith(self._battle.opponent_role):
             # Move tracking for AI
-            self._opponent_mons[ident]["num_moved"] += 1
-            self._opponent_mons[ident]["num_moves_since_switch"] += 1
+            self._inferences.set_flag(
+                ident, "num_moved", self._inferences.get_flag(ident, "num_moved") + 1
+            )
+            self._inferences.set_flag(
+                ident,
+                "num_moves_since_switch",
+                self._inferences.get_flag(ident, "num_moves_since_switch") + 1,
+            )
 
             # Check choice; mon can struggle if out of PP or Disabled
             if (
-                self._opponent_mons[ident]["last_move"] not in [events[i][3], None]
+                self._inferences.get_flag(ident, "last_move") not in [events[i][3], None]
                 and events[i][3] != "Struggle"
             ):
-                self._opponent_mons[ident]["can_be_choice"] = False
-                self._opponent_mons[ident]["last_move"] = events[i][3]
+                self._inferences.set_flag(ident, "can_be_choice", False)
+                self._inferences.set_flag(ident, "last_move", events[i][3])
 
             # Update last move
-            self._opponent_mons[ident]["last_move"] = events[i][3]
+            self._inferences.set_flag(ident, "last_move", events[i][3])
 
             # Record who used a screen move to track for Light Clay
             if events[i][3] in {"Reflect", "Light Screen", "Aurora Veil"} and not (
                 len(events) > i + 1 and events[i + 1][1] == "-fail"
             ):
-                self._opponent_mons[ident]["screens"].append(
-                    SideCondition.from_showdown_message(events[i][3])
-                )
+                screens = self._inferences.get_flag(ident, "screens")
+                screens.append(SideCondition.from_showdown_message(events[i][3]))
+                self._inferences.set_flag(ident, "screens", screens)
 
     # Checks a series of events for covert cloak. Does not read events. This may fail with ejectpack;
     # I have not tested it with this yet
@@ -471,7 +488,7 @@ class ItemInference:
         if (
             len(move.secondary) == 0
             or move.secondary[0].get("chance", 0) != 100
-            or target not in self._opponent_mons
+            or target not in self._battle.opponent_team
         ):
             raise ValueError(
                 f"Checking for Covert Cloak {events[i]}, but the event shouldn't trigger checking",
@@ -543,8 +560,8 @@ class ItemInference:
                     not self._opp_has_item(idents[0])
                     or self._battle.opponent_team[idents[0]].item == "covertcloak"
                 ):
-                    self._opponent_mons[idents[0]]["can_be_choice"] = False
-                    self._opponent_mons[idents[0]]["item"] = "covertcloak"
+                    self._inferences.set_flag(idents[0], "can_be_choice", False)
+                    self._inferences.set_flag(idents[0], "item", "covertcloak")
                     self._battle.opponent_team[idents[0]].item = "covertcloak"
                 else:
                     raise ValueError(
@@ -576,8 +593,8 @@ class ItemInference:
                 not self._opp_has_item(target)
                 or self._battle.opponent_team[target].item == "covertcloak"
             ):
-                self._opponent_mons[target]["can_be_choice"] = False
-                self._opponent_mons[target]["item"] = "covertcloak"
+                self._inferences.set_flag(target, "can_be_choice", False)
+                self._inferences.set_flag(target, "item", "covertcloak")
                 self._battle.opponent_team[target].item = "covertcloak"
             else:
                 raise ValueError(
@@ -611,8 +628,8 @@ class ItemInference:
                 not self._opp_has_item(target)
                 or self._battle.opponent_team[target].item == "covertcloak"
             ):
-                self._opponent_mons[target]["can_be_choice"] = False
-                self._opponent_mons[target]["item"] = "covertcloak"
+                self._inferences.set_flag(target, "can_be_choice", False)
+                self._inferences.set_flag(target, "item", "covertcloak")
                 self._battle.opponent_team[target].item = "covertcloak"
             else:
                 raise ValueError(
@@ -665,8 +682,8 @@ class ItemInference:
                         not self._opp_has_item(target)
                         or self._battle.opponent_team[target].item == "covertcloak"
                     ):
-                        self._opponent_mons[target]["can_be_choice"] = False
-                        self._opponent_mons[target]["item"] = "covertcloak"
+                        self._inferences.set_flag(target, "can_be_choice", False)
+                        self._inferences.set_flag(target, "item", "covertcloak")
                         self._battle.opponent_team[target].item = "covertcloak"
                     else:
                         raise ValueError(
@@ -730,8 +747,8 @@ class ItemInference:
                 or self._battle.opponent_team[opp_actives[0]].item == "safetygoggles"
             ):
                 # We found SafetyGoggles, but we need to make sure the mon has it
-                self._opponent_mons[opp_actives[0]]["can_be_choice"] = False
-                self._opponent_mons[opp_actives[0]]["item"] = "safetygoggles"
+                self._inferences.set_flag(opp_actives[0], "can_be_choice", False)
+                self._inferences.set_flag(opp_actives[0], "item", "safetygoggles")
                 self._battle.opponent_team[opp_actives[0]].item = "safetygoggles"
 
             elif len(opp_actives) > 1:
@@ -778,8 +795,8 @@ class ItemInference:
                 ident = get_showdown_identifier(
                     self._battle.opponent_active_pokemon, self._battle.opponent_role
                 )
-                self._opponent_mons[ident]["can_be_choice"] = False
-                self._opponent_mons[ident]["item"] = "safetygoggles"
+                self._inferences.set_flag(ident, "can_be_choice", False)
+                self._inferences.set_flag(ident, "item", "safetygoggles")
                 self._battle.opponent_team[ident].item = "safetygoggles"
 
             for event in events:

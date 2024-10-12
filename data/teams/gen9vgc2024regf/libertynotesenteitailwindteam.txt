@@ -1,0 +1,69 @@
+Chien-Pao @ Focus Sash
+Ability: Sword of Ruin
+Level: 60
+Tera Type: Stellar
+EVs: 252 Atk / 6 Def / 252 Spe
+Adamant Nature
+- Icicle Crash
+- Sucker Punch
+- Tera Blast
+- Protect
+
+Entei @ Choice Band
+Ability: Inner Focus
+Level: 70
+Tera Type: Normal
+EVs: 6 HP / 252 Atk / 252 Spe
+Adamant Nature
+IVs: 20 SpA
+- Sacred Fire
+- Extreme Speed
+- Double-Edge
+- Stomping Tantrum
+
+Urshifu-Rapid-Strike (M) @ Mystic Water
+Ability: Unseen Fist
+Level: 50
+Tera Type: Water
+EVs: 44 HP / 190 Atk / 4 Def / 20 SpD / 252 Spe
+Adamant Nature
+IVs: 23 SpA
+- Surging Strikes
+- Close Combat
+- Aqua Jet
+- Detect
+
+Rillaboom (F) @ Assault Vest
+Ability: Grassy Surge
+Level: 50
+Tera Type: Poison
+EVs: 230 HP / 252 Atk / 12 Def / 12 SpD / 4 Spe
+Adamant Nature
+- Grassy Glide
+- Wood Hammer
+- Fake Out
+- U-turn
+
+Tornadus (M) @ Rocky Helmet
+Ability: Prankster
+Level: 77
+Tera Type: Ghost
+EVs: 244 HP / 180 Def / 4 SpA / 38 SpD / 44 Spe
+Timid Nature
+IVs: 1 Atk
+- Bleakwind Storm
+- Tailwind
+- Rain Dance
+- Taunt
+
+Flutter Mane @ Choice Specs
+Ability: Protosynthesis
+Level: 91
+Tera Type: Fairy
+EVs: 4 HP / 124 Def / 126 SpA / 4 SpD / 252 Spe
+Timid Nature
+IVs: 0 Atk
+- Moonblast
+- Dazzling Gleam
+- Shadow Ball
+- Perish Song

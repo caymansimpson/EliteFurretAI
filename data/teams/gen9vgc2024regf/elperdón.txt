@@ -1,0 +1,69 @@
+Porta Caribe (Sinistcha-Masterpiece) @ Rocky Helmet
+Ability: Heatproof
+Shiny: Yes
+Tera Type: Poison
+EVs: 212 HP / 44 Def / 84 SpA / 156 SpD / 12 Spe
+Modest Nature
+IVs: 0 Atk
+- Matcha Gotcha
+- Shadow Ball
+- Rage Powder
+- Trick Room
+
+Bayamón (Incineroar) (F) @ Assault Vest
+Ability: Intimidate
+Shiny: Yes
+Tera Type: Fighting
+EVs: 228 HP / 164 Atk / 36 Def / 36 SpD / 44 Spe
+Adamant Nature
+- Flare Blitz
+- Knock Off
+- Close Combat
+- U-turn
+
+Mayagüez (Ursaluna) (F) @ Flame Orb
+Ability: Guts
+Shiny: Yes
+Tera Type: Rock
+EVs: 140 HP / 244 Atk / 4 Def / 4 SpD / 116 Spe
+Adamant Nature
+IVs: 3 SpA
+- Facade
+- High Horsepower
+- Rock Slide
+- Protect
+
+Caguas (Thundurus-Therian) @ Life Orb
+Ability: Volt Absorb
+Shiny: Yes
+Tera Type: Poison
+EVs: 196 HP / 20 Def / 236 SpA / 12 SpD / 44 Spe
+Modest Nature
+IVs: 1 Atk
+- Wildbolt Storm
+- Sludge Bomb
+- Psychic
+- Protect
+
+Arecibo (Latias) @ Covert Cloak
+Ability: Levitate
+Shiny: Yes
+Tera Type: Steel
+EVs: 172 HP / 36 Def / 76 SpA / 212 SpD / 12 Spe
+Calm Nature
+- Ice Beam
+- Breaking Swipe
+- Recover
+- Tailwind
+
+Fajardo (Primarina) (F) @ Leftovers
+Ability: Liquid Voice
+Shiny: Yes
+Tera Type: Stellar
+EVs: 172 HP / 100 Def / 116 SpA / 92 SpD / 28 Spe
+Modest Nature
+IVs: 0 Atk
+- Hyper Voice
+- Moonblast
+- Calm Mind
+- Protect

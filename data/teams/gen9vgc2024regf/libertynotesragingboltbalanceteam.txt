@@ -1,0 +1,70 @@
+Raging Bolt @ Leftovers
+Ability: Protosynthesis
+Level: 75
+Tera Type: Water
+EVs: 252 HP / 252 Def / 6 SpD
+Modest Nature
+IVs: 20 Atk
+- Thunderclap
+- Dragon Pulse
+- Calm Mind
+- Protect
+
+Rillaboom (M) @ Assault Vest
+Ability: Grassy Surge
+Level: 64
+Tera Type: Fire
+EVs: 252 HP / 176 Atk / 2 Def / 80 Spe
+Adamant Nature
+IVs: 7 SpA
+- Fake Out
+- Wood Hammer
+- Grassy Glide
+- U-turn
+
+Urshifu-Rapid-Strike (M) @ Choice Scarf
+Ability: Unseen Fist
+Level: 50
+Tera Type: Water
+EVs: 12 HP / 252 Atk / 30 Def / 4 SpD / 212 Spe
+Adamant Nature
+IVs: 5 SpA
+- Surging Strikes
+- Close Combat
+- U-turn
+- Aqua Jet
+
+Metagross @ Choice Band
+Ability: Clear Body
+Level: 50
+Tera Type: Water
+EVs: 252 HP / 252 Atk / 4 SpD
+Adamant Nature
+IVs: 16 SpA
+- Iron Head
+- Psychic Fangs
+- Knock Off
+- Bullet Punch
+
+Incineroar (F) @ Safety Goggles
+Ability: Intimidate
+Level: 50
+Shiny: Yes
+Tera Type: Water
+EVs: 252 HP / 36 Atk / 172 Def / 20 SpD / 28 Spe
+Adamant Nature
+- Fake Out
+- Flare Blitz
+- Parting Shot
+- Helping Hand
+
+Amoonguss (M) @ Sitrus Berry
+Ability: Regenerator
+Level: 75
+Tera Type: Water
+EVs: 252 HP / 158 Def / 100 SpD
+Bold Nature
+- Pollen Puff
+- Rage Powder
+- Spore
+- Protect

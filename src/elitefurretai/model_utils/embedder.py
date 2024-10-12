@@ -83,6 +83,7 @@ class Embedder:
                     simple_features[k] = v
         return simple_features
 
+    # TODO: add num which is an id / 100
     def featurize_move(self, move: Optional[Move], prefix: str = "") -> Dict[str, float]:
         """
         Returns a feature dict representing a Move
@@ -217,6 +218,7 @@ class Embedder:
 
         return emb
 
+    # TODO: add num which is an id / 100
     def featurize_pokemon(
         self, mon: Optional[Pokemon], prefix: str = ""
     ) -> Dict[str, float]:
@@ -281,6 +283,7 @@ class Embedder:
 
         return emb
 
+    # TODO: add num
     def featurize_opponent_pokemon(
         self,
         mon: Optional[Pokemon],
@@ -330,17 +333,22 @@ class Embedder:
         # Add stats by calculating
         stats = ["hp", "atk", "def", "spa", "spd", "spe"]
         minstats, maxstats = [-1] * 6, [-1] * 6
+
         if mon:
             minstats = map(
-                lambda x: math.floor(x * 0.9),
-                compute_raw_stats(
-                    mon.species, [0] * 6, [0] * 6, mon.level, "serious", mon._data
+                lambda x: math.floor(x[1] * 0.9) if x[0] != 0 else x[1],
+                enumerate(
+                    compute_raw_stats(
+                        mon.species, [0] * 6, [0] * 6, mon.level, "serious", mon._data
+                    )
                 ),
             )
             maxstats = map(
-                lambda x: math.floor(x * 1.1),
-                compute_raw_stats(
-                    mon.species, [252] * 6, [31] * 6, mon.level, "serious", mon._data
+                lambda x: math.floor(x[1] * 1.1) if x[0] != 0 else x[1],
+                enumerate(
+                    compute_raw_stats(
+                        mon.species, [252] * 6, [31] * 6, mon.level, "serious", mon._data
+                    )
                 ),
             )
 
@@ -374,16 +382,19 @@ class Embedder:
                 int(mon.type_1 == ptype or mon.type_2 == ptype) if mon else -1
             )
 
-        # OHE TeraType
+        # OHE TeraType; TODO: need to change to be -1 if I dont know
         for ptype in self._knowledge["PokemonType"]:
             if ptype in [PokemonType.THREE_QUESTION_MARKS]:
                 continue
-            emb[prefix + "TERA_TYPE:" + ptype.name] = (
-                int(ptype == mon.tera_type) if mon else -1
-            )
+            val = -1
+            if mon and mon.tera_type is not None:
+                val = int(ptype == mon.tera_type)
+
+            emb[prefix + "TERA_TYPE:" + ptype.name] = val
 
         return emb
 
+    # TODO: add available switches, available moves
     def featurize_double_battle(
         self, battle: DoubleBattle, bi: Optional[BattleInference] = None
     ) -> Dict[str, float]:
@@ -524,6 +535,7 @@ BASIC_FEATURES = {
     "teampreview",
     "turn",
     "bias",
+    "id",
 }
 
 # TODO: need to revisit once I have showdown data to understand usage

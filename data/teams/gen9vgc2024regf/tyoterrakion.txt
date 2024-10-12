@@ -1,0 +1,67 @@
+Whimsicott @ Focus Sash
+Ability: Prankster
+Level: 50
+Tera Type: Ghost
+EVs: 4 Def / 252 SpA / 252 Spe
+Timid Nature
+- Moonblast
+- Beat Up
+- Misty Terrain
+- Tailwind
+
+Terrakion @ Covert Cloak
+Ability: Justified
+Level: 50
+Tera Type: Poison
+EVs: 20 HP / 228 Atk / 4 Def / 4 SpD / 252 Spe
+Jolly Nature
+- Protect
+- Rock Slide
+- Sacred Sword
+- Upper Hand
+
+Milotic @ Assault Vest
+Ability: Competitive
+Level: 50
+Tera Type: Poison
+EVs: 228 HP / 28 Def / 156 SpA / 4 SpD / 92 Spe
+Modest Nature
+IVs: 0 Atk
+- Muddy Water
+- Alluring Voice
+- Mirror Coat
+- Icy Wind
+
+Incineroar @ Sitrus Berry
+Ability: Intimidate
+Level: 50
+Tera Type: Grass
+EVs: 244 HP / 4 Atk / 156 Def / 76 SpD / 28 Spe
+Impish Nature
+- Flare Blitz
+- Parting Shot
+- Fake Out
+- Knock Off
+
+Dragonite @ Life Orb
+Ability: Inner Focus
+Level: 50
+Tera Type: Normal
+EVs: 180 HP / 204 Atk / 12 Def / 4 SpD / 108 Spe
+Adamant Nature
+- Protect
+- Extreme Speed
+- Stomping Tantrum
+- Aqua Jet
+
+Gholdengo @ Choice Scarf
+Ability: Good as Gold
+Level: 50
+Tera Type: Steel
+EVs: 84 HP / 4 Def / 212 SpA / 4 SpD / 204 Spe
+Modest Nature
+IVs: 0 Atk
+- Make It Rain
+- Shadow Ball
+- Dazzling Gleam
+- Trick

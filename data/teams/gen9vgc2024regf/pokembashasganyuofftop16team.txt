@@ -1,0 +1,65 @@
+シトリニカ (Flutter Mane) @ Choice Specs
+Ability: Protosynthesis
+Shiny: Yes
+Tera Type: Fairy
+EVs: 116 HP / 124 Def / 116 SpA / 14 SpD / 140 Spe
+Timid Nature
+IVs: 2 Atk
+- Dazzling Gleam
+- Shadow Ball
+- Moonblast
+- Perish Song
+
+Urshifu-Rapid-Strike (M) @ Choice Scarf
+Ability: Unseen Fist
+Level: 50
+Tera Type: Steel
+EVs: 92 HP / 244 Atk / 6 Def / 4 SpD / 164 Spe
+Adamant Nature
+- Surging Strikes
+- Close Combat
+- Aqua Jet
+- U-turn
+
+リベラシオン (Incineroar) (M) @ Figy Berry
+Ability: Intimidate
+Tera Type: Grass
+EVs: 252 HP / 188 Def / 70 SpD
+Impish Nature
+- Flare Blitz
+- Helping Hand
+- Parting Shot
+- Fake Out
+
+たかし (Rillaboom) (M) @ Assault Vest
+Ability: Grassy Surge
+Tera Type: Fire
+EVs: 252 HP / 92 Atk / 6 Def / 148 SpD / 12 Spe
+Adamant Nature
+- Grassy Glide
+- U-turn
+- Wood Hammer
+- Fake Out
+
+Ursaluna-Bloodmoon (M) @ Sitrus Berry
+Ability: Mind's Eye
+Level: 70
+Tera Type: Poison
+EVs: 252 HP / 6 Def / 244 SpA / 4 SpD / 4 Spe
+Modest Nature
+IVs: 0 Atk
+- Blood Moon
+- Earth Power
+- Hyper Voice
+- Protect
+
+アイビー (Ogerpon-Wellspring) (F) @ Wellspring Mask
+Ability: Water Absorb
+Tera Type: Water
+EVs: 252 HP / 52 Atk / 6 Def / 4 SpD / 196 Spe
+Adamant Nature
+IVs: 20 SpA
+- Ivy Cudgel
+- Taunt
+- Follow Me
+- Spiky Shield

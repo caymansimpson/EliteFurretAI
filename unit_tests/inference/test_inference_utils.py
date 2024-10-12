@@ -1143,10 +1143,13 @@ def test_get_showdown_identifier():
     wochien = Pokemon(gen=9, species="wochien")
     assert get_showdown_identifier(furret, "p1") == "p1: Furret"
     assert get_showdown_identifier(calyrex, "p1") == "p1: Calyrex"
-    assert get_showdown_identifier(calyrexshadow, "p1") == "p1: Calyrex"
-    assert get_showdown_identifier(weezinggalar, "p1") == "p1: Weezing"
     assert get_showdown_identifier(weezing, "p1") == "p1: Weezing"
     assert get_showdown_identifier(wochien, "p2") == "p2: Wo-Chien"
+
+    # This shouldn't really be occuring in battle; as Showdown will use
+    # the base species (eg Weezing-Galar --> Weezing)
+    assert get_showdown_identifier(calyrexshadow, "p1") == "p1: Calyrex"
+    assert get_showdown_identifier(weezinggalar, "p1") == "p1: Weezing"
 
     with pytest.raises(ValueError):
         get_showdown_identifier(furret, None)

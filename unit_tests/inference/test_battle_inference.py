@@ -10,3 +10,18 @@ def test_battle_inference():
     mock.player_username = "elitefurretai"
     battle_inference = BattleInference(mock)
     assert battle_inference
+
+
+# TODO: implement
+def test_is_tracking():
+    raise NotImplementedError
+
+
+# TODO: implement
+def test_set_flag():
+    raise NotImplementedError
+
+
+# TODO: implement
+def test_get_flag():
+    raise NotImplementedError

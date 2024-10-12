@@ -48,57 +48,52 @@ def clean_logs(txt):
     return txt.replace('"', "").replace("'", '"').replace("\\", "")
 
 
+def read_logs(file_text):
+    events = []
+    for line in file_text.split("\n"):
+        if len(line.strip()) == 0:
+            continue
+        events.append(orjson.loads(clean_logs(line)))
+    return events
+
+
 @fixture
 def speed_logs():
     with open(os.path.join(FIXTURE_DIR, "speed_logs.txt")) as f:
-        events = []
-        for line in f.read().split("\n"):
-            if len(line.strip()) == 0:
-                continue
-            events.append(orjson.loads(clean_logs(line)))
-        return events
+        return read_logs(f.read())
 
 
 @fixture
 def residual_logs():
     with open(os.path.join(FIXTURE_DIR, "residual_logs.txt")) as f:
-        events = []
-        for line in f.read().split("\n"):
-            if len(line.strip()) == 0:
-                continue
-            events.append(orjson.loads(clean_logs(line)))
-        return events
+        return read_logs(f.read())
 
 
 @fixture
 def edgecase_logs():
     with open(os.path.join(FIXTURE_DIR, "edgecase_logs.txt")) as f:
-        events = []
-        for line in f.read().split("\n"):
-            if len(line.strip()) == 0:
-                continue
-            events.append(orjson.loads(clean_logs(line)))
-        return events
+        return read_logs(f.read())
 
 
 @fixture
 def uturn_logs():
     with open(os.path.join(FIXTURE_DIR, "uturn_logs.txt")) as f:
-        events = []
-        for line in f.read().split("\n"):
-            if len(line.strip()) == 0:
-                continue
-            events.append(orjson.loads(clean_logs(line)))
-        return events
+        return read_logs(f.read())
 
 
 @fixture
-def vgc_battle_p1():
-    with open(os.path.join(FIXTURE_DIR, "vgcp1battle.pickle"), "rb") as f:
-        return pickle.loads(f.read())
+def vgc_battle_p1_logs():
+    with open(os.path.join(FIXTURE_DIR, "vgc_battle_p1_logs.txt")) as f:
+        return read_logs(f.read())
 
 
 @fixture
-def vgc_battle_p2():
-    with open(os.path.join(FIXTURE_DIR, "vgcp2battle.pickle"), "rb") as f:
-        return pickle.loads(f.read())
+def vgc_battle_p2_logs():
+    with open(os.path.join(FIXTURE_DIR, "vgc_battle_p2_logs.txt")) as f:
+        return read_logs(f.read())
+
+
+@fixture
+def vgc_battle_team():
+    with open(os.path.join(FIXTURE_DIR, "vgc_battle_team.txt")) as f:
+        return f.read()

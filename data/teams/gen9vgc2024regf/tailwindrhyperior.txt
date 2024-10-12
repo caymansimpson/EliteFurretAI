@@ -1,0 +1,68 @@
+Rhyperior @ Choice Scarf
+Ability: Lightning Rod
+Level: 50
+Tera Type: Flying
+EVs: 252 Atk / 4 SpD / 252 Spe
+Jolly Nature
+- Rock Slide
+- High Horsepower
+- Tera Blast
+- Earthquake
+
+Tornadus @ Rocky Helmet
+Ability: Prankster
+Level: 50
+Tera Type: Ghost
+EVs: 228 HP / 92 Def / 4 SpA / 4 SpD / 180 Spe
+Timid Nature
+IVs: 0 Atk
+- Icy Wind
+- Bleakwind Storm
+- Tailwind
+- Sunny Day
+
+Urshifu @ Black Glasses
+Ability: Unseen Fist
+Level: 50
+Tera Type: Poison
+EVs: 60 HP / 156 Atk / 36 Def / 4 SpD / 252 Spe
+Adamant Nature
+- Detect
+- Wicked Blow
+- Close Combat
+- Sucker Punch
+
+Flutter Mane @ Pixie Plate
+Ability: Protosynthesis
+Level: 50
+Tera Type: Fairy
+EVs: 116 HP / 156 Def / 116 SpA / 4 SpD / 116 Spe
+Modest Nature
+IVs: 0 Atk
+- Protect
+- Moonblast
+- Shadow Ball
+- Dazzling Gleam
+
+Iron Bundle @ Booster Energy
+Ability: Quark Drive
+Level: 50
+Tera Type: Ghost
+EVs: 124 HP / 4 Def / 156 SpA / 28 SpD / 196 Spe
+Timid Nature
+IVs: 0 Atk
+- Protect
+- Hydro Pump
+- Icy Wind
+- Freeze-Dry
+
+Rillaboom @ Assault Vest
+Ability: Grassy Surge
+Level: 50
+Tera Type: Fire
+EVs: 252 HP / 196 Atk / 60 Spe
+Adamant Nature
+- Grassy Glide
+- Wood Hammer
+- U-turn
+- Fake Out

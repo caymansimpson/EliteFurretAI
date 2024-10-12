@@ -1,0 +1,67 @@
+Scream Tail @ Booster Energy
+Ability: Protosynthesis
+Level: 50
+Tera Type: Dark
+EVs: 228 HP / 20 Def / 4 SpD / 252 Spe
+Timid Nature
+IVs: 0 Atk
+- Protect
+- Encore
+- Disable
+- Perish Song
+
+Tatsugiri @ Rocky Helmet
+Ability: Commander
+Level: 50
+Tera Type: Steel
+EVs: 4 Def / 252 SpA / 252 Spe
+Modest Nature
+IVs: 0 Atk
+- Endure
+- Muddy Water
+- Taunt
+- Draco Meteor
+
+Dondozo @ Sitrus Berry
+Ability: Unaware
+Level: 50
+Tera Type: Grass
+EVs: 12 HP / 156 Atk / 60 Def / 116 SpD / 164 Spe
+Adamant Nature
+- Protect
+- Wave Crash
+- Rock Slide
+- Order Up
+
+Smeargle @ Focus Sash
+Ability: Moody
+Level: 50
+Tera Type: Ghost
+EVs: 252 HP / 4 Def / 252 Spe
+Jolly Nature
+- Spiky Shield
+- Follow Me
+- Spore
+- Fake Out
+
+Muk-Alola @ Leftovers
+Ability: Power of Alchemy
+Level: 50
+Tera Type: Fairy
+EVs: 252 HP / 252 Def / 4 SpD
+Careful Nature
+- Protect
+- Toxic
+- Minimize
+- Knock Off
+
+Flamigo @ White Herb
+Ability: Costar
+Level: 50
+Tera Type: Flying
+EVs: 140 HP / 116 Atk / 252 Spe
+Adamant Nature
+- Detect
+- Acrobatics
+- Close Combat
+- Throat Chop

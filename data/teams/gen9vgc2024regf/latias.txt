@@ -1,0 +1,68 @@
+Latias @ Rocky Helmet
+Ability: Levitate
+Level: 50
+Tera Type: Poison
+EVs: 252 HP / 4 Def / 44 SpA / 4 SpD / 204 Spe
+Timid Nature
+IVs: 0 Atk
+- Mist Ball
+- Ice Beam
+- Tailwind
+- Recover
+
+Flutter Mane @ Choice Specs
+Ability: Protosynthesis
+Level: 50
+Tera Type: Fairy
+EVs: 116 HP / 196 Def / 60 SpA / 4 SpD / 132 Spe
+Timid Nature
+IVs: 0 Atk
+- Moonblast
+- Shadow Ball
+- Dazzling Gleam
+- Icy Wind
+
+Kingambit @ Assault Vest
+Ability: Defiant
+Level: 50
+Tera Type: Dragon
+EVs: 252 HP / 196 Atk / 4 Def / 52 SpD / 4 Spe
+Adamant Nature
+- Kowtow Cleave
+- Sucker Punch
+- Iron Head
+- Low Kick
+
+Ogerpon-Wellspring (F) @ Wellspring Mask
+Ability: Water Absorb
+Level: 50
+Tera Type: Water
+EVs: 236 HP / 76 Atk / 100 Def / 12 SpD / 84 Spe
+Adamant Nature
+- Ivy Cudgel
+- Horn Leech
+- Follow Me
+- Spiky Shield
+
+Incineroar @ Sitrus Berry
+Ability: Intimidate
+Level: 50
+Tera Type: Grass
+EVs: 236 HP / 4 Atk / 100 Def / 156 SpD / 12 Spe
+Careful Nature
+- Flare Blitz
+- Fake Out
+- Parting Shot
+- Knock Off
+
+Landorus @ Life Orb
+Ability: Sheer Force
+Level: 50
+Tera Type: Poison
+EVs: 252 SpA / 4 SpD / 252 Spe
+Timid Nature
+IVs: 0 Atk
+- Earth Power
+- Sludge Bomb
+- Substitute
+- Protect

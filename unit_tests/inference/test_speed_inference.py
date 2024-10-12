@@ -16,13 +16,15 @@ from poke_env.environment import (
 from poke_env.teambuilder.constant_teambuilder import ConstantTeambuilder
 
 from elitefurretai.inference.speed_inference import SpeedInference, get_pokemon
+from elitefurretai.inference.battle_inference import BattleInference
 
 
 def generate_speed_inference():
     battle = DoubleBattle("tag", "username", MagicMock(), gen=9)
     battle._players = [{"username": "elitefurretai"}, {"username": "joeschmoe"}]
-    si = SpeedInference(battle=battle, opponent_mons={})
-    si._battle.player_role = "p1"
+    battle.player_role = "p1"
+    bi = BattleInference(battle)
+    si = SpeedInference(battle=battle, inferences=bi)
     return si
 
 
@@ -796,7 +798,7 @@ Adamant Nature
 
     # Smeargle and Calyrex speed tie (139) > Furret (110) > Incineroar (101 w/out choicescarf)
     si = generate_speed_inference()
-    si._opponent_mons = {
+    si._inferences._opponent_mons = {
         "p2: Calyrex": {"spe": [139, 222], "can_be_choice": True},
         "p2: Incineroar": {"spe": [58, 111], "can_be_choice": True},
     }
@@ -812,6 +814,7 @@ Adamant Nature
         "p2: Calyrex": Pokemon(gen=9, teambuilder=tb[2]),
         "p2: Incineroar": Pokemon(gen=9, teambuilder=tb[3]),
     }
+    si._inferences._battle._opponent_team = si._battle._opponent_team
     si._battle.parse_message(["", "switch", "p1a: Furret", "Furret, L50", "160/160"])
     si._battle.parse_message(
         ["", "switch", "p1b: Smeargle", "Smeargle, L50, F", "167/167"]
@@ -832,5 +835,5 @@ Adamant Nature
     si._solve_speeds(si.clean_orders(si._parse_residual(events)))
 
     assert get_pokemon("p2: Incineroar", si._battle).item == "choicescarf"
-    assert si._opponent_mons["p2: Calyrex"]["spe"] == [139.0, 139.0]
-    assert si._opponent_mons["p2: Incineroar"]["spe"] == [93.0, 111.0]
+    assert si._inferences.get_flag("p2: Calyrex", "spe") == [139.0, 139.0]
+    assert si._inferences.get_flag("p2: Incineroar", "spe") == [93.0, 111.0]

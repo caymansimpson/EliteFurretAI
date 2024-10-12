@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 from unittest.mock import MagicMock
+from logging import Logger
 
 from poke_env.data import GenData
 from poke_env.environment import DoubleBattle, Move, Pokemon, PokemonType, Status
+from poke_env.teambuilder.constant_teambuilder import ConstantTeambuilder
 
 from elitefurretai.model_utils.embedder import Embedder
 
@@ -150,7 +152,8 @@ def test_featurize_move():
     assert emb["chance"] == 0.1
 
 
-def test_featurize_pokemon(vgc_battle_p1):
+# TODO: just create a furret based on the tests below, from a teambuilder (reverse engineer)
+def test_featurize_pokemon():
     embedder = Embedder()
 
     # Test that we're creating correct features for None
@@ -167,9 +170,23 @@ def test_featurize_pokemon(vgc_battle_p1):
             == none_mon_len
         )
 
-    furret = vgc_battle_p1.team["p1: Furret"]
-    furret._status = Status.SLP
+    tb_furret = ConstantTeambuilder(
+        """Furret @ Leftovers
+        Ability: Run Away
+        Level: 50
+        Tera Type: Normal
+        EVs: 252 Atk / 4 SpA / 252 Spe
+        Naive Nature
+        - Agility
+        - Baton Pass
+        - Blizzard
+        - Body Slam"""
+    )
+
+    furret = Pokemon(gen=9, teambuilder=tb_furret.team[0])
     furret._terastallized_type = PokemonType.DARK
+    furret.set_hp_status("21/160 slp")
+    furret.set_boost("spe", 2)
     emb = embedder.featurize_pokemon(furret)
 
     # We have move embeddings
@@ -224,7 +241,7 @@ def test_featurize_pokemon(vgc_battle_p1):
     assert emb["TERA_TYPE:GRASS"] == 0
 
 
-def test_featurize_oponent_pokemon(vgc_battle_p1):
+def test_featurize_oponent_pokemon(vgc_battle_p1_logs):
     embedder = Embedder()
 
     # Test that we featurize none correctly
@@ -241,14 +258,27 @@ def test_featurize_oponent_pokemon(vgc_battle_p1):
             == none_mon_len
         )
 
-    smeargle = vgc_battle_p1.opponent_team["p2: Smeargle"]
+    # Generate battle
+    p1_battle = DoubleBattle("tag", "elitefurretai", Logger("example"), gen=9)
+    for turn in vgc_battle_p1_logs:
+        for log in turn:
+            if len(log) > 1 and log[1] not in ["", "t:", "win"]:
+                p1_battle.parse_message(log)
+            elif len(log) > 1 and log[1] == "win":
+                p1_battle.won_by(log[2])
+
+    smeargle = p1_battle.opponent_team["p2: Smeargle"]
     emb = embedder.featurize_opponent_pokemon(smeargle)
 
     assert any(map(lambda x: x.startswith("MOVE:0:"), emb))
     assert any(map(lambda x: x.startswith("MOVE:1:"), emb))
+    assert any(map(lambda x: x.startswith("MOVE:2:"), emb))
 
-    assert emb["MOVE:0:STATUS:PAR"] == 1  # Nuzzle
-    assert emb["MOVE:1:current_pp"] == -1  # Dont know it
+    assert emb["MOVE:1:min_hits"] == 3
+    assert emb["MOVE:1:max_hits"] == 3
+    assert emb["MOVE:1:TYPE:ICE"] == 1
+    assert emb["MOVE:2:max_hits"] == -1  # Dont know it
+    assert emb["MOVE:1:current_pp"] == 1
     assert emb["ABILITY:thermalexchange"] == 0
     assert emb["ABILITY:immunity"] == 0
     assert emb["ABILITY:punkrock"] == 0
@@ -266,11 +296,11 @@ def test_featurize_oponent_pokemon(vgc_battle_p1):
     assert emb["current_hp_fraction"] == 0
     assert emb["level"] == 50 / 100.0
     assert emb["weight"] == 58 / 100.0
-    assert emb["is_terastallized"] == 1
+    assert emb["is_terastallized"] == 0
 
     # no battle_inference
-    assert emb["STAT_MIN:hp"] == 103 / 100.0
-    assert emb["STAT_MAX:hp"] == 178 / 100.0
+    assert emb["STAT_MIN:hp"] == 115 / 100.0
+    assert emb["STAT_MAX:hp"] == 162 / 100.0
     assert emb["STAT_MIN:atk"] == 22 / 100.0
     assert emb["STAT_MAX:atk"] == 79 / 100.0
     assert emb["STAT_MIN:def"] == 36 / 100.0
@@ -295,33 +325,100 @@ def test_featurize_oponent_pokemon(vgc_battle_p1):
     assert emb["STATUS: TOX"] == 0
     assert emb["STATUS: SLP"] == 0
     assert emb["TYPE:NORMAL"] == 1
+    assert emb["TYPE:ROCK"] == 0
     assert emb["TYPE:DRAGON"] == 0
     assert emb["TYPE:FLYING"] == 0
     assert emb["TYPE:GHOST"] == 0
-    assert emb["TERA_TYPE:NORMAL"] == 1
-    assert emb["TERA_TYPE:DRAGON"] == 0
+    assert emb["TERA_TYPE:NORMAL"] == -1
+    assert emb["TERA_TYPE:DRAGON"] == -1
+    assert emb["TERA_TYPE:ROCK"] == -1  # Don't know this is the ground truth
+
+    ttar = p1_battle.opponent_team["p2: Tyranitar"]
+    emb = embedder.featurize_opponent_pokemon(ttar)
+
+    assert emb["MOVE:0:base_power"] == 0.6
+    assert emb["MOVE:0:TYPE:DRAGON"] == 1
+    assert emb["MOVE:0:priority"] == -6
+    assert emb["MOVE:2:accuracy"] == -1
+    assert emb["is_terastallized"] == 1
+
+    assert emb["TERA_TYPE:ROCK"] == 0
+    assert emb["TERA_TYPE:PSYCHIC"] == 1
+    assert emb["TYPE:ROCK"] == 0
+    assert emb["TYPE:PSYCHIC"] == 1
 
 
-def test_featurize_turn(vgc_battle_p1):
+def test_featurize_turn(vgc_battle_p1_logs):
+
     embedder = Embedder()
-    emb = embedder.featurize_double_battle(vgc_battle_p1)
-    vec = embedder.feature_dict_to_vector(emb)
+    emb_length = None
 
-    for feature in vec:
-        assert isinstance(feature, float)
+    # Generate battle
+    p1_battle = DoubleBattle("tag", "elitefurretai", Logger("example"), gen=9)
+    for turn in vgc_battle_p1_logs:
+        for log in turn:
+            if len(log) > 1 and log[1] not in ["", "t:", "win"]:
+                p1_battle.parse_message(log)
+            elif len(log) > 1 and log[1] == "win":
+                p1_battle.won_by(log[2])
+
+            # If we just went through a turn
+            if len(log) > 1 and log[1] == "-turn" and log[2] == "1":
+                p1_battle.parse_message(log)
+
+                emb = embedder.featurize_double_battle(vgc_battle_p1)
+                assert emb["MON:0:sent"] == 1
+                assert emb["MON:5:TYPE:ROCK"] == -1
+                assert emb["MON:5:sent"] == -1
+                assert emb["MON:0:active"] == 1
+                assert emb["MON:3:active"] == 0
+                assert emb["MON:5:active"] == -1
+
+                assert emb["OPP_MON:0:sent"] == 1
+                assert emb["OPP_MON:0:active"] == 1
+
+                assert emb["OPP_MON:0:sent"] == 0
+                assert emb["OPP_MON:0:active"] == 0
+
+                assert emb["FORCE_SWITCH:0"] == 0
+                assert emb["FORCE_SWITCH:1"] == 0
+
+                assert emb["teampreview"] == 0
+                assert emb["turn"] == 1
+                assert emb["bias"] == 1
+
+                if emb_length is None:
+                    emb_length = len(emb.keys())
+                else:
+                    assert len(emb.keys()) == emb_length
 
 
-def test_simplify_features(vgc_battle_p1):
+def test_simplify_features(vgc_battle_p1_logs):
     embedder = Embedder()
-    emb = embedder.featurize_double_battle(vgc_battle_p1)
+    emb_length = None
 
-    simple_emb = embedder.simplify_features(emb)
-    simple_vec = embedder.feature_dict_to_vector(simple_emb)
+    # Generate battle
+    p1_battle = DoubleBattle("tag", "elitefurretai", Logger("example"), gen=9)
+    for turn in vgc_battle_p1_logs:
+        for log in turn:
+            if len(log) > 1 and log[1] not in ["", "t:", "win"]:
+                p1_battle.parse_message(log)
+            elif len(log) > 1 and log[1] == "win":
+                p1_battle.won_by(log[2])
 
-    for feature in simple_vec:
-        assert isinstance(feature, float)
+            # If we just went through a turn
+            if len(log) > 1 and log[1] == "-turn" and log[2] == "1":
+                p1_battle.parse_message(log)
 
-    assert len(simple_emb) < len(emb)
+                emb = embedder.featurize_double_battle(vgc_battle_p1)
+                simple_emb = embedder.simplify_features(emb)
+
+                assert len(simple_emb) < len(emb)
+
+                if emb_length is None:
+                    emb_length = len(emb.keys())
+                else:
+                    assert len(emb.keys()) == emb_length
 
 
 def test_featurize_teampreview(example_vgc_teampreview_request):

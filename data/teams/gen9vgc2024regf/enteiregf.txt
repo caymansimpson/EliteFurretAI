@@ -1,0 +1,68 @@
+Chien-Pao @ Focus Sash
+Ability: Sword of Ruin
+Level: 50
+Tera Type: Ghost
+EVs: 252 Atk / 4 SpD / 252 Spe
+Adamant Nature
+- Ice Spinner
+- Sacred Sword
+- Sucker Punch
+- Protect
+
+Urshifu-Rapid-Strike @ Choice Scarf
+Ability: Unseen Fist
+Level: 50
+Tera Type: Water
+EVs: 44 HP / 244 Atk / 4 Def / 4 SpD / 212 Spe
+Adamant Nature
+- Surging Strikes
+- Close Combat
+- Aqua Jet
+- U-turn
+
+Entei @ Assault Vest
+Ability: Inner Focus
+Level: 50
+Tera Type: Grass
+EVs: 12 HP / 196 Atk / 12 Def / 36 SpD / 252 Spe
+Adamant Nature
+- Sacred Fire
+- Stomping Tantrum
+- Extreme Speed
+- Snarl
+
+Amoonguss @ Sitrus Berry
+Ability: Regenerator
+Level: 50
+Tera Type: Water
+EVs: 236 HP / 156 Def / 116 SpD
+Relaxed Nature
+IVs: 0 Atk / 0 Spe
+- Rage Powder
+- Spore
+- Pollen Puff
+- Protect
+
+Tornadus @ Covert Cloak
+Ability: Prankster
+Level: 50
+Tera Type: Ghost
+EVs: 220 HP / 196 Def / 4 SpA / 12 SpD / 76 Spe
+Bold Nature
+IVs: 0 Atk
+- Tailwind
+- Bleakwind Storm
+- Taunt
+- Rain Dance
+
+Gholdengo @ Life Orb
+Ability: Good as Gold
+Level: 50
+Tera Type: Dragon
+EVs: 236 HP / 4 Def / 132 SpA / 12 SpD / 124 Spe
+Modest Nature
+IVs: 0 Atk
+- Make It Rain
+- Shadow Ball
+- Nasty Plot
+- Protect

@@ -19,141 +19,6 @@ from poke_env.environment.side_condition import SideCondition
 from poke_env.environment.status import Status
 from poke_env.environment.weather import Weather
 
-DISCERNABLE_ITEMS = set(
-    [
-        "choiceband",
-        "choicescarf",
-        "choicespecs",
-        "clearamulet",
-        "covertcloack",
-        "eviolite",
-        "expertbelt",
-        "gripclaw",
-        "heavydutyboots",
-        "ironball",
-        "kingsrock",
-        "laggingtail",
-        "lightclaw",
-        "machobrace",
-        "muscleband",
-        "protectivepads",
-        "safetygoggles",
-        "shedshell",
-        "terrainextender",
-        "utilityumbrella",
-        "wiseglasses",
-        "dragonfang",
-        "hardstone",
-        "magnet",
-        "metalcoat",
-        "mysticwater" "charcoal",
-        "miracleseed",
-        "nevermeltice",
-        "blackglasses",
-        "blackbelt",
-        "pixieplate",
-        "sharpbeak",
-        "spelltag",
-        "oddinsence" "silkscarf",
-        "silverpowder",
-        "softsand",
-        "spelltag",
-        "twistedspoon",
-    ]
-)
-
-MEGASTONES_THAT_CAN_PUBLICLY_ACTIVATE_ABILITIES_OR_ITEMS = {"charizarditey", "alakazite"}
-
-# From https://github.com/search?q=repo%3Asmogon%2Fpokemon-showdown+residualorder&type=code
-FIRST_BLOCK_RESIDUALS = {
-    "Sandstorm",
-    "Hail",
-    "Solar Power",
-    "Dry Skin",
-    "Ice Body",
-    "Rain Dish",
-}
-
-SECOND_BLOCK_RESIDUALS = {
-    "Grassy Terrain",
-    "Healer",
-    "Hydration",
-    "Shed Skin",
-    "Black Sludge",
-    "Leftovers",
-}
-
-THIRD_BLOCK_RESIDUALS = {
-    "Uproar",
-    "CudChew",
-    "Harvest",
-    "Moody",
-    "Slow Start",
-    "Speed Boost",
-    "Flame Orb",
-    "Sticky Barb",
-    "Toxic Orb",
-}
-
-RESIDUALS_WITH_OWN_PRIORITY = {
-    "Aqua Ring",
-    "Ingrain",
-    "Leech Seed",
-    "Poison",
-    "brn",
-    "Curse",
-    "tox",
-    "psn",
-    "Bind",
-    "Octolock",
-    "Salt Cure",
-    "Taunt",
-    "Torment",
-    "Encore",
-    "Disable",
-    "Magnet Rise",
-    "Yawn",
-    "Perish count",
-    "Bind",
-    "Whirlpool",
-    "Infestation",
-    "Clamp",
-    "Fire Spin",
-    "Thunder Cage",
-    "Sand Tomb",
-    "Snap Trap",
-    "Wrap",
-    "Magma Storm",
-    "Perish Song",
-}
-
-# Denoted by preStart in https://github.com/smogon/pokemon-showdown/blob/master/data/abilities.ts
-PRIORITY_ACTIVATION_ABILITIES = ["As One", "Neutralizing Gas", "Unnerve", "Tera Shift"]
-
-MSGS_THAT_ACTIVATE_BEFORE_ATTACK = ["confusion", "slp", "par", "frz", "recharge", "flinch"]
-
-ITEMS_THAT_ACTIVATE_ON_SWITCH = [
-    "Booster Energy",
-    "Air Balloon",
-    "Grassy Seed",
-    "Electric Seed",
-    "Misty Seed",
-]
-
-ABILITIES_THAT_CAN_PUBLICLY_ACTIVATE_ABILITIES_OR_ITEMS = {
-    "Snow Warning",
-    "Orachium Pulse",
-    "Drought",
-    "Desolate Land",
-    "Hadron Engine",
-    "Electric Surge",
-    "Grassy Surge",
-    "Misty Surge",
-    "Pyschic Surge",
-}
-
-SANDSTORM_IMMUNE_TYPES = {PokemonType.ROCK, PokemonType.STEEL, PokemonType.GROUND}
-
 
 # In Showdown, Weezing-Galar --> Weezing; Calyrex-Ice --> Calyrex
 def get_showdown_identifier(mon: Pokemon, player_role: Optional[str]) -> str:
@@ -163,11 +28,7 @@ def get_showdown_identifier(mon: Pokemon, player_role: Optional[str]) -> str:
             + str(Pokemon)
         )
 
-    dex_entry = mon._data.pokedex[mon.species]
-    if re.match("^[a-z]+$", dex_entry["baseSpecies"]) is None:
-        return player_role + ": " + dex_entry.get("baseSpecies")
-    else:
-        return player_role + ": " + dex_entry.get("name")
+    return player_role + ": " + mon.name
 
 
 # Converts showdown message into dict key for self._mons
@@ -255,7 +116,7 @@ def copy_battle(
     b._players = battle._players
 
     # Copy all Pokemon fields we have
-    b.team = {ident: copy_pokemon(mon, battle.gen) for ident, mon in battle.team.items()}
+    # b.team = {ident: copy_pokemon(mon, battle.gen) for ident, mon in battle.team.items()}
     b.teampreview_team = {mon for mon in battle.teampreview_team}
     b._teampreview_opponent_team = {mon for mon in battle._teampreview_opponent_team}
     if battle.opponent_role is not None:
@@ -272,6 +133,27 @@ def copy_battle(
             for event in battle.observations[i].events:
                 update_battle(b, event)
 
+    return b
+
+
+def copy_bare_battle(
+    battle: Union[Battle, DoubleBattle], turn: Optional[int] = None
+) -> Union[Battle, DoubleBattle]:
+    b = DoubleBattle(
+        battle.battle_tag,
+        battle.player_username,
+        logging.getLogger(battle.player_username),
+        gen=battle.gen,
+    )
+
+    # Since this can't be replicated via events; it's populated by
+    # player
+    b.teampreview_team = {mon for mon in battle.teampreview_team}
+
+    # Copy player information we have
+    b._player_role = battle._player_role
+    b._opponent_username = battle._opponent_username
+    b._players = battle._players
     return b
 
 
@@ -637,12 +519,13 @@ def get_residual_and_identifier(event: List[str]) -> Tuple[Optional[str], Option
 # Start of battle / end-of-turn switches for fainted mons (None)
 # Preturn switch ("preturn_switch") <- only includes events for ability/item activations upon switch
 # Turn ("turn") <- captures event changing turn (if present)
-def get_segments(events: List[List[str]]) -> Dict[str, List[List[str]]]:
+def get_segments(events: List[List[str]], start=0) -> Dict[str, List[List[str]]]:
     indices, segments = {}, {}
     init = []
     last_segment = ""
     i = 0
 
+    # Remove empty events
     events = [event for event in events if len(event) > 1]
 
     # If at the start of the battle, we move directly to the post-turn phase
@@ -683,8 +566,8 @@ def get_segments(events: List[List[str]]) -> Dict[str, List[List[str]]]:
 
         # If we stop on a switch, we record the position
         if i < len(events) and events[i][1] == "switch":
-            if last_segment != "":
-                segments[last_segment] = events[indices[last_segment] : i]
+            if last_segment != "" and i >= start:
+                segments[last_segment] = events[max(indices[last_segment], start) : i]
             last_segment = "switch"
             indices["switch"] = i
 
@@ -699,8 +582,8 @@ def get_segments(events: List[List[str]]) -> Dict[str, List[List[str]]]:
 
         # If we stop on a battle_mechanic, we record the position
         if i < len(events) and events[i][1] in ["-terastallize", "-dynamax", "-mega"]:
-            if last_segment != "":
-                segments[last_segment] = events[indices[last_segment] : i]
+            if last_segment != "" and i >= start:
+                segments[last_segment] = events[max(indices[last_segment], start) : i]
             last_segment = "battle_mechanic"
             indices["battle_mechanic"] = i
 
@@ -717,8 +600,8 @@ def get_segments(events: List[List[str]]) -> Dict[str, List[List[str]]]:
         if i < len(events) and (
             events[i][1] == "move" or events[i][-1] in MSGS_THAT_ACTIVATE_BEFORE_ATTACK
         ):
-            if last_segment != "":
-                segments[last_segment] = events[indices[last_segment] : i]
+            if last_segment != "" and i >= start:
+                segments[last_segment] = events[max(indices[last_segment], start) : i]
             last_segment = "move"
             indices["move"] = i
 
@@ -731,8 +614,8 @@ def get_segments(events: List[List[str]]) -> Dict[str, List[List[str]]]:
 
         #  Once we hit the empty event, we record what we've gotten to and reset last_segment
         if i < len(events):
-            if last_segment != "":
-                segments[last_segment] = events[indices[last_segment] : i]
+            if last_segment != "" and i >= start:
+                segments[last_segment] = events[max(indices[last_segment], start) : i]
             last_segment = ""
             i += 1
 
@@ -752,8 +635,8 @@ def get_segments(events: List[List[str]]) -> Dict[str, List[List[str]]]:
 
         # If after going through state upkeep, we're not at upkeep, this means we're at residuals
         if i < len(events) and events[i][1] != "upkeep":
-            if last_segment != "":
-                segments[last_segment] = events[indices[last_segment] : i]
+            if last_segment != "" and i >= start:
+                segments[last_segment] = events[max(indices[last_segment], start) : i]
             last_segment = "residual"
             indices["residual"] = i
 
@@ -782,10 +665,10 @@ def get_segments(events: List[List[str]]) -> Dict[str, List[List[str]]]:
     # If we found a preturn switch and there's something to record, record it til the end
     # since this is the last segment
     if events[-1][1] == "turn" and last_segment == "preturn_switch":
-        segments["preturn_switch"] = events[i:-1]
+        segments["preturn_switch"] = events[max(i, start) : -1]
 
     # Record the last turn if theres a turn
-    if events[-1][1] == "turn":
+    if events[-1][1] == "turn" and len(events) > start:
         segments["turn"] = [events[-1]]
 
     # These are events that we collected that no bearing on the battle; they are initial showdown
@@ -796,33 +679,36 @@ def get_segments(events: List[List[str]]) -> Dict[str, List[List[str]]]:
     return segments
 
 
-def print_observation(obs):
+def observation_to_str(obs):
     message = ""
     message += f"\n\tMy Active Mon:  [{', '.join(map(lambda x: x.species if x else 'None', obs.active_pokemon)) if obs.active_pokemon else ''}]"
     message += f"\n\tOpp Active Mon: [{', '.join(map(lambda x: x.species if x else 'None', obs.opponent_active_pokemon)) if obs.opponent_active_pokemon else ''}]"
     message += f"\n\tWeather: [{', '.join(map(lambda x: x.name, obs.weather))}]"
-    message += f"\tFields: [{', '.join(map(lambda x: x.name, obs.fields))}]"
+    message += f"\n\tFields: [{', '.join(map(lambda x: x.name, obs.fields))}]"
     message += f"\n\tMy Side Conditions:  [{', '.join(map(lambda x: x.name, obs.side_conditions))}]"
     message += f"\n\tOpp Side Conditions: [{', '.join(map(lambda x: x.name, obs.opponent_side_conditions))}]"
 
     message += "\n\tMy Team:"
     for ident, mon in obs.team.items():
-        message += f"\n\t\t{mon.species} => [Speed: {mon.stats['spe']}], [Item: {mon.item}], [Speed Boost: {mon.boosts['spe']}], [Effects: {list(map(lambda x: x.name, mon.effects))}], [Status: {mon.status.name if mon.status else 'None'}]"
+        message += f"\n\t\t{ident} => [Speed: {mon.stats['spe']}], [Item: {mon.item}], [Speed Boost: {mon.boosts['spe']}], [Effects: {list(map(lambda x: x.name, mon.effects))}], [Status: {mon.status.name if mon.status else 'None'}]"
 
     message += "\n\tOpp Team:"
     for ident, mon in obs.opponent_team.items():
-        message += f"\n\t\t{mon.species} => [Speed: {mon.stats['spe']}], [Item: {mon.item}], [Speed Boost: {mon.boosts['spe']}], [Effects: {list(map(lambda x: x.name, mon.effects))}], [Status: {mon.status.name if mon.status else 'None'}]"
+        message += f"\n\t\t{ident} => [Speed: {mon.stats['spe']}], [Item: {mon.item}], [Speed Boost: {mon.boosts['spe']}], [Effects: {list(map(lambda x: x.name, mon.effects))}], [Status: {mon.status.name if mon.status else 'None'}]"
 
     message += "\n\n\tEvents:"
-    for event in obs.events:
-        message += f"\n\t\t{event}"
+    if len(obs.events) == 0:
+        message += "\n\t\t(No events yet! You are at the beginning of this turn.)"
+    else:
+        for event in obs.events:
+            message += f"\n\t\t{event}"
 
     return message
 
 
-def print_battle(battle):
+def battle_to_str(battle) -> str:
 
-    message = f"============= Battle [{battle.battle_tag} =============\n"
+    message = f"============= Battle [{battle.battle_tag}] =============\n"
     message += f"The battle is between {battle.player_username} and {battle.opponent_username} from {battle.player_username}'s perspective.\n"
 
     message += "P1 Teampreview Team (omniscient): ["
@@ -845,10 +731,146 @@ def print_battle(battle):
 
     for turn, obs in battle.observations.items():
         message += f"\n\nTurn #{turn}:"
-        message += print_observation(obs)
+        message += observation_to_str(obs)
 
     if battle._current_observation not in battle.observations.values():
-        message += f"\n\nCurrent Observation; Turn #{turn}:"
-        message += print_observation(battle._current_observation)
+        message += f"\n\nCurrent Observation; Turn #{battle.turn}:"
+        message += observation_to_str(battle._current_observation)
 
     return message
+
+
+DISCERNABLE_ITEMS = set(
+    [
+        "choiceband",
+        "choicescarf",
+        "choicespecs",
+        "clearamulet",
+        "covertcloack",
+        "eviolite",
+        "expertbelt",
+        "gripclaw",
+        "heavydutyboots",
+        "ironball",
+        "kingsrock",
+        "laggingtail",
+        "lightclaw",
+        "machobrace",
+        "muscleband",
+        "protectivepads",
+        "safetygoggles",
+        "shedshell",
+        "terrainextender",
+        "utilityumbrella",
+        "wiseglasses",
+        "dragonfang",
+        "hardstone",
+        "magnet",
+        "metalcoat",
+        "mysticwater" "charcoal",
+        "miracleseed",
+        "nevermeltice",
+        "blackglasses",
+        "blackbelt",
+        "pixieplate",
+        "sharpbeak",
+        "spelltag",
+        "oddinsence" "silkscarf",
+        "silverpowder",
+        "softsand",
+        "spelltag",
+        "twistedspoon",
+    ]
+)
+
+MEGASTONES_THAT_CAN_PUBLICLY_ACTIVATE_ABILITIES_OR_ITEMS = {"charizarditey", "alakazite"}
+
+# From https://github.com/search?q=repo%3Asmogon%2Fpokemon-showdown+residualorder&type=code
+FIRST_BLOCK_RESIDUALS = {
+    "Sandstorm",
+    "Hail",
+    "Solar Power",
+    "Dry Skin",
+    "Ice Body",
+    "Rain Dish",
+}
+
+SECOND_BLOCK_RESIDUALS = {
+    "Grassy Terrain",
+    "Healer",
+    "Hydration",
+    "Shed Skin",
+    "Black Sludge",
+    "Leftovers",
+}
+
+THIRD_BLOCK_RESIDUALS = {
+    "Uproar",
+    "CudChew",
+    "Harvest",
+    "Moody",
+    "Slow Start",
+    "Speed Boost",
+    "Flame Orb",
+    "Sticky Barb",
+    "Toxic Orb",
+}
+
+RESIDUALS_WITH_OWN_PRIORITY = {
+    "Aqua Ring",
+    "Ingrain",
+    "Leech Seed",
+    "Poison",
+    "brn",
+    "Curse",
+    "tox",
+    "psn",
+    "Bind",
+    "Octolock",
+    "Salt Cure",
+    "Taunt",
+    "Torment",
+    "Encore",
+    "Disable",
+    "Magnet Rise",
+    "Yawn",
+    "Perish count",
+    "Bind",
+    "Whirlpool",
+    "Infestation",
+    "Clamp",
+    "Fire Spin",
+    "Thunder Cage",
+    "Sand Tomb",
+    "Snap Trap",
+    "Wrap",
+    "Magma Storm",
+    "Perish Song",
+}
+
+# Denoted by preStart in https://github.com/smogon/pokemon-showdown/blob/master/data/abilities.ts
+PRIORITY_ACTIVATION_ABILITIES = ["As One", "Neutralizing Gas", "Unnerve", "Tera Shift"]
+
+MSGS_THAT_ACTIVATE_BEFORE_ATTACK = ["confusion", "slp", "par", "frz", "recharge", "flinch"]
+
+ITEMS_THAT_ACTIVATE_ON_SWITCH = [
+    "Booster Energy",
+    "Air Balloon",
+    "Grassy Seed",
+    "Electric Seed",
+    "Misty Seed",
+]
+
+ABILITIES_THAT_CAN_PUBLICLY_ACTIVATE_ABILITIES_OR_ITEMS = {
+    "Snow Warning",
+    "Orachium Pulse",
+    "Drought",
+    "Desolate Land",
+    "Hadron Engine",
+    "Electric Surge",
+    "Grassy Surge",
+    "Misty Surge",
+    "Pyschic Surge",
+}
+
+SANDSTORM_IMMUNE_TYPES = {PokemonType.ROCK, PokemonType.STEEL, PokemonType.GROUND}
