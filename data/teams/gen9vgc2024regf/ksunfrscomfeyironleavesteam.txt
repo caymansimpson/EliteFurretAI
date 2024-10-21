@@ -1,6 +1,6 @@
 Spike (Thundurus) (M) @ Covert Cloak
 Ability: Prankster
-Level: 77
+Level: 50
 Tera Type: Dark
 EVs: 252 HP / 252 Def / 6 SpA
 Bold Nature
@@ -11,7 +11,7 @@ Bold Nature
 
 The Thing (Heatran) (M) @ Assault Vest
 Ability: Flash Fire
-Level: 72
+Level: 50
 Tera Type: Bug
 EVs: 208 HP / 3 Atk / 3 Def / 252 SpA / 44 Spe
 Modest Nature
@@ -22,7 +22,7 @@ Modest Nature
 
 Hope (Comfey) (F) @ Rocky Helmet
 Ability: Triage
-Level: 63
+Level: 50
 Tera Type: Steel
 EVs: 194 HP / 252 Def / 64 SpA
 Bold Nature
@@ -33,6 +33,7 @@ Bold Nature
 
 Zap (Raging Bolt) @ Booster Energy
 Ability: Protosynthesis
+Level: 50
 Tera Type: Electric
 EVs: 92 HP / 116 Def / 252 SpA / 49 SpD
 Modest Nature
@@ -43,7 +44,7 @@ Modest Nature
 
 Code X (Iron Leaves) @ Life Orb
 Ability: Quark Drive
-Level: 84
+Level: 50
 Tera Type: Fire
 EVs: 3 HP / 252 Atk / 2 Def / 1 SpD / 252 Spe
 Jolly Nature
@@ -54,7 +55,7 @@ Jolly Nature
 
 Flutter Mane @ Focus Sash
 Ability: Protosynthesis
-Level: 87
+Level: 50
 Tera Type: Stellar
 EVs: 6 HP / 252 SpA / 252 Spe
 Timid Nature

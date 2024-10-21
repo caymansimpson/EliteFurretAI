@@ -11,6 +11,7 @@ Adamant Nature
 
 Farigiraf (M) @ Safety Goggles
 Ability: Armor Tail
+Level: 50
 Tera Type: Ground
 EVs: 252 HP / 156 Def / 100 SpD
 Relaxed Nature
@@ -34,6 +35,7 @@ IVs: 0 Atk
 
 Torkoal (M) @ Charcoal
 Ability: Drought
+Level: 50
 Tera Type: Fire
 EVs: 252 HP / 4 Def / 252 SpA
 Quiet Nature
@@ -45,6 +47,7 @@ IVs: 0 Atk / 0 Spe
 
 Lilligant-Hisui @ Focus Sash
 Ability: Chlorophyll
+Level: 50
 Tera Type: Ghost
 EVs: 4 HP / 252 Atk / 252 Spe
 Jolly Nature

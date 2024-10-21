@@ -1,6 +1,6 @@
 天野阳菜 (Torkoal) (F) @ Charcoal
 Ability: Drought
-Level: 66
+Level: 50
 Tera Type: Fire
 EVs: 252 HP / 252 SpA / 6 SpD
 Quiet Nature
@@ -12,6 +12,7 @@ IVs: 30 Atk / 0 Spe
 
 Walking Wake @ Life Orb
 Ability: Protosynthesis
+Level: 50
 Tera Type: Fire
 EVs: 38 HP / 4 Def / 220 SpA / 12 SpD / 236 Spe
 Timid Nature
@@ -23,7 +24,7 @@ IVs: 0 Atk
 
 Ogerpon-Hearthflame (F) @ Hearthflame Mask
 Ability: Mold Breaker
-Level: 70
+Level: 50
 Tera Type: Fire
 EVs: 6 HP / 252 Atk / 252 Spe
 Jolly Nature
@@ -34,6 +35,7 @@ Jolly Nature
 
 解放之鼓 (Raging Bolt) @ Assault Vest
 Ability: Protosynthesis
+Level: 50
 Tera Type: Grass
 EVs: 180 HP / 100 SpA / 230 SpD
 Modest Nature
@@ -56,7 +58,7 @@ Bold Nature
 
 Flutter Mane @ Choice Specs
 Ability: Protosynthesis
-Level: 84
+Level: 50
 Shiny: Yes
 Tera Type: Fairy
 EVs: 92 HP / 110 Def / 52 SpA / 4 SpD / 252 Spe

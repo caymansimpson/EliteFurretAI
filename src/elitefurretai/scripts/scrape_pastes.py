@@ -3,17 +3,18 @@
 It accepts a csv in the format of regulation -> pokepaste link.
 """
 
-import requests
 import csv
-from bs4 import BeautifulSoup
 import os
 import os.path
-from queue import Queue
-import threading
-from collections import deque
-import sys
 import re
+import sys
+import threading
 import time
+from collections import deque
+from queue import Queue
+
+import requests
+from bs4 import BeautifulSoup
 from poke_env.data.normalize import to_id_str
 
 queue = Queue()

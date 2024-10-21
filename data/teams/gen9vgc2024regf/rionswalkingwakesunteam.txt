@@ -1,5 +1,6 @@
 Whimsicott (F) @ Focus Sash
 Ability: Prankster
+Level: 50
 Shiny: Yes
 Tera Type: Ghost
 EVs: 252 HP / 6 SpA / 252 Spe
@@ -12,6 +13,7 @@ IVs: 18 Atk
 
 Flutter Mane @ Booster Energy
 Ability: Protosynthesis
+Level: 50
 Shiny: Yes
 Tera Type: Fire
 EVs: 116 HP / 252 SpA / 142 Spe
@@ -24,6 +26,7 @@ IVs: 5 Atk
 
 Walking Wake @ Assault Vest
 Ability: Protosynthesis
+Level: 50
 Tera Type: Steel
 EVs: 6 HP / 252 SpA / 252 Spe
 Timid Nature
@@ -35,6 +38,7 @@ IVs: 23 Def / 29 SpD
 
 Urshifu (F) @ Choice Band
 Ability: Unseen Fist
+Level: 50
 Tera Type: Dark
 EVs: 6 HP / 252 Atk / 252 Spe
 Adamant Nature
@@ -45,6 +49,7 @@ Adamant Nature
 
 Raging Bolt @ Safety Goggles
 Ability: Protosynthesis
+Level: 50
 Tera Type: Electric
 EVs: 190 HP / 108 Def / 180 SpA / 12 SpD / 20 Spe
 Bashful Nature
@@ -56,6 +61,7 @@ IVs: 20 Atk
 
 Chi-Yu @ Choice Scarf
 Ability: Beads of Ruin
+Level: 50
 Tera Type: Ghost
 EVs: 108 HP / 6 Def / 140 SpA / 4 SpD / 252 Spe
 Timid Nature

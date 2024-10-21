@@ -1,6 +1,6 @@
 Tyranitar @ Weakness Policy  
 Ability: Sand Stream  
-Level: 50  
+Level: 50
 EVs: 252 HP / 44 Atk / 60 Def / 124 SpD / 28 Spe  
 Adamant Nature  
 - Rock Slide  
@@ -10,7 +10,7 @@ Adamant Nature
 
 Incineroar @ Aguav Berry  
 Ability: Intimidate  
-Level: 50  
+Level: 50
 EVs: 252 HP / 4 Atk / 156 Def / 52 SpD / 44 Spe  
 Impish Nature  
 IVs: 0 SpA  
@@ -21,7 +21,7 @@ IVs: 0 SpA
 
 Excadrill @ Focus Sash  
 Ability: Mold Breaker  
-Level: 50  
+Level: 50
 EVs: 4 HP / 252 Atk / 252 Spe  
 Jolly Nature  
 - High Horsepower  
@@ -31,7 +31,7 @@ Jolly Nature
 
 Togekiss @ Scope Lens  
 Ability: Super Luck  
-Level: 50  
+Level: 50
 EVs: 92 HP / 4 Def / 196 SpA / 4 SpD / 212 Spe  
 Modest Nature  
 IVs: 0 Atk  
@@ -42,7 +42,7 @@ IVs: 0 Atk
 
 Conkeldurr @ Assault Vest  
 Ability: Guts  
-Level: 50  
+Level: 50
 EVs: 156 HP / 204 Atk / 4 Def / 100 SpD / 44 Spe  
 Adamant Nature  
 - Drain Punch  
@@ -52,7 +52,7 @@ Adamant Nature
 
 Jellicent @ Kasib Berry  
 Ability: Cursed Body  
-Level: 50  
+Level: 50
 EVs: 180 HP / 188 Def / 124 SpA / 4 SpD / 12 Spe  
 Modest Nature  
 IVs: 0 Atk  

@@ -1,5 +1,6 @@
 Kyogre @ Assault Vest
 Ability: Drizzle
+Level: 50
 Tera Type: Grass
 EVs: 252 HP / 12 Def / 236 SpA / 4 SpD / 4 Spe
 Modest Nature
@@ -10,7 +11,7 @@ Modest Nature
 
 Wo-Chien @ Leftovers
 Ability: Tablets of Ruin
-Level: 61
+Level: 50
 Tera Type: Poison
 EVs: 252 HP / 44 Def / 4 SpA / 36 SpD / 172 Spe
 Bold Nature
@@ -32,7 +33,7 @@ Careful Nature
 
 Incineroar @ Safety Goggles
 Ability: Intimidate
-Level: 71
+Level: 50
 Tera Type: Ghost
 EVs: 252 HP / 156 Def / 100 SpD
 Impish Nature
@@ -43,7 +44,7 @@ Impish Nature
 
 Farigiraf @ Mental Herb
 Ability: Armor Tail
-Level: 61
+Level: 50
 Tera Type: Fairy
 EVs: 252 HP / 60 Def / 196 SpD
 Calm Nature
@@ -55,7 +56,7 @@ IVs: 2 Atk
 
 Ursaluna-Bloodmoon @ Throat Spray
 Ability: Mind's Eye
-Level: 70
+Level: 50
 Tera Type: Normal
 EVs: 252 HP / 252 SpA / 4 SpD
 Modest Nature

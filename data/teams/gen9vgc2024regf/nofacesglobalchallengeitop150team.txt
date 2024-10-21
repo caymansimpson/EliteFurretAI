@@ -11,6 +11,7 @@ Calm Nature
 
 かこうとん (Kingdra) (M) @ Life Orb
 Ability: Swift Swim
+Level: 50
 Shiny: Yes
 Tera Type: Steel
 EVs: 148 HP / 4 Def / 244 SpA / 12 SpD / 102 Spe
@@ -22,7 +23,7 @@ Modest Nature
 
 Scizor (M) @ Choice Band
 Ability: Technician
-Level: 77
+Level: 50
 Tera Type: Dark
 EVs: 222 HP / 4 Atk / 92 Def / 4 SpD / 188 Spe
 Adamant Nature
@@ -58,7 +59,7 @@ IVs: 5 SpA
 
 タケルどの (Raging Bolt) @ Choice Specs
 Ability: Protosynthesis
-Level: 93
+Level: 50
 Tera Type: Grass
 EVs: 236 SpA / 180 SpD / 92 Spe
 Modest Nature

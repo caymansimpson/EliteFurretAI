@@ -24,7 +24,7 @@ IVs: 0 Atk
 
 Money Boy (Gholdengo) @ Life Orb
 Ability: Good as Gold
-Level: 86
+Level: 50
 Tera Type: Dragon
 EVs: 52 HP / 4 Def / 212 SpA / 60 SpD / 180 Spe
 Modest Nature
@@ -36,7 +36,7 @@ IVs: 0 Atk
 
 Raf Camora (Murkrow) @ Eviolite
 Ability: Prankster
-Level: 52
+Level: 50
 Tera Type: Ghost
 EVs: 252 HP / 220 SpD / 36 Spe
 Calm Nature

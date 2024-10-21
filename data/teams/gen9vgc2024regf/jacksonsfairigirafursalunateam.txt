@@ -1,6 +1,6 @@
 ones (Farigiraf) (F) @ Figy Berry
 Ability: Armor Tail
-Level: 75
+Level: 50
 Shiny: Yes
 Tera Type: Fairy
 EVs: 252 HP / 142 Def / 116 SpD
@@ -13,7 +13,7 @@ IVs: 4 Atk / 8 Spe
 
 Ashes (Incineroar) (M) @ Sitrus Berry
 Ability: Intimidate
-Level: 75
+Level: 50
 Shiny: Yes
 Tera Type: Grass
 EVs: 236 HP / 4 Atk / 100 Def / 68 SpD / 100 Spe
@@ -25,6 +25,7 @@ Careful Nature
 
 Vampires (Flutter Mane) @ Choice Specs
 Ability: Protosynthesis
+Level: 50
 Shiny: Yes
 Tera Type: Fairy
 EVs: 68 HP / 164 Def / 68 SpA / 4 SpD / 206 Spe
@@ -37,7 +38,7 @@ IVs: 16 Atk
 
 Portrait (Raging Bolt) @ Safety Goggles
 Ability: Protosynthesis
-Level: 75
+Level: 50
 Tera Type: Water
 EVs: 228 HP / 140 Def / 116 SpA / 20 SpD / 4 Spe
 Modest Nature
@@ -49,6 +50,7 @@ IVs: 20 Atk
 
 Shokan (Ogerpon-Wellspring) (F) @ Wellspring Mask
 Ability: Water Absorb
+Level: 50
 Tera Type: Water
 EVs: 172 HP / 124 Atk / 4 Def / 4 SpD / 204 Spe
 Jolly Nature
@@ -60,7 +62,7 @@ IVs: 20 SpA
 
 Providence (Ursaluna-Bloodmoon) (M) @ Life Orb
 Ability: Mind’s Eye
-Level: 75
+Level: 50
 Tera Type: Normal
 EVs: 244 HP / 124 Def / 142 SpA
 Quiet Nature

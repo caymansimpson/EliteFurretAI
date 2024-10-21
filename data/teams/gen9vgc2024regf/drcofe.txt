@@ -11,6 +11,7 @@ Jolly Nature
 
 RazzleDazzle (Flutter Mane) @ Booster Energy
 Ability: Protosynthesis
+Level: 50
 Tera Type: Fairy
 EVs: 244 HP / 124 Def / 4 SpA / 4 SpD / 132 Spe
 Timid Nature

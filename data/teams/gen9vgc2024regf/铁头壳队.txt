@@ -1,5 +1,6 @@
 Iron Crown @ Life Orb
 Ability: Quark Drive
+Level: 50
 Tera Type: Water
 EVs: 4 HP / 252 SpA / 252 Spe
 Modest Nature
@@ -13,6 +14,7 @@ Indeedee-F (F) @ Psychic Seed
 IVs: 0 Atk / 28 Spe
 EVs: 252 HP / 252 Def / 6 SpD
 Ability: Psychic Surge
+Level: 50
 Tera Type: Fairy
 Level: 50
 
@@ -25,6 +27,7 @@ Bold Nature
 Dondozo (F) @ Rocky Helmet
 EVs: 252 Atk / 4 SpD / 252 Spe
 Ability: Unaware
+Level: 50
 Tera Type: Grass
 Level: 50
 
@@ -38,6 +41,7 @@ Tatsugiri (F) @ Choice Scarf
 IVs: 0 Atk
 EVs: 4 HP / 252 SpA / 252 Spe
 Ability: Commander
+Level: 50
 Tera Type: Steel
 Level: 50
 
@@ -51,6 +55,7 @@ Glimmora (F) @ Focus Sash
 IVs: 0 Atk
 EVs: 4 HP / 252 SpA / 252 Spe
 Ability: Toxic Debris
+Level: 50
 Tera Type: Grass
 Modest Nature
 - Power Gem
@@ -62,6 +67,7 @@ Flutter Mane @ Booster Energy
 IVs: 0 Atk
 EVs: 124 HP / 140 Def / 116 SpA / 4 SpD / 124 Spe
 Ability: Protosynthesis
+Level: 50
 Tera Type: Water
 Timid Nature
 - Moonblast

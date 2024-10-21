@@ -1,5 +1,6 @@
 Real Steal (Registeel) @ Leftovers
 Ability: Clear Body
+Level: 50
 Shiny: Yes
 Tera Type: Fairy
 EVs: 252 HP / 6 Atk / 164 Def / 76 SpD / 12 Spe
@@ -11,6 +12,7 @@ Impish Nature
 
 Incineroar (M) @ Sitrus Berry
 Ability: Intimidate
+Level: 50
 Shiny: Yes
 Tera Type: Ghost
 EVs: 236 HP / 6 Atk / 156 Def / 4 SpD / 108 Spe
@@ -22,6 +24,7 @@ Impish Nature
 
 Small Spaces (Cresselia) (F) @ Safety Goggles
 Ability: Levitate
+Level: 50
 Shiny: Yes
 Tera Type: Fairy
 EVs: 252 HP / 172 Def / 86 SpD
@@ -34,6 +37,7 @@ IVs: 0 Atk / 18 Spe
 
 Queen2 (Ogerpon-Wellspring) (F) @ Wellspring Mask
 Ability: Water Absorb
+Level: 50
 Tera Type: Water
 EVs: 156 HP / 140 Atk / 6 Def / 12 SpD / 196 Spe
 Jolly Nature
@@ -44,6 +48,7 @@ Jolly Nature
 
 Queen (Flutter Mane) @ Focus Sash
 Ability: Protosynthesis
+Level: 50
 Shiny: Yes
 Tera Type: Fairy
 EVs: 6 HP / 252 SpA / 252 Spe
@@ -56,7 +61,7 @@ IVs: 0 Atk
 
 Raging Bolt @ Assault Vest
 Ability: Protosynthesis
-Level: 75
+Level: 50
 Tera Type: Bug
 EVs: 100 HP / 76 Def / 244 SpA / 4 SpD / 86 Spe
 Modest Nature

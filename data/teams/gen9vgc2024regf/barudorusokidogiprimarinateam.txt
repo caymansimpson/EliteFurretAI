@@ -1,6 +1,6 @@
 グレンタウン (Armarouge) (M) @ Weakness Policy
 Ability: Weak Armor
-Level: 75
+Level: 50
 Tera Type: Fire
 EVs: 6 HP / 252 SpA / 252 Spe
 Modest Nature
@@ -24,7 +24,7 @@ IVs: 24 Atk
 
 ワスレイヌ (Chien-Pao) @ Focus Sash
 Ability: Sword of Ruin
-Level: 61
+Level: 50
 Tera Type: Stellar
 EVs: 6 HP / 252 Atk / 252 Spe
 Jolly Nature
@@ -48,6 +48,7 @@ IVs: 24 Atk
 
 こうひょうか (Okidogi) (M) @ Sitrus Berry
 Ability: Guard Dog
+Level: 50
 Tera Type: Dragon
 EVs: 172 HP / 252 Atk / 4 Def / 5 SpD / 77 Spe
 Adamant Nature

@@ -11,7 +11,7 @@ Careful Nature
 
 Volcarona @ Leftovers
 Ability: Flame Body
-Level: 71
+Level: 50
 Tera Type: Dragon
 EVs: 252 HP / 80 Def / 36 SpA / 140 Spe
 Modest Nature

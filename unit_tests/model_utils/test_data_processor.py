@@ -1,15 +1,14 @@
 # -*- coding: utf-8 -*-
 import os.path
-from unittest.mock import MagicMock
 from logging import Logger
+from unittest.mock import MagicMock
 
 from poke_env.data import GenData
 from poke_env.data.normalize import to_id_str
-from poke_env.environment import PokemonGender, PokemonType, DoubleBattle, Pokemon
-from poke_env.ps_client.account_configuration import AccountConfiguration
+from poke_env.environment import DoubleBattle, Pokemon, PokemonGender, PokemonType
 from poke_env.player.random_player import RandomPlayer
+from poke_env.ps_client.account_configuration import AccountConfiguration
 from poke_env.teambuilder.constant_teambuilder import ConstantTeambuilder
-
 
 from elitefurretai.model_utils.battle_data import BattleData
 from elitefurretai.model_utils.data_processor import DataProcessor

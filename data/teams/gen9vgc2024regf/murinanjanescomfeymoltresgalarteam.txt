@@ -1,5 +1,6 @@
 Moltres-Galar @ Weakness Policy
 Ability: Berserk
+Level: 50
 Shiny: Yes
 Tera Type: Poison
 EVs: 252 HP / 252 SpA / 6 Spe
@@ -11,7 +12,7 @@ Modest Nature
 
 きゅわみ (Comfey) (F) @ Mental Herb
 Ability: Triage
-Level: 59
+Level: 50
 Tera Type: Fairy
 EVs: 252 HP / 244 Def / 14 Spe
 Bold Nature
@@ -23,6 +24,7 @@ IVs: 4 Atk
 
 おがみ (Ogerpon-Wellspring) (F) @ Wellspring Mask
 Ability: Water Absorb
+Level: 50
 Tera Type: Water
 EVs: 252 HP / 124 Def / 132 SpD / 2 Spe
 Impish Nature
@@ -34,7 +36,7 @@ IVs: 20 SpA
 
 がちみ (Ursaluna-Bloodmoon) (M) @ Assault Vest
 Ability: Mind’s Eye
-Level: 72
+Level: 50
 Tera Type: Normal
 EVs: 4 HP / 4 Def / 252 SpA / 6 SpD / 244 Spe
 Modest Nature
@@ -45,7 +47,7 @@ IVs: 8 Atk
 - Vacuum Wave
 
 ふぁいあろみ (Talonflame) (F) Ability: Gale Wings
-Level: 69
+Level: 50
 Tera Type: Flying
 EVs: 238 Atk / 20 SpD / 252 Spe
 Jolly Nature
@@ -57,7 +59,7 @@ IVs: 27 SpA
 
 あしれーみ (Primarina) (M) @ Bright Powder
 Ability: Liquid Voice
-Level: 52
+Level: 50
 Tera Type: Steel
 EVs: 252 HP / 236 Def / 4 SpA / 4 SpD / 12 Spe
 Bold Nature

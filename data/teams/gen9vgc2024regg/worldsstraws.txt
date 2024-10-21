@@ -1,6 +1,6 @@
 Boba (Farigiraf) @ Safety Goggles
 Ability: Armor Tail
-Level: 66
+Level: 50
 Tera Type: Dark
 EVs: 188 HP / 228 Def / 92 SpD
 Bold Nature

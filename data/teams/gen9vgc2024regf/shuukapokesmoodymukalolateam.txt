@@ -12,6 +12,7 @@ IVs: 28 SpA
 
 Smeargle (M) @ Focus Sash
 Ability: Moody
+Level: 50
 Tera Type: Ghost
 EVs: 228 HP / 30 Def / 252 Spe
 Jolly Nature
@@ -35,6 +36,7 @@ IVs: 25 SpA
 
 Latias (F) @ Mental Herb
 Ability: Levitate
+Level: 50
 Tera Type: Fairy
 EVs: 252 HP / 6 Def / 252 Spe
 Timid Nature
@@ -45,7 +47,7 @@ Timid Nature
 
 Sinistcha @ Rocky Helmet
 Ability: Hospitality
-Level: 63
+Level: 50
 Tera Type: Water
 EVs: 244 HP / 68 Def / 198 SpD
 Bold Nature

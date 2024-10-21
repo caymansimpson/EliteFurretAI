@@ -33,7 +33,7 @@ Jolly Nature
 
 Kommo-o @ Leftovers
 Ability: Overcoat
-Level: 65
+Level: 50
 Tera Type: Steel
 EVs: 236 HP / 4 Atk / 36 Def / 196 SpD / 36 Spe
 Careful Nature

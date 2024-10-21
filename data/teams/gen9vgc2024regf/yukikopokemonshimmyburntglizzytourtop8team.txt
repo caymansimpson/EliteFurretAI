@@ -1,5 +1,6 @@
 PON☆ (Ogerpon-Wellspring) (F) @ Wellspring Mask
 Ability: Water Absorb
+Level: 50
 Tera Type: Water
 EVs: 252 HP / 54 Atk / 4 Def / 4 SpD / 196 Spe
 Jolly Nature
@@ -11,7 +12,7 @@ IVs: 20 SpA
 
 Raging Bolt @ Assault Vest
 Ability: Protosynthesis
-Level: 75
+Level: 50
 Tera Type: Fairy
 EVs: 198 HP / 252 SpA / 24 SpD / 36 Spe
 Modest Nature
@@ -23,7 +24,7 @@ IVs: 20 Atk
 
 よつんばいん (Heatran) (M) @ Leftovers
 Ability: Flash Fire
-Level: 70
+Level: 50
 Tera Type: Grass
 EVs: 244 HP / 44 Def / 100 SpA / 4 SpD / 116 Spe
 Modest Nature
@@ -34,7 +35,7 @@ Modest Nature
 
 Chien-Pao @ Focus Sash
 Ability: Sword of Ruin
-Level: 60
+Level: 50
 Tera Type: Ghost
 EVs: 252 Atk / 6 Def / 252 Spe
 Adamant Nature
@@ -45,7 +46,7 @@ Adamant Nature
 
 Primarina (M) @ Sitrus Berry
 Ability: Liquid Voice
-Level: 51
+Level: 50
 Tera Type: Grass
 EVs: 252 HP / 164 Def / 28 SpA / 4 SpD / 60 Spe
 Modest Nature
@@ -57,7 +58,7 @@ IVs: 13 Atk
 
 Dragonite (M) @ Clear Amulet
 Ability: Multiscale
-Level: 75
+Level: 50
 Tera Type: Steel
 EVs: 6 HP / 252 Atk / 252 Spe
 Adamant Nature

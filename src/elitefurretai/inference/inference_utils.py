@@ -9,6 +9,7 @@ from typing import Dict, List, Optional, Tuple, Union
 
 from poke_env.environment.battle import Battle
 from poke_env.environment.double_battle import DoubleBattle
+from poke_env.environment.abstract_battle import AbstractBattle
 from poke_env.environment.effect import Effect
 from poke_env.environment.field import Field
 from poke_env.environment.move import Move
@@ -43,15 +44,16 @@ def standardize_pokemon_ident(pokemon_str: str) -> str:
     if len(groups) == 0:
         raise ValueError("Unable to parse pokemon ident from " + pokemon_str)
     elif groups[0][1].endswith("a") or groups[0][1].endswith("b"):
-        return groups[0][1][:2] + ": " + groups[0][2].lower().title()
+        return groups[0][1][:2] + ": " + groups[0][2]
     else:
-        return groups[0][1] + ": " + groups[0][2].lower().title()
+        # return groups[0][1] + ": " + groups[0][2].lower().title() # TODO: this is giving me a problem
+        return groups[0][1] + ": " + groups[0][2]  # so changed it to this
 
 
 # Gets pokemon from a battle given a pokemon identifier; battle.team stores "p1: Furret"
 # But this method will get: "p1a: Furret", "p1: Furret", "furret" from either our team
 # or the opponent's
-def get_pokemon(mon_ident: str, battle: Union[Battle, DoubleBattle]) -> Pokemon:
+def get_pokemon(mon_ident: str, battle: Union[Battle, DoubleBattle, AbstractBattle]) -> Pokemon:
     if mon_ident in battle.team:
         return battle.team[mon_ident]
     elif mon_ident in battle.opponent_team:
@@ -64,8 +66,8 @@ def get_pokemon(mon_ident: str, battle: Union[Battle, DoubleBattle]) -> Pokemon:
     raise ValueError(
         f"Couldn't get a pokemon with ident {mon_ident} from \n"
         + f"\tOur team: {battle.team}"
-        + f"\tOpponent team: {battle.opponent_team}"
-        + f"\tOpponent Teampreview team: {battle.teampreview_opponent_team}"
+        + f"\n\tOpponent team: {battle.opponent_team}"
+        + f"\n\tOpponent Teampreview team: {battle.teampreview_opponent_team}"
     )
 
 
@@ -137,7 +139,7 @@ def copy_battle(
 
 
 def copy_bare_battle(
-    battle: Union[Battle, DoubleBattle], turn: Optional[int] = None
+    battle: Union[Battle, DoubleBattle, AbstractBattle], turn: Optional[int] = None
 ) -> Union[Battle, DoubleBattle]:
     b = DoubleBattle(
         battle.battle_tag,
@@ -158,7 +160,7 @@ def copy_bare_battle(
 
 
 # Updates a battle with an event
-def update_battle(battle: Union[Battle, DoubleBattle], event: List[str]):
+def update_battle(battle: Union[Battle, DoubleBattle, AbstractBattle], event: List[str]):
     if len(event) > 2 and event[1] not in ["", "t:"]:
         if event[1] == "win":
             battle.won_by(event[2])
@@ -208,7 +210,7 @@ def has_flinch_immunity(mon: Pokemon) -> bool:
 
 # Returns whether a Pokemon is immune to psn/brn/par
 def has_status_immunity(
-    ident: str, status: Status, battle: Union[Battle, DoubleBattle]
+    ident: str, status: Status, battle: Union[Battle, DoubleBattle, AbstractBattle]
 ) -> bool:
     if battle.opponent_role is None:
         return False
@@ -339,8 +341,64 @@ def has_rage_powder_immunity(mon: Pokemon) -> bool:
     return False
 
 
+def has_unboost_immunity(mon_ident: str, boost_type: str, battle: Union[Battle, DoubleBattle, AbstractBattle]) -> bool:
+    mine = battle.player_role and mon_ident.startswith(battle.player_role)
+
+    side_conditions = battle.opponent_side_conditions
+    if mine:
+        side_conditions = battle.side_conditions
+
+    if SideCondition.MIST in side_conditions:
+        return True
+
+    if isinstance(battle, DoubleBattle):
+        active_pokemon = battle.opponent_active_pokemon
+        team = battle.opponent_team
+        if mine:
+            active_pokemon = battle.active_pokemon
+            team = battle.team
+
+        if any(mon.ability == "flowerveil" for mon in active_pokemon if mon) and PokemonType.GRASS in team[mon_ident].types:
+            return True
+
+        if any(mon.ability is None and "flowerveil" in mon.possible_abilities for mon in active_pokemon if mon) and PokemonType.GRASS in team[mon_ident].types:
+            return True
+    else:
+        raise NotImplementedError()
+
+    mon = get_pokemon(mon_ident, battle)
+    if mon.item == "clearamulet":
+        return True
+
+    if mon.ability in ["clearbody", "fullmetalbody", "whitesmoke"]:
+        return True
+
+    if mon.ability is None and ("clearbody" in mon.possible_abilities or "fullmetalbody" in mon.possible_abilities or "whitesmoke" in mon.possible_abilities):
+        return True
+
+    if (mon.ability == "bigpeck" or (mon.ability is None and "bigpeck" in mon.possible_abilities)) and boost_type == "def":
+        return True
+
+    if (mon.ability == "illuminate" or (mon.ability is None and "illuminate" in mon.possible_abilities)) and boost_type in "accuracy":
+        return True
+
+    if (mon.ability == "keeneye" or (mon.ability is None and "keeneye" in mon.possible_abilities)) and boost_type in "accuracy":
+        return True
+
+    if (mon.ability == "mindseye" or (mon.ability is None and "mindseye" in mon.possible_abilities)) and boost_type in "accuracy":
+        return True
+
+    if (mon.ability == "hypercutter" or (mon.ability is None and "hypercutter" in mon.possible_abilities)) and boost_type in "atk":
+        return True
+
+    if mon.boosts[boost_type] == -6:
+        return True
+
+    return False
+
+
 # Assumes a mon that could be levitating has it
-def is_grounded(mon_ident: str, battle: Union[Battle, DoubleBattle]) -> bool:
+def is_grounded(mon_ident: str, battle: Union[Battle, DoubleBattle, AbstractBattle]) -> bool:
     mon = get_pokemon(mon_ident, battle)
     if Field.GRAVITY in battle.fields:
         return True
@@ -413,7 +471,7 @@ def get_ability_and_identifier(event: List[str]) -> Tuple[Optional[str], Optiona
 # returns None if the priority shouldn't be read (e.g. a move is moved to the first/last
 # in its priority bracket)
 def get_priority_and_identifier(
-    event: List[str], battle: Union[Battle, DoubleBattle]
+    event: List[str], battle: Union[Battle, DoubleBattle, AbstractBattle]
 ) -> Tuple[str, Optional[int]]:
 
     mon_ident = standardize_pokemon_ident(event[2])
@@ -606,9 +664,17 @@ def get_segments(events: List[List[str]], start=0) -> Dict[str, List[List[str]]]
             indices["move"] = i
 
         # Keep going until we get to the post-move phase (the empty event)
-        # Sometimes there's an empty event because of pivot moves like U-turn
-        while i < len(events) and not (
-            events[i][1] == "" and len(events) > i + 1 and events[i + 1][1] != "switch"
+        # Sometimes there's an empty event because of pivot moves like U-turn. Also
+        # there can be an event: ['', '-end', 'p1b: Iron Hands', 'Quark Drive', '[silent]']
+        # before it swithces out. So this tries to keep on going until we see an empty string
+        # that isnt immediately followed by a switch or has a switch two after
+        while i < len(events) and (
+            events[i][1] != "" or (
+                events[i][1] == "" and (
+                    (len(events) > i + 1 and events[i + 1][1] == "switch")
+                    or (len(events) > i + 2 and events[i + 2][1] == "switch" and events[i + 1][1] == "-end")
+                )
+            )
         ):
             i += 1
 
@@ -729,11 +795,13 @@ def battle_to_str(battle) -> str:
         message += f" // Item: {mon.item}]"
     message += "]\n"
 
+    last_obs = None
     for turn, obs in battle.observations.items():
         message += f"\n\nTurn #{turn}:"
         message += observation_to_str(obs)
+        last_obs = obs
 
-    if battle._current_observation not in battle.observations.values():
+    if last_obs is not None and battle._current_observation.events != last_obs.events:
         message += f"\n\nCurrent Observation; Turn #{battle.turn}:"
         message += observation_to_str(battle._current_observation)
 

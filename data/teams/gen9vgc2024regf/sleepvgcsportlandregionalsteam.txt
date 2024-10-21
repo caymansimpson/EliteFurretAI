@@ -11,6 +11,7 @@ Careful Nature
 
 Flutter Mane @ Choice Specs
 Ability: Protosynthesis
+Level: 50
 Shiny: Yes
 Tera Type: Fairy
 EVs: 20 HP / 84 Def / 196 SpA / 4 SpD / 204 Spe
@@ -23,7 +24,7 @@ IVs: 29 Atk
 
 Amoonguss (F) @ Sitrus Berry
 Ability: Regenerator
-Level: 60
+Level: 50
 Shiny: Yes
 Tera Type: Water
 EVs: 236 HP / 156 Def / 2 SpA / 116 SpD
@@ -47,7 +48,7 @@ Jolly Nature
 
 Dragonite (F) @ Assault Vest
 Ability: Inner Focus
-Level: 80
+Level: 50
 Tera Type: Normal
 EVs: 180 HP / 252 Atk / 4 Def / 4 SpD / 69 Spe
 Adamant Nature
@@ -59,7 +60,7 @@ IVs: 21 SpA
 
 Chien-Pao @ Focus Sash
 Ability: Sword of Ruin
-Level: 60
+Level: 50
 Tera Type: Stellar
 EVs: 6 HP / 252 Atk / 252 Spe
 Adamant Nature

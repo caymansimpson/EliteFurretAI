@@ -1,6 +1,6 @@
 ALD-Z (Porygon-Z) @ Life Orb  
 Ability: Adaptability  
-Level: 50  
+Level: 50
 Shiny: Yes  
 EVs: 36 HP / 4 Def / 252 SpA / 4 SpD / 212 Spe  
 Modest Nature  
@@ -12,7 +12,7 @@ IVs: 0 Atk
 
 ALDFAIRY (Clefairy) (F) @ Eviolite  
 Ability: Friend Guard  
-Level: 50  
+Level: 50
 Shiny: Yes  
 EVs: 252 HP / 252 Def / 4 SpD  
 Relaxed Nature  
@@ -24,7 +24,7 @@ IVs: 0 Atk / 0 Spe
 
 ALD FLAME (Talonflame) (M) @ Safety Goggles  
 Ability: Gale Wings  
-Level: 50  
+Level: 50
 Shiny: Yes  
 EVs: 252 Atk / 4 SpA / 252 Spe  
 Naive Nature  
@@ -35,7 +35,7 @@ Naive Nature
 
 ALD VISH (Dracovish) @ Choice Scarf  
 Ability: Strong Jaw  
-Level: 50  
+Level: 50
 Shiny: Yes  
 EVs: 252 Atk / 4 SpD / 252 Spe  
 Jolly Nature  
@@ -46,7 +46,7 @@ Jolly Nature
 
 ESCALDVALIER (Escavalier) (M) @ Assault Vest  
 Ability: Overcoat  
-Level: 50  
+Level: 50
 Shiny: Yes  
 EVs: 252 HP / 252 Atk / 4 SpD  
 Brave Nature  
@@ -58,7 +58,7 @@ IVs: 0 Spe
 
 ALD FU (Urshifu-Rapid-Strike-Gmax) @ Choice Band  
 Ability: Unseen Fist  
-Level: 50  
+Level: 50
 EVs: 4 HP / 252 Atk / 252 Spe  
 Jolly Nature  
 - Surging Strikes  

@@ -1,5 +1,6 @@
 Ogerpon-Wellspring (F) @ Wellspring Mask
 Ability: Water Absorb
+Level: 50
 Tera Type: Water
 EVs: 76 HP / 228 Atk / 12 Def / 4 SpD / 190 Spe
 Jolly Nature
@@ -10,6 +11,7 @@ Jolly Nature
 
 Flutter Mane @ Pixie Plate
 Ability: Protosynthesis
+Level: 50
 Tera Type: Fairy
 EVs: 100 HP / 1 Atk / 244 Def / 44 SpA / 4 SpD / 117 Spe
 Modest Nature
@@ -21,6 +23,7 @@ IVs: 0 Atk
 
 Chien-Pao @ Focus Sash
 Ability: Sword of Ruin
+Level: 50
 Tera Type: Ghost
 EVs: 252 Atk / 4 SpD / 252 Spe
 Jolly Nature
@@ -31,6 +34,7 @@ Jolly Nature
 
 Entei @ Life Orb
 Ability: Inner Focus
+Level: 50
 Tera Type: Normal
 EVs: 12 HP / 196 Atk / 12 Def / 36 SpD / 252 Spe
 Adamant Nature
@@ -41,6 +45,7 @@ Adamant Nature
 
 Tornadus (M) @ Covert Cloak
 Ability: Prankster
+Level: 50
 Tera Type: Ghost
 EVs: 252 HP / 92 Def / 4 SpA / 28 SpD / 132 Spe
 Calm Nature
@@ -52,6 +57,7 @@ IVs: 0 Atk
 
 Archaludon (F) @ Assault Vest
 Ability: Stamina
+Level: 50
 Tera Type: Fairy
 EVs: 212 HP / 12 Def / 204 SpA / 20 SpD / 60 Spe
 Modest Nature

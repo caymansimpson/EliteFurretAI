@@ -35,6 +35,7 @@ IVs: 0 Atk
 
 Smeargle @ Focus Sash
 Ability: Moody
+Level: 50
 Tera Type: Ghost
 EVs: 252 HP / 4 Atk / 252 Spe
 Jolly Nature
@@ -56,7 +57,7 @@ Adamant Nature
 
 Gholdengo @ Metal Coat
 Ability: Good as Gold
-Level: 90
+Level: 50
 Tera Type: Steel
 EVs: 212 HP / 4 Def / 132 SpA / 36 SpD / 124 Spe
 Modest Nature

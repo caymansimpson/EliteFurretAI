@@ -1,6 +1,6 @@
 Iron Hands @ Assault Vest  
 Ability: Quark Drive  
-Level: 50  
+Level: 50
 Tera Type: Water  
 EVs: 4 HP / 252 Atk / 4 Def / 236 SpD / 12 Spe  
 Adamant Nature  
@@ -11,7 +11,7 @@ Adamant Nature
 
 Flutter Mane @ Booster Energy  
 Ability: Protosynthesis  
-Level: 50  
+Level: 50
 Tera Type: Fairy  
 EVs: 252 HP / 116 Def / 124 SpA / 4 SpD / 12 Spe  
 Timid Nature  
@@ -23,7 +23,7 @@ IVs: 0 Atk
 
 Cresselia @ Safety Goggles  
 Ability: Levitate  
-Level: 50  
+Level: 50
 Tera Type: Dark  
 EVs: 252 HP / 172 Def / 84 SpD  
 Calm Nature  
@@ -35,7 +35,7 @@ IVs: 0 Atk
 
 Ursaluna @ Flame Orb  
 Ability: Guts  
-Level: 50  
+Level: 50
 Tera Type: Ghost  
 EVs: 252 HP / 252 Atk / 4 SpD  
 Brave Nature  
@@ -47,7 +47,7 @@ IVs: 0 Spe
 
 Urshifu @ Focus Sash  
 Ability: Unseen Fist  
-Level: 50  
+Level: 50
 Tera Type: Dark  
 EVs: 252 Atk / 4 SpD / 252 Spe  
 Adamant Nature  
@@ -58,7 +58,7 @@ Adamant Nature
 
 Dragonite @ Life Orb  
 Ability: Inner Focus  
-Level: 50  
+Level: 50
 Tera Type: Flying  
 EVs: 20 HP / 252 Atk / 36 Def / 4 SpD / 196 Spe  
 Jolly Nature  

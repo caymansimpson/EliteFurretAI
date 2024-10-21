@@ -1,5 +1,6 @@
 Tornadus (M) @ Focus Sash
 Ability: Prankster
+Level: 50
 Tera Type: Ghost
 EVs: 6 HP / 252 SpA / 252 Spe
 Timid Nature
@@ -11,6 +12,7 @@ IVs: 20 Atk
 
 Urshifu-Rapid-Strike (M) @ Assault Vest
 Ability: Unseen Fist
+Level: 50
 Tera Type: Grass
 EVs: 46 HP / 236 Atk / 4 Def / 204 SpD / 20 Spe
 Adamant Nature
@@ -33,7 +35,7 @@ IVs: 0 Atk
 
 Ogerpon-Hearthflame (F) @ Hearthflame Mask
 Ability: Mold Breaker
-Level: 70
+Level: 50
 Tera Type: Fire
 EVs: 237 HP / 69 Atk / 4 Def / 4 SpD / 196 Spe
 Jolly Nature
@@ -45,7 +47,7 @@ IVs: 20 SpA
 
 Flutter Mane @ Choice Specs
 Ability: Protosynthesis
-Level: 94
+Level: 50
 Tera Type: Fairy
 EVs: 100 HP / 60 Def / 92 SpA / 6 SpD / 252 Spe
 Timid Nature

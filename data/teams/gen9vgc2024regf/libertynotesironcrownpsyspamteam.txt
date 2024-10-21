@@ -1,6 +1,6 @@
 Iron Crown @ Booster Energy
 Ability: Quark Drive
-Level: 75
+Level: 50
 Tera Type: Water
 EVs: 6 Def / 252 SpA / 252 Spe
 Timid Nature
@@ -24,7 +24,7 @@ IVs: 0 Atk / 0 Spe
 
 Iron Hands @ Sitrus Berry
 Ability: Quark Drive
-Level: 84
+Level: 50
 Tera Type: Grass
 EVs: 100 HP / 158 Atk / 252 SpD
 Brave Nature
@@ -36,7 +36,7 @@ IVs: 18 SpA / 0 Spe
 
 Cresselia (F) @ Safety Goggles
 Ability: Levitate
-Level: 72
+Level: 50
 Tera Type: Fairy
 EVs: 252 HP / 252 Atk / 6 Def
 Adamant Nature
@@ -47,7 +47,7 @@ Adamant Nature
 
 Gouging Fire @ Life Orb
 Ability: Protosynthesis
-Level: 75
+Level: 50
 Tera Type: Fire
 EVs: 6 HP / 252 Atk / 252 Spe
 Adamant Nature

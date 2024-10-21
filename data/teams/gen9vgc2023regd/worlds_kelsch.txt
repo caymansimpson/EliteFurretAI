@@ -1,6 +1,6 @@
 Chien-Pao @ Focus Sash  
 Ability: Sword of Ruin  
-Level: 50  
+Level: 50
 Tera Type: Dark  
 EVs: 252 Atk / 4 Def / 252 Spe  
 Adamant Nature  
@@ -11,7 +11,7 @@ Adamant Nature
 
 Dragapult @ Choice Band  
 Ability: Clear Body  
-Level: 61  
+Level: 50
 Tera Type: Ghost  
 EVs: 252 Atk / 4 Def / 252 Spe  
 Jolly Nature  
@@ -22,7 +22,7 @@ Jolly Nature
 
 Heatran @ Assault Vest  
 Ability: Flash Fire  
-Level: 70  
+Level: 50
 Shiny: Yes  
 Tera Type: Grass  
 EVs: 244 HP / 4 Def / 236 SpA / 12 SpD / 12 Spe  
@@ -35,7 +35,7 @@ IVs: 0 Atk
 
 Farigiraf @ Rocky Helmet  
 Ability: Armor Tail  
-Level: 50  
+Level: 50
 Tera Type: Fairy  
 EVs: 252 HP / 236 Def / 4 SpA / 4 SpD / 12 Spe  
 Modest Nature  
@@ -47,7 +47,7 @@ IVs: 0 Atk
 
 Rillaboom @ Sitrus Berry  
 Ability: Grassy Surge  
-Level: 50  
+Level: 50
 Tera Type: Poison  
 EVs: 252 HP / 116 Atk / 76 Def / 52 SpD / 12 Spe  
 Adamant Nature  
@@ -58,6 +58,7 @@ Adamant Nature
 
 Urshifu-Rapid-Strike @ Choice Scarf  
 Ability: Unseen Fist  
+Level: 50
 Tera Type: Water  
 EVs: 28 HP / 156 Atk / 4 Def / 68 SpD / 252 Spe  
 Adamant Nature  

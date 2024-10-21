@@ -1,5 +1,6 @@
 2990えん (Porygon2) @ Eviolite
 Ability: Download
+Level: 50
 Shiny: Yes
 Tera Type: Fairy
 EVs: 244 HP / 180 SpA / 86 SpD
@@ -12,7 +13,7 @@ IVs: 23 Atk
 
 ラクス (Enamorus-Therian) (F) @ Fairy Feather
 Ability: Overcoat
-Level: 70
+Level: 50
 Tera Type: Fairy
 EVs: 238 HP / 252 SpA / 20 SpD
 Quiet Nature
@@ -36,6 +37,7 @@ IVs: 19 SpA
 
 スパチャ (Gholdengo) @ Choice Specs
 Ability: Good as Gold
+Level: 50
 Tera Type: Steel
 EVs: 166 HP / 140 SpA / 204 Spe
 Modest Nature
@@ -47,7 +49,7 @@ IVs: 0 Atk
 
 ソウエン (Entei) @ Assault Vest
 Ability: Inner Focus
-Level: 70
+Level: 50
 Tera Type: Grass
 EVs: 20 HP / 196 Atk / 4 Def / 100 SpD / 190 Spe
 Adamant Nature
@@ -59,6 +61,7 @@ IVs: 9 SpA
 
 スタルキッド (Ogerpon-Cornerstone) (F) @ Cornerstone Mask
 Ability: Sturdy
+Level: 50
 Tera Type: Rock
 EVs: 252 Atk / 6 SpD / 252 Spe
 Jolly Nature

@@ -1,6 +1,6 @@
 ホムラガン (Gouging Fire) @ Booster Energy
 Ability: Protosynthesis
-Level: 77
+Level: 50
 Tera Type: Grass
 EVs: 92 HP / 164 Atk / 2 SpA / 252 Spe
 Jolly Nature
@@ -11,6 +11,7 @@ Jolly Nature
 
 こうひょうか (Okidogi) (M) @ Sitrus Berry
 Ability: Guard Dog
+Level: 50
 Tera Type: Grass
 EVs: 164 HP / 252 Atk / 94 Spe
 Adamant Nature
@@ -22,6 +23,7 @@ IVs: 20 SpA
 
 ナミジェット (Latios) (M) @ Scope Lens
 Ability: Levitate
+Level: 50
 Tera Type: Steel
 EVs: 4 HP / 2 Atk / 252 SpA / 252 Spe
 Timid Nature
@@ -33,7 +35,7 @@ IVs: 9 Atk
 
 ワスレイヌ (Chien-Pao) @ Focus Sash
 Ability: Sword of Ruin
-Level: 61
+Level: 50
 Tera Type: Stellar
 EVs: 6 HP / 252 Atk / 252 Spe
 Jolly Nature
@@ -45,6 +47,7 @@ IVs: 24 SpA
 
 たんぜん (Ogerpon-Wellspring) (F) @ Wellspring Mask
 Ability: Water Absorb
+Level: 50
 Tera Type: Water
 EVs: 206 HP / 116 Atk / 188 Spe
 Jolly Nature
@@ -55,7 +58,7 @@ Jolly Nature
 
 オウノウツワ (Ting-Lu) @ Assault Vest
 Ability: Vessel of Ruin
-Level: 62
+Level: 50
 Tera Type: Poison
 EVs: 196 HP / 236 Atk / 2 SpA / 76 SpD
 Adamant Nature

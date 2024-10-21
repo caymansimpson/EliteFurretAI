@@ -1,5 +1,7 @@
 # Utils
 
+TODO: update how it works and what it covers
+
 This folder contains the class that does Battle Inference for VGC. Development of this module requires a fair amount of mechanics studying, and thus is quite manual, and hard to maintain. It is WIP.
 
 **BattleInference**: This module uses battle logs to infer various hidden information. This is WIP. It will make the following inferences:

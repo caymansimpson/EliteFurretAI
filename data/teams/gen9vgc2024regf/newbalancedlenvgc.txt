@@ -11,6 +11,7 @@ Impish Nature
 
 Tornadus @ Covert Cloak
 Ability: Prankster
+Level: 50
 Tera Type: Steel
 EVs: 228 HP / 244 Def / 4 SpA / 4 SpD / 28 Spe
 Bold Nature
@@ -33,6 +34,7 @@ Adamant Nature
 
 Flutter Mane @ Choice Specs
 Ability: Protosynthesis
+Level: 50
 Tera Type: Fairy
 EVs: 212 HP / 132 Def / 52 SpA / 4 SpD / 108 Spe
 Modest Nature

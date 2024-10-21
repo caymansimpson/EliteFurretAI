@@ -1,6 +1,6 @@
 Kyogre @ Assault Vest  
 Ability: Drizzle  
-Level: 50  
+Level: 50
 EVs: 244 HP / 124 Def / 108 SpA / 4 SpD / 28 Spe  
 Modest Nature  
 IVs: 0 Atk  
@@ -11,7 +11,7 @@ IVs: 0 Atk
 
 Zacian-Crowned @ Rusted Sword  
 Ability: Intrepid Sword  
-Level: 50  
+Level: 50
 EVs: 220 HP / 76 Atk / 4 Def / 4 SpD / 204 Spe  
 Adamant Nature  
 - Behemoth Blade  
@@ -21,7 +21,7 @@ Adamant Nature
 
 Landorus-Therian (M) @ Life Orb  
 Ability: Intimidate  
-Level: 50  
+Level: 50
 EVs: 36 HP / 252 Atk / 12 Def / 4 SpD / 204 Spe  
 Jolly Nature  
 - Earthquake  
@@ -31,7 +31,7 @@ Jolly Nature
 
 Grimmsnarl (M) @ Babiri Berry  
 Ability: Prankster  
-Level: 50  
+Level: 50
 EVs: 244 HP / 4 Atk / 36 Def / 196 SpD / 28 Spe  
 Careful Nature  
 - Spirit Break  
@@ -41,7 +41,7 @@ Careful Nature
 
 Celesteela @ Leftovers  
 Ability: Beast Boost  
-Level: 50  
+Level: 50
 EVs: 252 HP / 52 Def / 4 SpA / 188 SpD / 12 Spe  
 Bold Nature  
 IVs: 0 Atk  
@@ -52,6 +52,7 @@ IVs: 0 Atk
 
 Thundurus @ Sharp Beak  
 Ability: Defiant  
+Level: 50
 EVs: 196 HP / 116 Atk / 20 Def / 4 SpD / 172 Spe  
 Jolly Nature  
 - Protect  

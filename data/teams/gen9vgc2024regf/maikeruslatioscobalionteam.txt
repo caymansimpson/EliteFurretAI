@@ -1,5 +1,6 @@
 Latios (M) @ Choice Specs
 Ability: Levitate
+Level: 50
 Shiny: Yes
 Tera Type: Stellar
 EVs: 6 HP / 252 SpA / 252 Spe
@@ -22,6 +23,7 @@ Impish Nature
 
 Incineroar (M) @ Ability Shield
 Ability: Intimidate
+Level: 50
 Shiny: Yes
 Tera Type: Water
 EVs: 252 HP / 6 Def / 252 SpD
@@ -57,7 +59,7 @@ IVs: 12 SpA
 
 Landorus (M) @ Choice Scarf
 Ability: Sheer Force
-Level: 80
+Level: 50
 Tera Type: Steel
 EVs: 6 HP / 252 SpA / 252 Spe
 Modest Nature

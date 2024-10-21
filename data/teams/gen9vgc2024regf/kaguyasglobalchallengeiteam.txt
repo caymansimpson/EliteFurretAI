@@ -1,5 +1,6 @@
 On Purpose (Farigiraf) (F) @ Throat Spray
 Ability: Armor Tail
+Level: 50
 Shiny: Yes
 Tera Type: Fairy
 EVs: 108 HP / 1 Atk / 45 Def / 156 SpA / 196 SpD / 4 Spe
@@ -12,7 +13,7 @@ IVs: 23 Atk
 
 Power (Tinkaton) (F) @ Assault Vest
 Ability: Mold Breaker
-Level: 93
+Level: 50
 Tera Type: Water
 EVs: 252 HP / 2 Atk / 172 Def / 84 SpD
 Jolly Nature
@@ -24,6 +25,7 @@ IVs: 25 SpA / 13 Spe
 
 Vicious (Urshifu) (M) @ Focus Sash
 Ability: Unseen Fist
+Level: 50
 Tera Type: Dark
 EVs: 6 HP / 252 Atk / 252 Spe
 Adamant Nature
@@ -35,6 +37,7 @@ IVs: 30 SpA
 
 Nibbles (Chien-Pao) @ Life Orb
 Ability: Sword of Ruin
+Level: 50
 Tera Type: Psychic
 EVs: 252 Atk / 5 Def / 1 SpD / 252 Spe
 Jolly Nature
@@ -46,7 +49,7 @@ IVs: 24 SpA
 
 Ursaluna-Bloodmoon (M) @ Safety Goggles
 Ability: Mind’s Eye
-Level: 70
+Level: 50
 Tera Type: Normal
 EVs: 252 HP / 252 SpA
 Modest Nature
@@ -58,6 +61,7 @@ IVs: 0 Atk
 
 Fast Times (Regieleki) @ Choice Band
 Ability: Transistor
+Level: 50
 Tera Type: Electric
 EVs: 252 Atk / 6 Def / 252 Spe
 Adamant Nature

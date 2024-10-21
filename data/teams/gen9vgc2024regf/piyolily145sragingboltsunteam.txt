@@ -1,5 +1,6 @@
 ユイピー (Chi-Yu) @ Focus Sash
 Ability: Beads of Ruin
+Level: 50
 Tera Type: Ghost
 EVs: 70 HP / 252 SpA / 8 SpD / 180 Spe
 Timid Nature
@@ -11,6 +12,7 @@ IVs: 26 Atk
 
 コマツニャ (Flutter Mane) @ Choice Specs
 Ability: Protosynthesis
+Level: 50
 Shiny: Yes
 Tera Type: Fairy
 EVs: 6 HP / 252 SpA / 252 Spe
@@ -23,6 +25,7 @@ IVs: 23 Atk
 
 カメカメ (Torkoal) (M) @ Eject Button
 Ability: Drought
+Level: 50
 Tera Type: Fire
 EVs: 252 HP / 6 Def / 252 SpD
 Bold Nature
@@ -34,6 +37,7 @@ IVs: 4 Atk / 28 Spe
 
 マス (Urshifu) (M) @ Black Glasses
 Ability: Unseen Fist
+Level: 50
 Tera Type: Dark
 EVs: 252 Atk / 6 Def / 252 Spe
 Jolly Nature
@@ -44,6 +48,7 @@ Jolly Nature
 
 Raging Bolt @ Booster Energy
 Ability: Protosynthesis
+Level: 50
 Tera Type: Electric
 EVs: 100 HP / 76 Def / 244 SpA / 4 SpD / 86 Spe
 Modest Nature
@@ -55,6 +60,7 @@ IVs: 20 Atk / 20 Spe
 
 Incineroar (M) @ Sitrus Berry
 Ability: Intimidate
+Level: 50
 Tera Type: Grass
 EVs: 252 HP / 100 Def / 158 SpD
 Careful Nature

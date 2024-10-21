@@ -1,6 +1,6 @@
 Iron Leader (Iron Crown) @ Booster Energy
 Ability: Quark Drive
-Level: 78
+Level: 50
 Tera Type: Water
 EVs: 158 HP / 40 Def / 108 SpA / 11 SpD / 193 Spe
 Timid Nature
@@ -11,7 +11,7 @@ Timid Nature
 
 Sana (Indeedee-F) (F) @ Safety Goggles
 Ability: Psychic Surge
-Level: 75
+Level: 50
 Tera Type: Fairy
 EVs: 252 HP / 3 Atk / 252 Def / 3 SpD
 Bold Nature
@@ -23,7 +23,7 @@ IVs: 16 Atk / 1 Spe
 
 Paul (Tornadus) (M) @ Covert Cloak
 Ability: Prankster
-Level: 86
+Level: 50
 Tera Type: Steel
 EVs: 180 HP / 44 Def / 76 SpA / 4 SpD / 206 Spe
 Timid Nature
@@ -34,6 +34,7 @@ Timid Nature
 
 Fuxing Hao (Urshifu-Rapid-Strike) (M) @ Choice Scarf
 Ability: Unseen Fist
+Level: 50
 Tera Type: Water
 EVs: 252 Atk / 6 Def / 252 Spe
 Jolly Nature
@@ -44,7 +45,7 @@ Jolly Nature
 
 Hēi Jīnyú (Chi-Yu) @ Life Orb
 Ability: Beads of Ruin
-Level: 66
+Level: 50
 Tera Type: Water
 EVs: 122 HP / 2 Atk / 60 Def / 132 SpA / 7 SpD / 187 Spe
 Timid Nature
@@ -55,7 +56,7 @@ Timid Nature
 
 Tachyon (Flutter Mane) @ Choice Specs
 Ability: Protosynthesis
-Level: 85
+Level: 50
 Tera Type: Fairy
 EVs: 192 HP / 79 Def / 84 SpA / 4 SpD / 151 Spe
 Modest Nature

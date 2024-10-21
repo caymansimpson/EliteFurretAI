@@ -44,6 +44,7 @@ Modest Nature
 
 Chien-Pao @ Focus Sash
 Ability: Sword of Ruin
+Level: 50
 Tera Type: Stellar
 EVs: 252 Atk / 4 SpD / 252 Spe
 Adamant Nature

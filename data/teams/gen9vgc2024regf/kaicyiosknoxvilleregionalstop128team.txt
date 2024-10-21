@@ -1,5 +1,6 @@
 Captain Yomi (Ursaluna-Bloodmoon) (M) @ Silk Scarf
 Ability: Mind's Eye
+Level: 50
 Tera Type: Normal
 EVs: 166 HP / 252 SpA / 92 SpD
 Quiet Nature
@@ -11,6 +12,7 @@ IVs: 10 Atk
 
 Ranni (Hatterene) (F) @ Covert Cloak
 Ability: Magic Bounce
+Level: 50
 Shiny: Yes
 Tera Type: Psychic
 EVs: 252 HP / 6 Def / 252 SpA
@@ -23,6 +25,7 @@ IVs: 21 Atk / 4 Spe
 
 MC (Indeedee-F) (F) @ Psychic Seed
 Ability: Psychic Surge
+Level: 50
 Shiny: Yes
 Tera Type: Fairy
 EVs: 252 HP / 252 Def / 6 SpD
@@ -35,6 +38,7 @@ IVs: 20 Atk / 10 Spe
 
 Jaffar (Tornadus) (M) @ Sitrus Berry
 Ability: Prankster
+Level: 50
 Tera Type: Ghost
 EVs: 252 HP / 104 Def / 126 SpA / 28 Spe
 Bold Nature
@@ -46,6 +50,7 @@ IVs: 1 Atk
 
 Perona (Flutter Mane) @ Choice Specs
 Ability: Protosynthesis
+Level: 50
 Shiny: Yes
 Tera Type: Fairy
 EVs: 60 HP / 66 Def / 252 SpA / 132 Spe
@@ -57,6 +62,7 @@ Modest Nature
 
 Wano (Chi-Yu) @ Choice Scarf
 Ability: Beads of Ruin
+Level: 50
 Tera Type: Fire
 EVs: 6 Def / 252 SpA / 252 Spe
 Modest Nature

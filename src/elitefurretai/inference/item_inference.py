@@ -4,26 +4,29 @@ This object is a companion class to BattleInference.
 """
 
 import inspect
-from typing import Any, Dict, List, Union
+from typing import Dict, List, Union
 
 from poke_env.data.gen_data import GenData
 from poke_env.data.normalize import to_id_str
 from poke_env.environment import (
+    AbstractBattle,
     Battle,
     DoubleBattle,
     Effect,
+    Field,
     Move,
     MoveCategory,
-    Observation,
     Pokemon,
+    PokemonType,
     SideCondition,
     Status,
     Target,
     Weather,
 )
 
+from elitefurretai.inference.battle_inference import BattleInference
 from elitefurretai.inference.inference_utils import (
-    copy_battle,
+    copy_bare_battle,
     get_pokemon,
     get_segments,
     get_showdown_identifier,
@@ -31,11 +34,12 @@ from elitefurretai.inference.inference_utils import (
     has_rage_powder_immunity,
     has_sandstorm_immunity,
     has_status_immunity,
+    has_unboost_immunity,
     is_grounded,
     standardize_pokemon_ident,
     update_battle,
+    battle_to_str,
 )
-from elitefurretai.inference.battle_inference import BattleInference
 
 
 class ItemInference:
@@ -43,22 +47,75 @@ class ItemInference:
         "_battle",
         "_inferences",
         "_v",
-        "_last_event",
+        "_last_tracked_event",
+        "_last_tracked_turn",
     )
 
     # We need to keep a copy of the battle state because we need to recreate the turn and conditions of the turn to parse speeds
     def __init__(
         self,
-        battle: Union[Battle, DoubleBattle],
+        battle: Union[Battle, DoubleBattle, AbstractBattle],
         inferences: BattleInference,
         verbose: int = 0,
     ):
+        self._battle = copy_bare_battle(battle)
         self._inferences: BattleInference = inferences
-        self._battle = copy_battle(battle)
         self._v = verbose
-        self._last_event = 0
+        self._last_tracked_event: int = 0
+        self._last_tracked_turn: int = -1
 
-    def check_items(self, observation: Observation):
+        if battle.teampreview:
+            self._battle.parse_request(battle.last_request)
+
+    # Update our internal tracking of the battle, and apply inferences
+    def update(self, battle: Union[Battle, DoubleBattle]):
+
+        if len(battle.observations) == 0:
+            return
+
+        # Get most recent observation
+        turn_of_events = max(battle.observations.keys())
+        obs = battle.observations[max(battle.observations.keys())]
+
+        # TODO: because of a poke_env bug, we should only do one inference per turn.
+        # So if we've already touched this turn, we're just going to update the battle
+        if (
+            (isinstance(battle.force_switch, list) and any(battle.force_switch))
+            or (isinstance(battle.force_switch, bool) and battle.force_switch)
+        ):
+            turn_of_events = battle.turn
+            obs = battle.current_observation
+
+        # Check if we've already updated
+        if (
+            (len(obs.events) > self._last_tracked_event and self._last_tracked_event > 0 and turn_of_events == self._last_tracked_turn)
+            or turn_of_events > self._last_tracked_turn
+        ):
+            # Go through speeds
+            self.check_items(obs.events, start=self._last_tracked_event)
+
+            # Parse the request to update our internal battle copy after updating
+            # the events, since the request happened right before this call
+            self._battle.parse_request(battle.last_request)
+
+            # Update tracking
+            self._last_tracked_event = len(obs.events)
+            if len(obs.events) > 0 and obs.events[-1][1] == "turn":
+                self._last_tracked_event = 0
+            self._last_tracked_turn = turn_of_events
+        elif self._v >= 2:
+            print(
+                "Warning: Tried to track items frpm events multiple times... "
+                + "Not going to do anything!\n"
+                + f"\tbattle.teampreview: {battle.teampreview}\n"
+                + f"\tbattle.force_switch: {battle.force_switch}\n"
+                + f"\tturn_of_events: {turn_of_events}\n"
+                + f"\tself._last_tracked_turn: {self._last_tracked_turn}\n"
+                + f"\tself._last_tracked_event: {self._last_tracked_event}\n"
+                + f"\tlen(obs.events): {len(obs.events)}"
+            )
+
+    def check_items(self, events: List[List[str]], start: int = 0):
         """
         Updates the inference with the latest observation
 
@@ -70,7 +127,16 @@ class ItemInference:
         if self._battle.opponent_role is None or self._battle.player_role is None:
             return
 
-        segments = get_segments(observation.events[self._last_event :])
+        # If it's the first turn, we can't infer any items
+        if self._battle.turn == 0:
+            for event in events:
+                update_battle(self._battle, event)
+            return
+
+        if self._v >= 4:
+            print(events)
+
+        segments = get_segments(events, start=start)
 
         if "init" in segments:
             for event in segments["init"]:
@@ -85,10 +151,10 @@ class ItemInference:
         if "switch" in segments:
             i = 0
             while i < len(segments["switch"]):
-                if segments["switch"][i][1] == "switch" and segments["switch"][i][
-                    2
-                ].startswith(self._battle.opponent_role):
-
+                if (
+                    segments["switch"][i][1] == "switch"
+                    and segments["switch"][i][2].startswith(self._battle.opponent_role)
+                ):
                     end = i + 1
                     while (
                         end < len(segments["switch"])
@@ -96,9 +162,11 @@ class ItemInference:
                     ):
                         end += 1
 
+                    update_battle(self._battle, segments["switch"][i])
                     self._check_opponent_switch(segments["switch"][i:end])
+                else:
+                    update_battle(self._battle, segments["switch"][i])
 
-                update_battle(self._battle, segments["switch"][i])
                 i += 1
 
         if "battle_mechanic" in segments:
@@ -107,8 +175,6 @@ class ItemInference:
 
         # Reset mons flags on switch-in, check for heavydutyboots
         # Check for covert cloak and safetygoggles
-        # TODO: check knockoff and trick or fling or move that consumes items and set flags accordingly
-        # Knock off, switcheroo, trick, fling,
         if "move" in segments:
             self._handle_moves(segments)
 
@@ -133,38 +199,41 @@ class ItemInference:
         if "preturn_switch" in segments:
             i = 0
             while i < len(segments["preturn_switch"]):
-                if segments["preturn_switch"][i][1] == "switch" and segments[
-                    "preturn_switch"
-                ][i][2].startswith(self._battle.opponent_role):
+                if (
+                    segments["preturn_switch"][i][1] == "switch"
+                    and segments["preturn_switch"][i][2].startswith(self._battle.opponent_role)
+                ):
+                    update_battle(self._battle, segments["preturn_switch"][i])
                     self._check_opponent_switch(segments["preturn_switch"][i:])
+                else:
+                    update_battle(self._battle, segments["preturn_switch"][i])
 
-                update_battle(self._battle, segments["preturn_switch"][i])
                 i += 1
 
         # If we see a turn, that means we're done with the observation and
         # we can reset last_event
         if "turn" in segments:
+            self._handle_end_of_turn()
             for event in segments["turn"]:
                 update_battle(self._battle, event)
-            self._last_event = 0
-
-        # If there's no turn, this method likely got called in the middle of
-        # a turn, in a force_switch situation. So we save where we are so that
-        # we can continue parsing from there
-        else:
-            self._last_event = len(obs.events)
 
     def _handle_moves(self, segments: Dict[str, List[List[str]]]):
+
+        # Nothing to do if battle isnt initiated
+        if self._battle.opponent_role is None or self._battle.player_role is None:
+            return
+
         i = 0
         while i < len(segments["move"]):
 
             event = segments["move"][i]
 
-            # An opponent is given an tem
+            # An opponent is given an item
             if event[1] == "-item" and event[2].startswith(self._battle.opponent_role):
                 ident = standardize_pokemon_ident(event[2])
                 item = to_id_str(event[3])
                 self._inferences.set_flag(ident, "item", item)
+                self._inferences.set_flag(ident, "screens", [])
 
                 # Reset flags if Choice is being switched
                 if item.startswith("choice"):
@@ -188,12 +257,17 @@ class ItemInference:
                 actor = standardize_pokemon_ident(event[2])
                 target = None
                 if (
-                    event[-1] != "[still]"
-                    and len(event) >= 5
-                    and event[4] not in [None, "null"]
+                    event[-1] != "[still]" and len(event) > 4
+                    and event[4] != "[still]"
+                    and event[4] not in [None, "null", ""]  # is empty string for lifedew/lunarblessing for some reason
                 ):
-                    target = standardize_pokemon_ident(event[4])
-                active_pokemon = self._battle.active_pokemon
+                    try:
+                        target = standardize_pokemon_ident(event[4])
+                    except ValueError as e:
+                        print(str(e))
+                        print(e)
+                        print(event)
+                        print(segments)
 
                 # Check for covert cloak if an eligible move is made against an opponent
                 if (
@@ -207,69 +281,26 @@ class ItemInference:
                 # Check for safetygoggles if we have a mon that has a rage powder effect and two mons out on the field;
                 # not implemented for singles
                 if (
-                    isinstance(active_pokemon, list)
+                    isinstance(self._battle.active_pokemon, list)
                     and actor.startswith(self._battle.opponent_role)
-                    and all(map(lambda x: x and not x.fainted, active_pokemon))
+                    and all(map(lambda x: x and not x.fainted, self._battle.active_pokemon))
                     and any(
                         map(
-                            lambda x: x and Effect.RAGE_POWDER in x.effects, active_pokemon
+                            lambda x: x and Effect.RAGE_POWDER in x.effects, self._battle.active_pokemon
                         )
                     )
+                    and target is not None
+                    and actor != target
                 ):
-                    index = 1
-                    if (
-                        active_pokemon[0]
-                        and Effect.RAGE_POWDER in active_pokemon[0].effects
-                    ):  # pyright: ignore
-                        index = 0
+                    self._check_rage_powder_safety_goggles(actor, target, move)
 
-                    # If the actor targets the non rage-powdered mon and doesnt have immunity, it has safetygoggles
-                    if active_pokemon[index] is None:
-                        pass
-                    elif (
-                        target
-                        and target
-                        != get_showdown_identifier(
-                            active_pokemon[index], self._battle.player_role
-                        )  # pyright: ignore
-                        and not has_rage_powder_immunity(get_pokemon(actor, self._battle))
-                        and get_pokemon(actor, self._battle).item
-                        in [None, GenData.UNKNOWN_ITEM, "safetygoggles"]
-                        and (
-                            not move.id == "snipeshot"
-                            and move.target in [Target.ANY, Target.NORMAL]
-                        )
-                    ):
-                        self._inferences.set_flag(actor, "can_be_choice", False)
-                        self._inferences.set_flag(actor, "item", "safetygoggles")
-                        self._battle.opponent_team[actor].item = "safetygoggles"
-                    elif (
-                        target
-                        and target
-                        != get_showdown_identifier(
-                            active_pokemon[index], self._battle.player_role
-                        )  # pyright: ignore
-                        and not has_rage_powder_immunity(get_pokemon(actor, self._battle))
-                        and (
-                            not move.id == "snipeshot"
-                            and move.target in [Target.ANY, Target.NORMAL]
-                        )
-                    ):
-                        raise ValueError(
-                            f"Found safetygoggles for {actor}, but it already has an item {get_pokemon(actor, self._battle).item}",
-                            self._battle,
-                            {
-                                name: value
-                                for name, value in inspect.getmembers(
-                                    self._battle.opponent_team[actor]
-                                )
-                                if not name.startswith("__") or inspect.isfunction(value)
-                            },
-                        )
+            # Note that I call update_battle before I check the opponent switch because I need
+            # the event to register to have the mon in battle.opponent_team
+            update_battle(self._battle, event)
 
             # Check for heavydutyboots and reset tracking on switches; from pivot moves
-            # This method updates iteration counter and parses batttle messages
-            elif event[1] in ["switch", "drag"] and event[2].startswith(
+            # This method updates iteration counter and parses batttle messages.
+            if event[1] in ["switch", "drag"] and event[2].startswith(
                 self._battle.opponent_role
             ):
 
@@ -283,7 +314,7 @@ class ItemInference:
 
                 self._check_opponent_switch(segments["move"][i:end])
 
-            update_battle(self._battle, event)
+            # Now I increment the events
             i += 1
 
     def _handle_end_of_turn(self):
@@ -302,10 +333,12 @@ class ItemInference:
 
         # At end of the turn, remove all the screens that have been removed from the battle
         for ident in self._battle.opponent_team:
-            for sc in [item for item in self._inferences.get_flag(ident, "screens")]:
+            screens = self._inferences.get_flag(ident, "screens")
+            for sc in [item for item in (screens if screens is not None else [])]:
                 if sc not in self._battle.opponent_side_conditions:
                     screens = self._inferences.get_flag(ident, "screens")
-                    screens.remove(sc)
+                    if screens is not None and sc in screens:
+                        screens.remove(sc)
                     self._inferences.set_flag(ident, "screens", screens)
 
         # At end of turn, check battle for screen turns. If there's a screen that lasts longer than 5,
@@ -315,7 +348,8 @@ class ItemInference:
             # set the screen and give them light clay.
             if self._battle.turn - turn_started > 5:
                 for ident in self._battle.opponent_team:
-                    if sc in self._inferences.get_flag(ident, "screens"):
+                    screens = self._inferences.get_flag(ident, "screens")
+                    if screens is not None and sc in screens:
                         if self._battle.opponent_team[ident].item in {
                             None,
                             GenData.UNKNOWN_ITEM,
@@ -323,11 +357,10 @@ class ItemInference:
                         }:
                             self._inferences.set_flag(ident, "can_be_choice", False)
                             self._inferences.set_flag(ident, "item", "lightclay")
-                            self._battle.opponent_team[ident].item = "lightclay"
                         else:
+                            print(battle_to_str(self._battle))
                             raise ValueError(
                                 f"We found lightclay but {ident} has {self._battle.opponent_team[ident].item}",
-                                self._battle,
                             )
 
     # Reset mons flags on switch-in, check for heavydutyboots
@@ -337,17 +370,17 @@ class ItemInference:
     # the battle state after the switch
     def _check_opponent_switch(self, events: List[List[str]]):
         if self._battle.opponent_role is None or self._battle.player_role is None:
+            print(battle_to_str(self._battle))
             raise ValueError(
                 "Cannot check opponent switches without roles",
-                self._battle,
             )
 
         if events[0][1] not in ["switch", "drag"] or not events[0][2].startswith(
             self._battle.opponent_role
         ):
+            print(battle_to_str(self._battle))
             raise ValueError(
                 f"Expected switch event of opponent mon, but got {events[0]} instead",
-                self._battle,
             )
 
         ident = standardize_pokemon_ident(events[0][2])
@@ -357,6 +390,62 @@ class ItemInference:
         self._inferences.set_flag(ident, "num_moves_since_switch", 0)
         self._inferences.set_flag(ident, "last_move", None)
 
+        # Check Intimidate
+        # ['', '-ability', 'p1a: Incineroar', 'Intimidate', 'boost'],
+        # ['', '-unboost', 'p2a: Whimsicott', 'atk', '1'],
+        # ['', '-unboost', 'p2b: Ogerpon', 'atk', '1']
+        if (
+            len(events) > 1 and len(events[1]) > 3 and events[1][3] == "Intimidate"
+            and events[1][2].startswith(self._battle.player_role)
+        ):
+            # We go through every opponent mon and check if they got hit, and if they did, we
+            # check if they got the secondary effect (or fainted). We go until we don't
+            if not isinstance(self._battle.opponent_active_pokemon, list):
+                raise NotImplementedError()
+            idents = [
+                get_showdown_identifier(m, self._battle.opponent_role) if m else None
+                for m in self._battle.opponent_active_pokemon
+            ]
+
+            j = 2
+            while j < len(events):
+                # We look back one event to ensure an ability (eg Stamina) or item doesn't trigger a boost
+                if events[j][1] in ["-boost", "-unboost"] and events[j][2].startswith(
+                    self._battle.opponent_role
+                ):
+                    if standardize_pokemon_ident(events[j][2]) in idents:
+                        idents.remove(standardize_pokemon_ident(events[j][2]))
+
+                j += 1
+
+            # Remove any mons that are immune to Intimidate
+            for mon_ident in idents[:]:
+                if mon_ident is None:
+                    idents.remove(mon_ident)
+                elif has_unboost_immunity(mon_ident, 'atk', self._battle):
+                    idents.remove(mon_ident)
+                elif (
+                    get_pokemon(mon_ident, self._battle).ability == "innerfocus"
+                    or (
+                        get_pokemon(mon_ident, self._battle).ability is None
+                        and "innerfocus" in get_pokemon(mon_ident, self._battle).possible_abilities
+                    )
+                ):
+                    idents.remove(mon_ident)
+
+            # If there's a mon left. It has clear amulet. Otherwise, we know other mons arent
+            if len(idents) > 0 and idents[0]:
+                self._inferences.set_flag(idents[0], "can_be_choice", False)
+                self._inferences.set_flag(idents[0], "item", "clearamulet")
+                self._inferences.set_flag(idents[0], "clearamulet_or_covertcloak", True)
+            else:
+                for m in self._battle.opponent_active_pokemon:
+                    if m is not None:
+                        mon_ident = get_showdown_identifier(m, self._battle.opponent_role)
+                        if mon_ident not in idents and not has_unboost_immunity(mon_ident, 'atk', self._battle):
+                            self._inferences.set_flag(mon_ident, "clearamulet_or_covertcloak", False)
+
+        # Check HeavyDutyBoots
         immune_to_spikes = (
             not is_grounded(ident, self._battle)
             or mon.ability == "magicguard"
@@ -367,7 +456,7 @@ class ItemInference:
             ident, self._battle
         ) or has_status_immunity(ident, Status.PSN, self._battle)
 
-        immune_to_rocks = mon.ability == "magicguard" or (
+        immune_to_rocks = (mon.ability == "magicguard") or (
             mon.ability is None and "magicguard" in mon.possible_abilities
         )
 
@@ -414,9 +503,9 @@ class ItemInference:
             GenData.UNKNOWN_ITEM,
             "heavydutyboots",
         }:
+            print(battle_to_str(self._battle))
             raise ValueError(
                 f"We found Heavy Duty Boots but {ident} has {mon.item}",
-                self._battle,
                 {
                     name: value
                     for name, value in inspect.getmembers(
@@ -428,26 +517,91 @@ class ItemInference:
         elif has_heavy_duty_boots:
             self._inferences.set_flag(ident, "can_be_choice", False)
             self._inferences.set_flag(ident, "item", "heavydutyboots")
-            self._battle.opponent_team[ident].item = "heavydutyboots"
+
+    def _check_rage_powder_safety_goggles(self, actor: str, target: str, move: Move):
+
+        # Not implemented for singles
+        if not isinstance(self._battle, DoubleBattle):
+            raise NotImplementedError()
+
+        active_pokemon = self._battle.active_pokemon
+        index = 1
+        if (
+            active_pokemon[0]
+            and Effect.RAGE_POWDER in active_pokemon[0].effects
+        ):
+            index = 0
+
+        is_rage_powder_immune = has_rage_powder_immunity(get_pokemon(actor, self._battle))
+        if move.target in [Target.ALL, Target.SELF, Target.ALL_ADJACENT, Target.ALL_ADJACENT_FOES, Target.ALLIES, Target.ALLY_SIDE, Target.FOE_SIDE]:
+            is_rage_powder_immune = True
+        if move.id == "snipeshot" and move.target in [Target.ANY, Target.NORMAL]:
+            is_rage_powder_immune = True
+        if (
+                move.id == "terastarstorm"
+                and PokemonType.STELLAR in self._battle.opponent_team[actor].types
+        ):
+            is_rage_powder_immune = True
+        if (
+            move.id == "expandingforce" and Field.PSYCHIC_TERRAIN in self._battle.fields
+        ):
+            is_rage_powder_immune = True
+        if active_pokemon[1 - index] and Effect.FOLLOW_ME in active_pokemon[1 - index].effects:  # pyright: ignore
+            is_rage_powder_immune = True
+
+        # If the actor targets the non rage-powdered mon and doesnt have immunity, it has safetygoggles
+        if (
+            active_pokemon[index] is not None and target is not None
+            and target
+            != get_showdown_identifier(
+                active_pokemon[index], self._battle.player_role  # pyright: ignore
+            )
+            and not is_rage_powder_immune
+            and get_pokemon(actor, self._battle).item
+            in [None, GenData.UNKNOWN_ITEM, "safetygoggles"]
+        ):
+            self._inferences.set_flag(actor, "can_be_choice", False)
+            self._inferences.set_flag(actor, "item", "safetygoggles")
+        elif (
+            active_pokemon[index] is not None and target is not None
+            and target
+            != get_showdown_identifier(
+                active_pokemon[index], self._battle.player_role  # pyright: ignore
+            )
+            and not is_rage_powder_immune
+        ):
+            print(battle_to_str(self._battle))
+            raise ValueError(
+                f"Found safetygoggles for {actor}, but it already has an item {get_pokemon(actor, self._battle).item}",
+                {
+                    name: value
+                    for name, value in inspect.getmembers(
+                        self._battle.opponent_team[actor]
+                    )
+                    if not name.startswith("__") or inspect.isfunction(value)
+                },
+            )
 
     # Updates move tracking; checks for choice items, and looks for screen_setting
     def _update_move_tracking(self, events: List[List[str]], i: int):
+
+        # Nothing to do if battle isnt initiated
         if self._battle.opponent_role is None or self._battle.player_role is None:
-            raise ValueError(
-                "Cannot update move tracking without roles",
-                self._battle,
-            )
+            return
 
         ident = standardize_pokemon_ident(events[i][2])
         if ident.startswith(self._battle.opponent_role):
             # Move tracking for AI
+            num_moved = self._inferences.get_flag(ident, "num_moved")
             self._inferences.set_flag(
-                ident, "num_moved", self._inferences.get_flag(ident, "num_moved") + 1
+                ident, "num_moved", (num_moved if num_moved is not None else 0) + 1
             )
+
+            nummoves_since_switch = self._inferences.get_flag(ident, "num_moves_since_switch")
             self._inferences.set_flag(
                 ident,
                 "num_moves_since_switch",
-                self._inferences.get_flag(ident, "num_moves_since_switch") + 1,
+                (nummoves_since_switch if nummoves_since_switch is not None else 0) + 1,
             )
 
             # Check choice; mon can struggle if out of PP or Disabled
@@ -466,18 +620,28 @@ class ItemInference:
                 len(events) > i + 1 and events[i + 1][1] == "-fail"
             ):
                 screens = self._inferences.get_flag(ident, "screens")
-                screens.append(SideCondition.from_showdown_message(events[i][3]))
-                self._inferences.set_flag(ident, "screens", screens)
+                if screens is not None:
+                    screens.append(SideCondition.from_showdown_message(events[i][3]))
+                    self._inferences.set_flag(ident, "screens", screens)
 
     # Checks a series of events for covert cloak. Does not read events. This may fail with ejectpack;
     # I have not tested it with this yet
     def _check_covert_cloak(self, events: List[List[str]], i: int):
         if self._battle.opponent_role is None or self._battle.player_role is None:
+            print(battle_to_str(self._battle))
             raise ValueError(
                 "Cannot check for covert cloak without roles",
-                self._battle,
+            )
+        elif events[i][1] != "move":
+            print(battle_to_str(self._battle))
+            raise ValueError(
+                f"Checking for Covert Cloak {events[i]}, but the first event is not a move"
+                + "and this is not expected behavior",
+                events,
+                i
             )
 
+        actor = events[i][2]
         move = Move(to_id_str(events[i][3]), self._battle.gen)
 
         # Means move didnt activate; showdown is not animating this
@@ -490,9 +654,9 @@ class ItemInference:
             or move.secondary[0].get("chance", 0) != 100
             or target not in self._battle.opponent_team
         ):
+            print(battle_to_str(self._battle))
             raise ValueError(
                 f"Checking for Covert Cloak {events[i]}, but the event shouldn't trigger checking",
-                self._battle,
                 events,
             )
 
@@ -524,50 +688,62 @@ class ItemInference:
 
             # We go through every opponent mon and check if they got hit, and if they did, we
             # check if they got the secondary effect (or fainted). We go until we don't
-            idents = []
-            j = i
-            while j <= end and events[j][1] in [
-                "-damage",
-                "-boost",
-                "-unboost",
-                "-resisted",
-                "-immune",
-                "faint",
-                "-supereffective",
-                "-crit",
-                "-miss",
-            ]:
-                if events[j][1] == "-damage" and events[j][2].startswith(
-                    self._battle.opponent_role
+            idents, affected, ineligible = [], [], []
+            boost_types = move.secondary[0]["boosts"].keys()
+            j = i + 1
+            while j < end:
+                if (
+                    events[j][1] == "-damage" and events[j][2].startswith(self._battle.opponent_role)
+                    and events[j][2] != actor  # can happen if I self-attack and I damage with Rocky Helmet
                 ):
                     idents.append(standardize_pokemon_ident(events[j][2]))
 
                 # We look back one event to ensure an ability (eg Stamina) or item doesn't trigger a boost
                 elif events[j][1] in ["-boost", "-unboost"] and events[j][2].startswith(
                     self._battle.opponent_role
+                ) and events[j][2] != actor:
+                    affected.append(standardize_pokemon_ident(events[j][2]))
+
+                # If a mon faints, then it's ineligible to be considered
+                elif (
+                    events[j][1] == "faint" and events[j][2].startswith(self._battle.opponent_role)
+                    and events[j][2] != actor
                 ):
-                    idents.remove(standardize_pokemon_ident(events[j][2]))
-                elif events[j][1] in ["faint"] and events[j][2].startswith(
-                    self._battle.opponent_role
-                ):
-                    idents.remove(standardize_pokemon_ident(events[j][2]))
+                    ineligible.append(standardize_pokemon_ident(events[j][2]))
 
                 j += 1
 
+            # Store original idents so we can know who didn't pass
+            orig_idents = idents[:]
+            for ident in orig_idents:
+                for boost_type in boost_types:
+                    if (
+                        has_unboost_immunity(ident, boost_type, self._battle)
+                        or ident in ineligible
+                        or ident in affected
+                    ):
+                        idents.remove(ident)
+
             # This means that we get an ident that took damage, but didn't get a (un)boost
             if len(idents) > 0:
+
+                # We don't know if what we're seeing is a clear amulet or a covert cloak
                 if (
-                    not self._opp_has_item(idents[0])
-                    or self._battle.opponent_team[idents[0]].item == "covertcloak"
+                    (
+                        not self._opp_has_item(idents[0])
+                        or self._inferences.get_flag(idents[0], "item") == "covertcloak"
+                        or self._inferences.get_flag(idents[0], "item") == "clearamulet"
+                    )
+                    and self._inferences.get_flag(idents[0], "clearamulet_or_covertcloak") in [True, None]
                 ):
                     self._inferences.set_flag(idents[0], "can_be_choice", False)
-                    self._inferences.set_flag(idents[0], "item", "covertcloak")
-                    self._battle.opponent_team[idents[0]].item = "covertcloak"
+                    self._inferences.set_flag(idents[0], "clearamulet_or_covertcloak", True)
                 else:
+                    print(battle_to_str(self._battle))
                     raise ValueError(
-                        f"We found Covert Cloak but {idents[0]} has {self._battle.opponent_team[idents[0]].item}",
-                        self._battle,
+                        f"We found Covert Cloak/Clear Amulet but {idents[0]} has {self._battle.opponent_team[idents[0]].item}",
                         events,
+                        self._inferences.get_flag(idents[0], "clearamulet_or_covertcloak"),
                         {
                             name: value
                             for name, value in inspect.getmembers(
@@ -576,6 +752,11 @@ class ItemInference:
                             if not name.startswith("__")
                         },
                     )
+
+            # Confirm that mons that did get hit with the unboosts dont have either item
+            for ident in orig_idents:
+                if ident in affected:
+                    self._inferences.set_flag(ident, "clearamulet_or_covertcloak", False)
 
         # Check to see if someone has been damaged and if there is no status. If there is no status
         # this means that a mon has covert cloak. Note that this will fail if there is a move that
@@ -595,11 +776,11 @@ class ItemInference:
             ):
                 self._inferences.set_flag(target, "can_be_choice", False)
                 self._inferences.set_flag(target, "item", "covertcloak")
-                self._battle.opponent_team[target].item = "covertcloak"
+                self._inferences.set_flag(target, "clearamulet_or_covertcloak", True)
             else:
+                print(battle_to_str(self._battle))
                 raise ValueError(
                     f"We found Covert Cloak but {target} has {self._battle.opponent_team[target].item}",
-                    self._battle,
                     events,
                     {
                         name: value
@@ -613,16 +794,17 @@ class ItemInference:
         # |-start|p1a: Amoonguss|Salt Cure
         elif (
             key == "saltcure"  # Salt Cure was used
-            and events[i + 1][1] == "-damage"
-            and events[i + 1][2] == target  # It hits
+            and events[i + 1][1] == "-damage"  # it hits
+            and standardize_pokemon_ident(events[i + 1][2]) == target  # It hits our mon
             and not any(
                 events[j][1] in ["-start", "faint"] and events[j][-1] == "Salt Cure"
                 for j in range(i, end)
             )  # we didn't faint or salt cure didnt activate
-            and Effect.SALT_CURE
-            not in self._battle.opponent_team[
-                target
-            ].effects  # we already didn't have salt cure
+            and Effect.SALT_CURE not in self._battle.opponent_team[target].effects  # we already didn't have salt cure
+            and not any(
+                events[j][1] in ["switch", "drag"] and events[j][2].startswith(events[i][4][:3])
+                for j in range(i, len(events))
+            )  # we didn't switch out
         ):
             if (
                 not self._opp_has_item(target)
@@ -630,11 +812,11 @@ class ItemInference:
             ):
                 self._inferences.set_flag(target, "can_be_choice", False)
                 self._inferences.set_flag(target, "item", "covertcloak")
-                self._battle.opponent_team[target].item = "covertcloak"
+                self._inferences.set_flag(target, "clearamulet_or_covertcloak", True)
             else:
+                print(battle_to_str(self._battle))
                 raise ValueError(
                     f"We found Covert Cloak but {target} has {self._battle.opponent_team[target].item}",
-                    self._battle,
                     events,
                     {
                         name: value
@@ -684,11 +866,11 @@ class ItemInference:
                     ):
                         self._inferences.set_flag(target, "can_be_choice", False)
                         self._inferences.set_flag(target, "item", "covertcloak")
-                        self._battle.opponent_team[target].item = "covertcloak"
+                        self._inferences.set_flag(target, "clearamulet_or_covertcloak", True)
                     else:
+                        print(battle_to_str(self._battle))
                         raise ValueError(
                             f"We found Covert Cloak but {target} has {self._battle.opponent_team[target].item}",
-                            self._battle,
                             events,
                             {
                                 name: value
@@ -704,6 +886,7 @@ class ItemInference:
     # Goes through residuals and looks for mons who should be hit by sandstorm, but aren't
     def _check_residuals_for_safety_goggles(self, events: List[List[str]]):
         if self._battle.opponent_role is None:
+            print(battle_to_str(self._battle))
             raise ValueError(
                 "Cannot check for SafetyGoggles without an opponent role", self._battle
             )
@@ -749,13 +932,12 @@ class ItemInference:
                 # We found SafetyGoggles, but we need to make sure the mon has it
                 self._inferences.set_flag(opp_actives[0], "can_be_choice", False)
                 self._inferences.set_flag(opp_actives[0], "item", "safetygoggles")
-                self._battle.opponent_team[opp_actives[0]].item = "safetygoggles"
 
             elif len(opp_actives) > 1:
                 # This technically could happen if we trick SafetyGoogles, and had another Safetygoggles during a sandstorm
+                print(battle_to_str(self._battle))
                 raise ValueError(
                     f"Only at max one expected pokemon can not be affected by Sandstorm, but got {opp_actives}",
-                    self._battle,
                     events,
                 )
             elif (
@@ -763,9 +945,9 @@ class ItemInference:
                 and self._opp_has_item(opp_actives[0])
                 and self._battle.opponent_team[opp_actives[0]].item != "safetygoggles"
             ):
+                print(battle_to_str(self._battle))
                 raise ValueError(
                     f"We found SafetyGoggles but {opp_actives[0]} has {self._battle.opponent_team[opp_actives[0]].item}",
-                    self._battle,
                     events,
                     {
                         name: value

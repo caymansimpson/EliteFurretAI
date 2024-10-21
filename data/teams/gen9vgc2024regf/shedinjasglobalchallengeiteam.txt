@@ -1,5 +1,6 @@
 Flutter Mane @ Choice Specs
 Ability: Protosynthesis
+Level: 50
 Shiny: Yes
 Tera Type: Fairy
 EVs: 28 HP / 252 Def / 76 SpA / 4 SpD / 150 Spe
@@ -24,6 +25,7 @@ IVs: 20 SpA
 
 Chien-Pao @ Focus Sash
 Ability: Sword of Ruin
+Level: 50
 Tera Type: Ghost
 EVs: 252 Atk / 6 Def / 252 Spe
 Jolly Nature
@@ -34,6 +36,7 @@ Jolly Nature
 
 Dragonite (F) @ Life Orb
 Ability: Inner Focus
+Level: 50
 Shiny: Yes
 Tera Type: Normal
 EVs: 100 HP / 230 Atk / 60 Def / 4 SpD / 116 Spe
@@ -46,6 +49,7 @@ IVs: 5 SpA
 
 Entei @ Assault Vest
 Ability: Inner Focus
+Level: 50
 Shiny: Yes
 Tera Type: Grass
 EVs: 132 HP / 196 Atk / 44 Def / 4 SpD / 134 Spe
@@ -57,6 +61,7 @@ Adamant Nature
 
 Ting-Lu @ Sitrus Berry
 Ability: Vessel of Ruin
+Level: 50
 Tera Type: Poison
 EVs: 204 HP / 4 Atk / 118 Def / 180 SpD / 4 Spe
 Impish Nature

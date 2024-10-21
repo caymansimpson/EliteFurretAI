@@ -1,6 +1,6 @@
 はるよこい (Flutter Mane) @ Booster Energy
 Ability: Protosynthesis
-Level: 84
+Level: 50
 Tera Type: Fairy
 EVs: 54 HP / 220 Def / 108 SpA / 4 SpD / 124 Spe
 Timid Nature
@@ -12,7 +12,7 @@ IVs: 6 Atk
 
 ハーゲンダツ (Baxcalibur) (F) @ Loaded Dice
 Ability: Thermal Exchange
-Level: 75
+Level: 50
 Tera Type: Poison
 EVs: 6 HP / 252 Atk / 252 Spe
 Adamant Nature
@@ -34,6 +34,7 @@ Modest Nature
 
 かいばランド (Landorus) (M) @ Life Orb
 Ability: Sheer Force
+Level: 50
 Tera Type: Poison
 EVs: 6 HP / 252 SpA / 252 Spe
 Timid Nature
@@ -44,6 +45,7 @@ Timid Nature
 
 みずばしら (Urshifu-Rapid-Strike) (M) @ Choice Scarf
 Ability: Unseen Fist
+Level: 50
 Tera Type: Water
 EVs: 141 HP / 156 Atk / 1 Def / 212 Spe
 Adamant Nature
@@ -55,7 +57,7 @@ IVs: 18 SpA
 
 ブリジストン (Archaludon) (F) @ Assault Vest
 Ability: Stamina
-Level: 70
+Level: 50
 Tera Type: Fairy
 EVs: 252 HP / 4 Def / 116 SpA / 78 SpD / 60 Spe
 Modest Nature

@@ -1,6 +1,6 @@
 Iron Shield (Iron Boulder) @ Booster Energy
 Ability: Quark Drive
-Level: 78
+Level: 50
 Tera Type: Fighting
 EVs: 252 HP / 62 Atk / 22 Def / 58 SpD / 116 Spe
 Jolly Nature
@@ -12,6 +12,7 @@ IVs: 20 SpA
 
 Whimsicott (M) @ Covert Cloak
 Ability: Prankster
+Level: 50
 Tera Type: Grass
 EVs: 4 HP / 252 SpA / 252 Spe
 Timid Nature
@@ -23,7 +24,7 @@ IVs: 12 Atk
 
 Aleczandra (Ogerpon-Wellspring) (F) @ Wellspring Mask
 Ability: Water Absorb
-Level: 70
+Level: 50
 Tera Type: Water
 EVs: 122 HP / 172 Atk / 24 Def / 94 SpD / 98 Spe
 Adamant Nature
@@ -35,7 +36,7 @@ IVs: 20 SpA
 
 Bīng Māo (Chien-Pao) @ Focus Sash
 Ability: Sword of Ruin
-Level: 73
+Level: 50
 Tera Type: Ghost
 EVs: 5 HP / 252 Atk / 1 SpA / 252 Spe
 Jolly Nature
@@ -47,6 +48,7 @@ IVs: 22 SpA
 
 Timmy Hansen (Entei) @ Assault Vest
 Ability: Inner Focus
+Level: 50
 Tera Type: Normal
 EVs: 70 HP / 188 Atk / 252 Spe
 Jolly Nature
@@ -57,6 +59,7 @@ Jolly Nature
 
 Shroom Ball (Amoonguss) (F) @ Sitrus Berry
 Ability: Regenerator
+Level: 50
 Tera Type: Water
 EVs: 252 HP / 2 Atk / 106 Def / 150 SpD
 Sassy Nature

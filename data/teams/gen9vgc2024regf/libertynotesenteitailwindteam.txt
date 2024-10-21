@@ -1,6 +1,6 @@
 Chien-Pao @ Focus Sash
 Ability: Sword of Ruin
-Level: 60
+Level: 50
 Tera Type: Stellar
 EVs: 252 Atk / 6 Def / 252 Spe
 Adamant Nature
@@ -11,7 +11,7 @@ Adamant Nature
 
 Entei @ Choice Band
 Ability: Inner Focus
-Level: 70
+Level: 50
 Tera Type: Normal
 EVs: 6 HP / 252 Atk / 252 Spe
 Adamant Nature
@@ -46,7 +46,7 @@ Adamant Nature
 
 Tornadus (M) @ Rocky Helmet
 Ability: Prankster
-Level: 77
+Level: 50
 Tera Type: Ghost
 EVs: 244 HP / 180 Def / 4 SpA / 38 SpD / 44 Spe
 Timid Nature
@@ -58,7 +58,7 @@ IVs: 1 Atk
 
 Flutter Mane @ Choice Specs
 Ability: Protosynthesis
-Level: 91
+Level: 50
 Tera Type: Fairy
 EVs: 4 HP / 124 Def / 126 SpA / 4 SpD / 252 Spe
 Timid Nature

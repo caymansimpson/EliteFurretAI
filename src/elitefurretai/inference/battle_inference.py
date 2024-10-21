@@ -3,22 +3,24 @@
 """
 
 import math
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, Optional, Union
 
 from poke_env.data.gen_data import GenData
-from poke_env.environment import Battle, DoubleBattle, Pokemon
+from poke_env.environment import Battle, DoubleBattle, Pokemon, AbstractBattle
 from poke_env.stats import compute_raw_stats
 
-from elitefurretai.inference.inference_utils import get_showdown_identifier, battle_to_str
+from elitefurretai.inference.inference_utils import battle_to_str
 
 _FLAGS = {
     "has_status_move": False,  # Assault Vest Flag
-    "can_be_choice": True,  # Choice Flag
-    "last_move": None,  # Check Choice
+    "can_be_choice": True,  # Fo checking Choice
+    "last_move": None,  # For checking Choice
     "item": GenData.UNKNOWN_ITEM,
     "num_moves_since_switch": 0,  # Check Choice probs
     "num_moved": 0,
     "screens": [],  # Check Light Clay
+    "clearamulet_or_covertcloak": None,
+    "debug_item_found_turn": -1,  # TODO: debugging; need to remove
     # Currently not checked, since we don't have a reverse damage calculator
     "1.2atk": 0,
     "1.5atk": 0,
@@ -38,8 +40,8 @@ class BattleInference:
         "_opponent_mons",
     )
 
-    def __init__(self, battle: Union[Battle, DoubleBattle]):
-        self._battle: Union[Battle, DoubleBattle] = battle
+    def __init__(self, battle: Union[Battle, DoubleBattle, AbstractBattle]):
+        self._battle: Union[Battle, DoubleBattle, AbstractBattle] = battle
 
         # Showdown identifier to flags
         self._opponent_mons: Dict[str, Any] = {}

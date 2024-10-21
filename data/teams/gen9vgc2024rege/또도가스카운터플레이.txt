@@ -1,5 +1,6 @@
 Regieleki @ Magnet
 Ability: Transistor
+Level: 50
 Tera Type: Ghost
 EVs: 252 SpA / 4 SpD / 252 Spe
 Timid Nature
@@ -11,6 +12,7 @@ IVs: 0 Atk
 
 Flutter Mane @ Choice Specs
 Ability: Protosynthesis
+Level: 50
 Tera Type: Grass
 EVs: 68 HP / 140 Def / 132 SpA / 4 SpD / 164 Spe
 Timid Nature
@@ -33,6 +35,7 @@ Adamant Nature
 
 Roaring Moon @ Booster Energy
 Ability: Protosynthesis
+Level: 50
 Tera Type: Flying
 EVs: 60 HP / 140 Atk / 180 Def / 4 SpD / 124 Spe
 Adamant Nature
@@ -43,6 +46,7 @@ Adamant Nature
 
 Weezing @ Shuca Berry
 Ability: Neutralizing Gas
+Level: 50
 Tera Type: Fire
 EVs: 52 HP / 204 SpA / 252 Spe
 Timid Nature
@@ -53,7 +57,7 @@ Timid Nature
 
 Landorus-Therian @ Choice Scarf
 Ability: Intimidate
-Level: 80
+Level: 50
 Tera Type: Flying
 EVs: 84 HP / 76 Atk / 4 Def / 132 SpD / 212 Spe
 Adamant Nature

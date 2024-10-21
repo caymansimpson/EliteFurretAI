@@ -58,7 +58,7 @@ Impish Nature
 
 Kenjaku (Clefairy) @ Eviolite
 Ability: Cute Charm
-Level: 62
+Level: 50
 Tera Type: Grass
 EVs: 252 HP / 212 Def / 44 SpD
 Sassy Nature

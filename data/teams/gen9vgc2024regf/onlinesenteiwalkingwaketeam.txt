@@ -1,6 +1,6 @@
 Chien-Pao @ Focus Sash
 Ability: Sword of Ruin
-Level: 60
+Level: 50
 Tera Type: Stellar
 EVs: 252 Atk / 6 SpD / 252 Spe
 Jolly Nature
@@ -23,6 +23,7 @@ Adamant Nature
 
 Tornadus (M) @ Covert Cloak
 Ability: Prankster
+Level: 50
 Tera Type: Steel
 EVs: 252 HP / 204 Def / 52 Spe
 Timid Nature
@@ -33,6 +34,7 @@ Timid Nature
 
 Flutter Mane @ Choice Specs
 Ability: Protosynthesis
+Level: 50
 Shiny: Yes
 Tera Type: Fairy
 EVs: 134 HP / 252 Def / 4 SpA / 4 SpD / 116 Spe
@@ -45,7 +47,7 @@ IVs: 3 Atk
 
 Rillaboom (F) @ Assault Vest
 Ability: Grassy Surge
-Level: 60
+Level: 50
 Shiny: Yes
 Tera Type: Fire
 EVs: 172 HP / 252 Atk / 4 Def / 30 SpD / 52 Spe
@@ -57,7 +59,7 @@ Adamant Nature
 
 Walking Wake @ Mystic Water
 Ability: Protosynthesis
-Level: 75
+Level: 50
 Tera Type: Water
 EVs: 6 HP / 252 SpA / 252 Spe
 Naive Nature

@@ -1,6 +1,6 @@
 Gholdengo @ Choice Specs
 Ability: Good as Gold
-Level: 77
+Level: 50
 Tera Type: Steel
 EVs: 180 HP / 84 Def / 156 SpA / 6 SpD / 84 Spe
 Modest Nature
@@ -12,6 +12,7 @@ IVs: 0 Atk
 
 Tornadus (M) @ Focus Sash
 Ability: Prankster
+Level: 50
 Tera Type: Ghost
 EVs: 30 HP / 44 Def / 180 SpA / 4 SpD / 252 Spe
 Timid Nature
@@ -22,7 +23,7 @@ Timid Nature
 
 全テヲ穿ツ者 (Urshifu-Rapid-Strike) (M) @ Mystic Water
 Ability: Unseen Fist
-Level: 77
+Level: 50
 Tera Type: Steel
 EVs: 140 HP / 244 Atk / 126 Spe
 Adamant Nature
@@ -33,6 +34,7 @@ Adamant Nature
 
 おじいさん。 (Landorus) (M) @ Life Orb
 Ability: Sheer Force
+Level: 50
 Shiny: Yes
 Tera Type: Steel
 EVs: 86 HP / 44 Def / 124 SpA / 4 SpD / 252 Spe
@@ -44,7 +46,7 @@ Timid Nature
 
 Rillaboom (M) @ Assault Vest
 Ability: Grassy Surge
-Level: 77
+Level: 50
 Tera Type: Fire
 EVs: 236 HP / 156 Atk / 6 Def / 44 SpD / 68 Spe
 Adamant Nature
@@ -55,7 +57,7 @@ Adamant Nature
 
 Raging Bolt @ Booster Energy
 Ability: Protosynthesis
-Level: 77
+Level: 50
 Tera Type: Fairy
 EVs: 76 HP / 4 Def / 188 SpA / 6 SpD / 236 Spe
 Modest Nature

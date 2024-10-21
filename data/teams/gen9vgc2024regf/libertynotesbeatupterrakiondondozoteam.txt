@@ -12,6 +12,7 @@ IVs: 1 Atk
 
 Terrakion @ Clear Amulet
 Ability: Justified
+Level: 50
 Tera Type: Grass
 EVs: 6 HP / 252 Atk / 252 Spe
 Jolly Nature
@@ -23,7 +24,7 @@ IVs: 21 SpA
 
 Dondozo (F) @ Leftovers
 Ability: Unaware
-Level: 65
+Level: 50
 Tera Type: Flying
 EVs: 6 HP / 252 Atk / 252 Spe
 Adamant Nature
@@ -46,6 +47,7 @@ IVs: 17 Atk
 
 Flutter Mane @ Booster Energy
 Ability: Protosynthesis
+Level: 50
 Shiny: Yes
 Tera Type: Stellar
 EVs: 230 HP / 4 Def / 188 SpA / 4 SpD / 84 Spe
@@ -58,6 +60,7 @@ IVs: 8 Atk
 
 Chi-Yu @ Focus Sash
 Ability: Beads of Ruin
+Level: 50
 Tera Type: Fire
 EVs: 6 HP / 252 SpA / 252 Spe
 Modest Nature

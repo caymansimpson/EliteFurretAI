@@ -13,6 +13,7 @@ IVs: 0 Atk / 0 Spe
 
 紫竽敲可愛 (Hatterene) (F) @ Life Orb
 Ability: Magic Bounce
+Level: 50
 Shiny: Yes
 Tera Type: Water
 EVs: 214 HP / 44 Def / 252 SpA
@@ -51,6 +52,7 @@ IVs: 0 Spe
 
 紫竽好可愛 (Lilligant-Hisui) (F) @ Focus Sash
 Ability: Chlorophyll
+Level: 50
 Shiny: Yes
 Tera Type: Ghost
 EVs: 6 HP / 252 Atk / 252 Spe

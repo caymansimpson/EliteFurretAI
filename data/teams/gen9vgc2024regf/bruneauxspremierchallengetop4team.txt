@@ -1,6 +1,6 @@
 FleetwoodMac (Archaludon) (F) @ Assault Vest
 Ability: Stamina
-Level: 63
+Level: 50
 Shiny: Yes
 Tera Type: Fairy
 EVs: 252 HP / 12 Def / 124 SpA / 116 SpD / 4 Spe
@@ -13,7 +13,7 @@ IVs: 9 Atk
 
 Tusk (Araquanid) (F) @ Clear Amulet
 Ability: Water Bubble
-Level: 56
+Level: 50
 Tera Type: Water
 EVs: 252 HP / 252 Atk / 4 SpD
 Adamant Nature
@@ -37,7 +37,7 @@ IVs: 0 Atk / 2 Spe
 
 Mirage (Farigiraf) (M) @ Safety Goggles
 Ability: Armor Tail
-Level: 56
+Level: 50
 Tera Type: Fairy
 EVs: 180 HP / 76 Def / 252 SpD
 Quiet Nature
@@ -49,7 +49,7 @@ IVs: 0 Atk / 0 Spe
 
 The Dance (Incineroar) (M) @ Sitrus Berry
 Ability: Intimidate
-Level: 71
+Level: 50
 Tera Type: Grass
 EVs: 236 HP / 4 Atk / 156 Def / 76 SpD / 36 Spe
 Impish Nature

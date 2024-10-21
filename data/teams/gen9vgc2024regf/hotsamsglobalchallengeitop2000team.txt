@@ -1,6 +1,6 @@
 Scizor (F) @ Expert Belt
 Ability: Technician
-Level: 75
+Level: 50
 Tera Type: Dragon
 EVs: 220 HP / 116 Atk / 76 Def / 60 SpD / 38 Spe
 Adamant Nature
@@ -11,7 +11,7 @@ Adamant Nature
 
 Araquanid (F) @ Clear Amulet
 Ability: Water Bubble
-Level: 65
+Level: 50
 Shiny: Yes
 Tera Type: Water
 EVs: 238 HP / 252 Atk / 20 Def
@@ -24,6 +24,7 @@ IVs: 7 Spe
 
 Regieleki @ Focus Sash
 Ability: Transistor
+Level: 50
 Tera Type: Ice
 EVs: 100 HP / 4 Def / 150 SpA / 12 SpD / 244 Spe
 Modest Nature
@@ -46,7 +47,7 @@ IVs: 8 SpA
 
 Landorus (M) @ Life Orb
 Ability: Sheer Force
-Level: 80
+Level: 50
 Tera Type: Poison
 EVs: 132 HP / 4 Def / 102 SpA / 20 SpD / 252 Spe
 Timid Nature
@@ -58,7 +59,7 @@ IVs: 23 Atk
 
 Flutter Mane @ Booster Energy
 Ability: Protosynthesis
-Level: 84
+Level: 50
 Tera Type: Fairy
 EVs: 126 HP / 10 Def / 252 SpA / 4 SpD / 116 Spe
 Timid Nature

@@ -1,6 +1,6 @@
 Gholdengo @ Iron Plate
 Ability: Good as Gold
-Level: 56
+Level: 50
 Tera Type: Steel
 EVs: 196 HP / 140 Def / 52 SpA / 4 SpD / 116 Spe
 Modest Nature
@@ -12,6 +12,7 @@ IVs: 0 Atk
 
 Regidrago @ Draco Plate
 Ability: Dragon's Maw
+Level: 50
 Tera Type: Steel
 EVs: 4 HP / 36 Def / 252 SpA / 20 SpD / 196 Spe
 Modest Nature
@@ -46,7 +47,7 @@ Adamant Nature
 
 Tornadus (M) @ Rocky Helmet
 Ability: Prankster
-Level: 77
+Level: 50
 Tera Type: Steel
 EVs: 228 HP / 244 Def / 4 SpA / 4 SpD / 28 Spe
 Bold Nature
@@ -58,7 +59,7 @@ IVs: 0 Atk
 
 Scream Tail @ Booster Energy
 Ability: Protosynthesis
-Level: 69
+Level: 50
 Shiny: Yes
 Tera Type: Ghost
 EVs: 252 HP / 4 Def / 252 Spe

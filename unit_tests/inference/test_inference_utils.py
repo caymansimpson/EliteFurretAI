@@ -23,6 +23,7 @@ from elitefurretai.inference.inference_utils import (
     get_showdown_identifier,
     has_flinch_immunity,
     has_rage_powder_immunity,
+    has_unboost_immunity,
     has_sandstorm_immunity,
     has_status_immunity,
     is_ability_event,
@@ -778,6 +779,60 @@ def test_get_segments(residual_logs, edgecase_logs, uturn_logs):
         == 4
     )
 
+    logs = [
+        ['', 'move', 'p1b: Iron Hands', 'Volt Switch', 'p2b: Urshifu'],
+        ['', '-supereffective', 'p2b: Urshifu'],
+        ['', '-damage', 'p2b: Urshifu', '134/176'],
+        ['', ''],
+        ['', '-end', 'p1b: Iron Hands', 'Quark Drive', '[silent]'],
+        ['', 'switch', 'p1b: Volcarona', 'Volcarona, L50, M', '100/100', '[from] Volt Switch'],
+        ['', 'move', 'p2a: Incineroar', 'Knock Off', 'p1a: Nickname'],
+        ['', '-damage', 'p1a: Nickname', '4/100'],
+        ['', 'move', 'p1a: Nickname', 'Volt Switch', 'p2a: Incineroar'],
+        ['', '-damage', 'p2a: Incineroar', '12/202'],
+        ['', ''],
+        ['', 'switch', 'p1a: Iron Hands', 'Iron Hands, L50, tera:Water', '28/100', '[from] Volt Switch'],
+        ['', 'move', 'p2b: Urshifu', 'Surging Strikes', 'p1a: Iron Hands'],
+        ['', '-resisted', 'p1a: Iron Hands'],
+        ['', '-crit', 'p1a: Iron Hands'],
+        ['', '-damage', 'p1a: Iron Hands', '20/100'],
+        ['', '-resisted', 'p1a: Iron Hands'],
+        ['', '-crit', 'p1a: Iron Hands'],
+        ['', '-damage', 'p1a: Iron Hands', '13/100'],
+        ['', '-resisted', 'p1a: Iron Hands'],
+        ['', '-crit', 'p1a: Iron Hands'],
+        ['', '-damage', 'p1a: Iron Hands', '6/100'],
+        ['', '-hitcount', 'p1a: Iron Hands', '3'],
+        ['', ''],
+        ['', '-sideend', 'p1: bfi24championteam', 'Reflect'],
+        ['', '-fieldend', 'move: Trick Room'],
+        ['', 'upkeep'],
+        ['', 'turn', '11'],
+    ]
+    segments = get_segments(logs)
+    assert (
+        len(
+            set(segments.keys())
+            & set(
+                [
+                    "activation",
+                    "switch",
+                    "battle_mechanic",
+                    "move",
+                    "state_upkeep",
+                    "residual",
+                    "preturn_switch",
+                ]
+            )
+        )
+        == 2
+    )
+    assert "move" in segments
+    assert segments["move"][0] == ['', 'move', 'p1b: Iron Hands', 'Volt Switch', 'p2b: Urshifu']
+    assert segments["move"][-1] == ['', '-hitcount', 'p1a: Iron Hands', '3']
+    assert "state_upkeep" in segments
+    assert segments["state_upkeep"] == [['', '-sideend', 'p1: bfi24championteam', 'Reflect'], ['', '-fieldend', 'move: Trick Room']]
+
 
 def test_get_residual_and_identifier():
     assert get_residual_and_identifier(
@@ -1181,7 +1236,7 @@ def test_has_status_immunity():
     assert has_status_immunity("p1: Furret", Status.TOX, battle)
 
     furret._status = None
-    furret._effects = {Effect.SUBSTITUTE}
+    furret._effects = {Effect.SUBSTITUTE: 0}
     assert has_status_immunity("p1: Furret", Status.SLP, battle)
     assert has_status_immunity("p1: Furret", Status.FRZ, battle)
     assert has_status_immunity("p1: Furret", Status.PSN, battle)
@@ -1553,3 +1608,80 @@ def test_is_grounded():
 
     furret.item = "ironball"
     assert is_grounded("p1: Furret", battle)
+
+
+def test_has_unboost_immunity():
+    gen = 9
+    battle = DoubleBattle("tag", "username", MagicMock(), gen=gen)
+    furret = Pokemon(gen=9, species="furret")
+    battle.team = {"p1: Furret": furret}
+    battle._player_role = "p1"
+
+    # Because we check Flower Veil (where your other mon can affect
+    # boost immunity), we check the whole side. We assign furret twice
+    # for convenience
+    battle._active_pokemon = {"p1a": furret, "p1b": furret}
+
+    # Furret can have keeneye
+    assert not has_unboost_immunity("p1: Furret", "atk", battle)
+    assert not has_unboost_immunity("p1: Furret", "def", battle)
+    assert not has_unboost_immunity("p1: Furret", "spa", battle)
+    assert not has_unboost_immunity("p1: Furret", "spd", battle)
+    assert not has_unboost_immunity("p1: Furret", "spe", battle)
+    assert not has_unboost_immunity("p1: Furret", "evasion", battle)
+    assert has_unboost_immunity("p1: Furret", "accuracy", battle)
+
+    furret._possible_abilities = ["frisk", "hypercutter"]
+    assert has_unboost_immunity("p1: Furret", "atk", battle)
+    assert not has_unboost_immunity("p1: Furret", "def", battle)
+
+    furret._ability = "hypercutter"
+    assert has_unboost_immunity("p1: Furret", "atk", battle)
+    assert not has_unboost_immunity("p1: Furret", "def", battle)
+
+    furret._ability = "frisk"
+    assert not has_unboost_immunity("p1: Furret", "atk", battle)
+    assert not has_unboost_immunity("p1: Furret", "def", battle)
+
+    furret._ability = "bigpeck"
+    assert not has_unboost_immunity("p1: Furret", "atk", battle)
+    assert has_unboost_immunity("p1: Furret", "def", battle)
+
+    furret._ability = "mindseye"
+    assert not has_unboost_immunity("p1: Furret", "atk", battle)
+    assert not has_unboost_immunity("p1: Furret", "def", battle)
+    assert has_unboost_immunity("p1: Furret", "accuracy", battle)
+
+    furret._ability = "clearbody"
+    assert has_unboost_immunity("p1: Furret", "atk", battle)
+    assert has_unboost_immunity("p1: Furret", "def", battle)
+    assert has_unboost_immunity("p1: Furret", "accuracy", battle)
+
+    furret._ability = "fullmetalbody"
+    assert has_unboost_immunity("p1: Furret", "atk", battle)
+    assert has_unboost_immunity("p1: Furret", "def", battle)
+    assert has_unboost_immunity("p1: Furret", "accuracy", battle)
+
+    furret._ability = None
+    furret._boosts["def"] = -6
+    assert has_unboost_immunity("p1: Furret", "def", battle)
+    assert not has_unboost_immunity("p1: Furret", "accuracy", battle)
+
+    battle._side_conditions = {SideCondition.MIST: 1}
+    assert has_unboost_immunity("p1: Furret", "atk", battle)
+    assert has_unboost_immunity("p1: Furret", "def", battle)
+    assert has_unboost_immunity("p1: Furret", "spa", battle)
+    assert has_unboost_immunity("p1: Furret", "spd", battle)
+    assert has_unboost_immunity("p1: Furret", "spe", battle)
+    assert has_unboost_immunity("p1: Furret", "evasion", battle)
+    assert has_unboost_immunity("p1: Furret", "accuracy", battle)
+
+    battle._side_conditions = {}
+    furret._item = "clearamulet"
+    assert has_unboost_immunity("p1: Furret", "atk", battle)
+    assert has_unboost_immunity("p1: Furret", "def", battle)
+    assert has_unboost_immunity("p1: Furret", "spa", battle)
+    assert has_unboost_immunity("p1: Furret", "spd", battle)
+    assert has_unboost_immunity("p1: Furret", "spe", battle)
+    assert has_unboost_immunity("p1: Furret", "evasion", battle)
+    assert has_unboost_immunity("p1: Furret", "accuracy", battle)

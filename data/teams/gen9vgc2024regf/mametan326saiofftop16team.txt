@@ -1,5 +1,6 @@
 Pelipper (F) @ Focus Sash
 Ability: Drizzle
+Level: 50
 Tera Type: Ground
 EVs: 6 HP / 252 SpA / 252 Spe
 Timid Nature
@@ -10,6 +11,7 @@ Timid Nature
 
 Archaludon (M) @ Assault Vest
 Ability: Stamina
+Level: 50
 Tera Type: Fairy
 EVs: 252 HP / 4 Def / 36 SpA / 180 SpD / 38 Spe
 Modest Nature
@@ -21,7 +23,7 @@ IVs: 22 Atk
 
 Amoonguss (F) @ Sitrus Berry
 Ability: Regenerator
-Level: 55
+Level: 50
 Tera Type: Dark
 EVs: 244 HP / 252 Def / 14 SpD
 Sassy Nature
@@ -44,6 +46,7 @@ Adamant Nature
 
 Flutter Mane @ Choice Specs
 Ability: Protosynthesis
+Level: 50
 Tera Type: Grass
 EVs: 4 HP / 110 Def / 196 SpA / 4 SpD / 196 Spe
 Modest Nature
@@ -55,6 +58,7 @@ IVs: 21 Atk
 
 Baxcalibur (F) @ Clear Amulet
 Ability: Thermal Exchange
+Level: 50
 Tera Type: Poison
 EVs: 252 HP / 198 Atk / 60 Spe
 Adamant Nature

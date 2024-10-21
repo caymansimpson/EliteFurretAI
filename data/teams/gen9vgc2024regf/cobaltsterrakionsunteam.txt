@@ -1,5 +1,6 @@
 Whimsicott (M) @ Focus Sash
 Ability: Prankster
+Level: 50
 Tera Type: Ghost
 EVs: 6 Def / 252 SpA / 252 Spe
 Timid Nature
@@ -11,7 +12,7 @@ IVs: 0 Atk
 
 Terrakion @ Covert Cloak
 Ability: Justified
-Level: 70
+Level: 50
 Tera Type: Poison
 EVs: 6 HP / 252 Atk / 252 Spe
 Jolly Nature
@@ -22,7 +23,7 @@ Jolly Nature
 
 Chi-Yu @ Choice Scarf
 Ability: Beads of Ruin
-Level: 60
+Level: 50
 Tera Type: Fire
 EVs: 6 HP / 252 SpA / 252 Spe
 Timid Nature
@@ -34,6 +35,7 @@ IVs: 29 Atk
 
 Flutter Mane @ Choice Specs
 Ability: Protosynthesis
+Level: 50
 Tera Type: Fairy
 EVs: 6 HP / 252 SpA / 252 Spe
 Timid Nature
@@ -45,7 +47,7 @@ IVs: 22 Atk
 
 Farigiraf (F) @ Rocky Helmet
 Ability: Armor Tail
-Level: 55
+Level: 50
 Tera Type: Fairy
 EVs: 252 HP / 252 Def / 6 SpA
 Modest Nature
@@ -56,7 +58,7 @@ Modest Nature
 
 Torkoal (F) @ Charcoal
 Ability: Drought
-Level: 64
+Level: 50
 Tera Type: Fire
 EVs: 252 HP / 252 SpA / 6 SpD
 Quiet Nature

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
-from unittest.mock import MagicMock
 from logging import Logger
+from unittest.mock import MagicMock
 
 from poke_env.data import GenData
 from poke_env.environment import DoubleBattle, Move, Pokemon, PokemonType, Status

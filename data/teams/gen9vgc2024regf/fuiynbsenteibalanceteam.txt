@@ -1,6 +1,6 @@
 ねこ (Chien-Pao) @ Focus Sash
 Ability: Sword of Ruin
-Level: 60
+Level: 50
 Tera Type: Stellar
 EVs: 252 Atk / 6 Def / 252 Spe
 Jolly Nature
@@ -23,6 +23,7 @@ IVs: 10 SpA
 
 すなお (Landorus) (M) @ Life Orb
 Ability: Sheer Force
+Level: 50
 Tera Type: Poison
 EVs: 6 HP / 252 SpA / 252 Spe
 Timid Nature
@@ -44,7 +45,7 @@ Adamant Nature
 
 くびなが (Raging Bolt) @ Booster Energy
 Ability: Protosynthesis
-Level: 75
+Level: 50
 Tera Type: Electric
 EVs: 36 HP / 76 Def / 252 SpA / 92 SpD / 54 Spe
 Modest Nature
@@ -56,6 +57,7 @@ IVs: 20 Atk
 
 Entei @ Mirror Herb
 Ability: Inner Focus
+Level: 50
 Shiny: Yes
 Tera Type: Normal
 EVs: 196 HP / 196 Atk / 4 Def / 100 SpD / 14 Spe

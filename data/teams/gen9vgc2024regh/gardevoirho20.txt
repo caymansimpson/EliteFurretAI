@@ -1,5 +1,6 @@
 Hỏa Ưng (Talonflame) (F) @ Safety Goggles
 Ability: Gale Wings
+Level: 50
 Shiny: Yes
 Tera Type: Ghost
 EVs: 252 Atk / 4 SpD / 252 Spe
@@ -11,6 +12,7 @@ Adamant Nature
 
 Ụm Bòa (Tauros-Paldea-Aqua) @ Mirror Herb
 Ability: Intimidate
+Level: 50
 Shiny: Yes
 Tera Type: Grass
 EVs: 252 Atk / 4 SpD / 252 Spe
@@ -22,6 +24,7 @@ Jolly Nature
 
 Mồn Lèo (Meowscarada) (F) @ Focus Sash
 Ability: Overgrow
+Level: 50
 Shiny: Yes
 Tera Type: Grass
 EVs: 4 HP / 252 Atk / 252 Spe
@@ -33,6 +36,7 @@ Adamant Nature
 
 Cậu Vàng (Gholdengo) @ Choice Specs
 Ability: Good as Gold
+Level: 50
 Shiny: Yes
 Tera Type: Steel
 EVs: 252 SpA / 4 SpD / 252 Spe
@@ -45,6 +49,7 @@ IVs: 0 Atk
 
 Cá Mụp (Garchomp) (F) @ Clear Amulet
 Ability: Rough Skin
+Level: 50
 Shiny: Yes
 Tera Type: Steel
 EVs: 252 Atk / 4 Def / 252 Spe
@@ -56,6 +61,7 @@ Adamant Nature
 
 Gardy (Gardevoir) (F) @ Choice Scarf
 Ability: Telepathy
+Level: 50
 Shiny: Yes
 Tera Type: Fairy
 EVs: 4 Def / 252 SpA / 252 Spe

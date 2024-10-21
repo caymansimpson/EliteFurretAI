@@ -48,6 +48,7 @@ IVs: 0 Spe
 
 Hatterene @ Covert Cloak
 Ability: Magic Bounce
+Level: 50
 Tera Type: Fire
 EVs: 212 HP / 44 Def / 252 SpA
 Quiet Nature

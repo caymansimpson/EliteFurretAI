@@ -35,6 +35,7 @@ Adamant Nature
 
 Thundurus (M) @ Rocky Helmet
 Ability: Prankster
+Level: 50
 Tera Type: Steel
 EVs: 252 HP / 86 Def / 172 Spe
 Timid Nature
@@ -45,6 +46,7 @@ Timid Nature
 
 Chien-Pao @ Focus Sash
 Ability: Sword of Ruin
+Level: 50
 Tera Type: Ghost
 EVs: 252 Atk / 6 Def / 252 Spe
 Jolly Nature

@@ -1,5 +1,6 @@
 Porta Caribe (Sinistcha-Masterpiece) @ Rocky Helmet
 Ability: Heatproof
+Level: 50
 Shiny: Yes
 Tera Type: Poison
 EVs: 212 HP / 44 Def / 84 SpA / 156 SpD / 12 Spe
@@ -12,6 +13,7 @@ IVs: 0 Atk
 
 Bayamón (Incineroar) (F) @ Assault Vest
 Ability: Intimidate
+Level: 50
 Shiny: Yes
 Tera Type: Fighting
 EVs: 228 HP / 164 Atk / 36 Def / 36 SpD / 44 Spe
@@ -23,6 +25,7 @@ Adamant Nature
 
 Mayagüez (Ursaluna) (F) @ Flame Orb
 Ability: Guts
+Level: 50
 Shiny: Yes
 Tera Type: Rock
 EVs: 140 HP / 244 Atk / 4 Def / 4 SpD / 116 Spe
@@ -35,6 +38,7 @@ IVs: 3 SpA
 
 Caguas (Thundurus-Therian) @ Life Orb
 Ability: Volt Absorb
+Level: 50
 Shiny: Yes
 Tera Type: Poison
 EVs: 196 HP / 20 Def / 236 SpA / 12 SpD / 44 Spe
@@ -47,6 +51,7 @@ IVs: 1 Atk
 
 Arecibo (Latias) @ Covert Cloak
 Ability: Levitate
+Level: 50
 Shiny: Yes
 Tera Type: Steel
 EVs: 172 HP / 36 Def / 76 SpA / 212 SpD / 12 Spe
@@ -58,6 +63,7 @@ Calm Nature
 
 Fajardo (Primarina) (F) @ Leftovers
 Ability: Liquid Voice
+Level: 50
 Shiny: Yes
 Tera Type: Stellar
 EVs: 172 HP / 100 Def / 116 SpA / 92 SpD / 28 Spe

@@ -22,7 +22,7 @@ Jolly Nature
 
 Bruxish @ Choice Scarf
 Ability: Dazzling
-Level: 63
+Level: 50
 Tera Type: Water
 EVs: 4 HP / 252 Atk / 252 Spe
 Jolly Nature
@@ -33,6 +33,7 @@ Jolly Nature
 
 Rillaboom @ Assault Vest
 Ability: Grassy Surge
+Level: 50
 Tera Type: Grass
 EVs: 252 HP / 116 Atk / 4 Def / 124 SpD / 12 Spe
 Adamant Nature

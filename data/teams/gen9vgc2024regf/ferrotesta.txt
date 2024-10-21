@@ -1,5 +1,6 @@
 Iron Crown @ Booster Energy
 Ability: Quark Drive
+Level: 50
 Tera Type: Dark
 EVs: 116 HP / 76 Def / 252 SpA / 4 SpD / 60 Spe
 Timid Nature
@@ -11,6 +12,7 @@ IVs: 0 Atk
 
 Indeedee-F @ Psychic Seed
 Ability: Psychic Surge
+Level: 50
 Tera Type: Fairy
 EVs: 252 HP / 244 Def / 12 SpD
 Relaxed Nature
@@ -45,6 +47,7 @@ IVs: 0 Atk
 
 Landorus-Therian @ Choice Scarf
 Ability: Intimidate
+Level: 50
 Tera Type: Flying
 EVs: 76 HP / 116 Atk / 60 Def / 44 SpD / 212 Spe
 Adamant Nature

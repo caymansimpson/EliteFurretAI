@@ -1,5 +1,6 @@
 Amoonguss @ Mental Herb
 Ability: Regenerator
+Level: 50
 Tera Type: Water
 EVs: 252 HP / 244 Def / 12 SpD
 Bold Nature
@@ -11,6 +12,7 @@ IVs: 0 Atk
 
 Gholdengo @ Leftovers
 Ability: Good as Gold
+Level: 50
 Tera Type: Dragon
 EVs: 236 HP / 4 Def / 52 SpA / 52 SpD / 164 Spe
 Modest Nature

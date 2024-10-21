@@ -1,6 +1,6 @@
 Raging Bolt @ Life Orb
 Ability: Protosynthesis
-Level: 75
+Level: 50
 Tera Type: Electric
 EVs: 148 HP / 70 Def / 252 SpA / 36 SpD / 4 Spe
 Modest Nature
@@ -12,7 +12,7 @@ IVs: 20 Atk
 
 Iron Bundle @ Booster Energy
 Ability: Quark Drive
-Level: 78
+Level: 50
 Tera Type: Ghost
 EVs: 252 HP / 12 Def / 110 SpA / 4 SpD / 132 Spe
 Timid Nature
@@ -24,7 +24,7 @@ IVs: 1 Atk
 
 Chi-Yu @ Choice Specs
 Ability: Beads of Ruin
-Level: 75
+Level: 50
 Tera Type: Ghost
 EVs: 6 HP / 252 SpA / 252 Spe
 Timid Nature
@@ -48,6 +48,7 @@ IVs: 9 Atk
 
 Incineroar (M) @ Shuca Berry
 Ability: Intimidate
+Level: 50
 Shiny: Yes
 Tera Type: Grass
 EVs: 244 HP / 4 Atk / 142 Def / 108 SpD / 12 Spe
@@ -59,6 +60,7 @@ Impish Nature
 
 Urshifu (M) @ Focus Sash
 Ability: Unseen Fist
+Level: 50
 Tera Type: Dark
 EVs: 252 Atk / 6 Def / 252 Spe
 Adamant Nature

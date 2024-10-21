@@ -1,6 +1,6 @@
 Gouging Fire @ Booster Energy
 Ability: Protosynthesis
-Level: 75
+Level: 50
 Tera Type: Grass
 EVs: 220 HP / 36 Atk / 20 Def / 4 SpD / 230 Spe
 Jolly Nature
@@ -12,6 +12,7 @@ IVs: 20 SpA
 
 Flutter Mane @ Choice Specs
 Ability: Protosynthesis
+Level: 50
 Tera Type: Fairy
 EVs: 108 HP / 158 Def / 76 SpA / 4 SpD / 164 Spe
 Timid Nature
@@ -23,7 +24,7 @@ IVs: 0 Atk
 
 Kingambit (M) @ Black Glasses
 Ability: Defiant
-Level: 73
+Level: 50
 Shiny: Yes
 Tera Type: Dragon
 EVs: 132 HP / 252 Atk / 20 Def / 86 SpD / 20 Spe
@@ -36,6 +37,7 @@ IVs: 16 SpA
 
 Ogerpon-Wellspring (F) @ Wellspring Mask
 Ability: Water Absorb
+Level: 50
 Tera Type: Water
 EVs: 198 HP / 116 Atk / 4 Def / 4 SpD / 188 Spe
 Jolly Nature
@@ -47,6 +49,7 @@ IVs: 20 SpA
 
 Landorus (M) @ Life Orb
 Ability: Sheer Force
+Level: 50
 Tera Type: Poison
 EVs: 116 HP / 142 SpA / 252 Spe
 Timid Nature
@@ -57,6 +60,7 @@ Timid Nature
 
 Junior (Rillaboom) (M) @ Assault Vest
 Ability: Grassy Surge
+Level: 50
 Shiny: Yes
 Tera Type: Water
 EVs: 132 HP / 196 Atk / 12 Def / 93 SpD / 77 Spe

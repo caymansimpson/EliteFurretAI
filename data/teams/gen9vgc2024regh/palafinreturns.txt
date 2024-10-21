@@ -1,5 +1,6 @@
 Dolmight (Palafin) @ Mystic Water
 Ability: Zero to Hero
+Level: 50
 Tera Type: Water
 EVs: 252 Atk / 4 SpD / 252 Spe
 Jolly Nature
@@ -21,6 +22,7 @@ Adamant Nature
 
 Pickles (Pelipper) @ Safety Goggles
 Ability: Drizzle
+Level: 50
 Tera Type: Stellar
 EVs: 252 SpA / 4 SpD / 252 Spe
 Modest Nature
@@ -32,6 +34,7 @@ IVs: 0 Atk
 
 Tiny (Incineroar) @ Sitrus Berry
 Ability: Intimidate
+Level: 50
 Tera Type: Ghost
 EVs: 252 HP / 4 Atk / 68 Def / 156 SpD / 28 Spe
 Careful Nature
@@ -53,6 +56,7 @@ Adamant Nature
 
 Bridge Four (Archaludon) @ Assault Vest
 Ability: Stamina
+Level: 50
 Tera Type: Fairy
 EVs: 124 HP / 12 Def / 196 SpA / 116 SpD / 60 Spe
 Modest Nature

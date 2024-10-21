@@ -1,6 +1,6 @@
 Land R us (Landorus-Therian) (M) @ Choice Scarf
 Ability: Intimidate
-Level: 71
+Level: 50
 Tera Type: Flying
 EVs: 164 HP / 84 Atk / 44 Def / 4 SpD / 212 Spe
 Adamant Nature
@@ -11,7 +11,7 @@ Adamant Nature
 
 Chien-Pao @ Focus Sash
 Ability: Sword of Ruin
-Level: 67
+Level: 50
 Tera Type: Ghost
 EVs: 252 Atk / 6 Def / 252 Spe
 Jolly Nature
@@ -22,7 +22,7 @@ Jolly Nature
 
 Flutter Mane @ Choice Specs
 Ability: Protosynthesis
-Level: 91
+Level: 50
 Shiny: Yes
 Tera Type: Fairy
 EVs: 100 HP / 196 Def / 60 SpA / 4 SpD / 150 Spe
@@ -34,7 +34,7 @@ Timid Nature
 
 Ogerpon-Wellspring (F) @ Wellspring Mask
 Ability: Water Absorb
-Level: 70
+Level: 50
 Tera Type: Water
 EVs: 244 HP / 76 Atk / 2 SpD / 188 Spe
 Jolly Nature
@@ -45,6 +45,7 @@ Jolly Nature
 
 Metagross @ Assault Vest
 Ability: Clear Body
+Level: 50
 Shiny: Yes
 Tera Type: Dragon
 EVs: 220 HP / 116 Atk / 52 Def / 116 SpD / 4 Spe
@@ -57,7 +58,7 @@ IVs: 26 SpA
 
 Gouging Fire @ Safety Goggles
 Ability: Protosynthesis
-Level: 75
+Level: 50
 Tera Type: Fairy
 EVs: 244 HP / 116 Atk / 1 Def / 3 SpA / 146 Spe
 Adamant Nature

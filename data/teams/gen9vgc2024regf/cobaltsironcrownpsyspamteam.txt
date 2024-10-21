@@ -1,5 +1,6 @@
 Urshifu-Rapid-Strike (M) @ Choice Scarf
 Ability: Unseen Fist
+Level: 50
 Tera Type: Water
 EVs: 60 HP / 156 Atk / 4 Def / 116 SpD / 174 Spe
 Adamant Nature
@@ -10,7 +11,7 @@ Adamant Nature
 
 Tornadus (M) @ Focus Sash
 Ability: Prankster
-Level: 77
+Level: 50
 Tera Type: Ghost
 EVs: 6 HP / 252 SpA / 252 Spe
 Timid Nature
@@ -21,6 +22,7 @@ Timid Nature
 
 Chi-Yu @ Choice Specs
 Ability: Beads of Ruin
+Level: 50
 Tera Type: Grass
 EVs: 244 HP / 124 Def / 36 SpA / 70 SpD / 36 Spe
 Modest Nature
@@ -32,6 +34,7 @@ IVs: 9 Atk
 
 Landorus (M) @ Life Orb
 Ability: Sheer Force
+Level: 50
 Tera Type: Poison
 EVs: 6 HP / 252 SpA / 252 Spe
 Modest Nature
@@ -42,7 +45,7 @@ Modest Nature
 
 Iron Crown @ Booster Energy
 Ability: Quark Drive
-Level: 75
+Level: 50
 Tera Type: Water
 EVs: 6 Def / 252 SpA / 252 Spe
 Timid Nature

@@ -3,20 +3,23 @@
 It even can even establish whether a mon has choice scarf. This object is a companion class to BattleInference
 """
 
+import sys
+import traceback
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import pulp
 from poke_env.environment import (
+    AbstractBattle,
     Battle,
     DoubleBattle,
     Effect,
     Field,
-    Observation,
     SideCondition,
     Status,
     Weather,
 )
 
+from elitefurretai.inference.battle_inference import BattleInference
 from elitefurretai.inference.inference_utils import (
     ABILITIES_THAT_CAN_PUBLICLY_ACTIVATE_ABILITIES_OR_ITEMS,
     FIRST_BLOCK_RESIDUALS,
@@ -25,7 +28,7 @@ from elitefurretai.inference.inference_utils import (
     PRIORITY_ACTIVATION_ABILITIES,
     SECOND_BLOCK_RESIDUALS,
     THIRD_BLOCK_RESIDUALS,
-    copy_battle,
+    battle_to_str,
     copy_bare_battle,
     get_ability_and_identifier,
     get_pokemon,
@@ -34,11 +37,9 @@ from elitefurretai.inference.inference_utils import (
     get_segments,
     get_showdown_identifier,
     is_ability_event,
-    battle_to_str,
     standardize_pokemon_ident,
     update_battle,
 )
-from elitefurretai.inference.battle_inference import BattleInference
 
 
 class SpeedInference:
@@ -49,21 +50,25 @@ class SpeedInference:
         "_v",
         "_last_tracked_event",
         "_last_tracked_turn",
+        "_tracked_events",  # TODO: remove after debugging
+        "_triggering_info",
     )
 
     # We need to keep a copy of the battle state because we need to recreate the turn and conditions of the turn to parse speeds
     def __init__(
         self,
-        battle: Union[Battle, DoubleBattle],
+        battle: Union[Battle, DoubleBattle, AbstractBattle],
         inferences: BattleInference,
         verbose: int = 0,
     ):
-        self._battle: Union[Battle, DoubleBattle] = copy_bare_battle(battle)
+        self._battle: Union[Battle, DoubleBattle, AbstractBattle] = copy_bare_battle(battle)
         self._inferences: BattleInference = inferences
         self._orders: List[List[Tuple[str, float]]] = []
         self._v: int = verbose
         self._last_tracked_event: int = 0
         self._last_tracked_turn: int = -1
+        self._tracked_events = []
+        self._triggering_info = {}
 
         if battle.teampreview:
             self._battle.parse_request(battle.last_request)
@@ -74,40 +79,25 @@ class SpeedInference:
         if len(battle.observations) == 0:
             return
 
-        # If teampreview, just update the battle object with request data
-        # early because there's nothing in Turn 0's events that could affect
-        # speed parsing between the events and the request. This also guarantees
-        # speed stat population in the case of an incomplete showdown paste
-        # (where level isn't specified, so we can't calculate stats from the teambuilder)
-        # if battle.teampreview:
-        #     self._battle.parse_request(battle.last_request)
-
         # Get most recent observation
         turn_of_events = max(battle.observations.keys())
         obs = battle.observations[max(battle.observations.keys())]
 
-        # To handle force_switch, where we'll want our current observation,
-        # rather than the stored one in observations, since we haven't finished
-        # the turn yet
-        if any(battle.force_switch):
+        # TODO: because of a poke_env bug, we should only do one inference per turn.
+        # So if we've already touched this turn, we're just going to update the battle
+        if (
+            (isinstance(battle.force_switch, list) and any(battle.force_switch))
+            or (isinstance(battle.force_switch, bool) and battle.force_switch)
+        ):
             turn_of_events = battle.turn
             obs = battle.current_observation
 
         # Check if we've already updated
         if (
-            len(obs.events) > self._last_tracked_event
+            (len(obs.events) > self._last_tracked_event and self._last_tracked_event > 0 and turn_of_events == self._last_tracked_turn)
             or turn_of_events > self._last_tracked_turn
         ):
-            print(
-                f"In speedinference.update where I am about to track_speeds for Turn #{turn_of_events}"
-                + f" and {len(obs.events[self._last_tracked_event:])} events, starting at {self._last_tracked_event}"
-                + f". Total events in the turn is {len(obs.events)}; last tracked turn was {self._last_tracked_turn}"
-                + f" and self._battle.force_switch is {self._battle.force_switch} nad battle.force_switch is {battle.force_switch}"
-            )
-            print(
-                f"My current Active Mon:  [{', '.join(map(lambda x: x.species if x else 'None', self._battle.active_pokemon)) if self._battle.active_pokemon else ''}]"
-            )
-            # print(battle_to_str(self._battle).replace("\n", "\n-- "))
+            self._triggering_info = {"turn_of_events": turn_of_events, "keys": list(battle.observations.keys())}
             # Go through speeds
             self.track_speeds(obs.events, start=self._last_tracked_event)
 
@@ -120,13 +110,14 @@ class SpeedInference:
             if len(obs.events) > 0 and obs.events[-1][1] == "turn":
                 self._last_tracked_event = 0
             self._last_tracked_turn = turn_of_events
-        else:
+            self._tracked_events += obs.events
+        elif self._v >= 2:
             print(
-                "Warning: Tried to track speeds of events multiple times... "
+                "Warning: Tried to track speeds from events multiple times... "
                 + "Not going to do anything!\n"
                 + f"\tbattle.teampreview: {battle.teampreview}\n"
                 + f"\tbattle.force_switch: {battle.force_switch}\n"
-                + f"\tlast_turn: {last_turn}\n"
+                + f"\tturn_of_events: {turn_of_events}\n"
                 + f"\tself._last_tracked_turn: {self._last_tracked_turn}\n"
                 + f"\tself._last_tracked_event: {self._last_tracked_event}\n"
                 + f"\tlen(obs.events): {len(obs.events)}"
@@ -159,6 +150,10 @@ class SpeedInference:
             print(events)
 
         segments = get_segments(events, start=start)
+        if start != 0:
+            print(events)
+            print(start)
+            print(segments)
 
         if "init" in segments:
             for event in segments["init"]:
@@ -207,17 +202,11 @@ class SpeedInference:
         # Clean the orders by making them into tuplets and removing duplicates
         self._solve_speeds(self.clean_orders(speed_orders))
 
-        print("Leaving solve speeds on battle turn #" + str(self._battle.turn - 1))
-        print(
-            f"\tMy Active Mon:  [{', '.join(map(lambda x: x.species if x else 'None', self._battle.active_pokemon)) if self._battle.active_pokemon else ''}] going into Turn #{self._battle.turn}"
-        )
-
     # Uses pulp to solve for speeds. We create the set of equations and try to solve them. If we get an infeasible
     # set of equations, this means that a mon has choice scarf (or SpeedInference's parsing is incomplete/buggy).
     # If we find infeasibility, we multiply each mon's speed by 1.5 if they are choicescarf eligible to see if we
     # can find a speed that makes the set of equations work. If it's only one mon, we know it's choicescarf! If
     # we find an optimal solution, we set the new speed bounds.
-
     # TODO: Need to check which mon is choice scarf
     def _solve_speeds(self, orders: List[List[Tuple[str, float]]]):
 
@@ -235,15 +224,12 @@ class SpeedInference:
 
         # Create the variables we're trying to solve for, which are opponent mons' speeds
         variables: Dict[str, pulp.LpVariable] = {}
-        # print("======== In Solve Speeds")
-        # print(battle_to_str(self._battle))
-        # print('\n\n\n\n\n')
         for mon in self._battle.opponent_team.values():
             key = get_showdown_identifier(mon, self._battle.opponent_role)
             variables[key] = pulp.LpVariable(
                 key,
-                lowBound=self._inferences.get_flag(key, "spe")[0],
-                upBound=self._inferences.get_flag(key, "spe")[1],
+                lowBound=self._inferences.get_flag(key, "spe")[0],  # pyright: ignore
+                upBound=self._inferences.get_flag(key, "spe")[1],  # pyright: ignore
                 cat="Integer",
             )
 
@@ -255,7 +241,7 @@ class SpeedInference:
             # and we solve for speeds before the request
             if mon.stats["spe"] is None:
                 for tp_mon in self._battle.teampreview_team:
-                    if mon.name == tp_mon.name:
+                    if mon.name == tp_mon.name and tp_mon.stats["spe"] is not None:
                         constraints[key] = tp_mon.stats["spe"]
             else:
                 constraints[key] = mon.stats["spe"]
@@ -322,8 +308,8 @@ class SpeedInference:
                         # We found our choice scarf mon! We should record success and update the mon
                         if pulp.LpStatus[problem.status] == "Optimal":
                             self._update_orders(mon_ident, 1.5)
-                            self._battle.opponent_team[mon_ident].item = "choicescarf"
                             self._inferences.set_flag(mon_ident, "item", "choicescarf")
+                            self._inferences.set_flag(mon_ident, "debug_item_found_turn", self._battle.turn - 1)
                             success = True
                             if self._v >= 2 and problem.name == "MinProblem":
                                 self._debug("item_found", mon_ident)
@@ -350,11 +336,11 @@ class SpeedInference:
                     if key in self._battle.opponent_team and variables[key].varValue:
                         if problem.name == "MinProblem":
                             speeds = self._inferences.get_flag(key, "spe")
-                            speeds[0] = variables[key].varValue
+                            speeds[0] = variables[key].varValue  # type: ignore
                             self._inferences.set_flag(key, "spe", speeds)
                         else:
                             speeds = self._inferences.get_flag(key, "spe")
-                            speeds[1] = variables[key].varValue
+                            speeds[1] = variables[key].varValue  # type: ignore
                             self._inferences.set_flag(key, "spe", speeds)
 
     # We look at abilities that don't have priority and trigger, found here:
@@ -424,12 +410,46 @@ class SpeedInference:
                     mon_ident = standardize_pokemon_ident(events[i][2])
 
                 if last_moved and last_multipliers and mon_ident:
-                    orders.append(
-                        [
-                            (last_moved, last_multipliers[last_moved]),
-                            (mon_ident, last_multipliers[mon_ident]),
-                        ]
-                    )
+                    try:
+                        orders.append(
+                            [
+                                (last_moved, last_multipliers[last_moved]),
+                                (mon_ident, last_multipliers[mon_ident]),
+                            ]
+                        )
+                    except KeyError as e:
+                        print("In Last Multipliers and had a Key Error in parse_preturn_switch")
+                        print(e)
+                        print()
+                        print("battle turn:", self._battle.turn)
+                        print("event:", events[i])
+                        print("events:", events)
+                        print()
+                        print("last multipliers:", last_multipliers)
+                        print("last moved:", last_moved)
+                        print("mon ident:", mon_ident)
+                        print()
+                        print("_last_tracked_event", self._last_tracked_event)
+                        print("_last_tracked_turn", self._last_tracked_turn)
+                        print("_self._tracked_events", self._tracked_events)
+                        print("triggering info", self._triggering_info)
+                        print()
+                        current_frame = sys._getframe()
+                        # Move up one level in the stack to the outer_function's frame
+                        outer_frame = current_frame.f_back
+                        # Access the variable from the outer function
+                        if outer_frame is not None:
+                            segments = outer_frame.f_locals.get('segments', 'Not found')
+                            start = outer_frame.f_locals.get('start', 'Not found')
+                            events = outer_frame.f_locals.get('events', 'Not found')
+
+                            print(f"Caught an error. The variable segments was: {segments}")
+                            print(f"Caught an error. The variable start was: {start}")
+                            print(f"Caught an error. The variable events was: {events}")
+                        print()
+                        print("Last Battle:")
+                        print(battle_to_str(self._battle))
+                        raise e
 
                 last_moved = mon_ident
                 last_multipliers = self._save_multipliers()
@@ -486,7 +506,40 @@ class SpeedInference:
                     i += num_traversed
 
             # Update battle after the order calculation
-            update_battle(self._battle, events[i])
+            try:
+                update_battle(self._battle, events[i])
+            except KeyError as e:
+                print("In Parse Battle Mehcanic and had an error")
+                print(str(e))
+                exc_type, exc_value, exc_traceback = sys.exc_info()
+                print(''.join(traceback.format_exception(exc_type, exc_value, exc_traceback)))
+                print()
+                print("battle turn:", self._battle.turn)
+                print()
+                print("event:", events[i])
+                print("events:", events)
+                print()
+                print("_last_tracked_event", self._last_tracked_event)
+                print("_last_tracked_turn", self._last_tracked_turn)
+                print("_self._tracked_events", self._tracked_events)
+                print("triggering info", self._triggering_info)
+                print()
+                current_frame = sys._getframe()
+                # Move up one level in the stack to the outer_function's frame
+                outer_frame = current_frame.f_back
+                # Access the variable from the outer function
+                if outer_frame is not None:
+                    segments = outer_frame.f_locals.get('segments', 'Not found')
+                    start = outer_frame.f_locals.get('start', 'Not found')
+                    events = outer_frame.f_locals.get('events', 'Not found')
+
+                    print(f"Caught an error. The variable segments was: {segments}")
+                    print(f"Caught an error. The variable start was: {start}")
+                    print(f"Caught an error. The variable events was: {events}")
+                print()
+                print("Last Battle:")
+                print(battle_to_str(self._battle))
+                raise e
             i += 1
 
         return orders
@@ -550,10 +603,38 @@ class SpeedInference:
                             )
                         except KeyError as e:
 
-                            print("In Last Multipliers and had a Key Error")
+                            print("In Last Multipliers and had a Key Error in parse_move")
                             print(e)
+                            print()
+                            print("battle turn:", self._battle.turn)
+                            print("event:", event)
+                            print("events:", events)
+                            print()
+                            print("last multipliers:", last_multipliers)
+                            print("last moved:", last_moved)
+                            print("mon ident:", mon_ident)
+                            print()
+                            print("_last_tracked_event", self._last_tracked_event)
+                            print("_last_tracked_turn", self._last_tracked_turn)
+                            print("_self._tracked_events", self._tracked_events)
+                            print("triggering info", self._triggering_info)
+                            print()
+                            current_frame = sys._getframe()
+                            # Move up one level in the stack to the outer_function's frame
+                            outer_frame = current_frame.f_back
+                            # Access the variable from the outer function
+                            if outer_frame is not None:
+                                segments = outer_frame.f_locals.get('segments', 'Not found')
+                                start = outer_frame.f_locals.get('start', 'Not found')
+                                events = outer_frame.f_locals.get('events', 'Not found')
+
+                                print(f"Caught an error. The variable segments was: {segments}")
+                                print(f"Caught an error. The variable start was: {start}")
+                                print(f"Caught an error. The variable events was: {events}")
+                            print()
                             print("Last Battle:")
                             print(battle_to_str(self._battle))
+                            raise e
 
                     # Now update our tracking
                     last_priority = priority
@@ -583,6 +664,11 @@ class SpeedInference:
                     # Now update our tracking
                     last_moved = mon_ident
                     last_multipliers = self._save_multipliers()
+
+            # If a new mon enters the field, we may need it in our multipliers to compare
+            # elif event[1] in ["switch", "drag"]:
+            #     key = standardize_pokemon_ident(event[2])
+            #     last_multipliers[key] = self._generate_multiplier(key)
 
             # Update battle after calculation, since the calculation happens before we make a mvove
             update_battle(self._battle, event)
@@ -631,12 +717,47 @@ class SpeedInference:
                     orders[key] = []
 
                 if last_moved and last_multipliers:
-                    orders[key].append(
-                        [
-                            (last_moved, last_multipliers[last_moved]),
-                            (mon_ident, last_multipliers[mon_ident]),
-                        ]
-                    )
+                    try:
+                        orders[key].append(
+                            [
+                                (last_moved, last_multipliers[last_moved]),
+                                (mon_ident, last_multipliers[mon_ident]),
+                            ]
+                        )
+                    except KeyError as e:
+                        print("In Last Multipliers and had a Key Error in parse_residuals")
+                        print(e)
+                        print()
+                        print("battle turn:", self._battle.turn)
+                        print("event:", event)
+                        print("events:", events)
+                        print()
+                        print("last multipliers:", last_multipliers)
+                        print("last moved:", last_moved)
+                        print("mon ident:", mon_ident)
+                        print()
+                        print("_last_tracked_event", self._last_tracked_event)
+                        print("_last_tracked_turn", self._last_tracked_turn)
+                        print("_self._tracked_events", self._tracked_events)
+                        print("triggering info", self._triggering_info)
+                        print()
+                        current_frame = sys._getframe()
+                        # Move up one level in the stack to the outer_function's frame
+                        outer_frame = current_frame.f_back
+                        # Access the variable from the outer function
+                        if outer_frame is not None:
+                            segments = outer_frame.f_locals.get('segments', 'Not found')
+                            start = outer_frame.f_locals.get('start', 'Not found')
+                            events = outer_frame.f_locals.get('events', 'Not found')
+
+                            print(f"Caught an error. The variable segments was: {segments}")
+                            print(f"Caught an error. The variable start was: {start}")
+                            print(f"Caught an error. The variable events was: {events}")
+
+                        print()
+                        print("Last Battle:")
+                        print(battle_to_str(self._battle))
+                        raise e
 
                 last_moved = mon_ident
                 last_multipliers = self._save_multipliers()
@@ -881,26 +1002,21 @@ class SpeedInference:
 
         multipliers: Dict[str, Optional[float]] = {}
         if isinstance(self._battle, DoubleBattle):
-            for mon in self._battle.active_pokemon:
-                if mon is not None:
-                    key = get_showdown_identifier(mon, self._battle.player_role)
-                    multipliers[key] = self._generate_multiplier(key)
 
-            for mon in self._battle.opponent_active_pokemon:
-                if mon is not None:
-                    key = get_showdown_identifier(mon, self._battle.opponent_role)
-                    multipliers[key] = self._generate_multiplier(key)
-
-        else:
-            mon = self._battle.active_pokemon
-            if mon is not None:
+            # Use internal variable because it already stores idents and also doesn't
+            # make the mons null if they fainted. If my mon uses an attack, life orb dies
+            # and then another mon moves, we can still use my mon's info to ascertain something
+            # about the opponent's speed
+            for mon in self._battle._active_pokemon.values():
                 key = get_showdown_identifier(mon, self._battle.player_role)
                 multipliers[key] = self._generate_multiplier(key)
 
-            opp_mon = self._battle.opponent_active_pokemon
-            if opp_mon is not None:
-                opp_key = get_showdown_identifier(opp_mon, self._battle.opponent_role)
-                multipliers[opp_key] = self._generate_multiplier(opp_key)
+            for mon in self._battle._opponent_active_pokemon.values():
+                key = get_showdown_identifier(mon, self._battle.opponent_role)
+                multipliers[key] = self._generate_multiplier(key)
+
+        else:
+            raise NotImplementedError("Not implemented for single battles")
 
         return multipliers
 
@@ -957,7 +1073,7 @@ class SpeedInference:
                 if ident in self._battle.opponent_team:
                     mon = self._battle.opponent_team[ident]
                 print(
-                    f"\t\t{mon.name} => [Speed Range: {self._inferences.get_flag(ident, "spe") if self._inferences.is_tracking(ident) else "None"}],"
+                    f"\t\t{mon.name} => [Speed Range: {self._inferences.get_flag(ident, 'spe') if self._inferences.is_tracking(ident) else 'None'}],"
                     + f"[Item: {mon.item}], [Speed Boost: {mon.boosts['spe']}], "
                     + f"[Effects: {list(map(lambda x: x.name, mon.effects))}], "
                     + f"[Status: {mon.status.name if mon.status else 'None'}]"
@@ -977,7 +1093,8 @@ class SpeedInference:
             print("\nThis makes total orders:", self._orders)
             print()
         elif key == "lpproblem":
-            print(arg)
+            # print(arg)
+            print("Having trouble with the f-string")
         elif key == "infeasible":
             print("Got an infeasible solution... looking for Choice Scarf...")
         elif key == "item_testing":
@@ -990,7 +1107,8 @@ class SpeedInference:
         elif key == "item_not_found":
             print("Couldn't find a mon with Choice Scarf...")
             print("Here is the LP problem:")
-            print(arg)
+            print("Not printing because having trouble with the fstrings")
+            # print(arg)
             print()
         elif key == "solution_found":
             print("We found an optimal solution!")

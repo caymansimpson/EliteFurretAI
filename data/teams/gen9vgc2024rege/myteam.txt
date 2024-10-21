@@ -23,6 +23,7 @@ IVs: 0 Atk
 
 Tornadus @ Rocky Helmet
 Ability: Prankster
+Level: 50
 Tera Type: Ghost
 EVs: 244 HP / 244 Def / 4 SpA / 4 SpD / 12 Spe
 Bold Nature

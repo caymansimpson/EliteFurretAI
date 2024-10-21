@@ -1,5 +1,6 @@
 Urshifu (M) @ Focus Sash
 Ability: Unseen Fist
+Level: 50
 Tera Type: Dark
 EVs: 6 HP / 252 Atk / 252 Spe
 Jolly Nature
@@ -10,6 +11,7 @@ Jolly Nature
 
 Raging Bolt @ Assault Vest
 Ability: Protosynthesis
+Level: 50
 Tera Type: Fairy
 EVs: 188 HP / 92 Def / 180 SpA / 36 SpD / 14 Spe
 Modest Nature
@@ -21,6 +23,7 @@ IVs: 20 Atk
 
 Gholdengo @ Leftovers
 Ability: Good as Gold
+Level: 50
 Tera Type: Steel
 EVs: 236 HP / 52 Def / 132 SpA / 52 SpD / 38 Spe
 Modest Nature
@@ -32,6 +35,7 @@ IVs: 5 Atk
 
 Incineroar (M) @ Sitrus Berry
 Ability: Intimidate
+Level: 50
 Tera Type: Water
 EVs: 238 HP / 4 Atk / 76 Def / 156 SpD / 36 Spe
 Careful Nature
@@ -42,6 +46,7 @@ Careful Nature
 
 Ogerpon-Hearthflame (F) @ Hearthflame Mask
 Ability: Mold Breaker
+Level: 50
 Tera Type: Fire
 EVs: 164 HP / 156 Atk / 92 Def / 14 SpD / 84 Spe
 Adamant Nature
@@ -53,6 +58,7 @@ IVs: 20 SpA
 
 Tornadus (M) @ Covert Cloak
 Ability: Prankster
+Level: 50
 Tera Type: Steel
 EVs: 212 HP / 196 Def / 4 SpA / 4 SpD / 94 Spe
 Bold Nature

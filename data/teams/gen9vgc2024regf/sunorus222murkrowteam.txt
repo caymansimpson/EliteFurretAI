@@ -37,7 +37,7 @@ IVs: 10 SpA
 
 Chi-Yu @ Focus Sash
 Ability: Beads of Ruin
-Level: 60
+Level: 50
 Tera Type: Stellar
 EVs: 20 HP / 4 Def / 244 SpA / 4 SpD / 238 Spe
 Timid Nature

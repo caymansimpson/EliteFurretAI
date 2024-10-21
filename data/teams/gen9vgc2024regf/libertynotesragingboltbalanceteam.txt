@@ -1,6 +1,6 @@
 Raging Bolt @ Leftovers
 Ability: Protosynthesis
-Level: 75
+Level: 50
 Tera Type: Water
 EVs: 252 HP / 252 Def / 6 SpD
 Modest Nature
@@ -12,7 +12,7 @@ IVs: 20 Atk
 
 Rillaboom (M) @ Assault Vest
 Ability: Grassy Surge
-Level: 64
+Level: 50
 Tera Type: Fire
 EVs: 252 HP / 176 Atk / 2 Def / 80 Spe
 Adamant Nature
@@ -60,7 +60,7 @@ Adamant Nature
 
 Amoonguss (M) @ Sitrus Berry
 Ability: Regenerator
-Level: 75
+Level: 50
 Tera Type: Water
 EVs: 252 HP / 158 Def / 100 SpD
 Bold Nature

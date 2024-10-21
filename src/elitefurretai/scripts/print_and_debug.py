@@ -63,11 +63,14 @@ class CustomPlayer(RandomPlayer):
     def choose_move(self, battle):
 
         if self.username == "elitefurretai":
-            print("in choose_move")
+            print(f"in choose_move on turn #{battle.turn}; force_switch: {battle.force_switch}.")
+            # print("Current Observation events:", battle.current_observation.events)
+            # print()
 
         return self.choose_random_doubles_move(battle)
 
     def teampreview(self, battle):
+
         if self.username == "elitefurretai":
             print("in teampreview")
 
@@ -88,47 +91,45 @@ class CustomPlayer(RandomPlayer):
 
 async def main():
     pokepaste = """
-        Delibird @ Safety Goggles  
-        Ability: Vital Spirit  
-        Tera Type: Steel  
-        EVs: 1 HP  
-        - Fake Out  
-        - Icy Wind  
-        - Spikes  
-        - Substitute  
+Golduck @ Aguav Berry  
+Ability: Cloud Nine  
+Level: 50  
+Tera Type: Water  
+EVs: 252 Atk / 4 SpD / 252 Spe  
+Jolly Nature  
+- Flip Turn  
+- Aqua Tail  
 
-        Raichu @ Light Clay  
-        Ability: Static  
-        Tera Type: Ground  
-        EVs: 1 HP  
-        - Light Screen  
-        - Fake Out  
-        - Reflect  
-        - Nuzzle  
+Pelipper @ Expert Belt  
+Ability: Drizzle  
+Level: 50  
+Tera Type: Water  
+EVs: 252 SpA / 4 SpD / 252 Spe  
+Timid Nature  
+- U-turn  
+- Hurricane  
 
-        Tyranitar @ Heavy-Duty Boots  
-        Ability: Sand Stream  
-        Tera Type: Psychic  
-        EVs: 1 HP  
-        - Bulldoze  
-        - Dragon Tail  
-        - Stealth Rock  
+Basculegion (M) @ Choice Band  
+Ability: Adaptability  
+Level: 50  
+Tera Type: Water  
+EVs: 252 Atk / 4 SpA / 252 Spe  
+Hasty Nature  
+- Aqua Jet  
+- Wave Crash  
 
-        Smeargle @ Covert Cloak  
-        Ability: Moody  
-        Tera Type: Rock  
-        EVs: 1 HP  
-        - U-turn  
-        - Icy Wind  
-        - Rage Powder  
-        - Spikes  
+Furret @ Focus Sash  
+Ability: Frisk  
+Level: 50  
+Tera Type: Normal  
+EVs: 244 HP / 12 Atk / 252 Spe  
+Jolly Nature  
+- Double-Edge  
+- Super Fang  
+- Protect  
+- Quick Attack  
 
-        Furret @ Leftovers
-        Ability: Frisk  
-        Tera Type: Rock  
-        EVs: 1 HP  
-        - Follow Me
-        - Double Edge
+
         """
 
     p1 = CustomPlayer(
@@ -136,7 +137,45 @@ async def main():
         battle_format="gen9vgc2024regg",
         team=pokepaste,
     )
-    p2 = CustomPlayer(battle_format="gen9vgc2024regg", team=pokepaste)
+    p2 = CustomPlayer(battle_format="gen9vgc2024regg", team="""
+Golduck @ Aguav Berry  
+Ability: Cloud Nine  
+Level: 50  
+Tera Type: Water  
+EVs: 252 Atk / 4 SpD / 252 Spe  
+Jolly Nature  
+- Flip Turn  
+- Aqua Tail  
+
+Pelipper @ Expert Belt  
+Ability: Drizzle  
+Level: 50  
+Tera Type: Water  
+EVs: 252 SpA / 4 SpD / 252 Spe  
+Timid Nature  
+- U-turn  
+- Hurricane  
+
+Basculegion (M) @ Choice Band  
+Ability: Adaptability  
+Level: 50  
+Tera Type: Water  
+EVs: 252 Atk / 4 SpA / 252 Spe  
+Hasty Nature  
+- Aqua Jet  
+- Wave Crash  
+
+Furret @ Focus Sash  
+Ability: Frisk  
+Level: 50  
+Tera Type: Normal  
+EVs: 244 HP / 12 Atk / 252 Spe  
+Jolly Nature  
+- Double-Edge  
+- Super Fang  
+- Protect  
+- Quick Attack  
+""")
 
     # Run the battle
     await p1.battle_against(p2)

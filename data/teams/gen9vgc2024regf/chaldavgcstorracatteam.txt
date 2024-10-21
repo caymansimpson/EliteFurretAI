@@ -1,6 +1,6 @@
 Buried Alive (Flutter Mane) @ Choice Specs
 Ability: Protosynthesis
-Level: 91
+Level: 50
 Shiny: Yes
 Tera Type: Fairy
 EVs: 100 HP / 244 Def / 46 SpA / 118 Spe
@@ -13,7 +13,7 @@ IVs: 16 Atk
 
 Flexicution (Rillaboom) (M) @ Assault Vest
 Ability: Grassy Surge
-Level: 51
+Level: 50
 Tera Type: Fire
 EVs: 252 HP / 252 Atk / 4 SpD
 Brave Nature
@@ -25,6 +25,7 @@ IVs: 29 SpA / 0 Spe
 
 Torra (Torracat) (M) @ Eviolite
 Ability: Intimidate
+Level: 50
 Shiny: Yes
 Tera Type: Grass
 EVs: 252 HP / 2 Def / 4 SpA / 28 SpD / 212 Spe
@@ -36,7 +37,7 @@ Timid Nature
 
 Insipio (Primarina) (M) @ Life Orb
 Ability: Liquid Voice
-Level: 68
+Level: 50
 Tera Type: Fairy
 EVs: 252 HP / 100 Def / 157 SpA / 1 SpD
 Modest Nature
@@ -48,6 +49,7 @@ IVs: 5 Atk
 
 Cresselia (F) @ Sitrus Berry
 Ability: Levitate
+Level: 50
 Tera Type: Dark
 EVs: 244 HP / 54 Def / 196 SpA / 4 SpD / 12 Spe
 Modest Nature
@@ -59,6 +61,7 @@ IVs: 23 Atk
 
 All I Do (Glastrier) @ Clear Amulet
 Ability: Chilling Neigh
+Level: 50
 Tera Type: Poison
 EVs: 237 HP / 252 Atk / 21 Spe
 Adamant Nature

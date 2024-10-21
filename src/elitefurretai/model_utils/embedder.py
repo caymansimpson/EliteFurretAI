@@ -83,7 +83,7 @@ class Embedder:
                     simple_features[k] = v
         return simple_features
 
-    # TODO: add num which is an id / 100
+    # TODO: add num which is an id / 100? Need to figure out how to link to available switch/move
     def featurize_move(self, move: Optional[Move], prefix: str = "") -> Dict[str, float]:
         """
         Returns a feature dict representing a Move
@@ -218,7 +218,7 @@ class Embedder:
 
         return emb
 
-    # TODO: add num which is an id / 100
+    # TODO: add num which is an id / 100?
     def featurize_pokemon(
         self, mon: Optional[Pokemon], prefix: str = ""
     ) -> Dict[str, float]:
@@ -283,7 +283,7 @@ class Embedder:
 
         return emb
 
-    # TODO: add num
+    # TODO: add num?
     def featurize_opponent_pokemon(
         self,
         mon: Optional[Pokemon],

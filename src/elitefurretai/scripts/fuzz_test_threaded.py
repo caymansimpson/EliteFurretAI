@@ -1,14 +1,18 @@
 # -*- coding: utf-8 -*-
-"""This module plays a bunch of players against each other to find errors in Inference classes.
+"""Threaded version of fuzz_test, where we play a bunch of players against each
+other to find errors in our Inference classes. This threaded version is
+specifically for when you get to the last 0.01% of errors, and need to find those errors
+more quickly.
 """
 
 import asyncio
-import itertools
 import os.path
 import re
 import sys
 import time
-from typing import Optional, Union
+import threading
+from dataclasses import dataclass
+from typing import Optional, Union, Dict, List, Tuple
 
 from poke_env.data.gen_data import GenData
 from poke_env.environment.move_category import MoveCategory
@@ -22,6 +26,37 @@ from elitefurretai.inference.inference_utils import get_showdown_identifier
 from elitefurretai.inference.item_inference import ItemInference
 from elitefurretai.inference.speed_inference import SpeedInference
 from elitefurretai.utils.team_repo import TeamRepo
+
+
+@dataclass
+class BattleResult:
+    p1_username: str
+    p2_username: str
+    battle_tag: str
+    errors: str
+    error_counts: Dict[str, int]
+    success: bool
+
+
+class ResultAggregator:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.total_battles = 0
+        self.successful_battles = 0
+        self.error_counts = {}
+        self.error_log = ""
+
+    def add_result(self, result: BattleResult):
+        with self.lock:
+            self.total_battles += 1
+            if result.success:
+                self.successful_battles += 1
+
+            for error_type, count in result.error_counts.items():
+                self.error_counts[error_type] = self.error_counts.get(error_type, 0) + count
+
+            if result.errors:
+                self.error_log += result.errors
 
 
 class CustomPlayer(RandomPlayer):
@@ -84,6 +119,33 @@ class CustomPlayer(RandomPlayer):
             self._speed_inferences[battle.battle_tag].update(battle)
             self._item_inferences[battle.battle_tag].update(battle)
         return self.choose_random_doubles_move(battle)  # pyright: ignore
+
+
+class PlayerPool:
+    """Manages a pool of players, ensuring each player is only used in one battle at a time"""
+    def __init__(self, players: List[CustomPlayer]):
+        self.players = set(players)
+        self.in_use = set()
+        self.lock = threading.Lock()
+
+    async def acquire_pair(self) -> Optional[Tuple[CustomPlayer, CustomPlayer]]:
+        """Attempt to acquire a pair of available players"""
+        with self.lock:
+            available = self.players - self.in_use
+            if len(available) < 2:
+                return None
+
+            # Get first two available players
+            p1, p2 = list(available)[:2]
+            self.in_use.add(p1)
+            self.in_use.add(p2)
+            return p1, p2
+
+    def release_pair(self, p1: CustomPlayer, p2: CustomPlayer):
+        """Release a pair of players back to the available pool"""
+        with self.lock:
+            self.in_use.remove(p1)
+            self.in_use.remove(p2)
 
 
 def print_observation(obs):
@@ -160,6 +222,7 @@ def check_ground_truth(p1, p2, battle_tag):
         if flags["item"] not in [mon.item, None, GenData.UNKNOWN_ITEM, mon_in_battle.item] and flags["item"] == "choicescarf":
             msg += "\n\n======================================================================\n=========================== ERROR FOUND :( ===========================\n======================================================================\n"
             msg += "Error Type: (error_speed_item) Erroneously found item that the mon didn't have, due to incorrect Speed Calculations\n"
+            msg += f"This was done on {flags['debug_item_found_turn']} turn\n"
             msg += f"{mon_in_battle.name} was found to have {flags['item']} when it actually had {mon.item}\n\n"
             msg += print_battle(p2, p1, battle_tag)
             counts["error_speed_item"] = counts.get("speed_item", 0) + 1
@@ -196,28 +259,88 @@ def check_ground_truth(p1, p2, battle_tag):
     return msg, counts
 
 
-# Arguments passed via CLI can be number of battles to run, or "print" to print the errors to the console
-async def main():
+async def run_battle(p1: CustomPlayer, p2: CustomPlayer) -> BattleResult:
+    """Run a single battle between two players and return the results"""
+    await p1.battle_against(p2)
 
-    print("\n\n\n\n\n\n\n\n\033[92mStarting Fuzz Test!\033[0m\n")
+    # Find the battle tag for this matchup
+    battle_tag = None
+    for tag, battle in p1.battles.items():
+        if battle.opponent_username == p2.username:
+            battle_tag = tag
+            break
+
+    if not battle_tag:
+        return BattleResult(p1.username, p2.username, "", "", {}, False)
+
+    # Check ground truth from both perspectives
+    msg1, counts1 = check_ground_truth(p1, p2, battle_tag)
+    msg2, counts2 = check_ground_truth(p2, p1, battle_tag)
+
+    # Combine error counts
+    combined_counts = {}
+    for key in set(counts1.keys()) | set(counts2.keys()):
+        combined_counts[key] = counts1.get(key, 0) + counts2.get(key, 0)
+
+    return BattleResult(
+        p1_username=p1.username,
+        p2_username=p2.username,
+        battle_tag=battle_tag,
+        errors=msg1 + msg2,
+        error_counts=combined_counts,
+        success=not bool(msg1 or msg2)
+    )
+
+
+async def battle_worker(player_pool: PlayerPool, result_aggregator: ResultAggregator, remaining_battles: asyncio.Event):
+    """Worker function that processes battles using available players from the pool"""
+    while remaining_battles.is_set():
+        try:
+            # Try to get an available pair of players
+            player_pair = await player_pool.acquire_pair()
+            if not player_pair:
+                # No players available, wait a bit and try again
+                await asyncio.sleep(0.1)
+                continue
+
+            p1, p2 = player_pair
+            try:
+                result = await run_battle(p1, p2)
+                result_aggregator.add_result(result)
+            finally:
+                # Always release the players back to the pool
+                player_pool.release_pair(p1, p2)
+
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            print(f"Error in battle worker: {e}")
+
+
+async def main():
+    print("\n\n\n\n\n\n\n\n\033[92mStarting Multithreaded Fuzz Test!\033[0m\n")
+
+    # Parse command line arguments
     num = None
     for arg in sys.argv:
         if arg.isdigit():
             num = arg
     total_battles = int(num) if num is not None else 1000
+
+    # Number of concurrent battles to run - limited by number of player pairs available
+    num_threads = min(os.cpu_count() or 4, 8)  # Limit to 8 threads maximum
+
+    print(f"Running with up to {num_threads} concurrent battles")
     print("Loading and validating teams, then creating players...")
+
     tr = TeamRepo(validate=False, verbose=False)
-    print(f"Finished loading {len(tr.teams['gen9vgc2024regg'])} teams to battle against each other!")
+    print(f"Finished loading {len(tr.teams['gen9vgc2024regg'])} teams!")
 
+    # Create players
     players = []
-    i = 0
     for team_name, team in tr.teams["gen9vgc2024regg"].items():
-
-        # Don't want to deal with Ditto yet; same with Zoroark and Tatsugiri/Dondozo
         if "Ditto" in team or "Zoroark" in team or ("Dondozo" in team and "Tatsugiri" in team):
             continue
-
-        # Don't want to deal with non-english characters
         if bool(re.search(r'[^a-zA-Z0-9\- _]', team_name)):
             continue
 
@@ -227,86 +350,61 @@ async def main():
             team=team,
         ))
 
-        i += 1
+    print(f"Created {len(players)} legal players (filtered out Dondozo, Ditto and Zoroark teams)")
 
-    # Change min to max to remove debugging
-    num_matchups = max(1, int(total_battles / len(list(itertools.combinations(players, 2)))))
+    # Initialize player pool and result aggregator
+    player_pool = PlayerPool(players)
+    result_aggregator = ResultAggregator()
 
-    print(f"Done! Now starting Player battles with {num_matchups} each")
+    # Create an event to signal when we should stop creating new battles
+    remaining_battles = asyncio.Event()
+    remaining_battles.set()
 
-    total_errors = ""
-    total = 0
+    print(f"Starting {total_battles} total battles! Will update progress every second:")
+
+    # Create and start worker tasks
     original_time = time.time()
-    filename = os.path.expanduser('~/Desktop/fuzz_errors.txt')
-
-    for p1, p2 in itertools.combinations(players, 2):
-        t0 = time.time()
-
-        for i in range(num_matchups):
-            total += 1
-            print(f"\rStarting battle #{total} between {p1.username} and {p2.username}...\r", end="", flush=True)
-            await p1.battle_against(p2)
-            if total >= total_battles:
-                break
-
-        print(
-            f"Finished {num_matchups} battles between {p1.username} and {p2.username} in {round((time.time() - t0), 2)}"
-            + f"s ({round((time.time() - t0) * 1. / num_matchups, 2)}s each)"
+    workers = []
+    for _ in range(num_threads):
+        worker = asyncio.create_task(
+            battle_worker(player_pool, result_aggregator, remaining_battles)
         )
+        workers.append(worker)
 
-        if total >= total_battles:
-            break
+    # Monitor progress and stop when we reach total_battles
+    while result_aggregator.total_battles < total_battles:
+        pct = result_aggregator.total_battles * 100. / total_battles
+        num = result_aggregator.total_battles
+        print(f"\r\tCompleted {pct}% battles with {num} done...", end="", flush=True)
+        await asyncio.sleep(1)
 
-    print("\n\n======== Finished all battles!! ========")
-    print(f"Finished {total} battles in {round(time.time() - original_time, 2)} sec")
-    print(f"\tfor {round((time.time() - original_time) * 1. / total, 2)} sec per battle")
+    # Signal workers to stop
+    remaining_battles.clear()
 
-    print(
-        "Now going through Inference to check the right ground truth! This method won't catch cases when"
-        + " I should have inferred items, but didn't. It will only catch when I infer incorrectly..."
-    )
+    # Cancel workers
+    for worker in workers:
+        worker.cancel()
+    await asyncio.gather(*workers, return_exceptions=True)
 
-    # Check for implicit inference errors. Doesn't catch when I should have inferred an error and I didn't
-    total_success = 0
-    total = 0
-    counts = {}
-    for p1, p2 in itertools.combinations(players, 2):
+    # Print results
+    print("\r\n\n======== Finished all battles!! ========")
+    print(f"Finished {result_aggregator.total_battles} battles in {round(time.time() - original_time, 2)} sec")
+    print(f"\tfor {round((time.time() - original_time) * 1. / result_aggregator.total_battles, 2)} sec per battle")
 
-        # Go through battle from each player's perspective; first have to find battles
-        # between them
-        for battle_tag, battle in p1.battles.items():
-            if battle.opponent_username == p2.username:
-                total += 2
+    success_rate = round(result_aggregator.successful_battles * 100.0 / result_aggregator.total_battles, 2)
+    print(f"\nFinished with {success_rate}% success rate")
 
-                msg, counts1 = check_ground_truth(p1, p2, battle_tag)
-                if msg == "":
-                    total_success += 1
-                else:
-                    total_errors += msg
+    for error_type, count in result_aggregator.error_counts.items():
+        print(f"\tError Type [{error_type}] was found {count} times")
 
-                msg, counts2 = check_ground_truth(p2, p1, battle_tag)
-                if msg == "":
-                    total_success += 1
-                else:
-                    total_errors += msg
-
-                for key in counts1:
-                    counts[key] = counts.get(key, 0) + counts1[key]
-                for key in counts2:
-                    counts[key] = counts.get(key, 0) + counts2[key]
-
-    print("\n======== Finished checking all battles for inferences ========")
-    print(f"Finished {total} battles with {round(total_success * 1.0 / total * 100, 2)}% success rate")
-    for error_type in counts:
-        print(f"\tError Type [{error_type}] was found {counts[error_type]} times")
-
-    print(f"Writing these to {filename}). {'Also, printing them here:' if 'print' in sys.argv else ''}")
+    # Write errors to file
+    filename = os.path.expanduser('~/Desktop/fuzz_errors.txt')
+    print(f"\nWriting errors to {filename}")
     with open(filename, 'w') as f:
-        f.write(total_errors)
+        f.write(result_aggregator.error_log)
 
-    print_errors = False
-    if print_errors or "print" in sys.argv:
-        print(total_errors)
+    if "print" in sys.argv:
+        print(result_aggregator.error_log)
 
 if __name__ == "__main__":
     asyncio.run(main())

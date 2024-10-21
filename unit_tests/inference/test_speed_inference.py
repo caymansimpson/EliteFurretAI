@@ -15,8 +15,8 @@ from poke_env.environment import (
 )
 from poke_env.teambuilder.constant_teambuilder import ConstantTeambuilder
 
-from elitefurretai.inference.speed_inference import SpeedInference, get_pokemon
 from elitefurretai.inference.battle_inference import BattleInference
+from elitefurretai.inference.speed_inference import SpeedInference, get_pokemon
 
 
 def generate_speed_inference():
@@ -140,20 +140,23 @@ def test_parse_preturn_switch():
     assert [("p2: Calyrex", 1.0), ("p1: Terapagos", 1.0)] in orders
     assert [("p1: Terapagos", 1.0), ("p1: Weezing", 1.0)] in orders
 
-    # Ensure I parse things right; this was a bug
     si = generate_speed_inference()
     events = [
-        ["", "switch", "p1a: Smeargle", "Smeargle, L50, M, tera:Rock", "32/130"],
-        ["", "-damage", "p1a: Smeargle", "0 fnt", "[from] Spikes"],
-        ["", "faint", "p1a: Smeargle"],
-        ["", ""],
-        ["", "switch", "p1a: Raichu", "Raichu, L50, F", "60/135"],
-        ["", "-damage", "p1a: Raichu", "27/135", "[from] Spikes"],
+        ['', 'switch', 'p1a: Nickname', 'Miraidon, L50', '100/100'],
+        ['', 'switch', 'p1b: Iron Hands', 'Iron Hands, L50', '100/100'],
+        ['', 'switch', 'p2a: Kommo-o better', 'Zamazenta-Crowned, L50', '199/199'],
+        ['', 'switch', 'p2b: Chien-Pao', 'Chien-Pao, L50', '155/155'],
+        ['', '-fieldstart', 'move: Electric Terrain', '[from] ability: Hadron Engine', '[of] p1a: Nickname'],
+        ['', '-activate', 'p1b: Iron Hands', 'ability: Quark Drive'],
+        ['', '-start', 'p1b: Iron Hands', 'quarkdriveatk'],
+        ['', '-ability', 'p2b: Chien-Pao', 'Sword of Ruin'],
+        ['', '-ability', 'p2a: Kommo-o better', 'Dauntless Shield', 'boost'],
+        ['', '-boost', 'p2a: Kommo-o better', 'def', '1']
     ]
     orders = si.clean_orders(si._parse_preturn_switch(events))
-    assert not any(map(lambda x: x and x.species == "smeargle", si._battle.active_pokemon))
-    assert any(map(lambda x: x and x.species == "raichu", si._battle.active_pokemon))
-    assert len(orders) == 0
+    assert len(orders) == 2
+    assert [('p1: Nickname', 1.0), ('p2: Chien-Pao', 1.0)] in orders
+    assert [('p2: Chien-Pao', 1.0), ('p2: Kommo-o better', 1.0)] in orders
 
 
 # Too lazy to test mega that might trigger some other series of abilities
@@ -379,6 +382,50 @@ def test_parse_move():
     assert len(orders) == 1
     assert [("p1: Delibird", 1.0), ("p2: Gardevoir", 1.0)] in orders
 
+    si = generate_speed_inference()
+    si._battle.parse_message(["", "switch", "p1b: Grimmsnarl", "Grimmsnarl, L50, F", "167/167"])
+    si._battle.parse_message(["", "switch", "p1a: Volcarona", "Volcarona, L50, F", "167/167"])
+    si._battle.parse_message(["", "switch", "p2a: Whimsicott", "Whimsicott, L50, F", "167/167"])
+    si._battle.parse_message(["", "switch", "p2b: Terapagos", "Terapagos, L50, F", "167/167"])
+    events = [
+        ['', 'move', 'p1b: Grimmsnarl', 'Thunder Wave', 'p1a: Volcarona'],
+        ['', '-status', 'p1a: Volcarona', 'par'],
+        ['', 'move', 'p2b: Terapagos', 'Meteor Beam', 'p1b: Grimmsnarl', '[from]lockedmove'],
+        ['', '-damage', 'p1b: Grimmsnarl', '41/100'],
+        ['', 'move', 'p2a: Whimsicott', 'Endeavor', 'p1b: Grimmsnarl'],
+        ['', '-damage', 'p1b: Grimmsnarl', '1/100'],
+        ['', 'move', 'p1a: Volcarona', 'Heat Wave', 'p2a: Whimsicott', '[spread] p2a,p2b'],
+        ['', '-supereffective', 'p2a: Whimsicott'],
+        ['', '-damage', 'p2a: Whimsicott', '0 fnt'],
+        ['', '-damage', 'p2b: Terapagos', '135/243'],
+        ['', 'faint', 'p2a: Whimsicott']
+    ]
+    orders = si.clean_orders(si._parse_move(events))
+    assert len(orders) == 2
+
+    si = generate_speed_inference()
+    si._battle.parse_message(["", "switch", "p1a: Nickname", "Miraidon, L50", "167/167"])
+    si._battle.parse_message(["", "switch", "p1b: Iron Hands", "Iron Hands, L50, F", "167/167"])
+    si._battle.parse_message(["", "switch", "p2a: Terapagos", "Terapagos, L50", "167/167"])
+    si._battle.parse_message(["", "switch", "p2b: Incineroar", "Incineroar, L50, F", "167/167"])
+    events = [
+        ['', 'move', 'p1a: Nickname', 'Draco Meteor', 'p2b: Incineroar', '[miss]'],
+        ['', '-miss', 'p1a: Nickname', 'p2b: Incineroar'],
+        ['', 'move', 'p2a: Terapagos', 'Tri Attack', 'p2b: Incineroar'],
+        ['', '-damage', 'p2b: Incineroar', '119/202'],
+        ['', 'move', 'p2b: Incineroar', 'U-turn', 'p2a: Terapagos'],
+        ['', '-damage', 'p2a: Terapagos', '231/258'],
+        ['', ''],
+        ['', 'switch', 'p2b: Rillaboom', 'Rillaboom, L50, M', '176/176', '[from] U-turn'],
+        ['', '-fieldstart', 'move: Grassy Terrain', '[from] ability: Grassy Surge', '[of] p2b: Rillaboom'],
+        ['', 'move', 'p1b: Iron Hands', 'Wild Charge', 'p1a: Nickname'],
+        ['', '-resisted', 'p1a: Nickname'],
+        ['', '-damage', 'p1a: Nickname', '92/100'],
+        ['', '-damage', 'p1b: Iron Hands', '99/100', '[from] Recoil']
+    ]
+    orders = si.clean_orders(si._parse_move(events))
+    assert len(orders) == 3
+
 
 def test_parse_residual():
     si = generate_speed_inference()
@@ -572,7 +619,7 @@ def test_get_activations_from_weather_or_terrain():
     assert [("p1: Wo-Chien", 2.0), ("p2: Pincurchin", 1.0)] in orders
 
     with pytest.raises(ValueError):
-        orders = si.clean_orders(si._get_activations_from_weather_or_terrain(events, 1))
+        orders = si.clean_orders(si._get_activations_from_weather_or_terrain(events, 1))  # pyright: ignore
 
 
 def test_save_multipliers():
@@ -729,7 +776,7 @@ def test_clean_orders():
         [("p1a: Wo-Chien", 1.0), ("p2b: Ting-Lu", 1.0), ("p1b: Raichu", 0.25)],
     ]
 
-    cleaned = SpeedInference.clean_orders(orders)
+    cleaned = SpeedInference.clean_orders(orders)  # pyright: ignore
     assert [("p2: Ting-Lu", 1.0), ("p1: Raichu", 1.0)] in cleaned
     assert [("p1: Raichu", 1.0), ("p1: Wo-Chien", 0.67)] in cleaned
     assert [("p1: Wo-Chien", 1.0), ("p2: Ting-Lu", 1.0)] in cleaned

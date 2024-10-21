@@ -13,6 +13,7 @@ IVs: 11 Atk / 1 Spe
 
 Annihilape (F) @ Choice Scarf
 Ability: Defiant
+Level: 50
 Shiny: Yes
 Tera Type: Fire
 EVs: 252 HP / 6 SpD / 252 Spe
@@ -36,7 +37,7 @@ IVs: 0 SpA / 0 Spe
 
 Ogerpon-Cornerstone (F) @ Cornerstone Mask
 Ability: Sturdy
-Level: 70
+Level: 50
 Tera Type: Rock
 EVs: 252 Atk / 20 Spe
 Naughty Nature
@@ -48,6 +49,7 @@ IVs: 20 Def / 20 SpA / 20 SpD
 
 Tsareena (F) @ Wide Lens
 Ability: Queenly Majesty
+Level: 50
 Tera Type: Stellar
 EVs: 252 HP / 252 Atk / 6 SpD
 Brave Nature
@@ -59,6 +61,7 @@ IVs: 0 SpA / 0 Spe
 
 Torkoal (M) @ Choice Specs
 Ability: Drought
+Level: 50
 Tera Type: Fire
 EVs: 166 HP / 252 SpA / 92 SpD
 Quiet Nature

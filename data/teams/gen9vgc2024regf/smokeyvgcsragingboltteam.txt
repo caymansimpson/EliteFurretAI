@@ -1,5 +1,6 @@
 Tornadus (M) @ Covert Cloak
 Ability: Prankster
+Level: 50
 Tera Type: Dark
 EVs: 164 HP / 2 Atk / 172 Def / 20 SpA / 4 SpD / 148 Spe
 Bold Nature
@@ -11,6 +12,7 @@ IVs: 0 Atk
 
 Melvino (Flutter Mane) @ Choice Specs
 Ability: Protosynthesis
+Level: 50
 Shiny: Yes
 Tera Type: Fairy
 EVs: 100 HP / 180 Def / 156 SpA / 4 SpD / 68 Spe
@@ -23,6 +25,7 @@ IVs: 0 Atk
 
 LongNeckAnt (Raging Bolt) @ Leftovers
 Ability: Protosynthesis
+Level: 50
 Tera Type: Grass
 EVs: 188 HP / 140 Def / 20 SpA / 68 SpD / 92 Spe
 Modest Nature
@@ -34,6 +37,7 @@ IVs: 20 Atk
 
 Enlightened (Incineroar) (M) @ Sitrus Berry
 Ability: Intimidate
+Level: 50
 Shiny: Yes
 Tera Type: Grass
 EVs: 236 HP / 4 Atk / 188 Def / 76 SpD / 4 Spe
@@ -45,6 +49,7 @@ Impish Nature
 
 DaveGoku (Urshifu-Rapid-Strike) (M) @ Mystic Water
 Ability: Unseen Fist
+Level: 50
 Tera Type: Water
 EVs: 204 HP / 236 Atk / 12 Def / 4 SpD / 52 Spe
 Adamant Nature
@@ -55,6 +60,7 @@ Adamant Nature
 
 BapeStar (Rillaboom) (M) @ Assault Vest
 Ability: Grassy Surge
+Level: 50
 Shiny: Yes
 Tera Type: Fire
 EVs: 204 HP / 196 Atk / 4 Def / 4 SpD / 100 Spe

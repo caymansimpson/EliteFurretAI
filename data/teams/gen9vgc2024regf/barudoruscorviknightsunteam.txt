@@ -1,6 +1,6 @@
 Raging Bolt @ Assault Vest
 Ability: Protosynthesis
-Level: 75
+Level: 50
 Tera Type: Fire
 EVs: 212 HP / 4 Def / 180 SpA / 44 SpD / 68 Spe
 Modest Nature
@@ -12,7 +12,7 @@ IVs: 20 Atk
 
 Gouging Fire @ Choice Scarf
 Ability: Protosynthesis
-Level: 75
+Level: 50
 Tera Type: Grass
 EVs: 36 HP / 252 Atk / 4 Def / 4 SpD / 212 Spe
 Adamant Nature
@@ -23,7 +23,7 @@ Adamant Nature
 
 Walking Wake @ Life Orb
 Ability: Protosynthesis
-Level: 76
+Level: 50
 Tera Type: Steel
 EVs: 4 HP / 4 Def / 244 SpA / 4 SpD / 252 Spe
 Timid Nature
@@ -58,7 +58,7 @@ Impish Nature
 
 Torkoal @ Charcoal
 Ability: Drought
-Level: 64
+Level: 50
 Tera Type: Fire
 EVs: 252 HP / 252 SpA / 4 SpD
 Quiet Nature

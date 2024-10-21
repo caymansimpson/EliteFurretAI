@@ -12,7 +12,7 @@ IVs: 0 Spe
 
 Incineroar @ Safety Goggles
 Ability: Intimidate
-Level: 65
+Level: 50
 Tera Type: Ghost
 EVs: 236 HP / 4 Atk / 92 Def / 156 SpD / 20 Spe
 Careful Nature
@@ -23,7 +23,7 @@ Careful Nature
 
 Amoonguss @ Sitrus Berry
 Ability: Regenerator
-Level: 54
+Level: 50
 Tera Type: Dark
 EVs: 252 HP / 156 Def / 100 SpD
 Relaxed Nature
