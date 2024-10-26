@@ -463,6 +463,8 @@ def get_ability_and_identifier(event: List[str]) -> Tuple[Optional[str], Optiona
         )
     elif len(event) > 3 and event[1] == "-ability":
         return event[3], standardize_pokemon_ident(event[2])
+    elif event[-1].startswith("ability: "):
+        return event[-1].replace("ability: ", ""), standardize_pokemon_ident(event[2])
     else:
         return None, None
 
@@ -501,7 +503,7 @@ def get_priority_and_identifier(
     elif (
         ("triage" in mon.possible_abilities and mon.ability is None)
         or "triage" == mon.ability
-    ) and move.heal + move.drain > 0:
+    ) and (move.heal + move.drain > 0 or "heal" in move.flags):
         priority += 3
     elif (
         ("myceliummight" in mon.possible_abilities and mon.ability is None)
@@ -586,8 +588,10 @@ def get_segments(events: List[List[str]], start=0) -> Dict[str, List[List[str]]]
     # Remove empty events
     events = [event for event in events if len(event) > 1]
 
+    start_of_battle = any(map(lambda x: len(x) >= 2 and x[1] == "start", events))
+
     # If at the start of the battle, we move directly to the post-turn phase
-    if not any(map(lambda x: len(x) >= 2 and x[1] == "start", events)):
+    if not start_of_battle:
 
         # We know there has to be a switch or a move; we go until we get there, but if we get a battle_mechanic,
         # we stop
@@ -716,15 +720,24 @@ def get_segments(events: List[List[str]], start=0) -> Dict[str, List[List[str]]]
         if last_segment != "" and indices[last_segment] != i:
             segments[last_segment] = events[indices[last_segment] : i]
 
-        last_segment = ""
+        last_segment = "post_upkeep"
+        indices["post_upkeep"] = i
 
+    # TODO: rejigger to properly handle post_upkeep
     # At this point, we could have a switches from fainted mons or end of turn
     while i < len(events) and events[i][1] not in ["turn", "switch"]:
-        init.append(events[i])
+        if start_of_battle:
+            init.append(events[i])
         i += 1
+
+    # If we have post_upkeep
+    if last_segment == "post_upkeep" and i > max(indices[last_segment], start):
+        segments[last_segment] = events[max(indices[last_segment], start) : -1]
 
     # If we find a switch, we record it as a preturn_switch
     if i < len(events) and events[i][1] == "switch":
+        if last_segment != "" and i >= start and max(indices[last_segment], start) != i:
+            segments[last_segment] = events[max(indices[last_segment], start) : i]
         last_segment = "preturn_switch"
         indices["preturn_switch"] = i
 

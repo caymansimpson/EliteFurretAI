@@ -4,6 +4,7 @@ It even can even establish whether a mon has choice scarf. This object is a comp
 """
 
 import sys
+import math
 import traceback
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -14,10 +15,12 @@ from poke_env.environment import (
     DoubleBattle,
     Effect,
     Field,
+    Pokemon,
     SideCondition,
     Status,
     Weather,
 )
+from poke_env.data.gen_data import GenData
 
 from elitefurretai.inference.battle_inference import BattleInference
 from elitefurretai.inference.inference_utils import (
@@ -39,6 +42,7 @@ from elitefurretai.inference.inference_utils import (
     is_ability_event,
     standardize_pokemon_ident,
     update_battle,
+    observation_to_str, # TODO: remove after debugging
 )
 
 
@@ -50,8 +54,10 @@ class SpeedInference:
         "_v",
         "_last_tracked_event",
         "_last_tracked_turn",
-        "_tracked_events",  # TODO: remove after debugging
+        "_tracked_events", # TODO: remove after debugging
         "_triggering_info",
+        "_player", # TODO: remove after debugging
+        "_printed",
     )
 
     # We need to keep a copy of the battle state because we need to recreate the turn and conditions of the turn to parse speeds
@@ -60,6 +66,7 @@ class SpeedInference:
         battle: Union[Battle, DoubleBattle, AbstractBattle],
         inferences: BattleInference,
         verbose: int = 0,
+        player: Any = None, # TODO: remove after debugging
     ):
         self._battle: Union[Battle, DoubleBattle, AbstractBattle] = copy_bare_battle(battle)
         self._inferences: BattleInference = inferences
@@ -67,8 +74,10 @@ class SpeedInference:
         self._v: int = verbose
         self._last_tracked_event: int = 0
         self._last_tracked_turn: int = -1
-        self._tracked_events = []
-        self._triggering_info = {}
+        self._tracked_events = [] # TODO: remove after debugging
+        self._triggering_info = {} # TODO: remove after debugging
+        self._printed = False # TODO: remove after debugging
+        self._player = player # TODO: remove after debugging
 
         if battle.teampreview:
             self._battle.parse_request(battle.last_request)
@@ -110,7 +119,7 @@ class SpeedInference:
             if len(obs.events) > 0 and obs.events[-1][1] == "turn":
                 self._last_tracked_event = 0
             self._last_tracked_turn = turn_of_events
-            self._tracked_events += obs.events
+            self._tracked_events += obs.events # TODO: remove after debugging
         elif self._v >= 2:
             print(
                 "Warning: Tried to track speeds from events multiple times... "
@@ -228,8 +237,8 @@ class SpeedInference:
             key = get_showdown_identifier(mon, self._battle.opponent_role)
             variables[key] = pulp.LpVariable(
                 key,
-                lowBound=self._inferences.get_flag(key, "spe")[0],  # pyright: ignore
-                upBound=self._inferences.get_flag(key, "spe")[1],  # pyright: ignore
+                lowBound=math.floor(self._inferences.get_flag(key, "spe")[0]),  # pyright: ignore
+                upBound=math.ceil(self._inferences.get_flag(key, "spe")[1]),  # pyright: ignore
                 cat="Integer",
             )
 
@@ -245,6 +254,8 @@ class SpeedInference:
                         constraints[key] = tp_mon.stats["spe"]
             else:
                 constraints[key] = mon.stats["spe"]
+
+        orig_variables = {k: self._inferences.get_flag(k, "spe") for k, v in variables.items()} # TODO: Remove this after debugging
 
         # For each problem (a minimization and maximization one)
         for problem in problems:
@@ -282,7 +293,7 @@ class SpeedInference:
             problem.solve(solver=pulp.apis.SCIP_PY(msg=False))
 
             # Flag for whether we can update our speed tracking
-            success = False
+            success, choicescarfmon = False, ""
 
             # If we get infeasible conditions, we check for Choice Scarf (we don't check for iron ball given its rarity)
             # This assumes that our speed tracking is correct; we could get infeasible if I miss a speed interaction
@@ -302,29 +313,39 @@ class SpeedInference:
                         self._inferences.get_flag(mon_ident, "can_be_choice")
                         and variables[mon_ident].upBound
                     ):
-                        variables[mon_ident].upBound = int(variables[mon_ident].upBound * 1.5)  # type: ignore
+                        # See if we can solve it if we let the speed be 1.5 the max
+                        variables[mon_ident].upBound = variables[mon_ident].upBound * 1.5  # type: ignore
                         problem.solve(solver=pulp.apis.SCIP_PY(msg=False))
 
-                        # We found our choice scarf mon! We should record success and update the mon
+                        # If solvable, we found our choice scarf mon! We should record success and update the mon
                         if pulp.LpStatus[problem.status] == "Optimal":
+
+                            # Need to go back and update the previous orders to note that there was a choice scarf there,
+                            # since previous orders were wrong
                             self._update_orders(mon_ident, 1.5)
+
+                            # Record that we found the item and update inferences
                             self._inferences.set_flag(mon_ident, "item", "choicescarf")
-                            self._inferences.set_flag(mon_ident, "debug_item_found_turn", self._battle.turn - 1)
-                            success = True
+                            self._inferences.set_flag(mon_ident, "debug_item_found_turn", self._battle.turn - 1) # TODO: remove after debugging
+                            success, choicescarfmon = True, mon_ident
+
                             if self._v >= 2 and problem.name == "MinProblem":
                                 self._debug("item_found", mon_ident)
                             break
 
-                        variables[mon_ident].upBound = int(variables[mon_ident].upBound / 1.5)  # type: ignore
-
-                if self._v >= 1 and not success and problem.name == "MinProblem":
-                    self._debug("item_not_found", problem)
+                        # Reset the upperbound to normal if this mon didnt make the LP solvable
+                        variables[mon_ident].upBound = variables[mon_ident].upBound / 1.5  # type: ignore
 
             elif pulp.LpStatus[problem.status] == "Optimal":
                 success = True
                 if self._v >= 3 and problem.name == "MinProblem":
                     self._debug("solution_found")
-            else:
+            
+            # TODO: fix error handling here
+            if not success:
+                print(battle_to_str(self._battle))
+                print(self._orders)
+                print(problem)
                 raise ValueError(
                     f"Got Pulp status of {pulp.LpStatus[problem.status]}. Pulp setup: {problem}",
                     self._battle,
@@ -334,14 +355,67 @@ class SpeedInference:
             if success:
                 for key in variables:
                     if key in self._battle.opponent_team and variables[key].varValue:
+                        
+                        # Get speed and adjust if choicescarf, since it's 1.5 what we think; the solved
+                        # speed is the choicescarf speed
+                        spe = variables[key].varValue  # type: ignore
+                        if choicescarfmon == key:
+                            spe = spe / 1.5
+
+                        # Update inferences
                         if problem.name == "MinProblem":
                             speeds = self._inferences.get_flag(key, "spe")
-                            speeds[0] = variables[key].varValue  # type: ignore
+                            speeds[0] = spe
                             self._inferences.set_flag(key, "spe", speeds)
                         else:
                             speeds = self._inferences.get_flag(key, "spe")
-                            speeds[1] = variables[key].varValue  # type: ignore
+                            speeds[1] = spe
                             self._inferences.set_flag(key, "spe", speeds)
+
+        for key in self._battle.opponent_team: # TODO: remove after debugging
+            if key not in variables or self._printed:
+                continue
+
+            spe = self._player.battles[self._battle.battle_tag].team[key].stats['spe']
+            item = self._player.battles[self._battle.battle_tag].team[key].item
+            if (
+                spe > self._inferences.get_flag(key, "spe")[1]
+                # and (item == "choicescarf" and spe*1.5 > self._inferences.get_flag(key, "spe")[1])
+            ):
+                print("==========================================================================")
+                print("==========================================================================")
+                print(f"\n\nfor {key}, we set its max lower than its speed")
+                print(problems[1])
+            elif (
+                spe < self._inferences.get_flag(key, "spe")[0]
+                # and (item == "choicescarf" and spe*1.5 < self._inferences.get_flag(key, "spe")[0])
+            ):
+                print("==========================================================================")
+                print("==========================================================================")
+                print(f"\n\nfor {key}, we set its min speed higher than its speed")
+                print(problems[0])
+            else:
+                continue
+
+            print(
+                f"Speed inferences that violated {self._inferences.get_flag(key, 'spe')}" +
+                f" when true speed is {spe}" +
+                f" and its item is {self._player.battles[self._battle.battle_tag].team[key].item}" +
+                f" and we think its item was {self._inferences.get_flag(key, 'item')}"
+            )
+            print("Turn found choicescarf:", self._inferences.get_flag(key, "debug_item_found_turn"))
+            print("Original constraints before the solve", orig_variables)
+            self._battle._teampreview_opponent_team = self._player.battles[self._battle.battle_tag].teampreview_team
+            print("Battle:")
+            print(observation_to_str(self._battle.observations[self._battle.turn-1]))
+            print("Orders:")
+            for order in orders:
+                print('\t', order)
+            print("Total Orders:", self._orders)
+            print('\n\n')
+            print(battle_to_str(self._battle))
+
+            self._printed = True
 
     # We look at abilities that don't have priority and trigger, found here:
     # https://github.com/smogon/pokemon-showdown/blob/master/data/abilities.ts
@@ -417,7 +491,7 @@ class SpeedInference:
                                 (mon_ident, last_multipliers[mon_ident]),
                             ]
                         )
-                    except KeyError as e:
+                    except KeyError as e: # TODO: remove after debugging
                         print("In Last Multipliers and had a Key Error in parse_preturn_switch")
                         print(e)
                         print()
@@ -508,7 +582,7 @@ class SpeedInference:
             # Update battle after the order calculation
             try:
                 update_battle(self._battle, events[i])
-            except KeyError as e:
+            except KeyError as e: # TODO: remove after debugging
                 print("In Parse Battle Mehcanic and had an error")
                 print(str(e))
                 exc_type, exc_value, exc_traceback = sys.exc_info()
@@ -601,7 +675,7 @@ class SpeedInference:
                                     (mon_ident, last_multipliers[mon_ident]),
                                 ]
                             )
-                        except KeyError as e:
+                        except KeyError as e: # TODO: remove after debugging
 
                             print("In Last Multipliers and had a Key Error in parse_move")
                             print(e)
@@ -724,7 +798,7 @@ class SpeedInference:
                                 (mon_ident, last_multipliers[mon_ident]),
                             ]
                         )
-                    except KeyError as e:
+                    except KeyError as e: # TODO: remove after debugging
                         print("In Last Multipliers and had a Key Error in parse_residuals")
                         print(e)
                         print()
@@ -767,6 +841,8 @@ class SpeedInference:
 
         return [o for order in orders.values() for o in order]
 
+    # TODO: there's a giant problem here where protosynthesis ends and then we switch out
+    # but the mon should be protosynthesised before we switch
     # Even at beginning of turns, abilities activate on switch
     def _parse_switch(
         self, events: List[List[str]]
@@ -937,9 +1013,11 @@ class SpeedInference:
             # ['', '-start', 'p1b: Iron Hands', 'quarkdriveatk']
             # ['', '-enditem', 'p2a: Hawlucha', 'Electric Seed']
             # ['', '-boost', 'p2a: Hawlucha', 'def', '1', '[from] item: Electric Seed']
+            # We also stop if we're activating another independent ability
             if (
                 events[i][1] not in ["-activate", "-enditem", "-start", "-boost"]
                 or events[i][-1] == "Booster Energy"
+                or get_ability_and_identifier(events[i])[0] in ABILITIES_THAT_CAN_PUBLICLY_ACTIVATE_ABILITIES_OR_ITEMS
             ):
                 break
 
@@ -982,15 +1060,21 @@ class SpeedInference:
             else self._battle.opponent_side_conditions
         )
 
+        # We need to override item if we previously found an item, because we only
+        # store it in the inferences object; we don't update the battle object
+        item = mon.item
+        if item in [None, GenData.UNKNOWN_ITEM] and self._inferences.is_tracking(mon_ident):
+            item = self._inferences.get_flag(mon_ident, "item")
+
         return self.get_speed_multiplier(
-            species=mon.species,
+            mon=mon,
             weathers=self._battle.weather,
             side_conditions=sc,
             fields=self._battle.fields,
             speed_boosts=(
                 override_speed_boost if override_speed_boost else mon.boosts["spe"]
             ),
-            item=mon.item,
+            item=item,
             ability=override_ability if override_ability else mon.ability,
             status=mon.status,
             effects=override_effects if override_effects else mon.effects,
@@ -1093,8 +1177,7 @@ class SpeedInference:
             print("\nThis makes total orders:", self._orders)
             print()
         elif key == "lpproblem":
-            # print(arg)
-            print("Having trouble with the f-string")
+            print(arg)
         elif key == "infeasible":
             print("Got an infeasible solution... looking for Choice Scarf...")
         elif key == "item_testing":
@@ -1156,7 +1239,7 @@ class SpeedInference:
     # via quash) we return None so that we know not to account for this mon's speed when deducing others'
     @staticmethod
     def get_speed_multiplier(
-        species: Optional[str] = None,
+        mon: Optional[Pokemon] = None,
         weathers: Dict[Weather, int] = {},
         side_conditions: Dict[SideCondition, int] = {},
         fields: Dict[Field, int] = {},
@@ -1235,7 +1318,7 @@ class SpeedInference:
             multiplier *= 0.5
         elif item == "choicescarf":
             multiplier *= 1.5
-        elif item == "quickpowder" and species == "ditto":
+        elif item == "quickpowder" and mon is not None and mon.species == "ditto":
             multiplier *= 2
 
         # Check abilities
@@ -1246,17 +1329,17 @@ class SpeedInference:
             multiplier *= 0.5
 
         # Check rest of abilities
-        if ability == "unburden" and item is None:
+        if (ability == "unburden" or (ability is None and mon is not None and "unburden" in mon.possible_abilities)) and item is None:
             multiplier *= 2  # Assume mon lost item if this is the case
-        elif ability == "sandrush" and Weather.SANDSTORM in weathers:
+        elif (ability == "sandrush" or (ability is None and mon is not None and "sandrush" in mon.possible_abilities)) and Weather.SANDSTORM in weathers:
             multiplier *= 2
-        elif ability == "swiftswim" and Weather.RAINDANCE in weathers:
+        elif (ability == "swiftswim" or (ability is None and mon is not None and "swiftswim" in mon.possible_abilities)) and Weather.RAINDANCE in weathers:
             multiplier *= 2
-        elif ability == "slushrush" and Weather.SNOW in weathers:
+        elif (ability == "slushrush" or (ability is None and mon is not None and "slushrush" in mon.possible_abilities)) and Weather.SNOW in weathers:
             multiplier *= 2
-        elif ability == "slushrush" and Weather.HAIL in weathers:
+        elif (ability == "slushrush" or (ability is None and mon is not None and "slushrush" in mon.possible_abilities)) and Weather.HAIL in weathers:
             multiplier *= 2
-        elif ability == "chlorophyll" and Weather.SUNNYDAY in weathers:
+        elif (ability == "chlorophyll" or (ability is None and mon is not None and "chlorophyll" in mon.possible_abilities)) and Weather.SUNNYDAY in weathers:
             multiplier *= 2
 
         if effects and Effect.SLOW_START in effects:

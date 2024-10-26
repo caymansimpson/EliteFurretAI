@@ -712,7 +712,7 @@ def test_get_segments(residual_logs, edgecase_logs, uturn_logs):
     assert segments["init"]
     assert segments["turn"]
     assert len(segments["turn"]) == 1
-    assert len(segments) == 5
+    assert len(segments) == 6
 
     segments = get_segments(uturn_logs[1])
     assert segments["switch"][0] == ["", "switch", "p1b: Chi-Yu", "Chi-Yu, L50", "162/162"]
@@ -832,6 +832,44 @@ def test_get_segments(residual_logs, edgecase_logs, uturn_logs):
     assert segments["move"][-1] == ['', '-hitcount', 'p1a: Iron Hands', '3']
     assert "state_upkeep" in segments
     assert segments["state_upkeep"] == [['', '-sideend', 'p1: bfi24championteam', 'Reflect'], ['', '-fieldend', 'move: Trick Room']]
+
+    logs = [
+        ['', '-end', 'p1b: Iron Hands', 'Quark Drive', '[silent]'],
+        ['', 'switch', 'p1b: Grimmsnarl', 'Grimmsnarl, L50, M', '100/100'],
+        ['', 'switch', 'p2a: Amoonguss', 'Amoonguss, L50, M', '100/100'],
+        ['', 'move', 'p2b: Iron Valiant', 'Encore', '', '[still]'],
+        ['', '-fail', 'p2b: Iron Valiant'],
+        ['', 'move', 'p1a: Nickname', 'Draco Meteor', 'p2b: Iron Valiant'],
+        ['', '-immune', 'p2b: Iron Valiant'],
+        ['', ''],
+        ['', '-fieldend', 'move: Electric Terrain'],
+        ['', '-end', 'p2b: Iron Valiant', 'Quark Drive'],
+        ['', 'upkeep'],
+        ['', '-enditem', 'p2b: Iron Valiant', 'Booster Energy'],
+        ['', '-activate', 'p2b: Iron Valiant', 'ability: Quark Drive', '[fromitem]'],
+        ['', '-start', 'p2b: Iron Valiant', 'quarkdrivespe'],
+        ['', 'turn', '6'],
+    ]
+    segments = get_segments(logs)
+
+    assert segments["init"] == [['', '-end', 'p1b: Iron Hands', 'Quark Drive', '[silent]']]
+    assert "switch" in segments
+    assert segments["switch"][0] == ['', 'switch', 'p1b: Grimmsnarl', 'Grimmsnarl, L50, M', '100/100']
+    assert segments["switch"][-1] == ['', 'switch', 'p2a: Amoonguss', 'Amoonguss, L50, M', '100/100']
+    assert "move" in segments
+    assert segments["move"][0] == ['', 'move', 'p2b: Iron Valiant', 'Encore', '', '[still]']
+    assert segments["move"][-1] == ['', "-immune", "p2b: Iron Valiant"]
+    assert segments["state_upkeep"] == [
+        ['', '-fieldend', 'move: Electric Terrain'],
+        ['', '-end', 'p2b: Iron Valiant', 'Quark Drive'],
+    ]
+
+    assert segments["post_upkeep"] == [
+        ['', 'upkeep'],
+        ['', '-enditem', 'p2b: Iron Valiant', 'Booster Energy'],
+        ['', '-activate', 'p2b: Iron Valiant', 'ability: Quark Drive', '[fromitem]'],
+        ['', '-start', 'p2b: Iron Valiant', 'quarkdrivespe'],
+    ]
 
 
 def test_get_residual_and_identifier():
@@ -994,6 +1032,10 @@ def test_get_ability_and_identifier():
         ["", "-ability", "p2b: Weezing", "Neutralizing Gas"]
     ) == ("Neutralizing Gas", "p2: Weezing")
 
+    assert get_ability_and_identifier(
+        ['', '-activate', 'p1a: Nickname', 'ability: Hadron Engine']
+    ) == ('Hadron Engine', 'p1: Nickname')
+
 
 def test_standardize_pokemon_ident():
     assert standardize_pokemon_ident("[of] p2a: Gardevoir") == "p2: Gardevoir"
@@ -1134,8 +1176,12 @@ def test_get_priority_and_identifier():
     # Test Triage
     furret._ability = "triage"
     assert get_priority_and_identifier(
-        ["", "move", "p1a: Furret", "Giga Drain"], battle
+        ["", "move", "p1a: Furret", "Giga Drain", "p2b: Arceus"], battle
     ) == ("p1: Furret", 3)
+
+    assert get_priority_and_identifier(
+        ['', 'move', 'p1a: Furret', 'Floral Healing', 'p2b: Arceus'], battle
+    ) == ('p1: Furret', 3)
 
     # Test Grassy Glide
     assert get_priority_and_identifier(

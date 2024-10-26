@@ -24,6 +24,9 @@ from elitefurretai.inference.speed_inference import SpeedInference
 from elitefurretai.utils.team_repo import TeamRepo
 
 
+global players # TODO: remove after debug
+
+
 class CustomPlayer(RandomPlayer):
 
     def __init__(
@@ -66,9 +69,15 @@ class CustomPlayer(RandomPlayer):
         inferences = BattleInference(battle)
         self._inferences[battle.battle_tag] = inferences
 
+        player = None # TODO: remove after debugging
+        for p in players:
+            if p.username == battle.opponent_username:
+                player = p
+                break
+
         # Speed and Item Inferences will fill inferences
         if battle.player_role == "p1":
-            self._speed_inferences[battle.battle_tag] = SpeedInference(battle, inferences, verbose=0)
+            self._speed_inferences[battle.battle_tag] = SpeedInference(battle, inferences, verbose=0, player=player)
             self._item_inferences[battle.battle_tag] = ItemInference(battle, inferences, verbose=0)
 
             self._speed_inferences[battle.battle_tag].update(battle)
@@ -86,6 +95,7 @@ class CustomPlayer(RandomPlayer):
         return self.choose_random_doubles_move(battle)  # pyright: ignore
 
 
+# TODO: move this over to utils and import it
 def print_observation(obs):
     message = ""
     message += f"\n\tMy Active Mon:  [{', '.join(map(lambda x: x.species if x else 'None', obs.active_pokemon)) if obs.active_pokemon else ''}]"
@@ -110,6 +120,7 @@ def print_observation(obs):
     return message
 
 
+# TODO: move this over utils and import it; can be omniscient or not
 def print_battle(p1, p2, battle_tag):
 
     battle = p1.battles[battle_tag]
@@ -209,12 +220,13 @@ async def main():
     tr = TeamRepo(validate=False, verbose=False)
     print(f"Finished loading {len(tr.teams['gen9vgc2024regg'])} teams to battle against each other!")
 
+    global players # TODO: remove after debug
     players = []
     i = 0
     for team_name, team in tr.teams["gen9vgc2024regg"].items():
 
-        # Don't want to deal with Ditto yet; same with Zoroark and Tatsugiri/Dondozo
-        if "Ditto" in team or "Zoroark" in team or ("Dondozo" in team and "Tatsugiri" in team):
+        # ef this noise
+        if "Ditto" in team or "Zoroark" in team or ("Dondozo" in team and "Tatsugiri" in team) or "Lagging Tail" in team or "Iron Ball" in team:
             continue
 
         # Don't want to deal with non-english characters

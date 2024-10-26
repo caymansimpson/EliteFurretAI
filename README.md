@@ -54,7 +54,7 @@ The ultimate goal of this work is to make Furret central to the VGC meta. Becaus
 
 Eventually, we hope that this AI can be used to build and use a competitive team centered around Furret -- one that will be deserving of surpassing all Elite Fours, hence the name "EliteFurretAI".
 
-![OG Furret](docs/images/furret.png)
+![OG Furret](docs/images/furret.png) 
 
 Afterwards, we hope that we can integrate this AI into emulators.
 
@@ -67,3 +67,5 @@ It's definitely greedy and presumptuous to acknowledge people before EliteFurret
 - First and foremost, a huge shoutout to [hsahovic](https://github.com/hsahovic) both for building poke-env, but also teaching me quite a lot about how to code better
 - Second, a shoutout to [attraylor](https://github.com/attraylor) who brought me into the Pokemon AI community
 - Lastly, a shoutout to [pre](https://github.com/scheibo) for being the engine that keeps the community going, and inspiring in me a new round of motivation to build AI right.
+
+![https://x.com/megapody6/status/1849056000969699480?s=46](docs/images/furret2.png)

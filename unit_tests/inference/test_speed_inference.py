@@ -158,6 +158,26 @@ def test_parse_preturn_switch():
     assert [('p1: Nickname', 1.0), ('p2: Chien-Pao', 1.0)] in orders
     assert [('p2: Chien-Pao', 1.0), ('p2: Kommo-o better', 1.0)] in orders
 
+    # Make sure we account for activations correctly
+    si = generate_speed_inference()
+    events = [
+        ['', 'switch', 'p1a: Nickname', 'Miraidon, L50', '176/176'],
+        ['', 'switch', 'p1b: Iron Hands', 'Iron Hands, L50', '238/238'],
+        ['', 'switch', 'p2a: Miraidon', 'Miraidon, L50', '100/100'],
+        ['', 'switch', 'p2b: Iron Hands', 'Iron Hands, L50', '100/100'],
+        ['', '-fieldstart', 'move: Electric Terrain', '[from] ability: Hadron Engine', '[of] p2a: Miraidon'],
+        ['', '-activate', 'p1b: Iron Hands', 'ability: Quark Drive'],
+        ['', '-start', 'p1b: Iron Hands', 'quarkdriveatk'],
+        ['', '-activate', 'p2b: Iron Hands', 'ability: Quark Drive'],
+        ['', '-start', 'p2b: Iron Hands', 'quarkdriveatk'],
+        ['', '-activate', 'p1a: Nickname', 'ability: Hadron Engine'],
+    ]
+    orders = si.clean_orders(si._parse_preturn_switch(events))
+    assert len(orders) == 2
+    assert [('p1: Iron Hands', 1.0), ('p2: Iron Hands', 1.0)] in orders
+    assert [('p2: Miraidon', 1.0), ('p1: Nickname', 1.0)] in orders
+    assert len(events) == len(si._battle.current_observation.events)
+
 
 # Too lazy to test mega that might trigger some other series of abilities
 def test_parse_battle_mechanic():
@@ -427,6 +447,27 @@ def test_parse_move():
     assert len(orders) == 3
 
 
+def test_new():
+    si = generate_speed_inference()
+
+    si._battle.parse_message(["", "switch", "p1b: Volcarona", "Volcarona, L50, M", "100/100"])
+    si._battle.parse_message(["", "switch", "p2a: Dragonite", "Dragonite, L50, F", "100/100"])
+    si._battle.parse_message(["", "switch", "p2b: Urshifu", "Urshifu, L50, F", "100/100"])
+    si._battle.parse_message(["", "switch", "p1a: Grimmsnarl", "Grimmsnarl, L50, F", "100/100"])
+    si._battle.parse_message(["", "turn", "5"])
+    events = [
+        ["", "move", "p2a: Dragonite", "Haze", "p2a: Dragonite"],
+        ["", "-clearallboost"],
+        ["", "move", "p2b: Urshifu", "Close Combat", "p1a: Grimmsnarl"],
+        ["", "-damage", "p1a: Grimmsnarl", "18/100"],
+        ["", "-unboost", "p2b: Urshifu", "def", "1"],
+        ["", "-unboost", "p2b: Urshifu", "spd", "1"],
+    ]
+
+    orders = si.clean_orders(si._parse_move(events))
+    assert orders
+    assert si._battle.current_observation.events == events
+
 def test_parse_residual():
     si = generate_speed_inference()
     si._battle.parse_message(["", "switch", "p2a: Furret", "Furret, L50, M", "165/165"])
@@ -556,6 +597,29 @@ def test_parse_switch():
     assert [("p2: Furret", 1.0), ("p2: Sentret", 1.0)] in orders
     assert len(orders) == 3
 
+    si = generate_speed_inference()
+
+    events = [
+        ['', 'switch', 'p1a: Nickname', 'Miraidon, L50', '176/176'],
+        ['', 'switch', 'p2b: Flutter Mane', 'Fluttermane, L50', '100/100'],
+        ['', '-activate', 'p2b: Flutter Mane', 'ability: Protosynthesis'],
+        ['', '-start', 'p2b: Flutter Mane', 'protosynthesisspe'],
+    ]
+    for event in events:
+        si._battle.parse_message(event)
+
+    events = [
+        ['', '-end', 'p2b: Flutter Mane', 'Protosynthesis', '[silent]'],
+        ['', 'switch', 'p2b: Eternatus', 'Eternatus, L50', '100/100'],
+        ['', '-ability', 'p2b: Eternatus', 'Pressure'],
+        ['', 'switch', 'p1a: Iron Hands', 'Iron Hands, L50, tera:Water', '164/238'],
+        ['', '-activate', 'p1a: Iron Hands', 'ability: Quark Drive'],
+        ['', '-start', 'p1a: Iron Hands', 'quarkdriveatk'],
+    ]
+
+    orders = si.clean_orders(si._parse_switch(events))
+    assert orders == [[('p2: Flutter Mane', 1.5), ('p1: Nickname', 1.0)]]
+
 
 def test_get_activations_from_weather_or_terrain():
     si = generate_speed_inference()
@@ -649,10 +713,10 @@ def test_save_multipliers():
 
 
 def test_get_speed_multiplier():
-    assert SpeedInference.get_speed_multiplier("furret") == 1.0
+    assert SpeedInference.get_speed_multiplier(mon=Pokemon(gen=9, species="furret")) == 1.0
     assert (
         SpeedInference.get_speed_multiplier(
-            species="ditto",
+            mon=Pokemon(gen=9, species="ditto"),
             item="quickpowder",
             side_conditions={SideCondition.TAILWIND: 1},
             speed_boosts=1,
@@ -681,7 +745,7 @@ def test_get_speed_multiplier():
     )
     assert (
         SpeedInference.get_speed_multiplier(
-            species="ditto",
+            mon=Pokemon(gen=9, species="ditto"),
             item="pokeball",
             side_conditions={SideCondition.TAILWIND: 1},
             speed_boosts=1,
@@ -691,7 +755,7 @@ def test_get_speed_multiplier():
     )
     assert (
         SpeedInference.get_speed_multiplier(
-            species="ditto",
+            mon=Pokemon(gen=9, species="ditto"),
             item="laggingtail",
             side_conditions={SideCondition.TAILWIND: 1},
             speed_boosts=1,

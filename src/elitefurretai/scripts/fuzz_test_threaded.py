@@ -339,6 +339,8 @@ async def main():
     # Create players
     players = []
     for team_name, team in tr.teams["gen9vgc2024regg"].items():
+        
+        # ef this noise
         if "Ditto" in team or "Zoroark" in team or ("Dondozo" in team and "Tatsugiri" in team):
             continue
         if bool(re.search(r'[^a-zA-Z0-9\- _]', team_name)):

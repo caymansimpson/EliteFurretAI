@@ -2,7 +2,7 @@
 """This module tracks pokemons' moves, stats and items inferences throughout a battle
 """
 
-import math
+import sys
 from typing import Any, Dict, Optional, Union
 
 from poke_env.data.gen_data import GenData
@@ -49,16 +49,22 @@ class BattleInference:
     @staticmethod
     def load_opponent_set(mon: Pokemon) -> Dict[str, Any]:
         opponent_info = {}
-        for stat, minval, maxval in zip(
-            ["hp", "atk", "def", "spa", "spd", "spe"],
-            compute_raw_stats(
-                mon.species, [0] * 6, [0] * 6, mon.level, "serious", mon._data
-            ),
-            compute_raw_stats(
-                mon.species, [252] * 6, [31] * 6, mon.level, "serious", mon._data
-            ),
-        ):
-            opponent_info[stat] = [math.floor(minval * 0.9), math.floor(maxval * 1.1)]
+
+        # Compute smallest and largest possible value for each stat
+        for nature in mon._data.natures:
+            for stat, minval, maxval in zip(
+                ["hp", "atk", "def", "spa", "spd", "spe"],
+                compute_raw_stats(
+                    mon.species, [0] * 6, [0] * 6, mon.level, nature, mon._data
+                ),
+                compute_raw_stats(
+                    mon.species, [252] * 6, [31] * 6, mon.level, nature, mon._data
+                ),
+            ):
+                stats = opponent_info.get(stat, [sys.maxsize, 0])
+                stats[0] = min(stats[0], minval)
+                stats[1] = max(stats[1], maxval)
+                opponent_info[stat] = stats
 
         opponent_info.update(_FLAGS)
         opponent_info["screens"] = []
