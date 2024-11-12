@@ -852,9 +852,8 @@ def test_get_segments(residual_logs, edgecase_logs, uturn_logs):
     ]
     segments = get_segments(logs)
 
-    assert segments["init"] == [['', '-end', 'p1b: Iron Hands', 'Quark Drive', '[silent]']]
     assert "switch" in segments
-    assert segments["switch"][0] == ['', 'switch', 'p1b: Grimmsnarl', 'Grimmsnarl, L50, M', '100/100']
+    assert segments["switch"][0] == ['', '-end', 'p1b: Iron Hands', 'Quark Drive', '[silent]']
     assert segments["switch"][-1] == ['', 'switch', 'p2a: Amoonguss', 'Amoonguss, L50, M', '100/100']
     assert "move" in segments
     assert segments["move"][0] == ['', 'move', 'p2b: Iron Valiant', 'Encore', '', '[still]']
@@ -871,6 +870,44 @@ def test_get_segments(residual_logs, edgecase_logs, uturn_logs):
         ['', '-start', 'p2b: Iron Valiant', 'quarkdrivespe'],
     ]
 
+    events = [
+        ['', '-end', 'p2b: Weezing', 'ability: Neutralizing Gas'],
+        ['', '-ability', 'p1a: Incineroar', 'Intimidate', 'boost'],
+        ['', '-unboost', 'p2a: Baxcalibur', 'atk', '1'],
+        ['', '-unboost', 'p2b: Weezing', 'atk', '1'],
+        ['', 'switch', 'p2b: Kyogre', 'Kyogre, L50', '100/100'],
+        ['', '-weather', 'RainDance', '[from] ability: Drizzle', '[of] p2b: Kyogre'],
+        ['', 'move', 'p1b: Calyrex', 'Protect', 'p1b: Calyrex'],
+        ['', '-singleturn', 'p1b: Calyrex', 'Protect'],
+        ['', 'move', 'p1a: Incineroar', 'Fake Out', '', '[still]'],
+        ['', '-hint', 'Fake Out only works on your first turn out.'],
+        ['', '-fail', 'p1a: Incineroar'],
+        ['', 'move', 'p2a: Baxcalibur', 'Scale Shot', 'p1b: Calyrex'],
+        ['', '-activate', 'p1b: Calyrex', 'move: Protect'],
+        ['', ''],
+        ['', '-weather', 'RainDance', '[upkeep]'],
+        ['', 'upkeep'],
+        ['', 'turn', '7']
+    ]
+    segments = get_segments(events)
+    assert segments["switch"] == [
+        ['', '-end', 'p2b: Weezing', 'ability: Neutralizing Gas'],
+        ['', '-ability', 'p1a: Incineroar', 'Intimidate', 'boost'],
+        ['', '-unboost', 'p2a: Baxcalibur', 'atk', '1'],
+        ['', '-unboost', 'p2b: Weezing', 'atk', '1'],
+        ['', 'switch', 'p2b: Kyogre', 'Kyogre, L50', '100/100'],
+        ['', '-weather', 'RainDance', '[from] ability: Drizzle', '[of] p2b: Kyogre']
+    ]
+
+    assert segments["move"] == [
+        ['', 'move', 'p1b: Calyrex', 'Protect', 'p1b: Calyrex'],
+        ['', '-singleturn', 'p1b: Calyrex', 'Protect'],
+        ['', 'move', 'p1a: Incineroar', 'Fake Out', '', '[still]'],
+        ['', '-hint', 'Fake Out only works on your first turn out.'],
+        ['', '-fail', 'p1a: Incineroar'],
+        ['', 'move', 'p2a: Baxcalibur', 'Scale Shot', 'p1b: Calyrex'],
+        ['', '-activate', 'p1b: Calyrex', 'move: Protect']
+    ]
 
 def test_get_residual_and_identifier():
     assert get_residual_and_identifier(

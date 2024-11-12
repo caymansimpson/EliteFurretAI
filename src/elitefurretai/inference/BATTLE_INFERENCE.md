@@ -1,21 +1,83 @@
 # Utils
 
-TODO: update how it works and what it covers
+This folder contains the class that does Battle Inference for VGC. Development of this module requires a fair amount of mechanics studying, and thus is quite manual and hard to maintain. If you plan to use these, I would encourage you to read this document in its entirety.
 
-This folder contains the class that does Battle Inference for VGC. Development of this module requires a fair amount of mechanics studying, and thus is quite manual, and hard to maintain. It is WIP.
+This module has gone through extensive Fuzz Testing, and so should work for most use-cases. However, it has many known bugs, because perfect is the enemy of done. I will not personally work on any Issues related to the Inference models I've implemented, but will take PR's with appropriate unit tests.
 
-**BattleInference**: This module uses battle logs to infer various hidden information. This is WIP. It will make the following inferences:
-   - Speed -- it will bound your opponent's mon's speed (including make inferences on choicescarf)
-   - Attack/Defense -- it will do reverse damage calculation to infer opponent's spreads
-   - Item -- it will infer opponent's items (right now: safetygoggles, heavydutyboots, lightclay and covertcloak) and keep track of whether choice/assaultvest are possible. It does not yet keep track of every item possibility (but can be easily extended to do so).
+## **BattleInference**
+This module stores inferences made by ItemInference and SpeedInference, and can be sent through the Embedder class to ameliorate an agent's understanding of the battle state. It is a glorified dicionary that has peresistent memory across both `SpeedInference` and `ItemInference` modules.
 
-**SpeedInference**: This module infers an opponent's speed. Using it's undertanding of game mechanics and Showdown message protocol, it assembles orders of logs, creating a Linear Programming problem to solve for opponent's speeds. It will also infer choicescarf. Note of an edge-case: it will not infer choicescarf if a mon's speed is in the realm of possibility (e.g. the unlikely scenario where a mon has no speed investment and has choicescarf, such that a jolly + 252 speed EV has the same speed). It will correctly identify it though if the mon demonstrates it's not scarf.
+Ideally, we would combine `BattleInference`, `SpeedInference` and `ItemInference` into one module so we only store one battle state and go through logs once, but the complexity of such a task would make these modules even more difficult to maintain. While not built for speed nor yet optimized, these haven't significaly slowed down battles, and so this is a small concern.
 
-**ItemInference**: This module infers an opponent's items (at least most). Using it's undertanding of game mechanics and Showdown message protocol, it infers based on what _didn't_ happen, what item a pokemon may have (since Showdown already exposes when something does happen, what item caused that event). Right now, it supports inferring lightclay, heavydutyboots, safetygoggles and covertcloak. It will also track whether assaultvest and choice items are plausible.
-
-NOTES:
-- All inference items are tested on doubles only, and some methods do have pity singles implementations, but they are untested -- they're neither robust nor thorough!
-- ItemInference and SpeedInference both independently track battle states because it is necessary to infer speed and items. This means that they triple the memory needed to play a battle! Just beware of this fact.
+#### NOTES:
+- All inference items are tested on doubles only, and some methods do have pity singles implementations, but they are untested!
+- ItemInference and SpeedInference both independently track battle states because it is necessary to track battle states mid-turn to properly infer speed and items. This means that they triple the memory needed to play a battle! Just beware of this fact.
 - Each inference will assume a mon has an advantageous ability if that ability isn't known. For example, we will always assume Venasaur has Chlorophyll if it is in the sun.
 
-**InfostateNetwork** -- a module that predicts the likelihood of opponent infostates. We will be using opponent’s past actions (e.g. our PBS/history) to infer infostates using our value network when created. Because Pokemon is a two-player zerosum game, our oppponent's predicted value can be trivially inferred by our predicted value -- they sum to 0. We can calculate the probability of an infostate based on the probability an opponent was likely to make previous moves (derived from the value they'd get from those moves). As an example, if I'm going to hydro pump an Incineroar, they probably let the Incineroar take it if the only mon they in back is a Heatran. This method is superior to MetaDB's because it can make inferences using opponent's actions and make guesses on unseen data. This has yet to be implemented.
+## SpeedInference
+This module infers an opponent's speed. Using it's undertanding of game mechanics and Showdown's message protocol, it:
+1. Assembles orders of relevant events using encoded knowledge of (Gen 9) game mechanics
+2. Uses those order of relevant to create a Linear Programming problem to solve for opponent's speeds. We need to use a LP because there are interactions with two unknown variables in VGC (your opponent's mons).
+3. It will also infer choicescarf if the LP isn't solvable until we assume that an opponent mon can have 1.5x speed it normally does and it only has used one move while being out.
+
+There are many edge-cases SpeedInference won't catch. Some examples:
+- Iron Ball or Lagging Tail affecting move orders
+- It won't infer choice scarf if we speedtie and always lose
+- It will misinterpret speeds if your opponent has a mon that could possibly have a speed-based ability (e.g. Basculeigon's Swift Swim) in the appropriate conditions (e.g. Rain) but doesn't actually (e.g. instead has Adaptability).
+- It doesnt take into account "intuition", so if a urushifu looks faster than a chien-pao, it will assume the chien-pao is slow instead of the urushifu being choicescarf (it will always try to solve the problem without a choicescarf), until it can confirm speeds with our own mons; in this way, **it will sometimes make the wrong inferences.**
+
+## ItemInference
+This module infers opponents' most common and inferrable items using it's undertanding of game mechanics and Showdown message protocol. Importantly, poke-env already updates with explicit mentions of items via Showdown protocol (e.g. via Frisk or Trick); this module infers items based on what _didn't_ happen. Right now, it supports inferring:
+1. **Light Clay**: If a mon's screens last for more than 5 turns
+2. **Heavy Duty Boots**: If a mon enters the battle with hazards and is unaffected, but should have been.
+3. **Safety Goggles**: If a mon should have been affected by Rage Powder or Sandstorm but wasn't.
+4. **Covert Cloak**: If a mon should have been affected by a move's secondary ability (with 100% chance of activating, like Salt Cure) but wasn't.
+5. **Clear Amulet**: If a mon should have been silently affected by an Intimidate or a move's secondary ability (with 100% chance of hitting that affects boosts), but didn't.
+6. **Choice Tracking**: Tracks whether a mon could be choice based on the moves it's used.
+7. **Assault Vest Tracking**: Trakvs whether a mon used a Status move, which would invalidate whether it has an Assault Vest. This can be ameliorated when we have Damage Calculation implemented.
+
+## Usage:
+```python
+class InferencePlayer(RandomPlayer):
+
+   def __init__(self, *):
+      super().__init__(*)
+
+      # Where I will store Inference objects (per battle)
+      self._inferences = {}
+      self._speed_inferences = {}
+      self._item_inferences = {}
+
+   def teampreview(self, battle):
+
+      # Initialize main Inference storage and store in Player
+      inferences = BattleInference(battle)
+      self._inferences[battle.battle_tag] = inferences
+
+      # Initialize Speed and Item Inferences
+      si = SpeedInference(battle, inferences)
+      ii = ItemInference( battle, inferences)
+
+      # Store them in Player
+      self._speed_inferences[battle.battle_tag] = si
+      self._item_inferences[battle.battle_tag] = ii
+
+      # Update them with what we've seen so far
+      self._speed_inferences[battle.battle_tag].update(battle)
+      self._item_inferences[battle.battle_tag].update(battle)
+
+      # Whatever algo to choose teampreview; hardcoded in this example
+      return "/team 1234"
+
+    def choose_move(self, battle):
+
+      # Force Switch is not implemented yet due to a poke-env bug
+      if not any(battle.force_switch):
+
+         # Update Inferences
+         self._speed_inferences[battle.battle_tag].update(battle)
+         self._item_inferences[battle.battle_tag].update(battle)
+
+      # Whatever algo to choose a move; random in this example
+      return self.choose_random_doubles_move(battle)
+```

@@ -4,10 +4,16 @@
 
 from dataclasses import dataclass
 from typing import Dict, List, Union
+import logging
+
+from elitefurretai.inference.inference_utils import get_showdown_identifier
 
 from poke_env.environment.observation import Observation
 from poke_env.environment.observed_pokemon import ObservedPokemon
 from poke_env.environment.pokemon import Pokemon
+from poke_env.environment import (
+    Battle, DoubleBattle, AbstractBattle
+)
 
 
 @dataclass
@@ -67,3 +73,27 @@ class BattleData:
         mon._gender = omon.gender
         mon._shiny = omon.shiny
         return mon
+    
+    # TODO: Update to handle singles and different generations
+    def to_battle(self, perspective: str) -> Union[Battle, DoubleBattle, AbstractBattle]:
+        player = self.p2
+        team = self.p2_team
+        if perspective == "p1":
+            player = self.p1
+            team = self.p1_team
+       
+        battle = DoubleBattle(
+            self.roomid, 
+            player, 
+            logging.getLogger(player), 
+            gen=9
+        )
+
+        my_team = {}
+        for omon in team:
+            mon = BattleData.observed_pokemon_to_pokemon(omon)
+            my_team[get_showdown_identifier(mon, perspective)] = mon
+
+        battle.team = my_team
+
+        return battle

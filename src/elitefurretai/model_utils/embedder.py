@@ -4,6 +4,7 @@
 
 import math
 from typing import Any, Dict, List, Optional
+import logging
 
 from poke_env.data import GenData
 from poke_env.environment import (
@@ -28,6 +29,7 @@ from elitefurretai.inference.inference_utils import get_showdown_identifier
 class Embedder:
 
     def __init__(self, gen=9):
+        self._history: List[Dict[str, float]] = []
         self._knowledge: Dict[str, Any] = {}
         self._gen_data = GenData.from_gen(gen)
         sets = [
@@ -58,6 +60,25 @@ class Embedder:
         Used to convert names of various enumerations into their string variants
         """
         return string.lower().replace("_", " ")
+    
+    @property
+    def history(self, last_n: Optional[int] = None, format: str = "gen9vgc2024regg") -> List[List[float]]:
+        if last_n is None:
+            return list(map(lambda x: self.feature_dict_to_vector(x), self._history))
+        else:
+            to_return = []
+
+            # Need to construct dummy battle
+            dummy_battle = DoubleBattle("tag", "elitefurretai", logging.Logger("example"), gen=9)
+            dummy_battle._format = format
+
+            for i in range(last_n):
+                if len(self._history) > i:
+                    to_return.append(self.feature_dict_to_vector(self._history[i]))
+                else:
+                    emb = self.featurize_double_battle(dummy_battle)
+                    to_return.insert(0, self.feature_dict_to_vector(emb))
+            return to_return
 
     def feature_dict_to_vector(self, features: Dict[str, Any]) -> List[float]:
         """
@@ -83,7 +104,6 @@ class Embedder:
                     simple_features[k] = v
         return simple_features
 
-    # TODO: add num which is an id / 100? Need to figure out how to link to available switch/move
     def featurize_move(self, move: Optional[Move], prefix: str = "") -> Dict[str, float]:
         """
         Returns a feature dict representing a Move
@@ -218,9 +238,8 @@ class Embedder:
 
         return emb
 
-    # TODO: add num which is an id / 100?
     def featurize_pokemon(
-        self, mon: Optional[Pokemon], prefix: str = ""
+        self, mon: Optional[Pokemon], request: Dict[str, Any] = {}, prefix: str = ""
     ) -> Dict[str, float]:
         """
         Returns a Dict of features representing the pokemon
@@ -230,9 +249,16 @@ class Embedder:
 
         # Add moves to feature dict (and account for the fact that the mon might have <4 moves)
         moves = list(mon.moves.values()) if mon else []
+        available_moves = mon.available_moves_from_request(request) if mon and len(request) > 0 else []
         for i, move in enumerate((moves + [None, None, None, None])[:4]):
             move_prefix = prefix + "MOVE:" + str(i) + ":"
             emb.update(self.featurize_move(move, move_prefix))
+
+            # Record whether a move is available
+            available = -1
+            if len(available_moves) > 0:
+                available = 1 if move in available_moves else 0
+            emb[move_prefix + "available"] = available
 
         # OHE abilities
         for ability in self._knowledge["Ability"]:
@@ -283,7 +309,6 @@ class Embedder:
 
         return emb
 
-    # TODO: add num?
     def featurize_opponent_pokemon(
         self,
         mon: Optional[Pokemon],
@@ -394,7 +419,6 @@ class Embedder:
 
         return emb
 
-    # TODO: add available switches, available moves
     def featurize_double_battle(
         self, battle: DoubleBattle, bi: Optional[BattleInference] = None
     ) -> Dict[str, float]:
@@ -419,11 +443,11 @@ class Embedder:
                 and not battle.teampreview
             ):
                 features = self.featurize_pokemon(
-                    battle.team[get_showdown_identifier(mon, battle.player_role)], prefix
+                    battle.team[get_showdown_identifier(mon, battle.player_role)], battle.last_request, prefix
                 )
                 sent = 1
             else:
-                features = self.featurize_pokemon(mon, prefix)
+                features = self.featurize_pokemon(mon, battle.last_request, prefix)
 
             features[prefix + "sent"] = sent
             features[prefix + "active"] = int(
@@ -433,6 +457,13 @@ class Embedder:
 
             # To maintain representation of public belief state
             features[prefix + "revealed"] = int(mon.revealed if mon else 0)
+
+            # Record whether mon is an available switch for active_pokemon1 and 2
+            for j, switches in enumerate(battle.available_switches):
+                val = -1
+                if battle.active_pokemon[j] is not None:
+                    val = 1 if mon in switches else 0
+                features[prefix + "available_switch:" + str(j)] = val
 
             emb.update(features)
 
@@ -519,6 +550,8 @@ class Embedder:
         emb["p2rating"] = battle.opponent_rating if battle.opponent_rating else -1
         emb["turn"] = battle.turn
         emb["bias"] = 1
+
+        self._history.append(emb)
 
         return emb
 
@@ -850,6 +883,7 @@ TRACKED_FORMATS = {
     "gen6doubblesou",
     "gen9vgc2024regf",
     "gen9vgc2024regg",
+    "gen9vgc2024regh",
 }
 
 TRACKED_FIELDS = {

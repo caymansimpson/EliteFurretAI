@@ -1,10 +1,12 @@
 # Utils
 
 This folder contains general utilities for EliteFurretAI. So far, these include:
-1. **MetaDB**: a module that calls a database built on raw data (dependent on anonymized showdown data availability) that will allow us to make usage-based inferences (e.g. likelihood that Incineroar has assault vest | observations). The database will not be sharable. `predict_vgc_team` will take in what the AI has observed about the opponent's pokemon (stored in `ObservedPokemon`) and return either the most common team that matches your observations, or a probability distribution of all teams that matches its observations based on data stored in the database. The probability distributions can then be used for probabilistic search for AI; the primary downside is that this method relies on having previously seen data -- it only memorizes. I have not yet tested this method's coverage.
+1. [**MetaDB**](#1-MetaDB): a module that calls a database built on raw data (dependent on anonymized showdown data availability) that will allow us to make usage-based inferences (e.g. likelihood that Incineroar has assault vest | observations). The database will not be sharable. `predict_vgc_team` will take in what the AI has observed about the opponent's pokemon (stored in `ObservedPokemon`) and return either the most common team that matches your observations, or a probability distribution of all teams that matches its observations based on data stored in the database. The probability distributions can then be used for probabilistic search for AI; the primary downside is that this method relies on having previously seen data -- it only memorizes. I have not yet tested this method's coverage.
 2. **BattleOrderValidator**: This module simply validates which moves are available moves we should pick from. It has simple logic that first validates whether a move will even work. Note that this is _not_ representative of what will pass the showdown protocol -- it is a stricter protocol syntax (relative to what Showdown accepts) that we will force the AI to use.
    - It separately contains simple heuristics that eliminate moves that are unlikely to help (e.g. self-attacks if the move doesnt heal or activate weakness policy).
-3. [**TeamRepo**](#3-teamrepo): This module simply just retrieves several pre-built teams to use, stored in data/teams
+3. [**TeamRepo**](#3-teamrepo): This module simply just retrieves several pre-built teams to use, stored in data/teams. More on usage below.
+
+## 1. MetaDB
 
 For `MetaDB`, the database is structured as follows:
 
@@ -29,20 +31,20 @@ For `MetaDB`, the database is structured as follows:
 | | | move3_id |  |
 | | | move3_id |  |
 
-# 3. TeamRepo
+## 3. TeamRepo
 
 This module provides functionality for reading and managing Pokémon teams in Showdown Export ([PokePaste](https://pokepast.es/syntax.html)) format. It includes features for team validation and organization.
 
-## Features
+### Features
 
 - Read teams from a specified directory structure
 - Optional team validation using [Pokémon Showdown](https://github.com/smogon/pokemon-showdown)
 - Organize teams by format
 - Retrieve individual teams or all teams for a specific format
 
-## Usage
+### Usage
 
-### Initializing TeamRepo
+#### Initializing TeamRepo
 
 ```python
 from team_repo import TeamRepo
@@ -55,14 +57,14 @@ repo = TeamRepo(
 )
 ```
 
-### Parameters
+#### Parameters
 
 - `filepath`: Path to the directory containing team files (default: "data/teams")
 - `showdown_path`: Path to the Pokémon Showdown directory (default: "../pokemon-showdown")
 - `validate`: Whether to validate teams using Pokémon Showdown (default: False)
 - `verbose`: Whether to print verbose output (default: False)
 
-### Accessing Teams
+#### Accessing Teams
 
 ```python
 # Get all formats
@@ -78,11 +80,11 @@ team = repo.get("vgc2023regd", "team_name")
 all_teams = repo.teams
 ```
 
-### Team Validation
+#### Team Validation
 
 If `validate=True` is set when initializing TeamRepo, it will attempt to validate each team using Pokémon Showdown. Make sure you have Pokémon Showdown and that `showdown_path` is correctly set for this feature to work.
 
-## File Structure
+### File Structure
 
 The module expects teams to be organized in the following directory structure:
 

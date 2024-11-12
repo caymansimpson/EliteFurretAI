@@ -10,6 +10,15 @@ import sys
 import time
 from typing import Optional, Union
 
+from elitefurretai.inference.battle_inference import BattleInference
+from elitefurretai.inference.inference_utils import (
+    get_showdown_identifier,
+    observation_to_str,
+)
+from elitefurretai.inference.item_inference import ItemInference
+from elitefurretai.inference.speed_inference import SpeedInference
+from elitefurretai.utils.team_repo import TeamRepo
+
 from poke_env.data.gen_data import GenData
 from poke_env.environment.move_category import MoveCategory
 from poke_env.player.random_player import RandomPlayer
@@ -17,17 +26,11 @@ from poke_env.ps_client.account_configuration import AccountConfiguration
 from poke_env.ps_client.server_configuration import ServerConfiguration
 from poke_env.teambuilder.teambuilder import Teambuilder
 
-from elitefurretai.inference.battle_inference import BattleInference
-from elitefurretai.inference.inference_utils import get_showdown_identifier
-from elitefurretai.inference.item_inference import ItemInference
-from elitefurretai.inference.speed_inference import SpeedInference
-from elitefurretai.utils.team_repo import TeamRepo
+
+global players  # TODO: remove after debug
 
 
-global players # TODO: remove after debug
-
-
-class CustomPlayer(RandomPlayer):
+class FuzzTestPlayer(RandomPlayer):
 
     def __init__(
         self,
@@ -69,7 +72,7 @@ class CustomPlayer(RandomPlayer):
         inferences = BattleInference(battle)
         self._inferences[battle.battle_tag] = inferences
 
-        player = None # TODO: remove after debugging
+        player = None  # TODO: remove after debugging
         for p in players:
             if p.username == battle.opponent_username:
                 player = p
@@ -77,8 +80,12 @@ class CustomPlayer(RandomPlayer):
 
         # Speed and Item Inferences will fill inferences
         if battle.player_role == "p1":
-            self._speed_inferences[battle.battle_tag] = SpeedInference(battle, inferences, verbose=0, player=player)
-            self._item_inferences[battle.battle_tag] = ItemInference(battle, inferences, verbose=0)
+            self._speed_inferences[battle.battle_tag] = SpeedInference(
+                battle, inferences, verbose=0, player=player
+            )
+            self._item_inferences[battle.battle_tag] = ItemInference(
+                battle, inferences, verbose=0
+            )
 
             self._speed_inferences[battle.battle_tag].update(battle)
             self._item_inferences[battle.battle_tag].update(battle)
@@ -90,34 +97,11 @@ class CustomPlayer(RandomPlayer):
 
         # Don't deal with battle.force_switch until
         if not any(battle.force_switch) and battle.player_role == "p1":
+            key = max(battle.observations.keys())
+            # print("fuzz_test.choose_move", battle.observations[key].events)
             self._speed_inferences[battle.battle_tag].update(battle)
             self._item_inferences[battle.battle_tag].update(battle)
         return self.choose_random_doubles_move(battle)  # pyright: ignore
-
-
-# TODO: move this over to utils and import it
-def print_observation(obs):
-    message = ""
-    message += f"\n\tMy Active Mon:  [{', '.join(map(lambda x: x.species if x else 'None', obs.active_pokemon)) if obs.active_pokemon else ''}]"
-    message += f"\n\tOpp Active Mon: [{', '.join(map(lambda x: x.species if x else 'None', obs.opponent_active_pokemon)) if obs.opponent_active_pokemon else ''}]"
-    message += f"\n\tWeather: [{', '.join(map(lambda x: x.name, obs.weather))}]"
-    message += f"\tFields: [{', '.join(map(lambda x: x.name, obs.fields))}]"
-    message += f"\n\tMy Side Conditions:  [{', '.join(map(lambda x: x.name, obs.side_conditions))}]"
-    message += f"\n\tOpp Side Conditions: [{', '.join(map(lambda x: x.name, obs.opponent_side_conditions))}]"
-
-    message += "\n\tMy Team:"
-    for ident, mon in obs.team.items():
-        message += f"\n\t\t{mon.species} => [Speed: {mon.stats['spe']}], [Item: {mon.item}], [Speed Boost: {mon.boosts['spe']}], [Effects: {list(map(lambda x: x.name, mon.effects))}], [Status: {mon.status.name if mon.status else 'None'}]"
-
-    message += "\n\tOpp Team:"
-    for ident, mon in obs.opponent_team.items():
-        message += f"\n\t\t{mon.species} => [Speed: {mon.stats['spe']}], [Item: {mon.item}], [Speed Boost: {mon.boosts['spe']}], [Effects: {list(map(lambda x: x.name, mon.effects))}], [Status: {mon.status.name if mon.status else 'None'}]"
-
-    message += "\n\n\tEvents:"
-    for event in obs.events:
-        message += f"\n\t\t{event}"
-
-    return message
 
 
 # TODO: move this over utils and import it; can be omniscient or not
@@ -143,11 +127,11 @@ def print_battle(p1, p2, battle_tag):
 
     for turn, obs in battle.observations.items():
         message += f"\n\nTurn #{turn}:"
-        message += print_observation(obs)
+        message += observation_to_str(obs)
 
     if battle._current_observation not in battle.observations.values():
         message += f"\n\nCurrent Observation; Turn #{battle.turn}:"
-        message += print_observation(battle._current_observation)
+        message += observation_to_str(battle._current_observation)
 
     return message
 
@@ -164,40 +148,64 @@ def check_ground_truth(p1, p2, battle_tag):
             continue
 
         flags = p2._inferences[battle_tag].get_flags(ident)
-        mon_in_battle = p1.battles[battle_tag].team[ident]  # Checking in case of knockoff
+        mon_in_battle = p1.battles[battle_tag].team[
+            ident
+        ]  # Checking in case of knockoff
 
         # zazmenta crown ed is causing problems; not sure if its getting recorded as steel type
         # handling of trick is broken too
-        if flags["item"] not in [mon.item, None, GenData.UNKNOWN_ITEM, mon_in_battle.item] and flags["item"] == "choicescarf":
+        if (
+            flags["item"]
+            not in [mon.item, None, GenData.UNKNOWN_ITEM, mon_in_battle.item]
+            and flags["item"] == "choicescarf"
+        ):
             msg += "\n\n======================================================================\n=========================== ERROR FOUND :( ===========================\n======================================================================\n"
             msg += "Error Type: (error_speed_item) Erroneously found item that the mon didn't have, due to incorrect Speed Calculations\n"
             msg += f"{mon_in_battle.name} was found to have {flags['item']} when it actually had {mon.item}\n\n"
             msg += print_battle(p2, p1, battle_tag)
             counts["error_speed_item"] = counts.get("speed_item", 0) + 1
 
-        elif flags["item"] not in [mon.item, None, GenData.UNKNOWN_ITEM, mon_in_battle.item]:
+        elif flags["item"] not in [
+            mon.item,
+            None,
+            GenData.UNKNOWN_ITEM,
+            mon_in_battle.item,
+        ]:
             msg += "\n\n======================================================================\n=========================== ERROR FOUND :( ===========================\n======================================================================\n"
             msg += "Error Type (error_item): Erroneously found item that the mon didn't have\n"
             msg += f"{mon_in_battle.name} was found to have {flags['item']} when it actually had {mon.item}\n\n"
             msg += print_battle(p2, p1, battle_tag)
             counts["error_item"] = counts.get("error_item", 0) + 1
 
-        elif not flags["can_be_choice"] and mon.item and mon_in_battle.item and mon_in_battle.item.startswith("choice") and mon.item.startswith("choice"):
+        elif (
+            not flags["can_be_choice"]
+            and mon.item
+            and mon_in_battle.item
+            and mon_in_battle.item.startswith("choice")
+            and mon.item.startswith("choice")
+        ):
             msg += "\n\n======================================================================\n=========================== ERROR FOUND :( ===========================\n======================================================================\n"
             msg += "Error Type (error_can_be_choice): Erroneously found a mon can't have a choice item when they do\n"
             msg += f"{mon_in_battle.name} was found not to have choice, but has the item '{mon.item}'\n\n"
             msg += print_battle(p2, p1, battle_tag)
             counts["error_can_be_choice"] = counts.get("error_can_be_choice", 0) + 1
 
-        elif flags["has_status_move"] and not any(map(lambda x: x.category == MoveCategory.STATUS, mon.moves.values())):
+        elif flags["has_status_move"] and not any(
+            map(lambda x: x.category == MoveCategory.STATUS, mon.moves.values())
+        ):
             msg += "\n\n======================================================================\n=========================== ERROR FOUND :( ===========================\n======================================================================\n"
             msg += "Error Type (error_has_status_move): Erroneously found a mon can't be assault vest (e.g. they used a status move) when they could be\n"
             msg += f"{mon_in_battle.name} has the moves: [{', '.join(map(lambda x: x.id, mon.moves.values()))}]\n\n"
             msg += print_battle(p2, p1, battle_tag)
             counts["error_has_status_move"] = counts.get("error_has_status_move", 0) + 1
 
-        # Something going wrong here; giving mons choicescarf when they already have revealed an item
-        elif mon_in_battle.stats['spe'] < flags["spe"][0] or mon_in_battle.stats['spe'] > flags['spe'][1]:
+        elif (
+            mon_in_battle.stats["spe"] < flags["spe"][0]
+            or mon_in_battle.stats["spe"] > flags["spe"][1]
+        ) and not (
+            mon_in_battle.item == "choicescarf"
+            and flags["spe"][1] == BattleInference.load_opponent_set(mon)["spe"][1]  # We guess theyre maxspeed
+        ):
             msg += "\n\n======================================================================\n=========================== ERROR FOUND :( ===========================\n======================================================================\n"
             msg += "Error Type (error_speed): Found an erroneous speed.\n"
             msg += f"{mon_in_battle.name} has a {mon_in_battle.stats['spe']} Speed stat, but we've bounded it between {flags['spe'][0]} and {flags['spe'][1]}\n\n"
@@ -218,45 +226,61 @@ async def main():
     total_battles = int(num) if num is not None else 1000
     print("Loading and validating teams, then creating players...")
     tr = TeamRepo(validate=False, verbose=False)
-    print(f"Finished loading {len(tr.teams['gen9vgc2024regg'])} teams to battle against each other!")
+    print(
+        f"Finished loading {len(tr.teams['gen9vgc2024regh'])} teams to battle against each other!"
+    )
 
-    global players # TODO: remove after debug
+    global players  # TODO: remove after debug
     players = []
     i = 0
-    for team_name, team in tr.teams["gen9vgc2024regg"].items():
+    for team_name, team in tr.teams["gen9vgc2024regh"].items():
 
         # ef this noise
-        if "Ditto" in team or "Zoroark" in team or ("Dondozo" in team and "Tatsugiri" in team) or "Lagging Tail" in team or "Iron Ball" in team:
+        if (
+            "Zoroark" in team
+            or ("Dondozo" in team and "Tatsugiri" in team)
+            or "Lagging Tail" in team
+            or "Iron Ball" in team
+        ):
             continue
 
         # Don't want to deal with non-english characters
-        if bool(re.search(r'[^a-zA-Z0-9\- _]', team_name)):
+        if bool(re.search(r"[^a-zA-Z0-9\- _]", team_name)):
             continue
 
-        players.append(CustomPlayer(
-            AccountConfiguration(team_name[:17], None),
-            battle_format="gen9vgc2024regg",
-            team=team,
-        ))
+        if not any(map(lambda x: team_name[:17] == x.username, players)):
+            players.append(
+                FuzzTestPlayer(
+                    AccountConfiguration(team_name[:17], None),
+                    battle_format="gen9vgc2024regg",
+                    team=team,
+                )
+            )
 
         i += 1
 
     # Change min to max to remove debugging
-    num_matchups = max(1, int(total_battles / len(list(itertools.combinations(players, 2)))))
+    num_matchups = max(
+        1, int(total_battles / len(list(itertools.combinations(players, 2))))
+    )
 
     print(f"Done! Now starting Player battles with {num_matchups} each")
 
     total_errors = ""
     total = 0
     original_time = time.time()
-    filename = os.path.expanduser('~/Desktop/fuzz_errors.txt')
+    filename = os.path.expanduser("~/Desktop/fuzz_errors.txt")
 
     for p1, p2 in itertools.combinations(players, 2):
         t0 = time.time()
 
         for i in range(num_matchups):
             total += 1
-            print(f"\rStarting battle #{total} between {p1.username} and {p2.username}...\r", end="", flush=True)
+            print(
+                f"\rStarting battle #{total} between {p1.username} and {p2.username}...\r",
+                end="",
+                flush=True,
+            )
             await p1.battle_against(p2)
             if total >= total_battles:
                 break
@@ -271,7 +295,9 @@ async def main():
 
     print("\n\n======== Finished all battles!! ========")
     print(f"Finished {total} battles in {round(time.time() - original_time, 2)} sec")
-    print(f"\tfor {round((time.time() - original_time) * 1. / total, 2)} sec per battle")
+    print(
+        f"\tfor {round((time.time() - original_time) * 1. / total, 2)} sec per battle"
+    )
 
     print(
         "Now going through Inference to check the right ground truth! This method won't catch cases when"
@@ -308,17 +334,22 @@ async def main():
                     counts[key] = counts.get(key, 0) + counts2[key]
 
     print("\n======== Finished checking all battles for inferences ========")
-    print(f"Finished {total} battles with {round(total_success * 1.0 / total * 100, 2)}% success rate")
+    print(
+        f"Finished {total} battles with {round(total_success * 1.0 / total * 100, 2)}% success rate"
+    )
     for error_type in counts:
         print(f"\tError Type [{error_type}] was found {counts[error_type]} times")
 
-    print(f"Writing these to {filename}). {'Also, printing them here:' if 'print' in sys.argv else ''}")
-    with open(filename, 'w') as f:
+    print(
+        f"Writing these to {filename}). {'Also, printing them here:' if 'print' in sys.argv else ''}"
+    )
+    with open(filename, "w") as f:
         f.write(total_errors)
 
     print_errors = False
     if print_errors or "print" in sys.argv:
         print(total_errors)
+
 
 if __name__ == "__main__":
     asyncio.run(main())

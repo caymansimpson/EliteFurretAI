@@ -7,19 +7,22 @@ It runs a battle, prints the observations, and saves the DoubleBattle object to 
 """
 
 import asyncio
-from typing import Optional, Union
-
-from poke_env.environment.abstract_battle import AbstractBattle
-from poke_env.player.random_player import RandomPlayer
-from poke_env.ps_client.account_configuration import AccountConfiguration
-from poke_env.ps_client.server_configuration import ServerConfiguration
-from poke_env.teambuilder.teambuilder import Teambuilder
+from typing import Optional, Union, List
+import random
 
 from elitefurretai.inference.battle_inference import BattleInference
+
+from elitefurretai.inference.inference_utils import battle_to_str
 from elitefurretai.inference.item_inference import ItemInference
 from elitefurretai.inference.speed_inference import SpeedInference
 
-from elitefurretai.inference.inference_utils import battle_to_str
+from poke_env.environment.abstract_battle import AbstractBattle
+from poke_env.environment.double_battle import DoubleBattle
+from poke_env.player.random_player import RandomPlayer
+from poke_env.player.battle_order import DefaultBattleOrder, BattleOrder, DoubleBattleOrder
+from poke_env.ps_client.account_configuration import AccountConfiguration
+from poke_env.ps_client.server_configuration import ServerConfiguration
+from poke_env.teambuilder.teambuilder import Teambuilder
 
 
 class CustomPlayer(RandomPlayer):
@@ -64,108 +67,143 @@ class CustomPlayer(RandomPlayer):
         self._inference = BattleInference(battle)
 
         # Speed and Item Inferences will fill inferences
-        if battle.player_role == "p1":
-            self._speed_inference = SpeedInference(battle, self._inference, verbose=10)
-            self._item_inference = ItemInference(battle, self._inference, verbose=10)
+        # if battle.player_role == "p1":
+        #     self._speed_inference = SpeedInference(battle, self._inference, verbose=0)
+        #     self._item_inference = ItemInference(battle, self._inference, verbose=0)
 
-            self._speed_inference.update(battle)  # pyright: ignore
-            self._item_inference.update(battle)  # pyright: ignore
+        #     self._speed_inference.update(battle)  # pyright: ignore
+        #     self._item_inference.update(battle)  # pyright: ignore
         return "/team 1234"
+    
+    def choose_random_doubles_move(self, battle: DoubleBattle) -> BattleOrder:
+        active_orders: List[List[BattleOrder]] = [[], []]
+
+        if any(battle.force_switch):
+            first_order = None
+            second_order = None
+
+            if battle.force_switch[0] and battle.available_switches[0]:
+                first_switch_in = random.choice(battle.available_switches[0])
+                first_order = BattleOrder(first_switch_in)
+            else:
+                first_switch_in = None
+
+            if battle.force_switch[1] and battle.available_switches[1]:
+                available_switches = [
+                    s for s in battle.available_switches[1] if s != first_switch_in
+                ]
+
+                if available_switches:
+                    second_switch_in = random.choice(available_switches)
+                    second_order = BattleOrder(second_switch_in)
+
+            if first_order and second_order:
+                return DoubleBattleOrder(first_order, second_order)
+            return DoubleBattleOrder(first_order or second_order, None)
+
+        for (orders, mon, switches, moves, can_tera) in zip(
+            active_orders,
+            battle.active_pokemon,
+            battle.available_switches,
+            battle.available_moves,
+            battle.can_tera,
+        ):
+            if not mon:
+                continue
+
+            targets = {
+                move: battle.get_possible_showdown_targets(move, mon) for move in moves
+            }
+            orders.extend(
+                [
+                    BattleOrder(move, move_target=target)
+                    for move in moves
+                    for target in targets[move]
+                ]
+            )
+            orders.extend([BattleOrder(switch) for switch in switches])
+
+            if can_tera:
+                orders.extend(
+                    [
+                        BattleOrder(move, move_target=target, terastallize=True)
+                        for move in moves
+                        for target in targets[move]
+                    ]
+                )
+
+        orders = DoubleBattleOrder.join_orders(*active_orders)
+
+        if orders:
+            return orders[int(random.random() * len(orders))]
+        else:
+            return DefaultBattleOrder()
 
     def choose_move(self, battle):
         # Don't deal with battle.force_switch until
-        if not any(battle.force_switch) and battle.player_role == "p1":
-            self._speed_inference.update(battle)  # pyright: ignore
-            self._item_inference.update(battle)  # pyright: ignore
+        # if not any(battle.force_switch) and battle.player_role == "p1":
+        #     self._speed_inference.update(battle)  # pyright: ignore
+        #     self._item_inference.update(battle)  # pyright: ignore
         return self.choose_random_doubles_move(battle)  # pyright: ignore
 
     # Print the battle upon battle completion, and save the observations in a BattleData object to the Desktop
     def _battle_finished_callback(self, battle: AbstractBattle):
         if self.username == "elitefurretai":
-            print(battle_to_str(battle))
+            # print(battle_to_str(battle))
+            pass
 
 
 async def main():
     pokepaste = """
-Groudon @ Clear Amulet
-Ability: Drought
-Level: 50
-Tera Type: Fire
-EVs: 252 HP / 76 Atk / 36 SpD / 140 Spe
-Adamant Nature
-- Precipice Blades
-- Thunder Punch
-- Heat Crash
-- Protect
+Hatterene
+Ability: Magic Bounce  
+Tera Type: Psychic  
+EVs: 1 HP / 252 SpA  
+IVs: 0 Atk  
+- Dazzling Gleam  
 
-Tornadus @ Focus Sash
-Ability: Prankster
-Level: 50
-Tera Type: Ghost
-EVs: 4 HP / 252 SpA / 252 Spe
-Timid Nature
-- Air Slash
-- Tailwind
-- Heat Wave
-- Protect
+Furret  
+Ability: Run Away  
+Tera Type: Normal  
+EVs: 1 HP / 252 Atk  
+Lonely Nature  
+- Baby-Doll Eyes  
+- Charm  
+- Double-Edge  
 
-Flutter Mane @ Choice Specs
-Ability: Protosynthesis
-Level: 50
-Tera Type: Fairy
-EVs: 148 HP / 252 SpA / 108 Spe
-Modest Nature
-IVs: 18 Atk
-- Dazzling Gleam
-- Moonblast
-- Shadow Ball
-- Perish Song
+Corviknight  
+Ability: Mirror Armor  
+Level: 50  
+Tera Type: Flying  
+EVs: 1 HP  
+- Fake Tears  
+- Metal Sound  
+- Screech  
+- Brave Bird  
 
-Chi-Yu @ Choice Scarf
-Ability: Beads of Ruin
-Level: 50
-Tera Type: Ghost
-EVs: 4 HP / 252 SpA / 252 Spe
-Timid Nature
-- Heat Wave
-- Dark Pulse
-- Snarl
-- Overheat
-
-Grimmsnarl @ Light Clay
-Ability: Prankster
-Level: 50
-Tera Type: Ghost
-EVs: 252 HP / 4 Atk / 180 Def / 36 SpD / 36 Spe
-Careful Nature
-IVs: 18 SpA
-- Foul Play
-- Thunder Wave
-- Reflect
-- Light Screen
-
-Raging Bolt @ Assault Vest
-Ability: Protosynthesis
-Level: 50
-Tera Type: Fire
-EVs: 60 HP / 4 Def / 196 SpA / 180 SpD / 68 Spe
-Modest Nature
-IVs: 20 Atk
-- Thunderbolt
-- Thunderclap
-- Dragon Pulse
-- Weather Ball
+Incineroar  
+Ability: Intimidate  
+Level: 50  
+Tera Type: Fire  
+EVs: 1 HP / 252 SpA  
+IVs: 0 Atk  
+- Fire Blast  
+- Will-O-Wisp  
+- Scary Face  
         """
 
     p1 = CustomPlayer(
         AccountConfiguration("elitefurretai", None),
-        battle_format="gen9vgc2024regg",
+        battle_format="gen9vgc2024regh",
         team=pokepaste,
     )
-    p2 = CustomPlayer(battle_format="gen9vgc2024regg", team=pokepaste)
+    p2 = CustomPlayer(battle_format="gen9vgc2024regh", team=pokepaste)
 
     # Run the battle
-    await p1.battle_against(p2)
+    for i in range(10000):
+        random.seed(i)
+        print("Starting battle with random seed", i)
+        await p1.battle_against(p2)
 
 
 if __name__ == "__main__":

@@ -62,8 +62,10 @@ def test_check_items_covertcloak_boost():
     ii.check_items(events)
     assert inferences.get_flag("p2: Shuckle", "item") == GenData.UNKNOWN_ITEM
     assert get_pokemon("p2: Furret", ii._battle).item == "airballoon"
-    assert inferences.get_flag("p2: Furret", "clearamulet_or_covertcloak") is False
-    assert inferences.get_flag("p2: Shuckle", "clearamulet_or_covertcloak")
+    assert inferences.get_flag("p2: Furret", "can_be_clearamulet") is False
+    assert inferences.get_flag("p2: Furret", "can_be_covertcloak") is False
+    assert inferences.get_flag("p2: Shuckle", "can_be_clearamulet")
+    assert inferences.get_flag("p2: Shuckle", "can_be_covertcloak")
 
     # Bulldoze
     ii, inferences = generate_item_inference_and_inferences()
@@ -79,8 +81,10 @@ def test_check_items_covertcloak_boost():
     ]
     ii.check_items(events)
     assert inferences.get_flag("p2: Furret", "item") == GenData.UNKNOWN_ITEM
-    assert inferences.get_flag("p2: Furret", "clearamulet_or_covertcloak")
-    assert inferences.get_flag("p2: Shuckle", "clearamulet_or_covertcloak") is False
+    assert inferences.get_flag("p2: Furret", "can_be_covertcloak")
+    assert inferences.get_flag("p2: Furret", "can_be_clearamulet")
+    assert inferences.get_flag("p2: Shuckle", "can_be_covertcloak") is False
+    assert inferences.get_flag("p2: Shuckle", "can_be_clearamulet") is False
 
     ii, inferences = generate_item_inference_and_inferences()
     events = [
@@ -97,8 +101,10 @@ def test_check_items_covertcloak_boost():
     ii.check_items(events)
     assert inferences.get_flag("p2: Furret", "item") == GenData.UNKNOWN_ITEM
     assert inferences.get_flag("p2: Shuckle", "item") == GenData.UNKNOWN_ITEM
-    assert inferences.get_flag("p2: Shuckle", "clearamulet_or_covertcloak")
-    assert inferences.get_flag("p2: Furret", "clearamulet_or_covertcloak") is None
+    assert inferences.get_flag("p2: Shuckle", "can_be_covertcloak")
+    assert inferences.get_flag("p2: Shuckle", "can_be_clearamulet")
+    assert inferences.get_flag("p2: Furret", "can_be_covertcloak") is None
+    assert inferences.get_flag("p2: Furret", "can_be_clearamulet") is None
 
     ii, inferences = generate_item_inference_and_inferences()
     events = [
@@ -116,8 +122,10 @@ def test_check_items_covertcloak_boost():
     ii.check_items(events)
     assert inferences.get_flag("p2: Furret", "item") == GenData.UNKNOWN_ITEM
     assert inferences.get_flag("p2: Shuckle", "item") == GenData.UNKNOWN_ITEM
-    assert inferences.get_flag("p2: Furret", "clearamulet_or_covertcloak") is None
-    assert inferences.get_flag("p2: Shuckle", "clearamulet_or_covertcloak") is False
+    assert inferences.get_flag("p2: Furret", "can_be_covertcloak") is None
+    assert inferences.get_flag("p2: Furret", "can_be_clearamulet") is None
+    assert inferences.get_flag("p2: Shuckle", "can_be_covertcloak") is False
+    assert inferences.get_flag("p2: Shuckle", "can_be_clearamulet") is False
 
 
 def test_check_items_covertcloak_flinch():
@@ -135,8 +143,28 @@ def test_check_items_covertcloak_flinch():
     ]
     ii.check_items(events)
     assert inferences.get_flag("p2: Furret", "item") == "covertcloak"
-    assert inferences.get_flag("p2: Furret", "clearamulet_or_covertcloak")
+    assert inferences.get_flag("p2: Furret", "can_be_covertcloak")
+    assert not inferences.get_flag("p2: Furret", "can_be_clearamulet")
 
+    ii, inferences = generate_item_inference_and_inferences()
+    events = [
+        ['', 'move', 'p1b: Rillaboom', 'Fake Out', 'p2b: Espeon'],
+        ['', '-resisted', 'p2b: Espeon'],
+        ['', '-damage', 'p2b: Espeon', '88/100'],
+        ['', 'cant', 'p2b: Espeon', 'flinch'],
+        ['', 'move', 'p1a: Pelipper', 'Hurricane', 'p2b: Espeon'],
+        ['', '-resisted', 'p2b: Espeon'], ['', '-damage', 'p2b: Espeon', '56/100'],
+        ['', '-start', 'p2b: Espeon', 'confusion'],
+        ['', 'move', 'p2a: Muk', 'Toxic', 'p2b: Espeon'],
+        ['', 'move', 'p2b: Espeon', 'Toxic', 'p2a: Muk'],
+        ['', '-immune', 'p2a: Muk'],
+    ]
+    ii._battle.parse_message(["", "switch", "p1b: Rillaboom", "Rillaboom, L50", "100/100"])
+    ii._battle.parse_message(["", "switch", "p2b: Espeon", "Espeon, L50", "100/100"])
+    ii._battle.parse_message(["", "switch", "p1a: Pelipper", "Pelipper, L50", "100/100"])
+    ii._battle.parse_message(["", "switch", "p2a: Muk", "Muk, L50", "100/100"])
+    ii.check_items(events)
+    assert inferences.get_flag("p2: Espeon", "item") == GenData.UNKNOWN_ITEM
 
 def test_check_items_covertcloak_status():
     # Nuzzle
@@ -153,10 +181,12 @@ def test_check_items_covertcloak_status():
     ]
     ii.check_items(events)
     assert inferences.get_flag("p2: Shuckle", "item") == "covertcloak"
-    assert inferences.get_flag("p2: Shuckle", "clearamulet_or_covertcloak")
+    assert inferences.get_flag("p2: Shuckle", "can_be_covertcloak")
+    assert not inferences.get_flag("p2: Shuckle", "can_be_clearamulet")
     assert inferences.get_flag("p2: Furret", "item") == GenData.UNKNOWN_ITEM
     assert inferences.get_flag("p2: Raichu", "item") == GenData.UNKNOWN_ITEM
-    assert inferences.get_flag("p2: Raichu", "clearamulet_or_covertcloak") is None
+    assert not inferences.get_flag("p2: Raichu", "can_be_covertcloak")
+    assert not inferences.get_flag("p2: Raichu", "can_be_clearamulet")
 
 
 def test_check_items_covertcloak_saltcure():
@@ -177,9 +207,10 @@ def test_check_items_covertcloak_saltcure():
     ]
     ii.check_items(events)
     assert inferences.get_flag("p2: Furret", "item") == "covertcloak"
-    assert inferences.get_flag("p2: Furret", "clearamulet_or_covertcloak")
+    assert inferences.get_flag("p2: Furret", "can_be_covertcloak")
+    assert inferences.get_flag("p2: Furret", "can_be_clearamulet") is False
     assert inferences.get_flag("p2: Shuckle", "item") == GenData.UNKNOWN_ITEM
-    assert inferences.get_flag("p2: Shuckle", "clearamulet_or_covertcloak") is None
+    assert not inferences.get_flag("p2: Shuckle", "can_be_covertcloak")
 
     # Salt Cure shouldnt lead to inferred covert cloak cuz of miss
     ii, inferences = generate_item_inference_and_inferences()
@@ -240,12 +271,9 @@ def test_check_items_clearamulet():
     ]
     ii.check_items(events)
     assert inferences.get_flag("p2: Furret", "item") == "covertcloak"
-    assert inferences.get_flag("p2: Furret", "clearamulet_or_covertcloak") is True
-
-    # I don't set the below flag False even though I know Shuckle doesn't have either
-    # item, because it got affected by intimidate and Furret has Covert Cloak. But I don't
-    # want to add these checks in because they're so niche, and one level of inference too far imo
-    # assert inferences.get_flag("p2: Shuckle", "clearamulet_or_covertcloak") is False
+    assert inferences.get_flag("p2: Furret", "can_be_covertcloak") is True
+    assert inferences.get_flag("p2: Furret", "can_be_clearamulet") is False
+    assert inferences.get_flag("p2: Shuckle", "can_be_clearamulet") is False
 
     ii, inferences = generate_item_inference_and_inferences()
     events = [
@@ -257,8 +285,11 @@ def test_check_items_clearamulet():
     ]
     ii.check_items(events)
     assert inferences.get_flag("p2: Furret", "item") == "clearamulet"
-    assert inferences.get_flag("p2: Furret", "clearamulet_or_covertcloak")
-    assert inferences.get_flag("p2: Shuckle", "clearamulet_or_covertcloak") is None
+    assert inferences.get_flag("p2: Furret", "can_be_clearamulet") is True
+    assert inferences.get_flag("p2: Furret", "can_be_covertcloak") is False
+    assert inferences.get_flag("p2: Furret", "can_be_choice") is False
+    assert inferences.get_flag("p2: Shuckle", "can_be_clearamulet") is False
+    assert inferences.get_flag("p2: Shuckle", "can_be_covertcloak") is None
     assert inferences.get_flag("p2: Shuckle", "item") == GenData.UNKNOWN_ITEM
 
 
@@ -403,6 +434,39 @@ def test_check_opponent_switch():
     assert inferences.get_flag("p2: Raichu", "item") == GenData.UNKNOWN_ITEM
     assert inferences.get_flag("p2: Tyranitar", "item") == "heavydutyboots"
 
+    # Just checking that we run through all events
+    ii, inferences = generate_item_inference_and_inferences()
+    events = [
+        ["", "switch", "p2a: Gothitelle", "Gothitelle, L50", "100/100"],
+        ["", "switch", "p2b: Lapras", "Lapras, L50", "100/100"],
+        ["", "switch", "p1a: cloud", "Altaria, L50", "100/100"],
+        ["", "switch", "p1b: Goth latina", "Gothitelle, L50", "100/100"],
+        ["", "move", "p2b: Lapras", "Protect", "p2b: Lapras"],
+        ["", "-singleturn", "p2b: Lapras", "Protect"],
+        ["", "move", "p2a: Gothitelle", "Protect", "p2a: Gothitelle"],
+        ["", "-singleturn", "p2a: Gothitelle", "Protect"],
+        ["", "move", "p1b: Goth latina", "Psychic", "p2b: Lapras"],
+        ["", "-activate", "p2b: Lapras", "move: Protect"],
+        ["", "move", "p1a: cloud", "Hyper Voice", "p2b: Lapras", "[spread]"],
+        ["", "-activate", "p2a: Gothitelle", "move: Protect"],
+        ["", "-activate", "p2b: Lapras", "move: Protect"],
+        ["",""],
+        ["", "-start", "p1b: Goth latina", "perish0"],
+        ["", "-start", "p1a: cloud", "perish0"],
+        ["", "-start", "p2b: Lapras", "perish0"],
+        ["", "-start", "p2a: Gothitelle", "perish0"],
+        ["", "faint", "p1b: Goth latina"],
+        ["", "faint", "p1a: cloud"],
+        ["", "faint", "p2b: Lapras"],
+        ["", "faint", "p2a: Gothitelle"],
+        ["", "upkeep"],
+        ["",""],
+        ["", "turn", "1"],
+    ]
+    ii.check_items(events)
+    assert ii._battle.turn == 1
+    assert ii._battle.active_pokemon == [None, None]
+    assert ii._battle.opponent_active_pokemon == [None, None]
 
 def test_check_items_heavy_duty_boots():
     ii, inferences = generate_item_inference_and_inferences()

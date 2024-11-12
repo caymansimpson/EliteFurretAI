@@ -7,9 +7,10 @@ import logging
 import re
 from typing import Dict, List, Optional, Tuple, Union
 
+from poke_env.environment.abstract_battle import AbstractBattle
+
 from poke_env.environment.battle import Battle
 from poke_env.environment.double_battle import DoubleBattle
-from poke_env.environment.abstract_battle import AbstractBattle
 from poke_env.environment.effect import Effect
 from poke_env.environment.field import Field
 from poke_env.environment.move import Move
@@ -53,7 +54,9 @@ def standardize_pokemon_ident(pokemon_str: str) -> str:
 # Gets pokemon from a battle given a pokemon identifier; battle.team stores "p1: Furret"
 # But this method will get: "p1a: Furret", "p1: Furret", "furret" from either our team
 # or the opponent's
-def get_pokemon(mon_ident: str, battle: Union[Battle, DoubleBattle, AbstractBattle]) -> Pokemon:
+def get_pokemon(
+    mon_ident: str, battle: Union[Battle, DoubleBattle, AbstractBattle]
+) -> Pokemon:
     if mon_ident in battle.team:
         return battle.team[mon_ident]
     elif mon_ident in battle.opponent_team:
@@ -142,7 +145,7 @@ def copy_bare_battle(
     battle: Union[Battle, DoubleBattle, AbstractBattle], turn: Optional[int] = None
 ) -> Union[Battle, DoubleBattle]:
     b = DoubleBattle(
-        battle.battle_tag,
+        battle.battle_tag + "elitefurretai",
         battle.player_username,
         logging.getLogger(battle.player_username),
         gen=battle.gen,
@@ -160,8 +163,10 @@ def copy_bare_battle(
 
 
 # Updates a battle with an event
-def update_battle(battle: Union[Battle, DoubleBattle, AbstractBattle], event: List[str]):
-    if len(event) > 2 and event[1] not in ["", "t:"]:
+def update_battle(
+    battle: Union[Battle, DoubleBattle, AbstractBattle], event: List[str]
+):
+    if len(event) > 1 and event[1] not in ["", "t:"]:
         if event[1] == "win":
             battle.won_by(event[2])
         elif event[1] == "tie":
@@ -341,7 +346,9 @@ def has_rage_powder_immunity(mon: Pokemon) -> bool:
     return False
 
 
-def has_unboost_immunity(mon_ident: str, boost_type: str, battle: Union[Battle, DoubleBattle, AbstractBattle]) -> bool:
+def has_unboost_immunity(
+    mon_ident: str, boost_type: str, battle: Union[Battle, DoubleBattle, AbstractBattle]
+) -> bool:
     mine = battle.player_role and mon_ident.startswith(battle.player_role)
 
     side_conditions = battle.opponent_side_conditions
@@ -358,10 +365,20 @@ def has_unboost_immunity(mon_ident: str, boost_type: str, battle: Union[Battle, 
             active_pokemon = battle.active_pokemon
             team = battle.team
 
-        if any(mon.ability == "flowerveil" for mon in active_pokemon if mon) and PokemonType.GRASS in team[mon_ident].types:
+        if (
+            any(mon.ability == "flowerveil" for mon in active_pokemon if mon)
+            and PokemonType.GRASS in team[mon_ident].types
+        ):
             return True
 
-        if any(mon.ability is None and "flowerveil" in mon.possible_abilities for mon in active_pokemon if mon) and PokemonType.GRASS in team[mon_ident].types:
+        if (
+            any(
+                mon.ability is None and "flowerveil" in mon.possible_abilities
+                for mon in active_pokemon
+                if mon
+            )
+            and PokemonType.GRASS in team[mon_ident].types
+        ):
             return True
     else:
         raise NotImplementedError()
@@ -370,25 +387,45 @@ def has_unboost_immunity(mon_ident: str, boost_type: str, battle: Union[Battle, 
     if mon.item == "clearamulet":
         return True
 
-    if mon.ability in ["clearbody", "fullmetalbody", "whitesmoke"]:
+    if mon.ability in ["clearbody", "fullmetalbody", "whitesmoke", "mirrorarmor"]:
         return True
 
-    if mon.ability is None and ("clearbody" in mon.possible_abilities or "fullmetalbody" in mon.possible_abilities or "whitesmoke" in mon.possible_abilities):
+    if mon.ability is None and (
+        "clearbody" in mon.possible_abilities
+        or "fullmetalbody" in mon.possible_abilities
+        or "whitesmoke" in mon.possible_abilities
+        or "mirrorarmor" in mon.possible_abilities
+    ):
         return True
 
-    if (mon.ability == "bigpeck" or (mon.ability is None and "bigpeck" in mon.possible_abilities)) and boost_type == "def":
+    if (
+        mon.ability == "bigpeck"
+        or (mon.ability is None and "bigpeck" in mon.possible_abilities)
+    ) and boost_type == "def":
         return True
 
-    if (mon.ability == "illuminate" or (mon.ability is None and "illuminate" in mon.possible_abilities)) and boost_type in "accuracy":
+    if (
+        mon.ability == "illuminate"
+        or (mon.ability is None and "illuminate" in mon.possible_abilities)
+    ) and boost_type in "accuracy":
         return True
 
-    if (mon.ability == "keeneye" or (mon.ability is None and "keeneye" in mon.possible_abilities)) and boost_type in "accuracy":
+    if (
+        mon.ability == "keeneye"
+        or (mon.ability is None and "keeneye" in mon.possible_abilities)
+    ) and boost_type in "accuracy":
         return True
 
-    if (mon.ability == "mindseye" or (mon.ability is None and "mindseye" in mon.possible_abilities)) and boost_type in "accuracy":
+    if (
+        mon.ability == "mindseye"
+        or (mon.ability is None and "mindseye" in mon.possible_abilities)
+    ) and boost_type in "accuracy":
         return True
 
-    if (mon.ability == "hypercutter" or (mon.ability is None and "hypercutter" in mon.possible_abilities)) and boost_type in "atk":
+    if (
+        mon.ability == "hypercutter"
+        or (mon.ability is None and "hypercutter" in mon.possible_abilities)
+    ) and boost_type in "atk":
         return True
 
     if mon.boosts[boost_type] == -6:
@@ -398,7 +435,9 @@ def has_unboost_immunity(mon_ident: str, boost_type: str, battle: Union[Battle, 
 
 
 # Assumes a mon that could be levitating has it
-def is_grounded(mon_ident: str, battle: Union[Battle, DoubleBattle, AbstractBattle]) -> bool:
+def is_grounded(
+    mon_ident: str, battle: Union[Battle, DoubleBattle, AbstractBattle]
+) -> bool:
     mon = get_pokemon(mon_ident, battle)
     if Field.GRAVITY in battle.fields:
         return True
@@ -535,7 +574,9 @@ def get_priority_and_identifier(
 
 # Takes in an event and returns the residual and the identifier of the mon who triggered the residual
 # See unit_tests for examples
-def get_residual_and_identifier(event: List[str]) -> Tuple[Optional[str], Optional[str]]:
+def get_residual_and_identifier(
+    event: List[str],
+) -> Tuple[Optional[str], Optional[str]]:
     if event is None:
         return None, None
     elif event[-2] == "[from] Leech Seed":
@@ -555,11 +596,15 @@ def get_residual_and_identifier(event: List[str]) -> Tuple[Optional[str], Option
             event[2]
         )
     elif event[-1].startswith("[from] item:"):
-        return event[-1].replace("[from] item: ", ""), standardize_pokemon_ident(event[2])
+        return event[-1].replace("[from] item: ", ""), standardize_pokemon_ident(
+            event[2]
+        )
     elif event[-1].startswith("[from] "):
         return event[-1].replace("[from] ", ""), standardize_pokemon_ident(event[2])
     elif event[-2].startswith("[from] move: "):
-        return event[-2].replace("[from] move: ", ""), standardize_pokemon_ident(event[2])
+        return event[-2].replace("[from] move: ", ""), standardize_pokemon_ident(
+            event[2]
+        )
     else:
         return None, None
 
@@ -604,6 +649,7 @@ def get_segments(events: List[List[str]], start=0) -> Dict[str, List[List[str]]]
                 "-mega",
                 "-primal",
                 "-activate",
+                "-end",  # for protosynthesis/quarkdrives end before switch
                 "switch",
                 "move",
             ]
@@ -620,14 +666,20 @@ def get_segments(events: List[List[str]], start=0) -> Dict[str, List[List[str]]]
         while (
             i < len(events)
             and events[i][1]
-            not in ["-terastallize", "-dynamax", "-mega", "-primal", "switch", "move"]
+            not in ["-terastallize", "-dynamax", "-mega", "-primal", "switch", "move", "-end"]
             and events[i][-1] != "[upkeep]"
             and events[i][-1] not in MSGS_THAT_ACTIVATE_BEFORE_ATTACK
         ):
             i += 1
 
         # If we stop on a switch, we record the position
-        if i < len(events) and events[i][1] == "switch":
+        if i < len(events) and (
+            events[i][1] == "switch" or (
+                # for protosynthesis/quarkdrives/neutralizinggas; note that this is a bug in showdown:
+                # https://github.com/smogon/pokemon-showdown/blob/c82d1b8433440256f7b75fe1c68deac31a29c09d/data/abilities.ts#L2877
+                events[i][1] == "-end" and len(events) > 3
+            )
+        ):
             if last_segment != "" and i >= start:
                 segments[last_segment] = events[max(indices[last_segment], start) : i]
             last_segment = "switch"
@@ -673,10 +725,16 @@ def get_segments(events: List[List[str]], start=0) -> Dict[str, List[List[str]]]
         # before it swithces out. So this tries to keep on going until we see an empty string
         # that isnt immediately followed by a switch or has a switch two after
         while i < len(events) and (
-            events[i][1] != "" or (
-                events[i][1] == "" and (
+            events[i][1] != ""
+            or (
+                events[i][1] == ""
+                and (
                     (len(events) > i + 1 and events[i + 1][1] == "switch")
-                    or (len(events) > i + 2 and events[i + 2][1] == "switch" and events[i + 1][1] == "-end")
+                    or (
+                        len(events) > i + 2
+                        and events[i + 2][1] == "switch"
+                        and events[i + 1][1] == "-end"
+                    )
                 )
             )
         ):
@@ -864,7 +922,10 @@ DISCERNABLE_ITEMS = set(
     ]
 )
 
-MEGASTONES_THAT_CAN_PUBLICLY_ACTIVATE_ABILITIES_OR_ITEMS = {"charizarditey", "alakazite"}
+MEGASTONES_THAT_CAN_PUBLICLY_ACTIVATE_ABILITIES_OR_ITEMS = {
+    "charizarditey",
+    "alakazite",
+}
 
 # From https://github.com/search?q=repo%3Asmogon%2Fpokemon-showdown+residualorder&type=code
 FIRST_BLOCK_RESIDUALS = {
@@ -932,7 +993,14 @@ RESIDUALS_WITH_OWN_PRIORITY = {
 # Denoted by preStart in https://github.com/smogon/pokemon-showdown/blob/master/data/abilities.ts
 PRIORITY_ACTIVATION_ABILITIES = ["As One", "Neutralizing Gas", "Unnerve", "Tera Shift"]
 
-MSGS_THAT_ACTIVATE_BEFORE_ATTACK = ["confusion", "slp", "par", "frz", "recharge", "flinch"]
+MSGS_THAT_ACTIVATE_BEFORE_ATTACK = [
+    "confusion",
+    "slp",
+    "par",
+    "frz",
+    "recharge",
+    "flinch",
+]
 
 ITEMS_THAT_ACTIVATE_ON_SWITCH = [
     "Booster Energy",
@@ -944,7 +1012,7 @@ ITEMS_THAT_ACTIVATE_ON_SWITCH = [
 
 ABILITIES_THAT_CAN_PUBLICLY_ACTIVATE_ABILITIES_OR_ITEMS = {
     "Snow Warning",
-    "Orachium Pulse",
+    "Orichalcum Pulse",
     "Drought",
     "Desolate Land",
     "Hadron Engine",
