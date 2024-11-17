@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 import os
-import pickle
 
 import orjson
 from pytest import fixture

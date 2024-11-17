@@ -25,7 +25,7 @@ class TeamRepo:
         self._verbose = verbose
 
         # If we have the default filepath, use the default
-        if filepath == None:
+        if filepath is None:
             current_file = os.path.dirname(
                 os.path.abspath(__file__)
             )  # Gets current directory

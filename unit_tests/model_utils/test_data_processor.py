@@ -6,8 +6,6 @@ from unittest.mock import MagicMock
 from poke_env.data import GenData
 from poke_env.data.normalize import to_id_str
 from poke_env.environment import DoubleBattle, Pokemon, PokemonGender, PokemonType
-from poke_env.player.random_player import RandomPlayer
-from poke_env.ps_client.account_configuration import AccountConfiguration
 from poke_env.teambuilder.constant_teambuilder import ConstantTeambuilder
 
 from elitefurretai.model_utils.battle_data import BattleData
@@ -37,7 +35,7 @@ def test_write_battle_data_to_file():
         winner="elitefurretai",
         end_type="",
         observations={},
-        inputs={},
+        inputs=[],
         source="test",
     )
     dp = DataProcessor()
@@ -182,6 +180,8 @@ def test_self_play_to_battle_data(vgc_battle_p1_logs, vgc_battle_p2_logs, vgc_ba
         if mon.species == "smeargle":
             omon = mon
 
+    assert omon is not None
+
     assert omon.species == "smeargle"
     assert omon.item == "covertcloak"
     assert omon.ability == "moody"
@@ -207,7 +207,7 @@ def test_self_play_to_battle_data(vgc_battle_p1_logs, vgc_battle_p2_logs, vgc_ba
         if mon.species == "pikachu":
             omon = mon
 
-    assert omon
+    assert omon is not None
     assert omon.species == "pikachu"
     assert omon.item == "lightball"
     assert omon.tera_type == PokemonType.ELECTRIC
@@ -217,6 +217,7 @@ def test_self_play_to_battle_data(vgc_battle_p1_logs, vgc_battle_p2_logs, vgc_ba
     for mon in bd.p2_team:
         if mon.species == "pikachu":
             omon = mon
+    assert omon is not None
     assert omon.species == "pikachu"
     assert omon.tera_type == PokemonType.ELECTRIC
 
@@ -227,11 +228,13 @@ def test_self_play_to_battle_data(vgc_battle_p1_logs, vgc_battle_p2_logs, vgc_ba
 
     # Observations should NOT have omniscience because they come from a battle object
     # with one perspective. However, BattleData object has all omniscient characteristics
+    assert bd.observations[10].opponent_team["p2: gagaga"] is not None
     assert bd.observations[10].opponent_team["p2: gagaga"].tera_type is None
     omon = None
     for mon in bd.p2_team:
         if mon.species == "zamazentacrowned":
             omon = mon
+    assert omon is not None
     assert omon.species == "zamazentacrowned"
     assert omon.tera_type == PokemonType.FIGHTING
 
@@ -278,6 +281,7 @@ def test_online_play_to_battle_data(vgc_battle_p1_logs, vgc_battle_team):
         if mon.species == "smeargle":
             omon = mon
 
+    assert omon is not None
     assert omon.species == "smeargle"
     assert omon.item == "covertcloak"
     assert omon.ability == "moody"
@@ -305,7 +309,7 @@ def test_online_play_to_battle_data(vgc_battle_p1_logs, vgc_battle_team):
     for mon in bd.p2_team:
         if mon.species == "pikachu":
             omon = mon
-
+    assert omon is not None
     assert omon.species == "pikachu"
     assert omon.item == GenData.UNKNOWN_ITEM
     assert omon.tera_type is None
@@ -317,10 +321,12 @@ def test_online_play_to_battle_data(vgc_battle_p1_logs, vgc_battle_team):
 
     # Observations should NOT have omniscience because they come from a battle object
     # with one perspective. However, BattleData object has all omniscient characteristics
+    assert bd.observations[10].opponent_team["p2: gagaga"] is not None
     assert bd.observations[10].opponent_team["p2: gagaga"].tera_type is None
     omon = None
     for mon in bd.p2_team:
         if mon.species == "zamazentacrowned":
             omon = mon
+    assert omon is not None
     assert omon.species == "zamazentacrowned"
     assert omon.tera_type is None

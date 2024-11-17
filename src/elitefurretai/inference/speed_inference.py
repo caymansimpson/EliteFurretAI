@@ -4,9 +4,7 @@ It even can even establish whether a mon has choice scarf. This object is a comp
 """
 
 import math
-import sys
-import traceback
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 import pulp
 from poke_env.data.gen_data import GenData
@@ -32,7 +30,6 @@ from elitefurretai.inference.inference_utils import (
     PRIORITY_ACTIVATION_ABILITIES,
     SECOND_BLOCK_RESIDUALS,
     THIRD_BLOCK_RESIDUALS,
-    battle_to_str,
     copy_bare_battle,
     get_ability_and_identifier,
     get_pokemon,
@@ -374,7 +371,7 @@ class SpeedInference:
 
                 if events[i][1] in ["-transform", "detailschange"]:
                     last_moved, last_multipliers = None, None
-                    orders = self.scrub_orders( # type: ignore
+                    orders = self.scrub_orders(  # type: ignore
                         self.clean_orders(orders), standardize_pokemon_ident(events[i][2])
                     )
 

@@ -3,7 +3,7 @@ from logging import Logger
 from unittest.mock import MagicMock
 
 from poke_env.data import GenData
-from poke_env.environment import DoubleBattle, Move, Pokemon, PokemonType, Status
+from poke_env.environment import DoubleBattle, Move, Pokemon, PokemonType
 from poke_env.teambuilder.constant_teambuilder import ConstantTeambuilder
 
 from elitefurretai.model_utils.embedder import Embedder

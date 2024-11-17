@@ -3,7 +3,6 @@
 This object is a companion class to BattleInference.
 """
 
-import inspect
 from typing import Dict, List, Union
 
 from poke_env.data.gen_data import GenData
@@ -716,12 +715,12 @@ class ItemInference:
                     in [True, None]
                 ):
                     # Check flags
-                    if self._inferences.get_flag(idents[0], "can_be_clearamulet") == False:
+                    if self._inferences.get_flag(idents[0], "can_be_clearamulet") is False:
                         self._inferences.set_flag(idents[0], "can_be_choice", False)
                         self._inferences.set_flag(idents[0], "can_be_covertcloak", True)
                         self._inferences.set_flag(idents[0], "item", "covertcloak")
                     elif (
-                        self._inferences.get_flag(idents[0], "can_be_covertcloak") == False
+                        self._inferences.get_flag(idents[0], "can_be_covertcloak") is False
                     ):
                         self._inferences.set_flag(idents[0], "can_be_choice", False)
                         self._inferences.set_flag(idents[0], "can_be_clearamulet", True)
@@ -822,8 +821,8 @@ class ItemInference:
                     events[j][1] == "move"
                     and standardize_pokemon_ident(events[j][2]) == target
                     and not has_flinch_immunity(get_pokemon(target, self._battle))
-                    and not "magicbounce"
-                    in get_pokemon(target, self._battle).possible_abilities
+                    and "magicbounce"
+                    not in get_pokemon(target, self._battle).possible_abilities
                 ):
                     if (
                         not self._opp_has_item(target)

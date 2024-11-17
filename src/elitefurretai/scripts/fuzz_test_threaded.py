@@ -7,27 +7,12 @@ more quickly.
 
 import asyncio
 import os.path
-import re
 import sys
 import threading
 import time
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple
 
-from poke_env.data.gen_data import GenData
-from poke_env.environment.move_category import MoveCategory
-from poke_env.player.random_player import RandomPlayer
-from poke_env.ps_client.account_configuration import AccountConfiguration
-from poke_env.ps_client.server_configuration import ServerConfiguration
-from poke_env.teambuilder.teambuilder import Teambuilder
-
-from elitefurretai.inference.battle_inference import BattleInference
-from elitefurretai.inference.inference_utils import (
-    battle_to_str,
-    get_showdown_identifier,
-)
-from elitefurretai.inference.item_inference import ItemInference
-from elitefurretai.inference.speed_inference import SpeedInference
 from elitefurretai.scripts.fuzz_test import (
     FuzzTestPlayer,
     check_ground_truth,
@@ -164,7 +149,9 @@ async def battle_worker(
 
 async def main():
 
-    # Get Parameters of fuzz testing
+    # Get Parameters of fuzz testing; for the number of threads, you have to initiate showdown
+    # with the appropriate number of workers (can do this through CLI or config) to take advantage
+    # of parallelism
     num = None
     for arg in sys.argv:
         if arg.isdigit():
