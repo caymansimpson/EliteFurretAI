@@ -95,7 +95,7 @@ def test_check_items_covertcloak_boost():
         ["", "-damage", "p2a: Furret", "0 fnt"],
         ["", "-damage", "p2b: Shuckle", "99/100"],
         ["", "-unboost", "p1b: Raichu", "spe", "1"],
-        ['', 'faint', 'p2a: Furret'],
+        ["", "faint", "p2a: Furret"],
     ]
 
     ii.check_items(events)
@@ -116,7 +116,7 @@ def test_check_items_covertcloak_boost():
         ["", "-damage", "p2b: Shuckle", "99/100"],
         ["", "-unboost", "p1b: Raichu", "spe", "1"],
         ["", "-unboost", "p2b: Shuckle", "spe", "1"],
-        ['', 'faint', 'p2a: Furret'],
+        ["", "faint", "p2a: Furret"],
     ]
 
     ii.check_items(events)
@@ -148,16 +148,17 @@ def test_check_items_covertcloak_flinch():
 
     ii, inferences = generate_item_inference_and_inferences()
     events = [
-        ['', 'move', 'p1b: Rillaboom', 'Fake Out', 'p2b: Espeon'],
-        ['', '-resisted', 'p2b: Espeon'],
-        ['', '-damage', 'p2b: Espeon', '88/100'],
-        ['', 'cant', 'p2b: Espeon', 'flinch'],
-        ['', 'move', 'p1a: Pelipper', 'Hurricane', 'p2b: Espeon'],
-        ['', '-resisted', 'p2b: Espeon'], ['', '-damage', 'p2b: Espeon', '56/100'],
-        ['', '-start', 'p2b: Espeon', 'confusion'],
-        ['', 'move', 'p2a: Muk', 'Toxic', 'p2b: Espeon'],
-        ['', 'move', 'p2b: Espeon', 'Toxic', 'p2a: Muk'],
-        ['', '-immune', 'p2a: Muk'],
+        ["", "move", "p1b: Rillaboom", "Fake Out", "p2b: Espeon"],
+        ["", "-resisted", "p2b: Espeon"],
+        ["", "-damage", "p2b: Espeon", "88/100"],
+        ["", "cant", "p2b: Espeon", "flinch"],
+        ["", "move", "p1a: Pelipper", "Hurricane", "p2b: Espeon"],
+        ["", "-resisted", "p2b: Espeon"],
+        ["", "-damage", "p2b: Espeon", "56/100"],
+        ["", "-start", "p2b: Espeon", "confusion"],
+        ["", "move", "p2a: Muk", "Toxic", "p2b: Espeon"],
+        ["", "move", "p2b: Espeon", "Toxic", "p2a: Muk"],
+        ["", "-immune", "p2a: Muk"],
     ]
     ii._battle.parse_message(["", "switch", "p1b: Rillaboom", "Rillaboom, L50", "100/100"])
     ii._battle.parse_message(["", "switch", "p2b: Espeon", "Espeon, L50", "100/100"])
@@ -165,6 +166,7 @@ def test_check_items_covertcloak_flinch():
     ii._battle.parse_message(["", "switch", "p2a: Muk", "Muk, L50", "100/100"])
     ii.check_items(events)
     assert inferences.get_flag("p2: Espeon", "item") == GenData.UNKNOWN_ITEM
+
 
 def test_check_items_covertcloak_status():
     # Nuzzle
@@ -201,9 +203,9 @@ def test_check_items_covertcloak_saltcure():
         ["", "-boost", "p1b: Raichu", "spe", "2"],
         ["", "move", "p2a: Furret", "Last Resort", "p1b: Raichu"],
         ["", "-damage", "p1b: Raichu", "2/100"],
-        ['', ''],
-        ['', 'upkeep'],
-        ['', 'turn', '11'],
+        ["", ""],
+        ["", "upkeep"],
+        ["", "turn", "11"],
     ]
     ii.check_items(events)
     assert inferences.get_flag("p2: Furret", "item") == "covertcloak"
@@ -223,9 +225,9 @@ def test_check_items_covertcloak_saltcure():
         ["", "-boost", "p1b: Raichu", "spe", "2"],
         ["", "move", "p2a: Furret", "Last Resort", "p1b: Raichu"],
         ["", "-damage", "p1b: Raichu", "2/100"],
-        ['', ''],
-        ['', 'upkeep'],
-        ['', 'turn', '11'],
+        ["", ""],
+        ["", "upkeep"],
+        ["", "turn", "11"],
     ]
     ii.check_items(events)
     assert inferences.get_flag("p2: Furret", "item") == GenData.UNKNOWN_ITEM
@@ -242,11 +244,11 @@ def test_check_items_covertcloak_saltcure():
         ["", "-boost", "p1b: Raichu", "spe", "2"],
         ["", "move", "p2a: Furret", "U-turn", "p1b: Raichu"],
         ["", "-damage", "p1b: Raichu", "2/100"],
-        ['', ''],
+        ["", ""],
         ["", "switch", "p2a: Tyranitar", "Tyranitar, L50, F", "100/100"],
-        ['', ''],
-        ['', 'upkeep'],
-        ['', 'turn', '11'],
+        ["", ""],
+        ["", "upkeep"],
+        ["", "turn", "11"],
     ]
     ii.check_items(events)
     assert inferences.get_flag("p2: Furret", "item") == GenData.UNKNOWN_ITEM
@@ -265,9 +267,9 @@ def test_check_items_clearamulet():
         ["", "-damage", "p2a: Furret", "97/100"],
         ["", "move", "p1b: Raichu", "Agility", "p1b: Raichu"],
         ["", "-boost", "p1b: Raichu", "spe", "2"],
-        ['', ''],
-        ['', 'upkeep'],
-        ['', 'turn', '11'],
+        ["", ""],
+        ["", "upkeep"],
+        ["", "turn", "11"],
     ]
     ii.check_items(events)
     assert inferences.get_flag("p2: Furret", "item") == "covertcloak"
@@ -281,7 +283,7 @@ def test_check_items_clearamulet():
         ["", "switch", "p2a: Furret", "Furret, L50, F", "100/100"],
         ["", "-ability", "p1b: Raichu", "Intimidate", "boost"],
         ["", "-unboost", "p2b: Shuckle", "atk", "1"],
-        ['', 'turn', '11'],
+        ["", "turn", "11"],
     ]
     ii.check_items(events)
     assert inferences.get_flag("p2: Furret", "item") == "clearamulet"
@@ -418,17 +420,24 @@ def test_check_opponent_switch():
     events = [
         ["", "switch", "p2a: Furret", "Furret, L50, F", "100/100"],
         ["", "switch", "p2b: Shuckle", "Shuckle, L50", "100/100"],
-        ['', 'move', 'p1a: Furret', 'Spikes'],
+        ["", "move", "p1a: Furret", "Spikes"],
         ["", "-sidestart", "p2: joeschmoe", "Spikes"],
-        ['', 'move', 'p2a: Furret', 'Volt Switch', 'p2b: Shuckle'],
-        ['', '-damage', 'p2b: Shuckle', '62/100 par'],
-        ['', ''],
-        ['', 'switch', 'p2a: Tyranitar', 'Tyranitar, L50', '100/100', '[from] Volt Switch'],
-        ['', 'move', 'p2b: Shuckle', 'U-turn', 'p2a: Tyranitar'],
-        ['', '-damage', 'p2a: Tyranitar', '97/100'],
-        ['', ''],
-        ['', 'switch', 'p2b: Raichu', 'Raichu, L50', '100/100', '[from] U-turn'],
-        ['', '-damage', 'p2b: Raichu', '80/100', '[from] Spikes'],
+        ["", "move", "p2a: Furret", "Volt Switch", "p2b: Shuckle"],
+        ["", "-damage", "p2b: Shuckle", "62/100 par"],
+        ["", ""],
+        [
+            "",
+            "switch",
+            "p2a: Tyranitar",
+            "Tyranitar, L50",
+            "100/100",
+            "[from] Volt Switch",
+        ],
+        ["", "move", "p2b: Shuckle", "U-turn", "p2a: Tyranitar"],
+        ["", "-damage", "p2a: Tyranitar", "97/100"],
+        ["", ""],
+        ["", "switch", "p2b: Raichu", "Raichu, L50", "100/100", "[from] U-turn"],
+        ["", "-damage", "p2b: Raichu", "80/100", "[from] Spikes"],
     ]
     ii.check_items(events)
     assert inferences.get_flag("p2: Raichu", "item") == GenData.UNKNOWN_ITEM
@@ -450,7 +459,7 @@ def test_check_opponent_switch():
         ["", "move", "p1a: cloud", "Hyper Voice", "p2b: Lapras", "[spread]"],
         ["", "-activate", "p2a: Gothitelle", "move: Protect"],
         ["", "-activate", "p2b: Lapras", "move: Protect"],
-        ["",""],
+        ["", ""],
         ["", "-start", "p1b: Goth latina", "perish0"],
         ["", "-start", "p1a: cloud", "perish0"],
         ["", "-start", "p2b: Lapras", "perish0"],
@@ -460,13 +469,14 @@ def test_check_opponent_switch():
         ["", "faint", "p2b: Lapras"],
         ["", "faint", "p2a: Gothitelle"],
         ["", "upkeep"],
-        ["",""],
+        ["", ""],
         ["", "turn", "1"],
     ]
     ii.check_items(events)
     assert ii._battle.turn == 1
     assert ii._battle.active_pokemon == [None, None]
     assert ii._battle.opponent_active_pokemon == [None, None]
+
 
 def test_check_items_heavy_duty_boots():
     ii, inferences = generate_item_inference_and_inferences()
@@ -487,7 +497,9 @@ def test_check_items_heavy_duty_boots():
 
     # Should assign Shuckle heavydutyboots if it doesnt take dmg and ttar is immune
     ii, inferences = generate_item_inference_and_inferences()
-    ii._battle._opponent_team = {"p2: Tyranitar": Pokemon(gen=9, details="Tyranitar, L50, M")}
+    ii._battle._opponent_team = {
+        "p2: Tyranitar": Pokemon(gen=9, details="Tyranitar, L50, M")
+    }
 
     events = [
         ["", "switch", "p1a: Smeargle", "Smeargle, L50, M", "100/100"],
@@ -509,7 +521,9 @@ def test_check_items_heavy_duty_boots():
 
     # Should assign Shuckle heavydutyboots if it doesnt take dmg and ttar is immune
     ii, inferences = generate_item_inference_and_inferences()
-    ii._battle._opponent_team = {"p2: Tyranitar": Pokemon(gen=9, details="Tyranitar, L50, M")}
+    ii._battle._opponent_team = {
+        "p2: Tyranitar": Pokemon(gen=9, details="Tyranitar, L50, M")
+    }
 
     events = [
         ["", "switch", "p1a: Smeargle", "Smeargle, L50, M", "100/100"],
@@ -531,7 +545,9 @@ def test_check_items_heavy_duty_boots():
 
     # Shouldnt assign Tyranitar heavydutyboots if it has levitate
     ii, inferences = generate_item_inference_and_inferences()
-    ii._battle._opponent_team = {"p2: Tyranitar": Pokemon(gen=9, details="Tyranitar, L50, M")}
+    ii._battle._opponent_team = {
+        "p2: Tyranitar": Pokemon(gen=9, details="Tyranitar, L50, M")
+    }
 
     events = [
         ["", "switch", "p1a: Smeargle", "Smeargle, L50, M", "100/100"],
@@ -551,7 +567,9 @@ def test_check_items_heavy_duty_boots():
 
     # Shouldnt assign Tyranitar heavydutyboots if it could have levitate
     ii, inferences = generate_item_inference_and_inferences()
-    ii._battle._opponent_team = {"p2: Tyranitar": Pokemon(gen=9, details="Tyranitar, L50, M")}
+    ii._battle._opponent_team = {
+        "p2: Tyranitar": Pokemon(gen=9, details="Tyranitar, L50, M")
+    }
 
     events = [
         ["", "switch", "p1a: Smeargle", "Smeargle, L50, M", "100/100"],
@@ -572,7 +590,9 @@ def test_check_items_heavy_duty_boots():
 
     # Shouldnt assign Tyranitar heavydutyboots if it could have levitate
     ii, inferences = generate_item_inference_and_inferences()
-    ii._battle._opponent_team = {"p2: Tyranitar": Pokemon(gen=9, details="Tyranitar, L50, M")}
+    ii._battle._opponent_team = {
+        "p2: Tyranitar": Pokemon(gen=9, details="Tyranitar, L50, M")
+    }
 
     events = [
         ["", "switch", "p1a: Smeargle", "Smeargle, L50, M", "100/100"],
@@ -593,7 +613,9 @@ def test_check_items_heavy_duty_boots():
 
     # Shouldnt assign Tyranitar heavydutyboots for stealthrock even if it has levitate
     ii, inferences = generate_item_inference_and_inferences()
-    ii._battle._opponent_team = {"p2: Tyranitar": Pokemon(gen=9, details="Tyranitar, L50, M")}
+    ii._battle._opponent_team = {
+        "p2: Tyranitar": Pokemon(gen=9, details="Tyranitar, L50, M")
+    }
 
     events = [
         ["", "switch", "p1a: Smeargle", "Smeargle, L50, M", "100/100"],
@@ -613,7 +635,9 @@ def test_check_items_heavy_duty_boots():
 
     # Should assign Tyranitar heavydutyboots for stealthrock even if it possibly has levitate
     ii, inferences = generate_item_inference_and_inferences()
-    ii._battle._opponent_team = {"p2: Tyranitar": Pokemon(gen=9, details="Tyranitar, L50, M")}
+    ii._battle._opponent_team = {
+        "p2: Tyranitar": Pokemon(gen=9, details="Tyranitar, L50, M")
+    }
 
     events = [
         ["", "switch", "p1a: Smeargle", "Smeargle, L50, M", "100/100"],

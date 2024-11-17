@@ -4,9 +4,6 @@
 from unittest.mock import MagicMock
 
 import pytest
-
-from elitefurretai.inference.battle_inference import BattleInference
-from elitefurretai.inference.speed_inference import get_pokemon, SpeedInference
 from poke_env.environment import (
     DoubleBattle,
     Effect,
@@ -17,6 +14,9 @@ from poke_env.environment import (
     Weather,
 )
 from poke_env.teambuilder.constant_teambuilder import ConstantTeambuilder
+
+from elitefurretai.inference.battle_inference import BattleInference
+from elitefurretai.inference.speed_inference import SpeedInference, get_pokemon
 
 
 def generate_speed_inference():
@@ -174,18 +174,18 @@ def test_parse_preturn_switch():
 
     si = generate_speed_inference()
     events = [
-		['', 'switch', 'p1a: Calyrex', 'Calyrex-Shadow, L50', '176/176'],
-		['', 'switch', 'p1b: Iron Bundle', 'Iron Bundle, L50', '139/139'],
-		['', 'switch', 'p2a: Groudon', 'Groudon, L50', '100/100'],
-		['', 'switch', 'p2b: Flutter Mane', 'Flutter Mane, L50', '100/100'],
-		['', '-ability', 'p1a: Calyrex', 'As One'],
-		['', '-ability', 'p1a: Calyrex', 'Unnerve'],
-		['', '-weather', 'SunnyDay', '[from] ability: Drought', '[of] p2a: Groudon'],
-		['', '-activate', 'p2b: Flutter Mane', 'ability: Protosynthesis'],
-		['', '-start', 'p2b: Flutter Mane', 'protosynthesisspe'],
-		['', '-enditem', 'p1b: Iron Bundle', 'Booster Energy'],
-		['', '-activate', 'p1b: Iron Bundle', 'ability: Quark Drive', '[fromitem]'],
-		['', '-start', 'p1b: Iron Bundle', 'quarkdrivespe'],
+        ["", "switch", "p1a: Calyrex", "Calyrex-Shadow, L50", "176/176"],
+        ["", "switch", "p1b: Iron Bundle", "Iron Bundle, L50", "139/139"],
+        ["", "switch", "p2a: Groudon", "Groudon, L50", "100/100"],
+        ["", "switch", "p2b: Flutter Mane", "Flutter Mane, L50", "100/100"],
+        ["", "-ability", "p1a: Calyrex", "As One"],
+        ["", "-ability", "p1a: Calyrex", "Unnerve"],
+        ["", "-weather", "SunnyDay", "[from] ability: Drought", "[of] p2a: Groudon"],
+        ["", "-activate", "p2b: Flutter Mane", "ability: Protosynthesis"],
+        ["", "-start", "p2b: Flutter Mane", "protosynthesisspe"],
+        ["", "-enditem", "p1b: Iron Bundle", "Booster Energy"],
+        ["", "-activate", "p1b: Iron Bundle", "ability: Quark Drive", "[fromitem]"],
+        ["", "-start", "p1b: Iron Bundle", "quarkdrivespe"],
     ]
     temp = si._parse_preturn_switch(events)
     orders = list(filter(lambda x: x[0] != x[1], temp))
@@ -264,16 +264,12 @@ def test_parse_battle_mechanic():
 
 def test_parse_move():
     si = generate_speed_inference()
-    si._battle.parse_message(
-        ["", "switch", "p1a: Smeargle", "Smeargle, L50", "160/160"]
-    )
+    si._battle.parse_message(["", "switch", "p1a: Smeargle", "Smeargle, L50", "160/160"])
     si._battle.parse_message(
         ["", "switch", "p1b: Wo-Chien", "Wo-Chien, L50, F", "167/167"]
     )
     si._battle.parse_message(["", "switch", "p2a: Furret", "Furret, L50, F", "100/100"])
-    si._battle.parse_message(
-        ["", "switch", "p2b: Sentret", "Sentret, L50, M", "100/100"]
-    )
+    si._battle.parse_message(["", "switch", "p2b: Sentret", "Sentret, L50, M", "100/100"])
     events = [
         ["", "move", "p2a: Furret", "Trailblaze", "p2b: Sentret", "[notarget]"],
         ["", "-fail", "p2a: Furret"],
@@ -288,12 +284,8 @@ def test_parse_move():
     assert len(orders) == 2
 
     si = generate_speed_inference()
-    si._battle.parse_message(
-        ["", "switch", "p1a: Furret", "Furret, L50", "160/160 par"]
-    )
-    si._battle.parse_message(
-        ["", "switch", "p1b: Sentret", "Sentret, L50, F", "167/167"]
-    )
+    si._battle.parse_message(["", "switch", "p1a: Furret", "Furret, L50", "160/160 par"])
+    si._battle.parse_message(["", "switch", "p1b: Sentret", "Sentret, L50, F", "167/167"])
     si._battle.parse_message(
         ["", "switch", "p2a: Wo-Chien", "Wo-Chien, L50, F", "100/100"]
     )
@@ -332,12 +324,8 @@ def test_parse_move():
     assert len(orders) == 3
 
     si = generate_speed_inference()
-    si._battle.parse_message(
-        ["", "switch", "p1a: Furret", "Furret, L50", "160/160 par"]
-    )
-    si._battle.parse_message(
-        ["", "switch", "p1b: Sentret", "Sentret, L50, F", "167/167"]
-    )
+    si._battle.parse_message(["", "switch", "p1a: Furret", "Furret, L50", "160/160 par"])
+    si._battle.parse_message(["", "switch", "p1b: Sentret", "Sentret, L50, F", "167/167"])
     si._battle.parse_message(
         ["", "switch", "p2a: Wo-Chien", "Wo-Chien, L50, F", "100/100"]
     )
@@ -382,9 +370,7 @@ def test_parse_move():
     si._battle.parse_message(
         ["", "switch", "p2a: Oricorio", "Oricorio, L50, F", "100/100"]
     )
-    si._battle.parse_message(
-        ["", "switch", "p2b: Sentret", "Sentret, L50, F", "100/100"]
-    )
+    si._battle.parse_message(["", "switch", "p2b: Sentret", "Sentret, L50, F", "100/100"])
     events = [
         ["", "move", "p1b: Volcarona", "Quiver Dance", "p1b: Volcarona"],
         ["", "-boost", "p1b: Volcarona", "spa", "1"],
@@ -505,15 +491,11 @@ def test_parse_move():
     assert len(orders) == 2
 
     si = generate_speed_inference()
-    si._battle.parse_message(
-        ["", "switch", "p1a: Nickname", "Miraidon, L50", "167/167"]
-    )
+    si._battle.parse_message(["", "switch", "p1a: Nickname", "Miraidon, L50", "167/167"])
     si._battle.parse_message(
         ["", "switch", "p1b: Iron Hands", "Iron Hands, L50, F", "167/167"]
     )
-    si._battle.parse_message(
-        ["", "switch", "p2a: Terapagos", "Terapagos, L50", "167/167"]
-    )
+    si._battle.parse_message(["", "switch", "p2a: Terapagos", "Terapagos, L50", "167/167"])
     si._battle.parse_message(
         ["", "switch", "p2b: Incineroar", "Incineroar, L50, F", "167/167"]
     )
@@ -556,9 +538,7 @@ def test_parse_move():
     si._battle.parse_message(
         ["", "switch", "p2a: Dragonite", "Dragonite, L50, F", "100/100"]
     )
-    si._battle.parse_message(
-        ["", "switch", "p2b: Urshifu", "Urshifu, L50, F", "100/100"]
-    )
+    si._battle.parse_message(["", "switch", "p2b: Urshifu", "Urshifu, L50, F", "100/100"])
     si._battle.parse_message(
         ["", "switch", "p1a: Grimmsnarl", "Grimmsnarl, L50, F", "100/100"]
     )
@@ -580,9 +560,7 @@ def test_parse_move():
     si._battle.parse_message(
         ["", "switch", "p1b: Incineroar", "Incineroar, L50, M", "100/100"]
     )
-    si._battle.parse_message(
-        ["", "switch", "p2a: Calyrex", "Calyrex, L50, F", "100/100"]
-    )
+    si._battle.parse_message(["", "switch", "p2a: Calyrex", "Calyrex, L50, F", "100/100"])
     si._battle.parse_message(
         ["", "switch", "p2b: Farigiraf", "Farigiraf, L50, F", "100/100"]
     )
@@ -591,36 +569,37 @@ def test_parse_move():
     )
 
     events = [
-        ['', 'move', 'p1a: Rillaboom', 'Fake Out', '', '[still]'],
-        ['', 'cant', 'p2b: Farigiraf', 'ability: Armor Tail', 'Fake Out', '[of] p1a: Rillaboom'],
-        ['', 'move', 'p1b: Incineroar', 'Fake Out', '', '[still]'],
-        ['', '-hint', 'Fake Out only works on your first turn out.'],
-        ['', '-fail', 'p1b: Incineroar'],
-        ['', 'move', 'p2b: Farigiraf', 'Psychic Noise', 'p1a: Rillaboom'],
-        ['', '-damage', 'p1a: Rillaboom', '0 fnt'],
-        ['', 'faint', 'p1a: Rillaboom'],
-        ['', 'move', 'p2a: Calyrex', 'Trick Room', 'p2a: Calyrex'],
-        ['', '-fieldstart', 'move: Trick Room', '[of] p2a: Calyrex'],
+        ["", "move", "p1a: Rillaboom", "Fake Out", "", "[still]"],
+        [
+            "",
+            "cant",
+            "p2b: Farigiraf",
+            "ability: Armor Tail",
+            "Fake Out",
+            "[of] p1a: Rillaboom",
+        ],
+        ["", "move", "p1b: Incineroar", "Fake Out", "", "[still]"],
+        ["", "-hint", "Fake Out only works on your first turn out."],
+        ["", "-fail", "p1b: Incineroar"],
+        ["", "move", "p2b: Farigiraf", "Psychic Noise", "p1a: Rillaboom"],
+        ["", "-damage", "p1a: Rillaboom", "0 fnt"],
+        ["", "faint", "p1a: Rillaboom"],
+        ["", "move", "p2a: Calyrex", "Trick Room", "p2a: Calyrex"],
+        ["", "-fieldstart", "move: Trick Room", "[of] p2a: Calyrex"],
     ]
 
     orders = si._parse_move(events)
-    assert orders == [
-        [('p1: Rillaboom', 1.0), ('p1: Incineroar', 1.0)]
-    ]
+    assert orders == [[("p1: Rillaboom", 1.0), ("p1: Incineroar", 1.0)]]
 
 
 def test_parse_residual():
     si = generate_speed_inference()
     si._battle.parse_message(["", "switch", "p2a: Furret", "Furret, L50, M", "165/165"])
-    si._battle.parse_message(
-        ["", "switch", "p1a: Smeargle", "Smeargle, L50", "100/100"]
-    )
+    si._battle.parse_message(["", "switch", "p1a: Smeargle", "Smeargle, L50", "100/100"])
     si._battle.parse_message(
         ["", "switch", "p1b: Wo-Chien", "Wo-Chien, L50, M", "165/165"]
     )
-    si._battle.parse_message(
-        ["", "switch", "p2b: Smeargle", "Smeargle, L50", "100/100"]
-    )
+    si._battle.parse_message(["", "switch", "p2b: Smeargle", "Smeargle, L50", "100/100"])
     events = [
         ["", "-heal", "p2a: Furret", "27/100", "[from] item: Leftovers"],
         ["", "-damage", "p1a: Smeargle", "15/130", "[from] item: Black Sludge"],
@@ -691,12 +670,8 @@ def test_parse_residual():
     assert len(orders) == 3
 
     si = generate_speed_inference()
-    si._battle.parse_message(
-        ["", "switch", "p1b: Sentret", "Sentret, L50, M", "165/165"]
-    )
-    si._battle.parse_message(
-        ["", "switch", "p1a: Smeargle", "Smeargle, L50", "100/100"]
-    )
+    si._battle.parse_message(["", "switch", "p1b: Sentret", "Sentret, L50, M", "165/165"])
+    si._battle.parse_message(["", "switch", "p1a: Smeargle", "Smeargle, L50", "100/100"])
     si._battle.parse_message(
         ["", "switch", "p2a: Wo-Chien", "Wo-Chien, L50, M", "165/165"]
     )
@@ -735,16 +710,12 @@ def test_parse_residual():
 def test_parse_switch():
     si = generate_speed_inference()
     si._battle._side_conditions = {SideCondition.TAILWIND: 1}
-    si._battle.parse_message(
-        ["", "switch", "p1a: Smeargle", "Smeargle, L50", "160/160"]
-    )
+    si._battle.parse_message(["", "switch", "p1a: Smeargle", "Smeargle, L50", "160/160"])
     si._battle.parse_message(
         ["", "switch", "p1b: Wo-Chien", "Wo-Chien, L50, F", "167/167 par"]
     )
     si._battle.parse_message(["", "switch", "p2a: Furret", "Furret, L50, F", "100/100"])
-    si._battle.parse_message(
-        ["", "switch", "p2b: Sentret", "Sentret, L50, M", "100/100"]
-    )
+    si._battle.parse_message(["", "switch", "p2b: Sentret", "Sentret, L50, M", "100/100"])
     events = [
         ["", "switch", "p1a: Shuckle", "Shuckle, L50", "160/160"],
         ["", "switch", "p1b: Dragonite", "Dragonite, L50, F", "167/167"],
@@ -809,20 +780,30 @@ def test_parse_switch():
 
     si = generate_speed_inference()
     si._battle.parse_message(["", "switch", "p1a: Furret", "Furret, L50", "100/100"])
-    si._battle.parse_message(["", "switch", "p1b: Flutter Mane", "Fluttermane, L50", "100/100"])
-    si._battle.parse_message(["", "switch", "p2a: Calyrex", "Calyrex-Shadow, L50, F", "100/100"])
+    si._battle.parse_message(
+        ["", "switch", "p1b: Flutter Mane", "Fluttermane, L50", "100/100"]
+    )
+    si._battle.parse_message(
+        ["", "switch", "p2a: Calyrex", "Calyrex-Shadow, L50, F", "100/100"]
+    )
     si._battle.parse_message(["", "switch", "p2b: Sentret", "Sentret, L50, F", "100/100"])
 
     si._battle.team["p1: Flutter Mane"]._effects = {
         Effect.PROTOSYNTHESISSPE: 1,
-        Effect.PROTOSYNTHESIS: 1
+        Effect.PROTOSYNTHESIS: 1,
     }
 
     events = [
-        ['', '-end', 'p1b: Flutter Mane', 'Protosynthesis', '[silent]'],
-        ['', 'switch', 'p1b: Rillaboom', 'Rillaboom, L50, M', '183/183'],
-        ['', '-fieldstart', 'move: Grassy Terrain', '[from] ability: Grassy Surge', '[of] p1b: Rillaboom'],
-        ['', 'switch', 'p2a: Urshifu', 'Urshifu-Rapid-Strike, L50, F', '100/100'],
+        ["", "-end", "p1b: Flutter Mane", "Protosynthesis", "[silent]"],
+        ["", "switch", "p1b: Rillaboom", "Rillaboom, L50, M", "183/183"],
+        [
+            "",
+            "-fieldstart",
+            "move: Grassy Terrain",
+            "[from] ability: Grassy Surge",
+            "[of] p1b: Rillaboom",
+        ],
+        ["", "switch", "p2a: Urshifu", "Urshifu-Rapid-Strike, L50, F", "100/100"],
     ]
 
     orders = si._parse_switch(events)
@@ -868,13 +849,9 @@ def test_get_activations_from_weather_or_terrain():
 
     si = generate_speed_inference()
     si._battle._opponent_side_conditions = {SideCondition.TAILWIND: 1}
-    si._battle.parse_message(
-        ["", "switch", "p1a: Wo-Chien", "Wo-Chien, L50", "160/160"]
-    )
+    si._battle.parse_message(["", "switch", "p1a: Wo-Chien", "Wo-Chien, L50", "160/160"])
     si._battle.parse_message(["", "switch", "p1b: Raichu", "Raichu, L50", "160/160"])
-    si._battle.parse_message(
-        ["", "switch", "p2a: Rillaboom", "Rillaboom, L50", "160/160"]
-    )
+    si._battle.parse_message(["", "switch", "p2a: Rillaboom", "Rillaboom, L50", "160/160"])
     si._battle.parse_message(
         ["", "switch", "p2b: Pincurchin", "Pincurchin, L50", "160/160"]
     )
@@ -885,13 +862,9 @@ def test_get_activations_from_weather_or_terrain():
 
     si = generate_speed_inference()
     si._battle._side_conditions = {SideCondition.TAILWIND: 1}
-    si._battle.parse_message(
-        ["", "switch", "p1a: Wo-Chien", "Wo-Chien, L50", "160/160"]
-    )
+    si._battle.parse_message(["", "switch", "p1a: Wo-Chien", "Wo-Chien, L50", "160/160"])
     si._battle.parse_message(["", "switch", "p1b: Raichu", "Raichu, L50", "160/160"])
-    si._battle.parse_message(
-        ["", "switch", "p2a: Rillaboom", "Rillaboom, L50", "160/160"]
-    )
+    si._battle.parse_message(["", "switch", "p2a: Rillaboom", "Rillaboom, L50", "160/160"])
     si._battle.parse_message(
         ["", "switch", "p2b: Pincurchin", "Pincurchin, L50", "160/160"]
     )
@@ -917,13 +890,9 @@ def test_save_multipliers():
         ["", "switch", "p1a: Arceus", "Arceus, L50, M", "142/175 par"]
     )
     si._battle.parse_message(["", "switch", "p1a: Furret", "Furret, L50, M", "165/165"])
-    si._battle.parse_message(
-        ["", "switch", "p2a: Arceus", "Arceus, L50, M", "0/175 fnt"]
-    )
+    si._battle.parse_message(["", "switch", "p2a: Arceus", "Arceus, L50, M", "0/175 fnt"])
     si._battle.parse_message(["", "switch", "p2a: Furret", "Furret, L50", "1/100"])
-    si._battle.parse_message(
-        ["", "switch", "p2b: Sentret", "Sentret, L50", "100/100 par"]
-    )
+    si._battle.parse_message(["", "switch", "p2b: Sentret", "Sentret, L50", "100/100 par"])
     si._battle.parse_message(["", "move", "p1a: Furret", "Tailwind"])
 
     multipliers = si._save_multipliers()
@@ -935,9 +904,7 @@ def test_save_multipliers():
 
 
 def test_get_speed_multiplier():
-    assert (
-        SpeedInference.get_speed_multiplier(mon=Pokemon(gen=9, species="furret")) == 1.0
-    )
+    assert SpeedInference.get_speed_multiplier(mon=Pokemon(gen=9, species="furret")) == 1.0
     assert (
         SpeedInference.get_speed_multiplier(
             mon=Pokemon(gen=9, species="ditto"),
@@ -1011,14 +978,11 @@ def test_get_speed_multiplier():
         is None
     )
     assert (
-        SpeedInference.get_speed_multiplier(ability="quickfeet", status=Status.PAR)
-        == 1.5
+        SpeedInference.get_speed_multiplier(ability="quickfeet", status=Status.PAR) == 1.5
     )
     assert SpeedInference.get_speed_multiplier(status=Status.PAR) == 0.5
     assert SpeedInference.get_speed_multiplier(speed_boosts=2, status=Status.PAR) == 1.0
-    assert (
-        SpeedInference.get_speed_multiplier(speed_boosts=-2, status=Status.PAR) == 0.25
-    )
+    assert SpeedInference.get_speed_multiplier(speed_boosts=-2, status=Status.PAR) == 0.25
     assert (
         SpeedInference.get_speed_multiplier(
             side_conditions={SideCondition.TAILWIND: 1},
@@ -1136,36 +1100,35 @@ Adamant Nature
     """
     ).team
 
-    # Smeargle and Calyrex speed tie (139) > Furret (110) > Incineroar (101 w/out choicescarf)
     si = generate_speed_inference()
-    si._inferences._opponent_mons = {
-        "p2: Calyrex": {"spe": [139, 222], "can_be_choice": True, "item": "unknown_item"},
-        "p2: Incineroar": {"spe": [58, 111], "can_be_choice": True, "item": "unknown_item"},
-    }
-    si._battle.team = {
-        "p1: Furret": Pokemon(gen=9, teambuilder=tb[0]),
-        "p1: Smeargle": Pokemon(gen=9, teambuilder=tb[1]),
-    }
-    si._battle._teampreview_opponent_team = {
-        Pokemon(gen=9, teambuilder=tb[2]),
-        Pokemon(gen=9, teambuilder=tb[3]),
-    }
-    si._battle._opponent_team = {
-        "p2: Calyrex": Pokemon(gen=9, teambuilder=tb[2]),
-        "p2: Incineroar": Pokemon(gen=9, teambuilder=tb[3]),
-    }
-    si._inferences._battle._opponent_team = si._battle._opponent_team
-    si._battle.parse_message(["", "switch", "p1a: Furret", "Furret, L50", "160/160"])
-    si._battle.parse_message(
-        ["", "switch", "p1b: Smeargle", "Smeargle, L50, F", "167/167"]
-    )
-    si._battle.parse_message(
-        ["", "switch", "p2a: Calyrex", "Calyrex, L50, F", "100/100"]
-    )
-    si._battle.parse_message(
-        ["", "switch", "p2b: Incineroar", "Incineroar, L50, M", "100/100"]
-    )
 
+    # Load team; Smeargle and Calyrex speed tie (139) > Furret (110) > Incineroar (101 w/out choicescarf)
+    for tb_mon in tb:
+        mon = Pokemon(gen=9, teambuilder=tb_mon)
+        si._battle._team["p1: " + mon.name] = mon
+
+    # Load opponent team
+    si._battle._opponent_team = {
+        "p2: Calyrex": Pokemon(gen=9, details="Calyrex-Shadow, L50"),
+        "p2: Incineroar": Pokemon(gen=9, details="Incineroar, L50, F"),
+    }
+
+    si._inferences._battle = si._battle
+    for ident, mon in si._battle._opponent_team.items():
+        si._inferences._opponent_mons[ident] = BattleInference.load_opponent_set(mon)
+
+    # Set up battle
+    events = [
+        ["", "switch", "p1a: Furret", "Furret, L50", "160/160"],
+        ["", "switch", "p1b: Smeargle", "Smeargle, L50, F", "167/167"],
+        ["", "switch", "p2a: Calyrex", "Calyrex-Shadow, L50", "100/100"],
+        ["", "switch", "p2b: Incineroar", "Incineroar, L50, M", "100/100"],
+    ]
+    for event in events:
+        si._battle.parse_message(event)
+
+    # Parse events
+    # Smeargle and Calyrex speed tie (139) > Furret (110) > Incineroar (101 w/out choicescarf)
     events = [
         ["", "-heal", "p2b: Incineroar", "160/160", "[from] Grassy Terrain"],
         ["", "-heal", "p2a: Calyrex", "160/160", "[from] Grassy Terrain"],
@@ -1173,9 +1136,9 @@ Adamant Nature
         ["", "-heal", "p2a: Calyrex", "160/160", "[from] Leftovers"],
         ["", "-heal", "p1a: Furret", "160/160", "[from] Grassy Terrain"],
     ]
+    orders = si._parse_residual(events)
+    si._solve_speeds(orders)
 
-    si._solve_speeds(si._parse_residual(events))
-
-    assert get_pokemon("p2: Incineroar", si._battle).item == "choicescarf"
+    assert si._inferences.get_flag("p2: Incineroar", "item") == "choicescarf"
     assert si._inferences.get_flag("p2: Calyrex", "spe") == [139.0, 139.0]
-    assert si._inferences.get_flag("p2: Incineroar", "spe") == [93.0, 111.0]
+    assert si._inferences.get_flag("p2: Incineroar", "spe") == [93.0, 123.0]

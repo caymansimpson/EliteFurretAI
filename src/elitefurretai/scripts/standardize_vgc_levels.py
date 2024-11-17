@@ -1,7 +1,7 @@
 import os
 import os.path
-import sys
 import re
+import sys
 
 
 # This file makes sure that every mon has a level 50 for VGC teams. This is because we parse
@@ -35,11 +35,13 @@ def main():
             with open(team_path, "r") as f:
                 team_string = f.read()
 
-            team_string = re.sub(r"(Ability:.*\n)(Level:\s[0-9]+(\s+)?\n)?", r"\1Level: 50\n", team_string)
+            team_string = re.sub(
+                r"(Ability:.*\n)(Level:\s[0-9]+(\s+)?\n)?", r"\1Level: 50\n", team_string
+            )
 
             # Copies this exact file format to your Desktop, in order to not irreversibly overwrite files
-            new_path = os.path.expanduser(os.path.join('~/Desktop/', frmt, filename))
-            dir_path = os.path.expanduser(os.path.join('~/Desktop/', frmt))
+            new_path = os.path.expanduser(os.path.join("~/Desktop/", frmt, filename))
+            dir_path = os.path.expanduser(os.path.join("~/Desktop/", frmt))
             if not os.path.exists(dir_path):
                 os.mkdir(dir_path)
 

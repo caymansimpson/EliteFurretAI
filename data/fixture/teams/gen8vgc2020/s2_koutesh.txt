@@ -1,0 +1,63 @@
+žena (Gothitelle) @ Focus Sash  
+Ability: Shadow Tag  
+Level: 50
+EVs: 252 HP / 252 Def / 4 SpD  
+Relaxed Nature  
+IVs: 0 Spe  
+- Fake Out  
+- Hypnosis  
+- Trick Room  
+- Brick Break  
+
+lehni! (Dusclops) @ Eviolite  
+Ability: Frisk  
+Level: 50
+EVs: 252 HP / 252 Def / 4 SpD  
+Relaxed Nature  
+IVs: 0 Spe  
+- Will-O-Wisp  
+- Gravity  
+- Trick Room  
+- Bulldoze  
+
+deslimáktor (Torkoal) @ Charcoal  
+Ability: Drought  
+Level: 50
+EVs: 252 HP / 252 SpA / 4 SpD  
+Quiet Nature  
+IVs: 0 Atk  
+- Eruption  
+- Heat Wave  
+- Solar Beam  
+- Clear Smog  
+
+jatka (Rhyperior) @ Weakness Policy  
+Ability: Solid Rock  
+Level: 50
+EVs: 44 HP / 236 Atk / 4 Def / 196 SpD / 28 Spe  
+Adamant Nature  
+- Earthquake  
+- Rock Slide  
+- High Horsepower  
+- Protect  
+
+pozor (Togekiss) @ Scope Lens  
+Ability: Super Luck  
+Level: 50
+EVs: 252 HP / 44 Def / 116 SpA / 4 SpD / 92 Spe  
+Modest Nature  
+IVs: 0 Atk  
+- Air Slash  
+- Dazzling Gleam  
+- Follow Me  
+- Heat Wave  
+
+NE (Gyarados) @ Life Orb  
+Ability: Intimidate  
+Level: 50
+EVs: 4 HP / 252 Atk / 252 Spe  
+Jolly Nature  
+- Taunt  
+- Waterfall  
+- Power Whip  
+- Earthquake  

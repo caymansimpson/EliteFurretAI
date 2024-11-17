@@ -1,0 +1,64 @@
+Coalossal-Gmax @ Weakness Policy  
+Ability: Steam Engine  
+Level: 50
+Gigantamax: Yes  
+EVs: 4 HP / 252 SpA / 252 Spe  
+Modest Nature  
+IVs: 0 Atk  
+- Meteor Beam  
+- Heat Wave  
+- Earth Power  
+- Protect  
+
+Dragapult @ Life Orb  
+Ability: Clear Body  
+Level: 50
+EVs: 4 HP / 252 Atk / 252 Spe  
+Adamant Nature  
+IVs: 0 SpA  
+- Phantom Force  
+- Dragon Darts  
+- Fly  
+- Surf  
+
+Urshifu-Rapid-Strike-Gmax @ Focus Sash  
+Ability: Unseen Fist  
+Level: 50
+Gigantamax: Yes  
+EVs: 4 HP / 252 Atk / 252 Spe  
+Jolly Nature  
+- Surging Strikes  
+- Close Combat  
+- Aqua Jet  
+- Protect  
+
+Incineroar @ Shuca Berry  
+Ability: Intimidate  
+Level: 50
+EVs: 244 HP / 4 Atk / 68 Def / 76 SpD / 116 Spe  
+Careful Nature  
+- Flare Blitz  
+- Parting Shot  
+- Taunt  
+- Fake Out  
+
+Rillaboom-Gmax @ Miracle Seed  
+Ability: Grassy Surge  
+Level: 50
+EVs: 132 HP / 252 Atk / 4 Def / 44 SpD / 76 Spe  
+Adamant Nature  
+- Grassy Glide  
+- Fake Out  
+- Protect  
+- Wood Hammer  
+
+Togekiss @ Scope Lens  
+Ability: Super Luck  
+Level: 50
+EVs: 244 HP / 156 SpA / 108 Spe  
+Modest Nature  
+IVs: 0 Atk  
+- Dazzling Gleam  
+- Air Slash  
+- Follow Me  
+- Protect  

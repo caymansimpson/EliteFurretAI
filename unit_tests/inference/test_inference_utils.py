@@ -23,9 +23,9 @@ from elitefurretai.inference.inference_utils import (
     get_showdown_identifier,
     has_flinch_immunity,
     has_rage_powder_immunity,
-    has_unboost_immunity,
     has_sandstorm_immunity,
     has_status_immunity,
+    has_unboost_immunity,
     is_ability_event,
     is_grounded,
     standardize_pokemon_ident,
@@ -780,34 +780,48 @@ def test_get_segments(residual_logs, edgecase_logs, uturn_logs):
     )
 
     logs = [
-        ['', 'move', 'p1b: Iron Hands', 'Volt Switch', 'p2b: Urshifu'],
-        ['', '-supereffective', 'p2b: Urshifu'],
-        ['', '-damage', 'p2b: Urshifu', '134/176'],
-        ['', ''],
-        ['', '-end', 'p1b: Iron Hands', 'Quark Drive', '[silent]'],
-        ['', 'switch', 'p1b: Volcarona', 'Volcarona, L50, M', '100/100', '[from] Volt Switch'],
-        ['', 'move', 'p2a: Incineroar', 'Knock Off', 'p1a: Nickname'],
-        ['', '-damage', 'p1a: Nickname', '4/100'],
-        ['', 'move', 'p1a: Nickname', 'Volt Switch', 'p2a: Incineroar'],
-        ['', '-damage', 'p2a: Incineroar', '12/202'],
-        ['', ''],
-        ['', 'switch', 'p1a: Iron Hands', 'Iron Hands, L50, tera:Water', '28/100', '[from] Volt Switch'],
-        ['', 'move', 'p2b: Urshifu', 'Surging Strikes', 'p1a: Iron Hands'],
-        ['', '-resisted', 'p1a: Iron Hands'],
-        ['', '-crit', 'p1a: Iron Hands'],
-        ['', '-damage', 'p1a: Iron Hands', '20/100'],
-        ['', '-resisted', 'p1a: Iron Hands'],
-        ['', '-crit', 'p1a: Iron Hands'],
-        ['', '-damage', 'p1a: Iron Hands', '13/100'],
-        ['', '-resisted', 'p1a: Iron Hands'],
-        ['', '-crit', 'p1a: Iron Hands'],
-        ['', '-damage', 'p1a: Iron Hands', '6/100'],
-        ['', '-hitcount', 'p1a: Iron Hands', '3'],
-        ['', ''],
-        ['', '-sideend', 'p1: bfi24championteam', 'Reflect'],
-        ['', '-fieldend', 'move: Trick Room'],
-        ['', 'upkeep'],
-        ['', 'turn', '11'],
+        ["", "move", "p1b: Iron Hands", "Volt Switch", "p2b: Urshifu"],
+        ["", "-supereffective", "p2b: Urshifu"],
+        ["", "-damage", "p2b: Urshifu", "134/176"],
+        ["", ""],
+        ["", "-end", "p1b: Iron Hands", "Quark Drive", "[silent]"],
+        [
+            "",
+            "switch",
+            "p1b: Volcarona",
+            "Volcarona, L50, M",
+            "100/100",
+            "[from] Volt Switch",
+        ],
+        ["", "move", "p2a: Incineroar", "Knock Off", "p1a: Nickname"],
+        ["", "-damage", "p1a: Nickname", "4/100"],
+        ["", "move", "p1a: Nickname", "Volt Switch", "p2a: Incineroar"],
+        ["", "-damage", "p2a: Incineroar", "12/202"],
+        ["", ""],
+        [
+            "",
+            "switch",
+            "p1a: Iron Hands",
+            "Iron Hands, L50, tera:Water",
+            "28/100",
+            "[from] Volt Switch",
+        ],
+        ["", "move", "p2b: Urshifu", "Surging Strikes", "p1a: Iron Hands"],
+        ["", "-resisted", "p1a: Iron Hands"],
+        ["", "-crit", "p1a: Iron Hands"],
+        ["", "-damage", "p1a: Iron Hands", "20/100"],
+        ["", "-resisted", "p1a: Iron Hands"],
+        ["", "-crit", "p1a: Iron Hands"],
+        ["", "-damage", "p1a: Iron Hands", "13/100"],
+        ["", "-resisted", "p1a: Iron Hands"],
+        ["", "-crit", "p1a: Iron Hands"],
+        ["", "-damage", "p1a: Iron Hands", "6/100"],
+        ["", "-hitcount", "p1a: Iron Hands", "3"],
+        ["", ""],
+        ["", "-sideend", "p1: bfi24championteam", "Reflect"],
+        ["", "-fieldend", "move: Trick Room"],
+        ["", "upkeep"],
+        ["", "turn", "11"],
     ]
     segments = get_segments(logs)
     assert (
@@ -828,86 +842,115 @@ def test_get_segments(residual_logs, edgecase_logs, uturn_logs):
         == 2
     )
     assert "move" in segments
-    assert segments["move"][0] == ['', 'move', 'p1b: Iron Hands', 'Volt Switch', 'p2b: Urshifu']
-    assert segments["move"][-1] == ['', '-hitcount', 'p1a: Iron Hands', '3']
+    assert segments["move"][0] == [
+        "",
+        "move",
+        "p1b: Iron Hands",
+        "Volt Switch",
+        "p2b: Urshifu",
+    ]
+    assert segments["move"][-1] == ["", "-hitcount", "p1a: Iron Hands", "3"]
     assert "state_upkeep" in segments
-    assert segments["state_upkeep"] == [['', '-sideend', 'p1: bfi24championteam', 'Reflect'], ['', '-fieldend', 'move: Trick Room']]
+    assert segments["state_upkeep"] == [
+        ["", "-sideend", "p1: bfi24championteam", "Reflect"],
+        ["", "-fieldend", "move: Trick Room"],
+    ]
 
     logs = [
-        ['', '-end', 'p1b: Iron Hands', 'Quark Drive', '[silent]'],
-        ['', 'switch', 'p1b: Grimmsnarl', 'Grimmsnarl, L50, M', '100/100'],
-        ['', 'switch', 'p2a: Amoonguss', 'Amoonguss, L50, M', '100/100'],
-        ['', 'move', 'p2b: Iron Valiant', 'Encore', '', '[still]'],
-        ['', '-fail', 'p2b: Iron Valiant'],
-        ['', 'move', 'p1a: Nickname', 'Draco Meteor', 'p2b: Iron Valiant'],
-        ['', '-immune', 'p2b: Iron Valiant'],
-        ['', ''],
-        ['', '-fieldend', 'move: Electric Terrain'],
-        ['', '-end', 'p2b: Iron Valiant', 'Quark Drive'],
-        ['', 'upkeep'],
-        ['', '-enditem', 'p2b: Iron Valiant', 'Booster Energy'],
-        ['', '-activate', 'p2b: Iron Valiant', 'ability: Quark Drive', '[fromitem]'],
-        ['', '-start', 'p2b: Iron Valiant', 'quarkdrivespe'],
-        ['', 'turn', '6'],
+        ["", "-end", "p1b: Iron Hands", "Quark Drive", "[silent]"],
+        ["", "switch", "p1b: Grimmsnarl", "Grimmsnarl, L50, M", "100/100"],
+        ["", "switch", "p2a: Amoonguss", "Amoonguss, L50, M", "100/100"],
+        ["", "move", "p2b: Iron Valiant", "Encore", "", "[still]"],
+        ["", "-fail", "p2b: Iron Valiant"],
+        ["", "move", "p1a: Nickname", "Draco Meteor", "p2b: Iron Valiant"],
+        ["", "-immune", "p2b: Iron Valiant"],
+        ["", ""],
+        ["", "-fieldend", "move: Electric Terrain"],
+        ["", "-end", "p2b: Iron Valiant", "Quark Drive"],
+        ["", "upkeep"],
+        ["", "-enditem", "p2b: Iron Valiant", "Booster Energy"],
+        ["", "-activate", "p2b: Iron Valiant", "ability: Quark Drive", "[fromitem]"],
+        ["", "-start", "p2b: Iron Valiant", "quarkdrivespe"],
+        ["", "turn", "6"],
     ]
     segments = get_segments(logs)
 
     assert "switch" in segments
-    assert segments["switch"][0] == ['', '-end', 'p1b: Iron Hands', 'Quark Drive', '[silent]']
-    assert segments["switch"][-1] == ['', 'switch', 'p2a: Amoonguss', 'Amoonguss, L50, M', '100/100']
+    assert segments["switch"][0] == [
+        "",
+        "-end",
+        "p1b: Iron Hands",
+        "Quark Drive",
+        "[silent]",
+    ]
+    assert segments["switch"][-1] == [
+        "",
+        "switch",
+        "p2a: Amoonguss",
+        "Amoonguss, L50, M",
+        "100/100",
+    ]
     assert "move" in segments
-    assert segments["move"][0] == ['', 'move', 'p2b: Iron Valiant', 'Encore', '', '[still]']
-    assert segments["move"][-1] == ['', "-immune", "p2b: Iron Valiant"]
+    assert segments["move"][0] == [
+        "",
+        "move",
+        "p2b: Iron Valiant",
+        "Encore",
+        "",
+        "[still]",
+    ]
+    assert segments["move"][-1] == ["", "-immune", "p2b: Iron Valiant"]
     assert segments["state_upkeep"] == [
-        ['', '-fieldend', 'move: Electric Terrain'],
-        ['', '-end', 'p2b: Iron Valiant', 'Quark Drive'],
+        ["", "-fieldend", "move: Electric Terrain"],
+        ["", "-end", "p2b: Iron Valiant", "Quark Drive"],
     ]
 
     assert segments["post_upkeep"] == [
-        ['', 'upkeep'],
-        ['', '-enditem', 'p2b: Iron Valiant', 'Booster Energy'],
-        ['', '-activate', 'p2b: Iron Valiant', 'ability: Quark Drive', '[fromitem]'],
-        ['', '-start', 'p2b: Iron Valiant', 'quarkdrivespe'],
+        ["", "upkeep"],
+        ["", "-enditem", "p2b: Iron Valiant", "Booster Energy"],
+        ["", "-activate", "p2b: Iron Valiant", "ability: Quark Drive", "[fromitem]"],
+        ["", "-start", "p2b: Iron Valiant", "quarkdrivespe"],
     ]
 
     events = [
-        ['', '-end', 'p2b: Weezing', 'ability: Neutralizing Gas'],
-        ['', '-ability', 'p1a: Incineroar', 'Intimidate', 'boost'],
-        ['', '-unboost', 'p2a: Baxcalibur', 'atk', '1'],
-        ['', '-unboost', 'p2b: Weezing', 'atk', '1'],
-        ['', 'switch', 'p2b: Kyogre', 'Kyogre, L50', '100/100'],
-        ['', '-weather', 'RainDance', '[from] ability: Drizzle', '[of] p2b: Kyogre'],
-        ['', 'move', 'p1b: Calyrex', 'Protect', 'p1b: Calyrex'],
-        ['', '-singleturn', 'p1b: Calyrex', 'Protect'],
-        ['', 'move', 'p1a: Incineroar', 'Fake Out', '', '[still]'],
-        ['', '-hint', 'Fake Out only works on your first turn out.'],
-        ['', '-fail', 'p1a: Incineroar'],
-        ['', 'move', 'p2a: Baxcalibur', 'Scale Shot', 'p1b: Calyrex'],
-        ['', '-activate', 'p1b: Calyrex', 'move: Protect'],
-        ['', ''],
-        ['', '-weather', 'RainDance', '[upkeep]'],
-        ['', 'upkeep'],
-        ['', 'turn', '7']
+        ["", "-end", "p2b: Weezing", "ability: Neutralizing Gas"],
+        ["", "-ability", "p1a: Incineroar", "Intimidate", "boost"],
+        ["", "-unboost", "p2a: Baxcalibur", "atk", "1"],
+        ["", "-unboost", "p2b: Weezing", "atk", "1"],
+        ["", "switch", "p2b: Kyogre", "Kyogre, L50", "100/100"],
+        ["", "-weather", "RainDance", "[from] ability: Drizzle", "[of] p2b: Kyogre"],
+        ["", "move", "p1b: Calyrex", "Protect", "p1b: Calyrex"],
+        ["", "-singleturn", "p1b: Calyrex", "Protect"],
+        ["", "move", "p1a: Incineroar", "Fake Out", "", "[still]"],
+        ["", "-hint", "Fake Out only works on your first turn out."],
+        ["", "-fail", "p1a: Incineroar"],
+        ["", "move", "p2a: Baxcalibur", "Scale Shot", "p1b: Calyrex"],
+        ["", "-activate", "p1b: Calyrex", "move: Protect"],
+        ["", ""],
+        ["", "-weather", "RainDance", "[upkeep]"],
+        ["", "upkeep"],
+        ["", "turn", "7"],
     ]
     segments = get_segments(events)
     assert segments["switch"] == [
-        ['', '-end', 'p2b: Weezing', 'ability: Neutralizing Gas'],
-        ['', '-ability', 'p1a: Incineroar', 'Intimidate', 'boost'],
-        ['', '-unboost', 'p2a: Baxcalibur', 'atk', '1'],
-        ['', '-unboost', 'p2b: Weezing', 'atk', '1'],
-        ['', 'switch', 'p2b: Kyogre', 'Kyogre, L50', '100/100'],
-        ['', '-weather', 'RainDance', '[from] ability: Drizzle', '[of] p2b: Kyogre']
+        ["", "-end", "p2b: Weezing", "ability: Neutralizing Gas"],
+        ["", "-ability", "p1a: Incineroar", "Intimidate", "boost"],
+        ["", "-unboost", "p2a: Baxcalibur", "atk", "1"],
+        ["", "-unboost", "p2b: Weezing", "atk", "1"],
+        ["", "switch", "p2b: Kyogre", "Kyogre, L50", "100/100"],
+        ["", "-weather", "RainDance", "[from] ability: Drizzle", "[of] p2b: Kyogre"],
     ]
 
     assert segments["move"] == [
-        ['', 'move', 'p1b: Calyrex', 'Protect', 'p1b: Calyrex'],
-        ['', '-singleturn', 'p1b: Calyrex', 'Protect'],
-        ['', 'move', 'p1a: Incineroar', 'Fake Out', '', '[still]'],
-        ['', '-hint', 'Fake Out only works on your first turn out.'],
-        ['', '-fail', 'p1a: Incineroar'],
-        ['', 'move', 'p2a: Baxcalibur', 'Scale Shot', 'p1b: Calyrex'],
-        ['', '-activate', 'p1b: Calyrex', 'move: Protect']
+        ["", "move", "p1b: Calyrex", "Protect", "p1b: Calyrex"],
+        ["", "-singleturn", "p1b: Calyrex", "Protect"],
+        ["", "move", "p1a: Incineroar", "Fake Out", "", "[still]"],
+        ["", "-hint", "Fake Out only works on your first turn out."],
+        ["", "-fail", "p1a: Incineroar"],
+        ["", "move", "p2a: Baxcalibur", "Scale Shot", "p1b: Calyrex"],
+        ["", "-activate", "p1b: Calyrex", "move: Protect"],
     ]
+
 
 def test_get_residual_and_identifier():
     assert get_residual_and_identifier(
@@ -1070,8 +1113,8 @@ def test_get_ability_and_identifier():
     ) == ("Neutralizing Gas", "p2: Weezing")
 
     assert get_ability_and_identifier(
-        ['', '-activate', 'p1a: Nickname', 'ability: Hadron Engine']
-    ) == ('Hadron Engine', 'p1: Nickname')
+        ["", "-activate", "p1a: Nickname", "ability: Hadron Engine"]
+    ) == ("Hadron Engine", "p1: Nickname")
 
 
 def test_standardize_pokemon_ident():
@@ -1217,8 +1260,8 @@ def test_get_priority_and_identifier():
     ) == ("p1: Furret", 3)
 
     assert get_priority_and_identifier(
-        ['', 'move', 'p1a: Furret', 'Floral Healing', 'p2b: Arceus'], battle
-    ) == ('p1: Furret', 3)
+        ["", "move", "p1a: Furret", "Floral Healing", "p2b: Arceus"], battle
+    ) == ("p1: Furret", 3)
 
     # Test Grassy Glide
     assert get_priority_and_identifier(

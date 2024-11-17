@@ -1,9 +1,7 @@
 # -*- coding: utf-8 -*-
 """This module plays one player against another (need to have a local showdown server running). This
 is what I use to examine and print what's happening in a battle to debug; the purpose of this file is
-to provide some starter code for others.
-
-It runs a battle, prints the observations, and saves the DoubleBattle object to the Desktop.
+to provide starter code for others.
 """
 
 import asyncio
@@ -13,7 +11,6 @@ from typing import Dict, List, Optional, Tuple, Union
 
 from poke_env.data import to_id_str
 from poke_env.environment.abstract_battle import AbstractBattle
-from poke_env.player.battle_order import DefaultBattleOrder
 from poke_env.player.player import Player
 from poke_env.player.random_player import RandomPlayer
 from poke_env.ps_client.account_configuration import AccountConfiguration
@@ -21,7 +18,6 @@ from poke_env.ps_client.server_configuration import ServerConfiguration
 from poke_env.teambuilder.teambuilder import Teambuilder
 
 from elitefurretai.inference.inference_utils import battle_to_str
-from elitefurretai.model_utils.data_processor import DataProcessor
 
 
 class CustomPlayer(RandomPlayer):
@@ -58,15 +54,15 @@ class CustomPlayer(RandomPlayer):
             ping_timeout=ping_timeout,
             team=team,
         )
-        self._bi = None
 
+    # Place where I can implement basic logic; right now I just print that I'm in choose_move
     def choose_move(self, battle):
-
         if self.username == "elitefurretai":
             print("in choose_move")
 
-        return self.choose_random_doubles_move(battle)
+        return self.choose_random_doubles_move(battle)  # pyright: ignore
 
+    # Place where I can implement basic logic; right now I just print that I'm in teampreview
     def teampreview(self, battle):
         if self.username == "elitefurretai":
             print("in teampreview")
@@ -75,15 +71,8 @@ class CustomPlayer(RandomPlayer):
 
     # Print the battle upon battle completion, and save the observations in a BattleData object to the Desktop
     def _battle_finished_callback(self, battle: AbstractBattle):
-        address = os.path.expanduser(
-            os.path.join("~/Desktop", battle.format + "-" + battle.battle_tag + ".json")
-        )
-
         if self.username == "elitefurretai":
             print(battle_to_str(battle))
-
-        # with open(address, "w") as f:
-        #     f.write(DataProcessor.battle_to_json(battle))
 
 
 async def main():

@@ -7,22 +7,25 @@ It runs a battle, prints the observations, and saves the DoubleBattle object to 
 """
 
 import asyncio
-from typing import Optional, Union, List
 import random
-
-from elitefurretai.inference.battle_inference import BattleInference
-
-from elitefurretai.inference.inference_utils import battle_to_str
-from elitefurretai.inference.item_inference import ItemInference
-from elitefurretai.inference.speed_inference import SpeedInference
+from typing import List, Optional, Union
 
 from poke_env.environment.abstract_battle import AbstractBattle
 from poke_env.environment.double_battle import DoubleBattle
+from poke_env.player.battle_order import (
+    BattleOrder,
+    DefaultBattleOrder,
+    DoubleBattleOrder,
+)
 from poke_env.player.random_player import RandomPlayer
-from poke_env.player.battle_order import DefaultBattleOrder, BattleOrder, DoubleBattleOrder
 from poke_env.ps_client.account_configuration import AccountConfiguration
 from poke_env.ps_client.server_configuration import ServerConfiguration
 from poke_env.teambuilder.teambuilder import Teambuilder
+
+from elitefurretai.inference.battle_inference import BattleInference
+from elitefurretai.inference.inference_utils import battle_to_str
+from elitefurretai.inference.item_inference import ItemInference
+from elitefurretai.inference.speed_inference import SpeedInference
 
 
 class CustomPlayer(RandomPlayer):
@@ -74,7 +77,7 @@ class CustomPlayer(RandomPlayer):
         #     self._speed_inference.update(battle)  # pyright: ignore
         #     self._item_inference.update(battle)  # pyright: ignore
         return "/team 1234"
-    
+
     def choose_random_doubles_move(self, battle: DoubleBattle) -> BattleOrder:
         active_orders: List[List[BattleOrder]] = [[], []]
 
@@ -101,7 +104,7 @@ class CustomPlayer(RandomPlayer):
                 return DoubleBattleOrder(first_order, second_order)
             return DoubleBattleOrder(first_order or second_order, None)
 
-        for (orders, mon, switches, moves, can_tera) in zip(
+        for orders, mon, switches, moves, can_tera in zip(
             active_orders,
             battle.active_pokemon,
             battle.available_switches,

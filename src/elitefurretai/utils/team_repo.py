@@ -7,20 +7,30 @@ import os
 import os.path
 import subprocess
 from contextlib import contextmanager
-from typing import Dict, KeysView
+from typing import Dict, KeysView, Optional
+
+_DEFAULT_FILEPATH = "data/teams"
 
 
 class TeamRepo:
 
     def __init__(
         self,
-        filepath: str = "data/teams",
+        filepath: Optional[str] = None,
         showdown_path: str = "../pokemon-showdown",
         validate: bool = False,
         verbose: bool = False,
     ):
         self._teams: Dict[str, Dict[str, str]] = {}
         self._verbose = verbose
+
+        # If we have the default filepath, use the default
+        if filepath == None:
+            current_file = os.path.dirname(
+                os.path.abspath(__file__)
+            )  # Gets current directory
+            three_up = os.path.dirname(os.path.dirname(os.path.dirname(current_file)))
+            filepath = os.path.join(three_up, _DEFAULT_FILEPATH)
 
         directories = set()
         for format_folder in os.listdir(filepath):

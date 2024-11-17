@@ -1,11 +1,9 @@
 # -*- coding: utf-8 -*-
 from unittest.mock import MagicMock
-import pytest
 
-from poke_env.environment import (
-    DoubleBattle,
-    Pokemon
-)
+import pytest
+from poke_env.environment import DoubleBattle, Pokemon
+
 from elitefurretai.inference.battle_inference import BattleInference
 
 
@@ -15,7 +13,9 @@ def get_battle_inference():
     battle = DoubleBattle("tag", "elitefurretai", MagicMock(), gen=9)
     battle._player_role = "p2"
     battle_inference = BattleInference(battle)
-    battle_inference._opponent_mons = {"p1: Furret": BattleInference.load_opponent_set(furret)}
+    battle_inference._opponent_mons = {
+        "p1: Furret": BattleInference.load_opponent_set(furret)
+    }
     battle._opponent_team = {"p1: Sentret": sentret, "p1: Furret": furret}
     return battle_inference
 

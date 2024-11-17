@@ -2,9 +2,9 @@
 """This module defines a class that Embeds objects
 """
 
+import logging
 import math
 from typing import Any, Dict, List, Optional
-import logging
 
 from poke_env.data import GenData
 from poke_env.environment import (
@@ -60,16 +60,20 @@ class Embedder:
         Used to convert names of various enumerations into their string variants
         """
         return string.lower().replace("_", " ")
-    
+
     @property
-    def history(self, last_n: Optional[int] = None, format: str = "gen9vgc2024regg") -> List[List[float]]:
+    def history(
+        self, last_n: Optional[int] = None, format: str = "gen9vgc2024regg"
+    ) -> List[List[float]]:
         if last_n is None:
             return list(map(lambda x: self.feature_dict_to_vector(x), self._history))
         else:
             to_return = []
 
             # Need to construct dummy battle
-            dummy_battle = DoubleBattle("tag", "elitefurretai", logging.Logger("example"), gen=9)
+            dummy_battle = DoubleBattle(
+                "tag", "elitefurretai", logging.Logger("example"), gen=9
+            )
             dummy_battle._format = format
 
             for i in range(last_n):
@@ -249,7 +253,9 @@ class Embedder:
 
         # Add moves to feature dict (and account for the fact that the mon might have <4 moves)
         moves = list(mon.moves.values()) if mon else []
-        available_moves = mon.available_moves_from_request(request) if mon and len(request) > 0 else []
+        available_moves = (
+            mon.available_moves_from_request(request) if mon and "moves" in request else []
+        )
         for i, move in enumerate((moves + [None, None, None, None])[:4]):
             move_prefix = prefix + "MOVE:" + str(i) + ":"
             emb.update(self.featurize_move(move, move_prefix))
@@ -407,7 +413,7 @@ class Embedder:
                 int(mon.type_1 == ptype or mon.type_2 == ptype) if mon else -1
             )
 
-        # OHE TeraType; TODO: need to change to be -1 if I dont know
+        # OHE TeraType
         for ptype in self._knowledge["PokemonType"]:
             if ptype in [PokemonType.THREE_QUESTION_MARKS]:
                 continue
@@ -443,7 +449,9 @@ class Embedder:
                 and not battle.teampreview
             ):
                 features = self.featurize_pokemon(
-                    battle.team[get_showdown_identifier(mon, battle.player_role)], battle.last_request, prefix
+                    battle.team[get_showdown_identifier(mon, battle.player_role)],
+                    battle.last_request,
+                    prefix,
                 )
                 sent = 1
             else:

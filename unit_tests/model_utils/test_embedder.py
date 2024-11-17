@@ -366,7 +366,7 @@ def test_featurize_turn(vgc_battle_p1_logs):
             if len(log) > 1 and log[1] == "-turn" and log[2] == "1":
                 p1_battle.parse_message(log)
 
-                emb = embedder.featurize_double_battle(vgc_battle_p1)
+                emb = embedder.featurize_double_battle(p1_battle)
                 assert emb["MON:0:sent"] == 1
                 assert emb["MON:5:TYPE:ROCK"] == -1
                 assert emb["MON:5:sent"] == -1
@@ -410,7 +410,7 @@ def test_simplify_features(vgc_battle_p1_logs):
             if len(log) > 1 and log[1] == "-turn" and log[2] == "1":
                 p1_battle.parse_message(log)
 
-                emb = embedder.featurize_double_battle(vgc_battle_p1)
+                emb = embedder.featurize_double_battle(p1_battle)
                 simple_emb = embedder.simplify_features(emb)
 
                 assert len(simple_emb) < len(emb)

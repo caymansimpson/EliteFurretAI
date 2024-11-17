@@ -1,0 +1,64 @@
+Moltres-Galar @ Weakness Policy  
+Ability: Berserk  
+Level: 50
+EVs: 92 HP / 52 Def / 108 SpA / 4 SpD / 252 Spe  
+Timid Nature  
+IVs: 0 Atk  
+- Fiery Wrath  
+- Air Slash  
+- Nasty Plot  
+- Protect  
+
+Comfey @ Babiri Berry  
+Ability: Triage  
+Level: 50
+EVs: 252 HP / 60 Def / 196 SpD  
+Calm Nature  
+IVs: 0 Atk  
+- Floral Healing  
+- Draining Kiss  
+- Trick Room  
+- Taunt  
+
+Tapu Fini @ Wiki Berry  
+Ability: Misty Surge  
+Level: 50
+EVs: 236 HP / 4 Def / 204 SpA / 64 Spe  
+Modest Nature  
+IVs: 0 Atk  
+- Calm Mind  
+- Dazzling Gleam  
+- Muddy Water  
+- Protect  
+
+Raichu @ Focus Sash  
+Ability: Lightning Rod  
+Level: 50
+EVs: 4 HP / 252 Atk / 252 Spe  
+Jolly Nature  
+IVs: 0 SpA  
+- Volt Switch  
+- Charm
+- Volt Tackle  
+- Eerie Impulse  
+
+Incineroar @ Figy Berry  
+Ability: Intimidate  
+Level: 50
+EVs: 244 HP / 20 Atk / 84 Def / 148 SpD / 12 Spe  
+Careful Nature  
+- Fake Out  
+- Parting Shot  
+- Flare Blitz  
+- Burning Jealousy  
+
+Metagross @ Assault Vest  
+Ability: Clear Body  
+Level: 50
+EVs: 252 HP / 252 Atk / 4 Spe  
+Adamant Nature  
+- Meteor Mash  
+- Ice Punch  
+- Earthquake  
+- Zen Headbutt  
+

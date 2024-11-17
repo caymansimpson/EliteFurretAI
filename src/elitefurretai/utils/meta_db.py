@@ -15,15 +15,20 @@ from poke_env.environment import (
     PokemonType,
 )
 
+_DATABASE_REL_PATH: str = "data/database"
+
 
 class MetaDB:
-
-    _DATABASE_DIR: str = "data/database"
 
     def __init__(self, db: str = "frisk.db", write: bool = False):
         self._db = db
         self._write = write  # Just as a safeguard for scripting
         self._conn = None
+
+        current_file = os.path.dirname(os.path.abspath(__file__))  # Gets current directory
+        three_up = os.path.dirname(os.path.dirname(os.path.dirname(current_file)))
+        self._DB_ABS_PATH = os.path.join(three_up, _DATABASE_REL_PATH)
+
         self.open()
 
     def query(self, query) -> Optional[List[Any]]:
@@ -42,8 +47,9 @@ class MetaDB:
         if self._conn is not None:
             self._conn.close()
 
+    # TODO: consider creating one if I cant find one
     def open(self):
-        self._conn = sqlite3.connect(os.path.join(self._DATABASE_DIR, self._db))
+        self._conn = sqlite3.connect(os.path.join(self._DB_ABS_PATH, self._db))
 
     # Given a teampreview, predicts the spreads of the team.
     def predict_vgc_team(

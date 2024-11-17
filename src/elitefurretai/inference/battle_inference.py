@@ -5,11 +5,11 @@
 import sys
 from typing import Any, Dict, Optional, Union
 
-from elitefurretai.inference.inference_utils import battle_to_str
-
 from poke_env.data.gen_data import GenData
 from poke_env.environment import AbstractBattle, Battle, DoubleBattle, Pokemon
 from poke_env.stats import compute_raw_stats
+
+from elitefurretai.inference.inference_utils import battle_to_str
 
 _FLAGS = {
     "has_status_move": False,  # Assault Vest Flag
@@ -21,8 +21,6 @@ _FLAGS = {
     "num_moves_since_switch": 0,  # Check Choice probs
     "num_moved": 0,
     "screens": [],  # Check Light Clay
-    # To help disambiguate states in item tracking
-    "debug_item_found_turn": -1,  # TODO: debugging; need to remove
     # Currently not checked, since we don't have a reverse damage calculator
     "1.2atk": 0,
     "1.5atk": 0,

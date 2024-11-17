@@ -14,17 +14,6 @@ import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Union
 
-from elitefurretai.inference.battle_inference import BattleInference
-from elitefurretai.inference.inference_utils import get_showdown_identifier
-from elitefurretai.inference.item_inference import ItemInference
-from elitefurretai.inference.speed_inference import SpeedInference
-from elitefurretai.scripts.fuzz_test import (
-    check_ground_truth,
-    FuzzTestPlayer,
-    print_battle,
-)
-from elitefurretai.utils.team_repo import TeamRepo
-
 from poke_env.data.gen_data import GenData
 from poke_env.environment.move_category import MoveCategory
 from poke_env.player.random_player import RandomPlayer
@@ -32,7 +21,22 @@ from poke_env.ps_client.account_configuration import AccountConfiguration
 from poke_env.ps_client.server_configuration import ServerConfiguration
 from poke_env.teambuilder.teambuilder import Teambuilder
 
+from elitefurretai.inference.battle_inference import BattleInference
+from elitefurretai.inference.inference_utils import (
+    battle_to_str,
+    get_showdown_identifier,
+)
+from elitefurretai.inference.item_inference import ItemInference
+from elitefurretai.inference.speed_inference import SpeedInference
+from elitefurretai.scripts.fuzz_test import (
+    FuzzTestPlayer,
+    check_ground_truth,
+    get_players,
+)
+from elitefurretai.utils.team_repo import TeamRepo
 
+
+# A Dataclass that represents the outcome of a battle
 @dataclass
 class BattleResult:
     p1_username: str
@@ -43,6 +47,8 @@ class BattleResult:
     success: bool
 
 
+# The ResultAggregator class is used to keep track of the results of a set of battles.
+# It is thread-safe and can be used by multiple threads to report the results of their battles.
 class ResultAggregator:
     def __init__(self):
         self.lock = threading.Lock()
@@ -157,45 +163,24 @@ async def battle_worker(
 
 
 async def main():
-    print("\n\n\n\n\n\n\n\n\033[92mStarting Multithreaded Fuzz Test!\033[0m\n")
 
-    # Parse command line arguments
+    # Get Parameters of fuzz testing
     num = None
     for arg in sys.argv:
         if arg.isdigit():
             num = arg
     total_battles = int(num) if num is not None else 1000
+    format = "gen9vgc2024regh"
+    should_print = "print" in sys.argv
+    filepath = os.path.expanduser("~/Desktop/fuzz_errors.txt")
+    num_threads = int(min((os.cpu_count() or 8) / 2, 8))  # Limit to 8 threads maximum
 
-    # Number of concurrent battles to run - limited by number of player pairs available
-    num_threads = int(min((os.cpu_count() or 8)/2, 8))  # Limit to 8 threads maximum
-
+    print("\n\n\n\n\n\n\n\n\033[92mStarting Multithreaded Fuzz Test!\033[0m\n")
     print(f"Running with up to {num_threads} concurrent battles")
     print("Loading and validating teams, then creating players...")
 
-    tr = TeamRepo(validate=False, verbose=False)
-    print(f"Finished loading {len(tr.teams['gen9vgc2024regg'])} teams!")
-
     # Create players
-    players = []
-    for team_name, team in tr.teams["gen9vgc2024regg"].items():
-
-        # ef this noise
-        if (
-            "Ditto" in team
-            or "Zoroark" in team
-            or ("Dondozo" in team and "Tatsugiri" in team)
-        ):
-            continue
-        if bool(re.search(r"[^a-zA-Z0-9\- _]", team_name)):
-            continue
-
-        players.append(
-            FuzzTestPlayer(
-                AccountConfiguration(team_name[:17], None),
-                battle_format="gen9vgc2024regg",
-                team=team,
-            )
-        )
+    players = get_players(TeamRepo(validate=False, verbose=False), format)
 
     print(
         f"Created {len(players)} legal players (filtered out Dondozo, Ditto and Zoroark teams)"
@@ -254,12 +239,11 @@ async def main():
         print(f"\tError Type [{error_type}] was found {count} times")
 
     # Write errors to file
-    filename = os.path.expanduser("~/Desktop/fuzz_errors.txt")
-    print(f"\nWriting errors to {filename}")
-    with open(filename, "w") as f:
+    print(f"\nWriting errors to {filepath}")
+    with open(filepath, "w") as f:
         f.write(result_aggregator.error_log)
 
-    if "print" in sys.argv:
+    if should_print:
         print(result_aggregator.error_log)
 
 

@@ -2,10 +2,9 @@
 .DS_Store
 .vscode
 data/battles/*
-data/database/*
+data/database/frisk.db
 data/models/*
 __pycache__/*
 *.pyc
 src/elitefurretai/scripts/print_battle_debug.py
 coverage.xml
-scripts/print_and_debug.py

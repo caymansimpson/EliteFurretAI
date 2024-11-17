@@ -3,12 +3,12 @@
     some other utils that are not specific to a particular inference method (eg showdown log parsing)
 """
 
+import inspect
 import logging
 import re
 from typing import Dict, List, Optional, Tuple, Union
 
 from poke_env.environment.abstract_battle import AbstractBattle
-
 from poke_env.environment.battle import Battle
 from poke_env.environment.double_battle import DoubleBattle
 from poke_env.environment.effect import Effect
@@ -20,6 +20,7 @@ from poke_env.environment.pokemon_type import PokemonType
 from poke_env.environment.side_condition import SideCondition
 from poke_env.environment.status import Status
 from poke_env.environment.weather import Weather
+from poke_env.player.player import Player
 
 
 # In Showdown, Weezing-Galar --> Weezing; Calyrex-Ice --> Calyrex
@@ -163,9 +164,7 @@ def copy_bare_battle(
 
 
 # Updates a battle with an event
-def update_battle(
-    battle: Union[Battle, DoubleBattle, AbstractBattle], event: List[str]
-):
+def update_battle(battle: Union[Battle, DoubleBattle, AbstractBattle], event: List[str]):
     if len(event) > 1 and event[1] not in ["", "t:"]:
         if event[1] == "win":
             battle.won_by(event[2])
@@ -596,15 +595,11 @@ def get_residual_and_identifier(
             event[2]
         )
     elif event[-1].startswith("[from] item:"):
-        return event[-1].replace("[from] item: ", ""), standardize_pokemon_ident(
-            event[2]
-        )
+        return event[-1].replace("[from] item: ", ""), standardize_pokemon_ident(event[2])
     elif event[-1].startswith("[from] "):
         return event[-1].replace("[from] ", ""), standardize_pokemon_ident(event[2])
     elif event[-2].startswith("[from] move: "):
-        return event[-2].replace("[from] move: ", ""), standardize_pokemon_ident(
-            event[2]
-        )
+        return event[-2].replace("[from] move: ", ""), standardize_pokemon_ident(event[2])
     else:
         return None, None
 
@@ -666,7 +661,15 @@ def get_segments(events: List[List[str]], start=0) -> Dict[str, List[List[str]]]
         while (
             i < len(events)
             and events[i][1]
-            not in ["-terastallize", "-dynamax", "-mega", "-primal", "switch", "move", "-end"]
+            not in [
+                "-terastallize",
+                "-dynamax",
+                "-mega",
+                "-primal",
+                "switch",
+                "move",
+                "-end",
+            ]
             and events[i][-1] != "[upkeep]"
             and events[i][-1] not in MSGS_THAT_ACTIVATE_BEFORE_ATTACK
         ):
@@ -674,10 +677,12 @@ def get_segments(events: List[List[str]], start=0) -> Dict[str, List[List[str]]]
 
         # If we stop on a switch, we record the position
         if i < len(events) and (
-            events[i][1] == "switch" or (
+            events[i][1] == "switch"
+            or (
                 # for protosynthesis/quarkdrives/neutralizinggas; note that this is a bug in showdown:
                 # https://github.com/smogon/pokemon-showdown/blob/c82d1b8433440256f7b75fe1c68deac31a29c09d/data/abilities.ts#L2877
-                events[i][1] == "-end" and len(events) > 3
+                events[i][1] == "-end"
+                and len(events) > 3
             )
         ):
             if last_segment != "" and i >= start:
@@ -843,7 +848,7 @@ def observation_to_str(obs):
     return message
 
 
-def battle_to_str(battle) -> str:
+def battle_to_str(battle, opp: Optional[Player] = None) -> str:
 
     message = f"============= Battle [{battle.battle_tag}] =============\n"
     message += f"The battle is between {battle.player_username} and {battle.opponent_username} from {battle.player_username}'s perspective.\n"
@@ -857,10 +862,16 @@ def battle_to_str(battle) -> str:
         message += f" // Item: {mon.item}]"
     message += "]\n"
 
+    opp_teampreview_team = battle.teampreview_opponent_team
+    opp_team = battle.opponent_team
+    if opp is not None:
+        opp_teampreview_team = opp.battles[battle.battle_tag].teampreview_team
+        opp_team = opp.battles[battle.battle_tag].team
+
     message += "P2 Teampreview Team (not omniscient): ["
-    for mon in battle.teampreview_opponent_team:
+    for mon in opp_teampreview_team:
         ident = get_showdown_identifier(mon, battle.opponent_role)
-        mon = battle.opponent_team.get(ident, mon)
+        mon = opp_team.get(ident, mon)
         message += f"\n\t{mon.name} => "
         message += "[Speed: " + str(mon.stats["spe"])
         message += f" // Item: {mon.item}]"
@@ -877,6 +888,20 @@ def battle_to_str(battle) -> str:
         message += observation_to_str(battle._current_observation)
 
     return message
+
+
+def print_stack_trace():
+    print("\nFull Stack Trace with Local Variables:")
+    current_frame = inspect.currentframe()
+
+    while current_frame:
+        print(
+            f"\n\nFrame: {current_frame.f_code.co_name} in {current_frame.f_code.co_filename}:{current_frame.f_lineno}"
+        )
+        print("Local Variables:")
+        for name, value in current_frame.f_locals.items():
+            print(f"\t{name}: {value}")
+        current_frame = current_frame.f_back
 
 
 DISCERNABLE_ITEMS = set(
