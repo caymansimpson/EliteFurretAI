@@ -28,10 +28,13 @@ from elitefurretai.inference.inference_utils import get_showdown_identifier
 
 class Embedder:
 
-    def __init__(self, gen=9):
+    def __init__(self, format="gen9vgc2024regh", simple: bool = True):
         self._history: List[Dict[str, float]] = []
         self._knowledge: Dict[str, Any] = {}
-        self._gen_data = GenData.from_gen(gen)
+        self._format = format
+        self._gen_data = GenData.from_gen(format[3])
+        self._simple: bool = simple
+
         sets = [
             ("Status", Status),
             ("PokemonType", PokemonType),
@@ -54,6 +57,8 @@ class Embedder:
         # Sourced from https://github.com/smogon/pokemon-showdown/blob/67354c8f3d285b52a2e4cd4c6aa194a1bfd19c1c/data/abilities.ts
         self._knowledge["Ability"] = TRACKED_ABILITIES
 
+        self._embedding_size = self._get_embedding_size()
+
     @staticmethod
     def _prep(string) -> str:
         """
@@ -61,10 +66,17 @@ class Embedder:
         """
         return string.lower().replace("_", " ")
 
-    @property
-    def history(
-        self, last_n: Optional[int] = None, format: str = "gen9vgc2024regg"
-    ) -> List[List[float]]:
+    def _get_embedding_size(self) -> int:
+        dummy_battle = DoubleBattle(
+            "tag", "elitefurretai", logging.Logger("example"), gen=int(self._format[3])
+        )
+        dummy_battle._format = self._format
+        if self._simple:
+            return len(self._simplify_features(self.featurize_double_battle(dummy_battle)))
+        else:
+            return len(self.featurize_double_battle(dummy_battle))
+
+    def history(self, last_n: Optional[int] = None) -> List[List[float]]:
         if last_n is None:
             return list(map(lambda x: self.feature_dict_to_vector(x), self._history))
         else:
@@ -72,9 +84,9 @@ class Embedder:
 
             # Need to construct dummy battle
             dummy_battle = DoubleBattle(
-                "tag", "elitefurretai", logging.Logger("example"), gen=9
+                "tag", "elitefurretai", logging.Logger("example"), gen=int(self._format[3])
             )
-            dummy_battle._format = format
+            dummy_battle._format = self._format
 
             for i in range(last_n):
                 if len(self._history) > i:
@@ -83,6 +95,10 @@ class Embedder:
                     emb = self.featurize_double_battle(dummy_battle)
                     to_return.insert(0, self.feature_dict_to_vector(emb))
             return to_return
+
+    @property
+    def embedding_size(self):
+        return self._embedding_size
 
     def feature_dict_to_vector(self, features: Dict[str, Any]) -> List[float]:
         """
@@ -95,7 +111,7 @@ class Embedder:
         return vec
 
     # As of writing, this is 1449 features, mostly due to OHE of pokemon types
-    def simplify_features(self, features: Dict[str, Any]) -> Dict[str, Any]:
+    def _simplify_features(self, features: Dict[str, Any]) -> Dict[str, Any]:
         """
         Converts a normal feature dictionary into a heavily simplified one.
         Features were chosen to be able to roughly mimic max damage player,
@@ -115,29 +131,39 @@ class Embedder:
 
         emb: Dict[str, float] = {}
 
-        emb[prefix + "accuracy"] = move.accuracy if move else -1
-        emb[prefix + "base_power"] = move.base_power / 100.0 if move else -1
+        emb[prefix + "accuracy"] = move.accuracy if move else -1  # TODO: normalize
+        emb[prefix + "base_power"] = (
+            move.base_power / 100.0 if move else -1
+        )  # TODO: normalize
         emb[prefix + "current_pp"] = min(move.current_pp, 5) / 5.0 if move else -1
 
         # To maintain representation of public belief state
         emb[prefix + "used"] = int(move.current_pp < move.max_pp) if move else -1
+
+        # TODO: is this right?
         if move:
-            emb[prefix + "damage"] = move.damage if isinstance(move.damage, int) else 50
+            emb[prefix + "damage"] = (
+                move.damage if isinstance(move.damage, int) else 50
+            ) / 100.0  # TODO: normalize
         else:
             emb[prefix + "damage"] = -1
-        emb[prefix + "drain"] = move.drain if move else -1
+        emb[prefix + "drain"] = move.drain if move else -1  # TODO: normalize
         emb[prefix + "force_switch"] = move.force_switch if move else -1
-        emb[prefix + "heal"] = move.heal if move else -1
+        emb[prefix + "heal"] = move.heal if move else -1  # TODO: normalize
         emb[prefix + "is_protect_move"] = move.is_protect_move if move else -1
         emb[prefix + "is_side_protect_move"] = move.is_side_protect_move if move else -1
         if move:
-            emb[prefix + "min_hits"] = move.n_hit[0] if move.n_hit else 1
-            emb[prefix + "max_hits"] = move.n_hit[1] if move.n_hit else 1
+            emb[prefix + "min_hits"] = (
+                move.n_hit[0] if move.n_hit else 1
+            )  # TODO: normalize
+            emb[prefix + "max_hits"] = (
+                move.n_hit[1] if move.n_hit else 1
+            )  # TODO: normalize
         else:
             emb[prefix + "min_hits"] = -1
             emb[prefix + "max_hits"] = -1
-        emb[prefix + "priority"] = move.priority if move else -1
-        emb[prefix + "recoil"] = move.recoil if move else -1
+        emb[prefix + "priority"] = move.priority if move else -1  # TODO: normalize
+        emb[prefix + "recoil"] = move.recoil if move else -1  # TODO: normalize
         emb[prefix + "self_switch"] = (
             int(True if move.self_switch else False) if move else -1
         )
@@ -145,17 +171,17 @@ class Embedder:
             int(move.use_target_offensive) if move else -1
         )
 
-        # Add Category
+        # OHE Category
         for cat in self._knowledge["MoveCategory"]:
             emb[prefix + "OFF_CAT:" + cat.name] = int(move.category == cat) if move else -1
 
-        # Add Defensive Category
+        # OHE Defensive Category
         for cat in self._knowledge["MoveCategory"]:
             emb[prefix + "OFF_CAT:" + cat.name] = (
                 int(move.defensive_category == cat) if move else -1
             )
 
-        # Add Move Type
+        # OHE Move Type
         for ptype in self._knowledge["PokemonType"]:
             if ptype in [
                 PokemonType.THREE_QUESTION_MARKS,
@@ -164,17 +190,17 @@ class Embedder:
                 continue
             emb[prefix + "TYPE:" + ptype.name] = int(ptype == move.type) if move else -1
 
-        # Add Side Conditions
+        # OHE Side Conditions
         for sc in self._knowledge["SideCondition"]:
             emb[prefix + "SC:" + sc.name] = int(move.side_condition == sc) if move else -1
 
-        # Add Targeting Types
+        # OHE Targeting Types
         for t in self._knowledge["Target"]:
             emb[prefix + "TARGET:" + t.name] = (
                 int(move.deduced_target == t) if move else -1
             )
 
-        # Add Volatility Statuses
+        # OHE Volatility Statuses
         for vs in self._knowledge["Effect_VolatileStatus"]:
             val = 0
             if not move:
@@ -187,7 +213,7 @@ class Embedder:
                 val = 1
             emb[prefix + "EFFECT:" + vs.name] = val
 
-        # Add Statuses
+        # OHE Statuses
         for status in self._knowledge["Status"]:
             val = 0
             if status == Status.FNT:
@@ -213,7 +239,7 @@ class Embedder:
                 for info in move.secondary:
                     if "boosts" in info and stat in info["boosts"]:
                         val = info["boosts"][stat]
-            emb[prefix + "BOOST:" + stat] = val
+            emb[prefix + "BOOST:" + stat] = val  # TODO: normalize
 
         # Add Self-Boosts
         for stat in ["atk", "def", "spa", "spd", "spe"]:
@@ -230,7 +256,7 @@ class Embedder:
                         and stat in info["self"]["boosts"]
                     ):
                         val = info["self"]["boosts"][stat]
-            emb[prefix + "SELFBOOST:" + stat] = val
+            emb[prefix + "SELFBOOST:" + stat] = val  # TODO: normalize
 
         # Introduce the chance of a secondary effect happening
         val = 0
@@ -285,11 +311,13 @@ class Embedder:
             val = -1
             if mon and mon.stats and stat in mon.stats and mon.stats[stat]:
                 val = mon.stats[stat] / 100.0  # pyright:ignore
-            emb[prefix + "STAT:" + stat] = val
+            emb[prefix + "STAT:" + stat] = val  # TODO: normalize
 
         # Add boosts; don't add evasion
         for stat in ["accuracy", "atk", "def", "spa", "spd", "spe"]:
-            emb[prefix + "BOOST:" + stat] = mon.boosts[stat] if mon else -1
+            emb[prefix + "BOOST:" + stat] = (
+                mon.boosts[stat] if mon else -1
+            )  # TODO: normalize
 
         # OHE status
         for status in self._knowledge["Status"]:
@@ -358,7 +386,7 @@ class Embedder:
         # Add several other fields
         emb[prefix + "current_hp_fraction"] = mon.current_hp_fraction if mon else -1
         emb[prefix + "level"] = mon.level / 100.0 if mon else -1
-        emb[prefix + "weight"] = mon.weight / 100.0 if mon else -1
+        emb[prefix + "weight"] = mon.weight / 100.0 if mon else -1  # TODO: normalize
         emb[prefix + "is_terastallized"] = int(mon.is_terastallized) if mon else -1
 
         # Add stats by calculating
@@ -388,16 +416,18 @@ class Embedder:
                 minstat, maxstat = inference_flags[stat][0], inference_flags[stat][1]
             elif mon and mon.stats and stat in mon.stats and mon.stats[stat]:
                 minstat, maxstat = mon.stats[stat], mon.stats[stat]
-            emb[prefix + "STAT_MIN:" + stat] = (
+            emb[prefix + "STAT_MIN:" + stat] = (  # TODO: normalize
                 minstat / 100.0 if mon and minstat is not None else -1
             )
-            emb[prefix + "STAT_MAX:" + stat] = (
+            emb[prefix + "STAT_MAX:" + stat] = (  # TODO: normalize
                 maxstat / 100.0 if mon and maxstat is not None else -1
             )
 
         # Add boosts; don't add evasion
         for stat in ["accuracy", "atk", "def", "spa", "spd", "spe"]:
-            emb[prefix + "BOOST:" + stat] = mon.boosts[stat] if mon else -1
+            emb[prefix + "BOOST:" + stat] = (
+                mon.boosts[stat] if mon else -1
+            )  # TODO: normalize
 
         # OHE status
         for status in self._knowledge["Status"]:
@@ -554,12 +584,17 @@ class Embedder:
             emb["FORMAT:" + frmt] = int(frmt == battle.format)
 
         emb["teampreview"] = int(battle.teampreview)
-        emb["p1rating"] = battle.rating if battle.rating else -1
-        emb["p2rating"] = battle.opponent_rating if battle.opponent_rating else -1
-        emb["turn"] = battle.turn
+        emb["p1rating"] = battle.rating if battle.rating else -1  # TODO: normalize
+        emb["p2rating"] = (
+            battle.opponent_rating if battle.opponent_rating else -1
+        )  # TODO: normalize
+        emb["turn"] = battle.turn  # TODO: normalize
         emb["bias"] = 1
 
         self._history.append(emb)
+
+        if self._simple:
+            emb = self._simplify_features(emb)
 
         return emb
 
@@ -892,6 +927,9 @@ TRACKED_FORMATS = {
     "gen9vgc2024regf",
     "gen9vgc2024regg",
     "gen9vgc2024regh",
+    "gen9vgc2024regc",
+    "gen9vgc2024regb",
+    "gen9vgc2024rega",
 }
 
 TRACKED_FIELDS = {

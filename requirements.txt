@@ -2,3 +2,5 @@ git+https://github.com/caymansimpson/poke-env.git
 orjson
 pulp
 pyscipopt
+stable-baselines3
+pettingzoo
