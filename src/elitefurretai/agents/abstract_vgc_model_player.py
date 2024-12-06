@@ -9,6 +9,7 @@ from poke_env.player.battle_order import BattleOrder
 # We define our RL player
 class AbstractVGCModelPlayer(Player, ABC):
 
+    # TODO: pull in all player argumetns manually
     def __init__(self, **kwargs):
         self._last_message_error = False
         super().__init__(**kwargs)
@@ -31,10 +32,6 @@ class AbstractVGCModelPlayer(Player, ABC):
 
     @abstractmethod
     def action_to_move(self, action: int) -> BattleOrder:
-        pass
-
-    @abstractmethod
-    def learn(self, **kwargs):
         pass
 
     @abstractmethod

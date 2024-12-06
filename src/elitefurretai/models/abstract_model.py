@@ -31,5 +31,5 @@ class AbstractModel(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def get_action_probabilities(self, observation: List[float]) -> List[float]:
+    def predict(self, observation: List[float]) -> List[float]:
         raise NotImplementedError

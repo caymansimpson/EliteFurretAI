@@ -18,7 +18,7 @@ class VGCEnvironment(ParallelEnv):
 
     def __init__(
         self,
-        format="gen9vgc2024regh",
+        battle_format="gen9vgc2024regh",
         agents: List[AbstractVGCModelPlayer] = [],
         seed: int = 21,
         **kwargs,
@@ -30,7 +30,7 @@ class VGCEnvironment(ParallelEnv):
         assert len(agents) == len(set(map(lambda x: x.username, agents)))
 
         # Record necessary information
-        self.battle_format = format
+        self.battle_format = battle_format
         self._current_battle: Optional[DoubleBattle] = None
         self._players: Dict[str, AbstractVGCModelPlayer] = {
             agent.username: agent for agent in agents
@@ -122,6 +122,7 @@ class VGCEnvironment(ParallelEnv):
         }
 
         # Determine whether the battle was terminated or truncated early
+        # TODO: need to handle forfeits as well
         terminated = {agent: False for agent in self.agents}
         truncated = {agent: False for agent in self.agents}
         if self.current_battle.finished:

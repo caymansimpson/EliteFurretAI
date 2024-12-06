@@ -17,13 +17,14 @@ from elitefurretai.utils.battle_order_validator import is_valid_order
 class SimpleVGCDQNPlayer(AbstractVGCModelPlayer):
     def __init__(
         self,
-        format: str = "gen9vgc2024regh",
+        battle_format: str = "gen9vgc2024regh",
         simple: bool = True,
         probabilistic=True,
         **kwargs,
     ):
+        # pull in all player manually
         super().__init__(**kwargs)
-        self._embedder = Embedder(format=format, simple=simple)
+        self._embedder = Embedder(format=battle_format, simple=simple)
         self._probabilistic = probabilistic
 
         # The model that we use to make predictions
@@ -75,10 +76,13 @@ class SimpleVGCDQNPlayer(AbstractVGCModelPlayer):
         assert self._model is None
         self._model = DQN.load(filepath)
 
-    # Where I pass in a bunch of stuff and learn
-    def learn(self, **kwargs):
-        assert self._model is not None
-        self._model.learn(total_timesteps=kwargs.get("total_timesteps", 50000))
+    @property
+    def model(self):
+        return self._model
+
+    @model.setter
+    def model(self, model):
+        self._model = model
 
     def embed_battle_state(self, battle: AbstractBattle) -> List[float]:
         assert isinstance(battle, DoubleBattle)
@@ -147,6 +151,8 @@ class SimpleVGCDQNPlayer(AbstractVGCModelPlayer):
         probabilities = np.exp(output) * action_mask
         probabilities = probabilities / np.sum(probabilities)
 
+        # If probabilistic, sample a move proportiaonal to the softmax
+        # otherwise, choose the best move
         if self._probabilistic:
             return self.action_to_move(
                 np.random.choice(range(len(probabilities)), p=probabilities)
@@ -169,12 +175,14 @@ class SimpleVGCDQNPlayer(AbstractVGCModelPlayer):
         # If we find no valid actions, we need to throw an error
         if sum(action_mask) == 0:
             print(battle_to_str(battle))
-            raise ValueError("No valid moves in battle")
+            raise ValueError("No valid teampreview in battle")
 
         # Softmax
         probabilities = np.exp(output) * action_mask
         probabilities = probabilities / np.sum(probabilities)
 
+        # If probabilistic, sample a move proportiaonal to the softmax
+        # otherwise, choose the best move
         if self._probabilistic:
             return _TEAMPREVIEW_MAPPINGS[
                 np.random.choice(range(len(probabilities)), p=probabilities)

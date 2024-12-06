@@ -61,7 +61,7 @@ class DQNModel(AbstractModel):
         assert self._model is not None
         self._model.load(filepath)
 
-    def get_action_probabilities(self, observation: List[float]) -> List[float]:
+    def predict(self, observation: List[float]) -> List[float]:
         assert self._model is not None
 
         # Convert observation to tensor

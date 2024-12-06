@@ -395,6 +395,7 @@ def test_featurize_turn(vgc_battle_p1_logs):
 
 def test_simplify_features(vgc_battle_p1_logs):
     embedder = Embedder()
+    simple_embedder = Embedder(simple=True)
     emb_length = None
 
     # Generate battle
@@ -411,7 +412,11 @@ def test_simplify_features(vgc_battle_p1_logs):
                 p1_battle.parse_message(log)
 
                 emb = embedder.featurize_double_battle(p1_battle)
-                simple_emb = embedder.simplify_features(emb)
+                simple_emb = simple_embedder.featurize_double_battle(p1_battle)
+
+                print(len(emb.keys()))
+                print(len(simple_emb.keys()))
+                assert False
 
                 assert len(simple_emb) < len(emb)
 
