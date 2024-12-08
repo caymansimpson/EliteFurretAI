@@ -28,7 +28,7 @@ from elitefurretai.inference.inference_utils import get_showdown_identifier
 
 class Embedder:
 
-    def __init__(self, format="gen9vgc2024regh", simple: bool = True):
+    def __init__(self, format="gen9vgc2024regc", simple: bool = True):
         self._history: List[Dict[str, float]] = []
         self._knowledge: Dict[str, Any] = {}
         self._format = format
@@ -66,11 +66,17 @@ class Embedder:
         """
         return string.lower().replace("_", " ")
 
-    def _get_embedding_size(self) -> int:
+    # Does not currently support Singles; can be extended to do so by parsing format
+    def _create_dummy_battle(self) -> DoubleBattle:
         dummy_battle = DoubleBattle(
             "tag", "elitefurretai", logging.Logger("example"), gen=int(self._format[3])
         )
         dummy_battle._format = self._format
+        dummy_battle.player_role = "p1"
+        return dummy_battle
+
+    def _get_embedding_size(self) -> int:
+        dummy_battle = self._create_dummy_battle()
         if self._simple:
             return len(self._simplify_features(self.featurize_double_battle(dummy_battle)))
         else:
@@ -82,18 +88,11 @@ class Embedder:
         else:
             to_return = []
 
-            # Need to construct dummy battle
-            dummy_battle = DoubleBattle(
-                "tag", "elitefurretai", logging.Logger("example"), gen=int(self._format[3])
-            )
-            dummy_battle._format = self._format
-
             for i in range(last_n):
                 if len(self._history) > i:
                     to_return.append(self.feature_dict_to_vector(self._history[i]))
                 else:
-                    emb = self.featurize_double_battle(dummy_battle)
-                    to_return.insert(0, self.feature_dict_to_vector(emb))
+                    to_return.insert(0, [-1] * self.embedding_size)
             return to_return
 
     @property

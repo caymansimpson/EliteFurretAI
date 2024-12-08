@@ -34,6 +34,7 @@ def test_featurize_move():
             embedder.feature_dict_to_vector(embedder.featurize_move(move))
         )
         assert len(featurized_move) == len_none_move
+        assert all(map(lambda x: -10 <= x <= 10, featurized_move))
 
     # Test each implemented feature is working properly
     emb = embedder.featurize_move(Move("icywind", gen=9))
@@ -42,7 +43,7 @@ def test_featurize_move():
     assert emb["current_pp"] == 1
 
     emb = embedder.featurize_move(Move("seismictoss", gen=9))
-    assert emb["damage"] == 50
+    assert emb["damage"] == .5
 
     emb = embedder.featurize_move(Move("gigadrain", gen=9))
     assert emb["drain"] == 0.5
@@ -165,10 +166,9 @@ def test_featurize_pokemon():
     # Test that every mon has the same length
     none_mon_len = len(embedder.feature_dict_to_vector(none_mon))
     for mon in mon_generator():
-        assert (
-            len(embedder.feature_dict_to_vector(embedder.featurize_pokemon(mon)))
-            == none_mon_len
-        )
+        featurized_mon = embedder.feature_dict_to_vector(embedder.featurize_pokemon(mon))
+        assert len(featurized_mon) == none_mon_len
+        assert all(map(lambda x: -10 <= x <= 10, featurized_mon))
 
     tb_furret = ConstantTeambuilder(
         """Furret @ Leftovers
@@ -253,10 +253,9 @@ def test_featurize_oponent_pokemon(vgc_battle_p1_logs):
     # Test that every mon has the same length
     none_mon_len = len(embedder.feature_dict_to_vector(none_mon))
     for mon in mon_generator():
-        assert (
-            len(embedder.feature_dict_to_vector(embedder.featurize_opponent_pokemon(mon)))
-            == none_mon_len
-        )
+        featurized_mon = embedder.feature_dict_to_vector(embedder.featurize_opponent_pokemon(mon))
+        assert len(featurized_mon) == none_mon_len
+        assert all(map(lambda x: -10 <= x <= 10, featurized_mon))
 
     # Generate battle
     p1_battle = DoubleBattle("tag", "elitefurretai", Logger("example"), gen=9)
@@ -367,6 +366,8 @@ def test_featurize_turn(vgc_battle_p1_logs):
                 p1_battle.parse_message(log)
 
                 emb = embedder.featurize_double_battle(p1_battle)
+                assert all(map(lambda x: -10 <= x <= 10, emb.values()))
+
                 assert emb["MON:0:sent"] == 1
                 assert emb["MON:5:TYPE:ROCK"] == -1
                 assert emb["MON:5:sent"] == -1
