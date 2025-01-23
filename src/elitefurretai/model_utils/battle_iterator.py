@@ -145,9 +145,6 @@ class BattleIterator:
             ">" + self._perspective
         ):
 
-            # There's an edge-case here in /Users/cayman/Repositories/EliteFurretAI/data/battles/gen9vgc2023regulationc_raw/1039650.json
-            # where the user forfeits in the preturn switch, and so we increment input_nums in the is_preturn_switch check
-            # above, which sets the _input_nums erroneously to start with p2, and that causes infinite recursion.
             if self._input_nums[0] >= len(self.bd.input_logs) or self._battle.finished:
                 return None
             else:

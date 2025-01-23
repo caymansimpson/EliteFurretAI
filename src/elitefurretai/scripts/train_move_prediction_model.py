@@ -3,6 +3,7 @@
 to try to play like humans.
 """
 import os.path
+import sys
 import time
 
 import torch
@@ -134,7 +135,9 @@ class PolicyNetwork(nn.Module):
 
 def main(cfg):
 
-    # TODO: make sure I set seeds beforehand
+    torch.manual_seed(cfg["seed"])
+    torch.cuda.manual_seed(cfg["seed"])
+
     # Initialize everything
     wandb.init(project="elitefurretai-forewarn", config=cfg)
     embedder = Embedder(format=cfg["format"], simple=False)
@@ -168,6 +171,7 @@ def main(cfg):
     print(f"Optimizer:      {cfg['optimizer']}")
     print(f"Loss:           {cfg['loss']}")
     print(f"Scheduler:      {cfg['scheduler']}")
+    print(f"Seed:           {cfg['seed']}")
     print()
 
     # First I want to normalize the data by taking a sample of 10000
@@ -255,7 +259,8 @@ if __name__ == "__main__":
         "initializer": "He",
         "train_slice": (0, 0.98),
         "val_slice": (0.98, 1),
-        "data": "/Users/cayman/Repositories/EliteFurretAI/data/battles/gen9vgc2023regulationc_raw",
+        "data": sys.argv[1],
+        "seed": 21,
         "format": "gen9vgc2024regc",
     }
     main(config)

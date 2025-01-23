@@ -10,6 +10,6 @@ src/elitefurretai/scripts/print_battle_debug.py
 coverage.xml
 src/eitefurretai/scripts/train_move_prediction_model.py
 wandb/*
-agents/*
-environment/*
-models/*
+src/elitefurretai/agents/*
+src/elitefurretai/environment/*
+src/elitefurretai/models/*
