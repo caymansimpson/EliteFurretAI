@@ -5,19 +5,15 @@ to provide starter code for others.
 """
 
 import asyncio
-import os.path
-import pickle
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Optional, Union
 
-from poke_env.data import to_id_str
 from poke_env.environment.abstract_battle import AbstractBattle
-from poke_env.player.player import Player
 from poke_env.player.random_player import RandomPlayer
 from poke_env.ps_client.account_configuration import AccountConfiguration
 from poke_env.ps_client.server_configuration import ServerConfiguration
 from poke_env.teambuilder.teambuilder import Teambuilder
 
-from elitefurretai.inference.inference_utils import battle_to_str
+from elitefurretai.utils.inference_utils import battle_to_str
 
 
 class CustomPlayer(RandomPlayer):
@@ -77,45 +73,45 @@ class CustomPlayer(RandomPlayer):
 
 async def main():
     pokepaste = """
-        Delibird @ Safety Goggles  
-        Ability: Vital Spirit  
-        Tera Type: Steel  
-        EVs: 1 HP  
-        - Fake Out  
-        - Icy Wind  
-        - Spikes  
-        - Substitute  
+        Delibird @ Safety Goggles
+        Ability: Vital Spirit
+        Tera Type: Steel
+        EVs: 1 HP
+        - Fake Out
+        - Icy Wind
+        - Spikes
+        - Substitute
 
-        Raichu @ Light Clay  
-        Ability: Static  
-        Tera Type: Ground  
-        EVs: 1 HP  
-        - Light Screen  
-        - Fake Out  
-        - Reflect  
-        - Nuzzle  
+        Raichu @ Light Clay
+        Ability: Static
+        Tera Type: Ground
+        EVs: 1 HP
+        - Light Screen
+        - Fake Out
+        - Reflect
+        - Nuzzle
 
-        Tyranitar @ Heavy-Duty Boots  
-        Ability: Sand Stream  
-        Tera Type: Psychic  
-        EVs: 1 HP  
-        - Bulldoze  
-        - Dragon Tail  
-        - Stealth Rock  
+        Tyranitar @ Heavy-Duty Boots
+        Ability: Sand Stream
+        Tera Type: Psychic
+        EVs: 1 HP
+        - Bulldoze
+        - Dragon Tail
+        - Stealth Rock
 
-        Smeargle @ Covert Cloak  
-        Ability: Moody  
-        Tera Type: Rock  
-        EVs: 1 HP  
-        - U-turn  
-        - Icy Wind  
-        - Rage Powder  
-        - Spikes  
+        Smeargle @ Covert Cloak
+        Ability: Moody
+        Tera Type: Rock
+        EVs: 1 HP
+        - U-turn
+        - Icy Wind
+        - Rage Powder
+        - Spikes
 
         Furret @ Leftovers
-        Ability: Frisk  
-        Tera Type: Rock  
-        EVs: 1 HP  
+        Ability: Frisk
+        Tera Type: Rock
+        EVs: 1 HP
         - Follow Me
         - Double Edge
         """

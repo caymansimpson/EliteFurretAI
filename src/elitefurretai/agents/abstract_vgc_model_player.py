@@ -31,7 +31,7 @@ class AbstractVGCModelPlayer(Player, ABC):
         pass
 
     @abstractmethod
-    def action_to_move(self, action: int) -> BattleOrder:
+    def action_to_move(self, action: int, battle: AbstractBattle) -> BattleOrder:
         pass
 
     @abstractmethod

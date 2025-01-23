@@ -14,6 +14,102 @@ def single_battle_json_anon():
 
 
 @fixture
+def vgc_json_anon():
+    with open(os.path.join(FIXTURE_DIR, "gen9vgc2023regc_anon.json")) as f:
+        return orjson.loads(f.read())
+
+
+@fixture
+def vgc_json_anon2():
+    with open(os.path.join(FIXTURE_DIR, "gen9vgc2023regc_anon2.json")) as f:
+        return orjson.loads(f.read())
+
+
+@fixture
+def vgc_json_anon3():
+    with open(os.path.join(FIXTURE_DIR, "gen9vgc2023regc_anon3.json")) as f:
+        return orjson.loads(f.read())
+
+
+@fixture
+def vgc_json_anon4():
+    with open(os.path.join(FIXTURE_DIR, "gen9vgc2023regc_anon4.json")) as f:
+        return orjson.loads(f.read())
+
+
+@fixture
+def vgc_json_anon5():
+    with open(os.path.join(FIXTURE_DIR, "gen9vgc2023regc_anon5.json")) as f:
+        return orjson.loads(f.read())
+
+
+@fixture
+def vgc_json_anon6():
+    with open(os.path.join(FIXTURE_DIR, "gen9vgc2023regc_anon6.json")) as f:
+        return orjson.loads(f.read())
+
+
+@fixture
+def vgc_json_anon7():
+    with open(os.path.join(FIXTURE_DIR, "gen9vgc2023regc_anon7.json")) as f:
+        return orjson.loads(f.read())
+
+
+@fixture
+def vgc_json_anon8():
+    with open(os.path.join(FIXTURE_DIR, "gen9vgc2023regc_anon8.json")) as f:
+        return orjson.loads(f.read())
+
+
+@fixture
+def vgc_json_anon9():
+    with open(os.path.join(FIXTURE_DIR, "gen9vgc2023regc_anon9.json")) as f:
+        return orjson.loads(f.read())
+
+
+@fixture
+def vgc_json_anon10():
+    with open(os.path.join(FIXTURE_DIR, "gen9vgc2023regc_anon10.json")) as f:
+        return orjson.loads(f.read())
+
+
+@fixture
+def vgc_json_anon11():
+    with open(os.path.join(FIXTURE_DIR, "gen9vgc2023regc_anon11.json")) as f:
+        return orjson.loads(f.read())
+
+
+@fixture
+def vgc_json_anon12():
+    with open(os.path.join(FIXTURE_DIR, "gen9vgc2023regc_anon12.json")) as f:
+        return orjson.loads(f.read())
+
+
+@fixture
+def vgc_json_anon13():
+    with open(os.path.join(FIXTURE_DIR, "gen9vgc2023regc_anon13.json")) as f:
+        return orjson.loads(f.read())
+
+
+@fixture
+def vgc_json_anon14():
+    with open(os.path.join(FIXTURE_DIR, "gen9vgc2023regc_anon14.json")) as f:
+        return orjson.loads(f.read())
+
+
+@fixture
+def vgc_json_anon15():
+    with open(os.path.join(FIXTURE_DIR, "gen9vgc2023regc_anon15.json")) as f:
+        return orjson.loads(f.read())
+
+
+@fixture
+def vgc_json_anon16():
+    with open(os.path.join(FIXTURE_DIR, "gen9vgc2023regc_anon16.json")) as f:
+        return orjson.loads(f.read())
+
+
+@fixture
 def single_battle_json():
     with open(os.path.join(FIXTURE_DIR, "gen9randombattle-222.log.json")) as f:
         return orjson.loads(f.read())

@@ -1,14 +1,16 @@
 # -*- coding: utf-8 -*-
 """A wrapper class for a model
 """
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from typing import List
 
+from elitefurretai.models.abstract_model import AbstractModel
 
-class AbstractModel(ABC):
+
+class PlayerPredictModel(AbstractModel):
 
     def __init__(self):
-        raise NotImplementedError
+        pass
 
     @abstractmethod
     def create(self, **kwargs):
@@ -16,6 +18,7 @@ class AbstractModel(ABC):
 
     @abstractmethod
     def train(self, **kwargs):
+
         raise NotImplementedError(
             """This will take in a list of battles to learn from, and process each battle, similar
             to the implementation in the original R-NaD paper. It will load battles from a list of

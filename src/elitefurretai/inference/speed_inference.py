@@ -22,7 +22,7 @@ from poke_env.environment import (
 from poke_env.stats import _raw_stat
 
 from elitefurretai.inference.battle_inference import BattleInference
-from elitefurretai.inference.inference_utils import (
+from elitefurretai.utils.inference_utils import (
     ABILITIES_THAT_CAN_PUBLICLY_ACTIVATE_ABILITIES_OR_ITEMS,
     FIRST_BLOCK_RESIDUALS,
     ITEMS_THAT_ACTIVATE_ON_SWITCH,

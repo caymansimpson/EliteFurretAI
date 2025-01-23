@@ -23,17 +23,21 @@ from poke_env.environment import (
 from poke_env.stats import compute_raw_stats
 
 from elitefurretai.inference.battle_inference import BattleInference
-from elitefurretai.inference.inference_utils import get_showdown_identifier
+from elitefurretai.utils.inference_utils import get_showdown_identifier
 
 
 class Embedder:
 
-    def __init__(self, format="gen9vgc2024regc", simple: bool = True):
+    def __init__(
+        self, format="gen9vgc2024regc", simple: bool = True, max_size: Optional[int] = None
+    ):
         self._history: List[Dict[str, float]] = []
         self._knowledge: Dict[str, Any] = {}
         self._format = format
-        self._gen_data = GenData.from_gen(format[3])
         self._simple: bool = simple
+        self._max_size: int = (
+            max_size if max_size is not None else 10
+        )  # prevents memory leaking
 
         sets = [
             ("Status", Status),
@@ -45,7 +49,7 @@ class Embedder:
         for key, enum in sets:
             self._knowledge[key] = set(enum)
 
-        self._knowledge["Pokemon"] = set(self._gen_data.pokedex.keys())
+        self._knowledge["Pokemon"] = set(GenData.from_gen(format[3]).pokedex.keys())
         self._knowledge["Effect_VolatileStatus"] = TRACKED_EFFECTS
         self._knowledge["Item"] = TRACKED_ITEMS
         self._knowledge["Target"] = TRACKED_TARGET_TYPES
@@ -130,39 +134,30 @@ class Embedder:
 
         emb: Dict[str, float] = {}
 
-        emb[prefix + "accuracy"] = move.accuracy if move else -1  # TODO: normalize
-        emb[prefix + "base_power"] = (
-            move.base_power / 100.0 if move else -1
-        )  # TODO: normalize
-        emb[prefix + "current_pp"] = min(move.current_pp, 5) / 5.0 if move else -1
+        emb[prefix + "accuracy"] = move.accuracy if move else -1
+        emb[prefix + "base_power"] = move.base_power if move else -1
+        emb[prefix + "current_pp"] = min(move.current_pp, 5) if move else -1
 
         # To maintain representation of public belief state
         emb[prefix + "used"] = int(move.current_pp < move.max_pp) if move else -1
 
-        # TODO: is this right?
         if move:
-            emb[prefix + "damage"] = (
-                move.damage if isinstance(move.damage, int) else 50
-            ) / 100.0  # TODO: normalize
+            emb[prefix + "damage"] = move.damage if isinstance(move.damage, int) else 50
         else:
             emb[prefix + "damage"] = -1
-        emb[prefix + "drain"] = move.drain if move else -1  # TODO: normalize
+        emb[prefix + "drain"] = move.drain if move else -1
         emb[prefix + "force_switch"] = move.force_switch if move else -1
-        emb[prefix + "heal"] = move.heal if move else -1  # TODO: normalize
+        emb[prefix + "heal"] = move.heal if move else -1
         emb[prefix + "is_protect_move"] = move.is_protect_move if move else -1
         emb[prefix + "is_side_protect_move"] = move.is_side_protect_move if move else -1
         if move:
-            emb[prefix + "min_hits"] = (
-                move.n_hit[0] if move.n_hit else 1
-            )  # TODO: normalize
-            emb[prefix + "max_hits"] = (
-                move.n_hit[1] if move.n_hit else 1
-            )  # TODO: normalize
+            emb[prefix + "min_hits"] = move.n_hit[0] if move.n_hit else 1
+            emb[prefix + "max_hits"] = move.n_hit[1] if move.n_hit else 1
         else:
             emb[prefix + "min_hits"] = -1
             emb[prefix + "max_hits"] = -1
-        emb[prefix + "priority"] = move.priority if move else -1  # TODO: normalize
-        emb[prefix + "recoil"] = move.recoil if move else -1  # TODO: normalize
+        emb[prefix + "priority"] = move.priority if move else -1
+        emb[prefix + "recoil"] = move.recoil if move else -1
         emb[prefix + "self_switch"] = (
             int(True if move.self_switch else False) if move else -1
         )
@@ -238,7 +233,7 @@ class Embedder:
                 for info in move.secondary:
                     if "boosts" in info and stat in info["boosts"]:
                         val = info["boosts"][stat]
-            emb[prefix + "BOOST:" + stat] = val  # TODO: normalize
+            emb[prefix + "BOOST:" + stat] = val
 
         # Add Self-Boosts
         for stat in ["atk", "def", "spa", "spd", "spe"]:
@@ -255,14 +250,14 @@ class Embedder:
                         and stat in info["self"]["boosts"]
                     ):
                         val = info["self"]["boosts"][stat]
-            emb[prefix + "SELFBOOST:" + stat] = val  # TODO: normalize
+            emb[prefix + "SELFBOOST:" + stat] = val
 
         # Introduce the chance of a secondary effect happening
         val = 0
         if not move:
             val = -1
         elif move.secondary:
-            val = max(map(lambda x: x.get("chance", 0), move.secondary)) / 100.0
+            val = max(map(lambda x: x.get("chance", 0), move.secondary))
         emb[prefix + "chance"] = val
 
         return emb
@@ -301,22 +296,20 @@ class Embedder:
 
         # Add various relevant fields for mons
         emb[prefix + "current_hp_fraction"] = mon.current_hp_fraction if mon else -1
-        emb[prefix + "level"] = mon.level / 100.0 if mon else -1
-        emb[prefix + "weight"] = mon.weight / 100.0 if mon else -1
+        emb[prefix + "level"] = mon.level if mon else -1
+        emb[prefix + "weight"] = mon.weight if mon else -1
         emb[prefix + "is_terastallized"] = mon.is_terastallized if mon else -1
 
         # Add stats
         for stat in ["hp", "atk", "def", "spa", "spd", "spe"]:
             val = -1
             if mon and mon.stats and stat in mon.stats and mon.stats[stat]:
-                val = mon.stats[stat] / 100.0  # pyright:ignore
-            emb[prefix + "STAT:" + stat] = val  # TODO: normalize
+                val = mon.stats[stat]  # type:ignore
+            emb[prefix + "STAT:" + stat] = val if val is not None else -1
 
         # Add boosts; don't add evasion
         for stat in ["accuracy", "atk", "def", "spa", "spd", "spe"]:
-            emb[prefix + "BOOST:" + stat] = (
-                mon.boosts[stat] if mon else -1
-            )  # TODO: normalize
+            emb[prefix + "BOOST:" + stat] = mon.boosts[stat] if mon else -1
 
         # OHE status
         for status in self._knowledge["Status"]:
@@ -384,8 +377,8 @@ class Embedder:
 
         # Add several other fields
         emb[prefix + "current_hp_fraction"] = mon.current_hp_fraction if mon else -1
-        emb[prefix + "level"] = mon.level / 100.0 if mon else -1
-        emb[prefix + "weight"] = mon.weight / 100.0 if mon else -1  # TODO: normalize
+        emb[prefix + "level"] = mon.level if mon else -1
+        emb[prefix + "weight"] = mon.weight if mon else -1
         emb[prefix + "is_terastallized"] = int(mon.is_terastallized) if mon else -1
 
         # Add stats by calculating
@@ -415,18 +408,16 @@ class Embedder:
                 minstat, maxstat = inference_flags[stat][0], inference_flags[stat][1]
             elif mon and mon.stats and stat in mon.stats and mon.stats[stat]:
                 minstat, maxstat = mon.stats[stat], mon.stats[stat]
-            emb[prefix + "STAT_MIN:" + stat] = (  # TODO: normalize
-                minstat / 100.0 if mon and minstat is not None else -1
+            emb[prefix + "STAT_MIN:" + stat] = (
+                minstat if mon and minstat is not None else -1
             )
-            emb[prefix + "STAT_MAX:" + stat] = (  # TODO: normalize
-                maxstat / 100.0 if mon and maxstat is not None else -1
+            emb[prefix + "STAT_MAX:" + stat] = (
+                maxstat if mon and maxstat is not None else -1
             )
 
         # Add boosts; don't add evasion
         for stat in ["accuracy", "atk", "def", "spa", "spd", "spe"]:
-            emb[prefix + "BOOST:" + stat] = (
-                mon.boosts[stat] if mon else -1
-            )  # TODO: normalize
+            emb[prefix + "BOOST:" + stat] = mon.boosts[stat] if mon else -1
 
         # OHE status
         for status in self._knowledge["Status"]:
@@ -501,6 +492,20 @@ class Embedder:
                 if battle.active_pokemon[j] is not None:
                     val = 1 if mon in switches else 0
                 features[prefix + "available_switch:" + str(j)] = val
+
+            # Record the number that corresponds to the mon switch (eg #3, #4)
+            # We don't look at the request if there isn't one
+            val = -1
+            mons = battle.last_request.get("side", {}).get("pokemon", [])
+            for j, json_mon in enumerate((mons + [None] * 6)[:6]):
+                if (
+                    mon is not None
+                    and json_mon is not None
+                    and json_mon.get("identifier", "")
+                    == get_showdown_identifier(mon, battle.player_role)
+                ):
+                    val = j + 1
+            features[prefix + "switch_number"] = val
 
             emb.update(features)
 
@@ -583,13 +588,13 @@ class Embedder:
             emb["FORMAT:" + frmt] = int(frmt == battle.format)
 
         emb["teampreview"] = int(battle.teampreview)
-        emb["p1rating"] = battle.rating if battle.rating else -1  # TODO: normalize
-        emb["p2rating"] = (
-            battle.opponent_rating if battle.opponent_rating else -1
-        )  # TODO: normalize
-        emb["turn"] = battle.turn  # TODO: normalize
+        emb["p1rating"] = battle.rating if battle.rating else -1
+        emb["p2rating"] = battle.opponent_rating if battle.opponent_rating else -1
+        emb["turn"] = battle.turn
         emb["bias"] = 1
 
+        if len(self._history) == self._max_size:
+            self._history.pop(0)
         self._history.append(emb)
 
         if self._simple:
@@ -629,7 +634,6 @@ TRACKED_EFFECTS = {
     Effect.BANEFUL_BUNKER,
     Effect.PROTECT,
     Effect.BURNING_BULWARK,
-    Effect.DRAGON_CHEER,
     Effect.HELPING_HAND,
     Effect.FLINCH,
     Effect.SUBSTITUTE,

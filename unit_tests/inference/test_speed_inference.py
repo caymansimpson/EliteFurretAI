@@ -394,10 +394,6 @@ def test_parse_move():
     ]
     orders = si._parse_move(events)
     assert [("p1: Volcarona", 1.0), ("p1: Furret", 1.0)] in orders
-    # TODO: need to fix Oricorio Dancer abilities first
-    # assert [('p1: Furret', 1.0), ('p2: Sentret', 1.0)] in orders
-    # assert [('p2: Sentret', 1.0), ('p2: Oricorio', 1.5)] in orders
-    # assert len(orders) == 3
 
     si = generate_speed_inference()
     si._battle.parse_message(
@@ -1137,7 +1133,7 @@ Adamant Nature
         ["", "-heal", "p1a: Furret", "160/160", "[from] Grassy Terrain"],
     ]
     orders = si._parse_residual(events)
-    si._solve_speeds(orders)
+    si._solve_speeds(orders)  # type: ignore
 
     assert si._inferences.get_flag("p2: Incineroar", "item") == "choicescarf"
     assert si._inferences.get_flag("p2: Calyrex", "spe") == [139.0, 139.0]

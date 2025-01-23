@@ -158,10 +158,14 @@ def test_predict_vgc_team():
         "superfang": Move("superfang", gen=9),
     }
     m._teampreview_opponent_team = [
-        ObservedPokemon(species="furret", level=100),
-        ObservedPokemon(species="sentret", level=100),
+        ObservedPokemon(species="furret", level=100, name="elitefurretai"),
+        ObservedPokemon(species="sentret", level=100, name="elitesentretai"),
     ]
-    m.opponent_team = {"furret": ObservedPokemon(species="furret", level=100, moves=moves)}
+    m.opponent_team = {
+        "furret": ObservedPokemon(
+            species="furret", level=100, name="elitefurretai", moves=moves
+        )
+    }
     team = f.predict_vgc_team(m, battle_format="gen9vgc2024regg")
 
     # Verify that all properties and entries in the database are right

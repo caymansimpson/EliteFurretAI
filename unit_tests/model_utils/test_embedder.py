@@ -34,16 +34,15 @@ def test_featurize_move():
             embedder.feature_dict_to_vector(embedder.featurize_move(move))
         )
         assert len(featurized_move) == len_none_move
-        assert all(map(lambda x: -10 <= x <= 10, featurized_move))
 
     # Test each implemented feature is working properly
     emb = embedder.featurize_move(Move("icywind", gen=9))
     assert emb["accuracy"] == 0.95
-    assert emb["base_power"] == 55 / 100.0
-    assert emb["current_pp"] == 1
+    assert emb["base_power"] == 55
+    assert emb["current_pp"] == 5
 
     emb = embedder.featurize_move(Move("seismictoss", gen=9))
-    assert emb["damage"] == .5
+    assert emb["damage"] == 50
 
     emb = embedder.featurize_move(Move("gigadrain", gen=9))
     assert emb["drain"] == 0.5
@@ -116,7 +115,6 @@ def test_featurize_move():
     assert emb["EFFECT:HELPING_HAND"] == 0
     assert emb["EFFECT:IMPRISON"] == 0
     assert emb["EFFECT:SPOTLIGHT"] == 0
-    assert emb["EFFECT:DRAGON_CHEER"] == 0
     assert emb["EFFECT:CONFUSION"] == 0
     assert emb["EFFECT:BURNING_BULWARK"] == 1
     assert emb["EFFECT:TAUNT"] == 0
@@ -150,10 +148,9 @@ def test_featurize_move():
     assert emb["SELFBOOST:spa"] == 1
     assert emb["SELFBOOST:spd"] == 1
     assert emb["SELFBOOST:spe"] == 1
-    assert emb["chance"] == 0.1
+    assert emb["chance"] == 10
 
 
-# TODO: just create a furret based on the tests below, from a teambuilder (reverse engineer)
 def test_featurize_pokemon():
     embedder = Embedder()
 
@@ -168,7 +165,6 @@ def test_featurize_pokemon():
     for mon in mon_generator():
         featurized_mon = embedder.feature_dict_to_vector(embedder.featurize_pokemon(mon))
         assert len(featurized_mon) == none_mon_len
-        assert all(map(lambda x: -10 <= x <= 10, featurized_mon))
 
     tb_furret = ConstantTeambuilder(
         """Furret @ Leftovers
@@ -206,15 +202,15 @@ def test_featurize_pokemon():
     assert emb["ITEM:lifeorb"] == 0
     assert emb["ITEM:heavydutyboots"] == 0
     assert emb["current_hp_fraction"] == 0.13125
-    assert emb["level"] == 50 / 100.0
-    assert emb["weight"] == 32.5 / 100.0
+    assert emb["level"] == 50
+    assert emb["weight"] == 32.5
     assert emb["is_terastallized"] == 0
-    assert emb["STAT:hp"] == 160 / 100.0
-    assert emb["STAT:atk"] == 128 / 100.0
-    assert emb["STAT:def"] == 84 / 100.0
-    assert emb["STAT:spa"] == 66 / 100.0
-    assert emb["STAT:spd"] == 67 / 100.0
-    assert emb["STAT:spe"] == 156 / 100.0
+    assert emb["STAT:hp"] == 160
+    assert emb["STAT:atk"] == 128
+    assert emb["STAT:def"] == 84
+    assert emb["STAT:spa"] == 66
+    assert emb["STAT:spd"] == 67
+    assert emb["STAT:spe"] == 156
     assert emb["BOOST:accuracy"] == 0
     assert emb["BOOST:atk"] == 0
     assert emb["BOOST:spa"] == 0
@@ -253,9 +249,10 @@ def test_featurize_oponent_pokemon(vgc_battle_p1_logs):
     # Test that every mon has the same length
     none_mon_len = len(embedder.feature_dict_to_vector(none_mon))
     for mon in mon_generator():
-        featurized_mon = embedder.feature_dict_to_vector(embedder.featurize_opponent_pokemon(mon))
+        featurized_mon = embedder.feature_dict_to_vector(
+            embedder.featurize_opponent_pokemon(mon)
+        )
         assert len(featurized_mon) == none_mon_len
-        assert all(map(lambda x: -10 <= x <= 10, featurized_mon))
 
     # Generate battle
     p1_battle = DoubleBattle("tag", "elitefurretai", Logger("example"), gen=9)
@@ -277,7 +274,7 @@ def test_featurize_oponent_pokemon(vgc_battle_p1_logs):
     assert emb["MOVE:1:max_hits"] == 3
     assert emb["MOVE:1:TYPE:ICE"] == 1
     assert emb["MOVE:2:max_hits"] == -1  # Dont know it
-    assert emb["MOVE:1:current_pp"] == 1
+    assert emb["MOVE:1:current_pp"] == 5
     assert emb["ABILITY:thermalexchange"] == 0
     assert emb["ABILITY:immunity"] == 0
     assert emb["ABILITY:punkrock"] == 0
@@ -293,23 +290,23 @@ def test_featurize_oponent_pokemon(vgc_battle_p1_logs):
 
     # Fainted
     assert emb["current_hp_fraction"] == 0
-    assert emb["level"] == 50 / 100.0
-    assert emb["weight"] == 58 / 100.0
+    assert emb["level"] == 50
+    assert emb["weight"] == 58
     assert emb["is_terastallized"] == 0
 
     # no battle_inference
-    assert emb["STAT_MIN:hp"] == 115 / 100.0
-    assert emb["STAT_MAX:hp"] == 162 / 100.0
-    assert emb["STAT_MIN:atk"] == 22 / 100.0
-    assert emb["STAT_MAX:atk"] == 79 / 100.0
-    assert emb["STAT_MIN:def"] == 36 / 100.0
-    assert emb["STAT_MAX:def"] == 95 / 100.0
-    assert emb["STAT_MIN:spa"] == 22 / 100.0
-    assert emb["STAT_MAX:spa"] == 79 / 100.0
-    assert emb["STAT_MIN:spd"] == 45 / 100.0
-    assert emb["STAT_MAX:spd"] == 106 / 100.0
-    assert emb["STAT_MIN:spe"] == 72 / 100.0
-    assert emb["STAT_MAX:spe"] == 139 / 100.0
+    assert emb["STAT_MIN:hp"] == 115
+    assert emb["STAT_MAX:hp"] == 162
+    assert emb["STAT_MIN:atk"] == 22
+    assert emb["STAT_MAX:atk"] == 79
+    assert emb["STAT_MIN:def"] == 36
+    assert emb["STAT_MAX:def"] == 95
+    assert emb["STAT_MIN:spa"] == 22
+    assert emb["STAT_MAX:spa"] == 79
+    assert emb["STAT_MIN:spd"] == 45
+    assert emb["STAT_MAX:spd"] == 106
+    assert emb["STAT_MIN:spe"] == 72
+    assert emb["STAT_MAX:spe"] == 139
     assert emb["BOOST:accuracy"] == 0
     assert emb["BOOST:atk"] == 0
     assert emb["BOOST:def"] == 0
@@ -335,7 +332,7 @@ def test_featurize_oponent_pokemon(vgc_battle_p1_logs):
     ttar = p1_battle.opponent_team["p2: Tyranitar"]
     emb = embedder.featurize_opponent_pokemon(ttar)
 
-    assert emb["MOVE:0:base_power"] == 0.6
+    assert emb["MOVE:0:base_power"] == 60
     assert emb["MOVE:0:TYPE:DRAGON"] == 1
     assert emb["MOVE:0:priority"] == -6
     assert emb["MOVE:2:accuracy"] == -1
@@ -366,7 +363,6 @@ def test_featurize_turn(vgc_battle_p1_logs):
                 p1_battle.parse_message(log)
 
                 emb = embedder.featurize_double_battle(p1_battle)
-                assert all(map(lambda x: -10 <= x <= 10, emb.values()))
 
                 assert emb["MON:0:sent"] == 1
                 assert emb["MON:5:TYPE:ROCK"] == -1

@@ -24,7 +24,7 @@ from poke_env.environment import (
 )
 
 from elitefurretai.inference.battle_inference import BattleInference
-from elitefurretai.inference.inference_utils import (
+from elitefurretai.utils.inference_utils import (
     battle_to_str,
     copy_bare_battle,
     get_pokemon,

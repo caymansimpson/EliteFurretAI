@@ -3,7 +3,6 @@
     some other utils that are not specific to a particular inference method (eg showdown log parsing)
 """
 
-import inspect
 import logging
 import re
 from typing import Dict, List, Optional, Tuple, Union
@@ -48,8 +47,7 @@ def standardize_pokemon_ident(pokemon_str: str) -> str:
     elif groups[0][1].endswith("a") or groups[0][1].endswith("b"):
         return groups[0][1][:2] + ": " + groups[0][2]
     else:
-        # return groups[0][1] + ": " + groups[0][2].lower().title() # TODO: this is giving me a problem
-        return groups[0][1] + ": " + groups[0][2]  # so changed it to this
+        return groups[0][1] + ": " + groups[0][2]
 
 
 # Gets pokemon from a battle given a pokemon identifier; battle.team stores "p1: Furret"
@@ -97,49 +95,11 @@ def copy_pokemon(orig: Pokemon, gen: int) -> Pokemon:
     mon._terastallized_type = orig._terastallized_type
 
     mon.item = orig.item
-    mon.status = orig.status
+    mon._status = orig.status
     mon.stats = {k: v for k, v in orig.stats.items()}
     mon.boosts = {k: v for k, v in orig.boosts.items()}
 
     return mon
-
-
-# Copies a battle and loads it to the specified turn; if turn is None, will initialize the battle
-def copy_battle(
-    battle: Union[Battle, DoubleBattle], turn: Optional[int] = None
-) -> Union[Battle, DoubleBattle]:
-
-    b = DoubleBattle(
-        battle.battle_tag,
-        battle.player_username,
-        logging.getLogger(battle.player_username),
-        gen=battle.gen,
-    )
-
-    # Copy player information we have
-    b._player_role = battle._player_role
-    b._opponent_username = battle._opponent_username
-    b._players = battle._players
-
-    # Copy all Pokemon fields we have
-    # b.team = {ident: copy_pokemon(mon, battle.gen) for ident, mon in battle.team.items()}
-    b.teampreview_team = {mon for mon in battle.teampreview_team}
-    b._teampreview_opponent_team = {mon for mon in battle._teampreview_opponent_team}
-    if battle.opponent_role is not None:
-        b._opponent_team = {
-            get_showdown_identifier(mon, battle.opponent_role): copy_pokemon(
-                mon, battle.gen
-            )
-            for mon in battle._teampreview_opponent_team
-        }
-
-    # Catch battle up
-    if turn:
-        for i in range(0, turn):
-            for event in battle.observations[i].events:
-                update_battle(b, event)
-
-    return b
 
 
 def copy_bare_battle(
@@ -786,7 +746,6 @@ def get_segments(events: List[List[str]], start=0) -> Dict[str, List[List[str]]]
         last_segment = "post_upkeep"
         indices["post_upkeep"] = i
 
-    # TODO: rejigger to properly handle post_upkeep
     # At this point, we could have a switches from fainted mons or end of turn
     while i < len(events) and events[i][1] not in ["turn", "switch"]:
         if start_of_battle:
@@ -888,20 +847,6 @@ def battle_to_str(battle, opp: Optional[Player] = None) -> str:
         message += observation_to_str(battle._current_observation)
 
     return message
-
-
-def print_stack_trace():
-    print("\nFull Stack Trace with Local Variables:")
-    current_frame = inspect.currentframe()
-
-    while current_frame:
-        print(
-            f"\n\nFrame: {current_frame.f_code.co_name} in {current_frame.f_code.co_filename}:{current_frame.f_lineno}"
-        )
-        print("Local Variables:")
-        for name, value in current_frame.f_locals.items():
-            print(f"\t{name}: {value}")
-        current_frame = current_frame.f_back
 
 
 DISCERNABLE_ITEMS = set(

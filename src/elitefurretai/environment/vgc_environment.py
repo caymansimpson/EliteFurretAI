@@ -9,7 +9,7 @@ from poke_env.environment import DoubleBattle
 from poke_env.player import BattleOrder
 
 from elitefurretai.agents.abstract_vgc_model_player import AbstractVGCModelPlayer
-from elitefurretai.inference.inference_utils import observation_to_str
+from elitefurretai.utils.inference_utils import observation_to_str
 
 
 # We define our RL Environment

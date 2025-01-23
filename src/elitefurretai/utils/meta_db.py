@@ -5,6 +5,7 @@
 import os.path
 import re
 import sqlite3
+from collections import OrderedDict
 from typing import Any, List, Optional, Tuple, Union
 
 from poke_env.environment import (
@@ -47,7 +48,6 @@ class MetaDB:
         if self._conn is not None:
             self._conn.close()
 
-    # TODO: consider creating one if I cant find one
     def open(self):
         self._conn = sqlite3.connect(os.path.join(self._DB_ABS_PATH, self._db))
 
@@ -238,16 +238,17 @@ class MetaDB:
             "spd": row[18],
             "spe": row[19],
         }
-        moves = {
-            row[10]: Move(row[10], gen=gen),
-            row[11]: Move(row[11], gen=gen),
-            row[12]: Move(row[12], gen=gen),
-            row[13]: Move(row[13], gen=gen),
-        }
+
+        moves = OrderedDict()
+        moves[row[10]] = Move(row[10], gen=gen)
+        moves[row[11]] = Move(row[11], gen=gen)
+        moves[row[12]] = Move(row[12], gen=gen)
+        moves[row[13]] = Move(row[13], gen=gen)
 
         return ObservedPokemon(
             species=row[3],
             level=row[4],
+            name=row[3],
             stats=stats,
             moves=moves,
             ability=row[5],

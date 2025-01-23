@@ -9,7 +9,7 @@ from poke_env.data.gen_data import GenData
 from poke_env.environment import AbstractBattle, Battle, DoubleBattle, Pokemon
 from poke_env.stats import compute_raw_stats
 
-from elitefurretai.inference.inference_utils import battle_to_str
+from elitefurretai.utils.inference_utils import battle_to_str
 
 _FLAGS = {
     "has_status_move": False,  # Assault Vest Flag
