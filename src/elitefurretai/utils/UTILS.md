@@ -5,6 +5,25 @@ This folder contains general utilities for EliteFurretAI. So far, these include:
 2. **BattleOrderValidator**: This module simply validates which moves are available moves we should pick from. It has simple logic that first validates whether a move will even work. Note that this is _not_ representative of what will pass the showdown protocol -- it is a stricter protocol syntax (relative to what Showdown accepts) that we will force the AI to use.
    - It separately contains simple heuristics that eliminate moves that are unlikely to help (e.g. self-attacks if the move doesnt heal or activate weakness policy).
 3. [**TeamRepo**](#3-teamrepo): This module simply just retrieves several pre-built teams to use, stored in data/teams. More on usage below.
+4. **Inference Utils**: has a bunch of utility functions:
+    - def get_showdown_identifier(mon: Pokemon, player_role: Optional[str]) -> str:
+    - def standardize_pokemon_ident(pokemon_str: str) -> str:
+    - copy_bare_battle
+    - update_battle
+    - has_sandstorm_immunity
+    - has_flinch_immunity
+    - has_status_immunity
+    - def has_rage_powder_immunity(mon: Pokemon) -> bool:
+    - def has_unboost_immunity(
+    - def is_grounded(
+    - def is_ability_event(event: List[str]) -> bool:
+    - def get_ability_and_identifier(event: List[str]) -> Tuple[Optional[str], Optional[str]]:
+    - def get_priority_and_identifier(
+    - def get_residual_and_identifier(
+    - get_segments
+    - battle_to_str
+    - DISCERNABLE_ITEMS, MEGASTONES_THAT_CAN_PUBLICLY_ACTIVATE_ABILITIES_OR_ITEMS, FIRST_BLOCK_RESIDUALS, ABILITIES_THAT_CAN_PUBLICLY_ACTIVATE_ABILITIES_OR_ITEMS
+
 
 ## 1. MetaDB
 

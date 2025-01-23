@@ -1,0 +1,558 @@
+{
+  "format": "gen9vgc2023regulationc",
+  "endType": "forfeit",
+  "turns": 3,
+  "score": [
+    4,
+    2
+  ],
+  "p1rating": {
+    "rpr": 1526.0834360532017,
+    "rprd": 40.16248079068161
+  },
+  "p2rating": {
+    "rpr": 1530.9571134315124,
+    "rprd": 25
+  },
+  "p1team": [
+    {
+      "name": "ce93e79670",
+      "species": "Wo-Chien",
+      "item": "Leftovers",
+      "ability": "Tablets of Ruin",
+      "moves": [
+        "Pollen Puff",
+        "Snarl",
+        "Protect",
+        "Leech Seed"
+      ],
+      "nature": "Bold",
+      "evs": {
+        "hp": 252,
+        "atk": 0,
+        "def": 156,
+        "spa": 0,
+        "spd": 100,
+        "spe": 0
+      },
+      "gender": "N",
+      "ivs": {
+        "hp": 31,
+        "atk": 0,
+        "def": 31,
+        "spa": 31,
+        "spd": 31,
+        "spe": 31
+      },
+      "level": 50,
+      "happiness": 255,
+      "hpType": "",
+      "pokeball": "",
+      "gigantamax": false,
+      "dynamaxLevel": 10,
+      "teraType": "Water"
+    },
+    {
+      "name": "9364c56844",
+      "species": "Glimmora",
+      "item": "Focus Sash",
+      "ability": "Toxic Debris",
+      "moves": [
+        "Power Gem",
+        "Energy Ball",
+        "Spiky Shield",
+        "Mortal Spin"
+      ],
+      "nature": "Modest",
+      "evs": {
+        "hp": 4,
+        "atk": 0,
+        "def": 0,
+        "spa": 252,
+        "spd": 0,
+        "spe": 252
+      },
+      "gender": "F",
+      "shiny": true,
+      "level": 50,
+      "happiness": 255,
+      "hpType": "",
+      "pokeball": "",
+      "gigantamax": false,
+      "dynamaxLevel": 10,
+      "teraType": "Grass",
+      "ivs": {
+        "hp": 31,
+        "atk": 31,
+        "def": 31,
+        "spa": 31,
+        "spd": 31,
+        "spe": 31
+      }
+    },
+    {
+      "name": "374cba2858",
+      "species": "Farigiraf",
+      "item": "Colbur Berry",
+      "ability": "Armor Tail",
+      "moves": [
+        "Dazzling Gleam",
+        "Calm Mind",
+        "Protect",
+        "Endure"
+      ],
+      "nature": "Bold",
+      "evs": {
+        "hp": 252,
+        "atk": 0,
+        "def": 252,
+        "spa": 4,
+        "spd": 0,
+        "spe": 0
+      },
+      "gender": "F",
+      "ivs": {
+        "hp": 31,
+        "atk": 0,
+        "def": 31,
+        "spa": 31,
+        "spd": 31,
+        "spe": 31
+      },
+      "shiny": true,
+      "level": 50,
+      "happiness": 255,
+      "hpType": "",
+      "pokeball": "",
+      "gigantamax": false,
+      "dynamaxLevel": 10,
+      "teraType": "Fairy"
+    },
+    {
+      "name": "2e80529ed6",
+      "species": "Iron Hands",
+      "item": "Assault Vest",
+      "ability": "Quark Drive",
+      "moves": [
+        "Fake Out",
+        "Drain Punch",
+        "Wild Charge",
+        "Volt Switch"
+      ],
+      "nature": "Careful",
+      "evs": {
+        "hp": 252,
+        "atk": 20,
+        "def": 196,
+        "spa": 0,
+        "spd": 36,
+        "spe": 4
+      },
+      "gender": "N",
+      "level": 50,
+      "happiness": 255,
+      "hpType": "",
+      "pokeball": "",
+      "gigantamax": false,
+      "dynamaxLevel": 10,
+      "teraType": "Flying",
+      "ivs": {
+        "hp": 31,
+        "atk": 31,
+        "def": 31,
+        "spa": 31,
+        "spd": 31,
+        "spe": 31
+      }
+    },
+    {
+      "name": "26dedf9529",
+      "species": "Sableye",
+      "item": "Roseli Berry",
+      "ability": "Prankster",
+      "moves": [
+        "Fake Out",
+        "Encore",
+        "Protect",
+        "Disable"
+      ],
+      "nature": "Calm",
+      "evs": {
+        "hp": 252,
+        "atk": 0,
+        "def": 124,
+        "spa": 4,
+        "spd": 124,
+        "spe": 4
+      },
+      "level": 50,
+      "happiness": 255,
+      "hpType": "",
+      "pokeball": "",
+      "gigantamax": false,
+      "dynamaxLevel": 10,
+      "teraType": "Steel",
+      "ivs": {
+        "hp": 31,
+        "atk": 31,
+        "def": 31,
+        "spa": 31,
+        "spd": 31,
+        "spe": 31
+      }
+    },
+    {
+        "name": "EliteFurretAI",
+        "species": "Furret",
+        "item": "Custap Berry",
+        "ability": "Frisk",
+        "moves": [
+          "Quick Attack",
+          "Super Fang",
+          "Follow Me",
+          "Helping Hand"
+        ],
+        "nature": "Timid",
+        "evs": {
+          "hp": 252,
+          "atk": 0,
+          "def": 4,
+          "spa": 0,
+          "spd": 0,
+          "spe": 252
+        },
+        "gender": "N",
+        "ivs": {
+          "hp": 31,
+          "atk": 31,
+          "def": 31,
+          "spa": 31,
+          "spd": 31,
+          "spe": 31
+        },
+        "level": 50,
+        "happiness": 255,
+        "hpType": "",
+        "pokeball": "",
+        "gigantamax": false,
+        "dynamaxLevel": 10,
+        "teraType": "Ghost"
+      }
+  ],
+  "p2team": [
+    {
+      "name": "38f02f550d",
+      "species": "Azumarill",
+      "item": "Assault Vest",
+      "ability": "Huge Power",
+      "moves": [
+        "Aqua Jet",
+        "Play Rough",
+        "Liquidation",
+        "Ice Spinner"
+      ],
+      "nature": "Adamant",
+      "evs": {
+        "hp": 244,
+        "atk": 252,
+        "def": 0,
+        "spa": 0,
+        "spd": 12,
+        "spe": 0
+      },
+      "level": 50,
+      "happiness": 255,
+      "hpType": "",
+      "pokeball": "",
+      "gigantamax": false,
+      "dynamaxLevel": 10,
+      "teraType": "Ground",
+      "ivs": {
+        "hp": 31,
+        "atk": 31,
+        "def": 31,
+        "spa": 31,
+        "spd": 31,
+        "spe": 31
+      }
+    },
+    {
+      "name": "f24bb200d5",
+      "species": "Amoonguss",
+      "item": "Mental Herb",
+      "ability": "Regenerator",
+      "moves": [
+        "Protect",
+        "Rage Powder",
+        "Spore",
+        "Pollen Puff"
+      ],
+      "nature": "Sassy",
+      "evs": {
+        "hp": 228,
+        "atk": 0,
+        "def": 124,
+        "spa": 0,
+        "spd": 156,
+        "spe": 0
+      },
+      "ivs": {
+        "hp": 31,
+        "atk": 0,
+        "def": 31,
+        "spa": 31,
+        "spd": 31,
+        "spe": 0
+      },
+      "level": 50,
+      "happiness": 255,
+      "hpType": "",
+      "pokeball": "",
+      "gigantamax": false,
+      "dynamaxLevel": 10,
+      "teraType": "Dark"
+    },
+    {
+      "name": "6a56552ec9",
+      "species": "Scizor",
+      "item": "Clear Amulet",
+      "ability": "Technician",
+      "moves": [
+        "Bullet Punch",
+        "Swords Dance",
+        "U-turn",
+        "Protect"
+      ],
+      "nature": "Adamant",
+      "evs": {
+        "hp": 252,
+        "atk": 252,
+        "def": 0,
+        "spa": 0,
+        "spd": 0,
+        "spe": 4
+      },
+      "level": 50,
+      "happiness": 255,
+      "hpType": "",
+      "pokeball": "",
+      "gigantamax": false,
+      "dynamaxLevel": 10,
+      "teraType": "Fire",
+      "ivs": {
+        "hp": 31,
+        "atk": 31,
+        "def": 31,
+        "spa": 31,
+        "spd": 31,
+        "spe": 31
+      }
+    },
+    {
+      "name": "ac949a893a",
+      "species": "Chien-Pao",
+      "item": "Life Orb",
+      "ability": "Sword of Ruin",
+      "moves": [
+        "Throat Chop",
+        "Sacred Sword",
+        "Protect",
+        "Icy Wind"
+      ],
+      "nature": "Naive",
+      "evs": {
+        "hp": 0,
+        "atk": 252,
+        "def": 0,
+        "spa": 4,
+        "spd": 0,
+        "spe": 252
+      },
+      "gender": "N",
+      "level": 50,
+      "happiness": 255,
+      "hpType": "",
+      "pokeball": "",
+      "gigantamax": false,
+      "dynamaxLevel": 10,
+      "teraType": "Dark",
+      "ivs": {
+        "hp": 31,
+        "atk": 31,
+        "def": 31,
+        "spa": 31,
+        "spd": 31,
+        "spe": 31
+      }
+    },
+    {
+      "name": "ec2678b202",
+      "species": "Sandy Shocks",
+      "item": "Booster Energy",
+      "ability": "Protosynthesis",
+      "moves": [
+        "Thunderbolt",
+        "Earth Power",
+        "Protect",
+        "Power Gem"
+      ],
+      "nature": "Timid",
+      "evs": {
+        "hp": 4,
+        "atk": 0,
+        "def": 0,
+        "spa": 252,
+        "spd": 0,
+        "spe": 252
+      },
+      "gender": "N",
+      "ivs": {
+        "hp": 31,
+        "atk": 0,
+        "def": 31,
+        "spa": 31,
+        "spd": 31,
+        "spe": 31
+      },
+      "level": 50,
+      "happiness": 255,
+      "hpType": "",
+      "pokeball": "",
+      "gigantamax": false,
+      "dynamaxLevel": 10,
+      "teraType": "Electric"
+    },
+    {
+      "name": "86b009bd2b",
+      "species": "Volcarona",
+      "item": "Leftovers",
+      "ability": "Flame Body",
+      "moves": [
+        "Quiver Dance",
+        "Heat Wave",
+        "Giga Drain",
+        "Protect"
+      ],
+      "nature": "Modest",
+      "evs": {
+        "hp": 4,
+        "atk": 0,
+        "def": 148,
+        "spa": 196,
+        "spd": 20,
+        "spe": 140
+      },
+      "ivs": {
+        "hp": 31,
+        "atk": 0,
+        "def": 31,
+        "spa": 31,
+        "spd": 31,
+        "spe": 31
+      },
+      "level": 50,
+      "happiness": 255,
+      "hpType": "",
+      "pokeball": "",
+      "gigantamax": false,
+      "dynamaxLevel": 10,
+      "teraType": "Grass"
+    }
+  ],
+  "p1": "cf8e1441b3",
+  "p2": "2b1eed1729",
+  "winner": "cf8e1441b3",
+  "log": [
+    "|gametype|doubles",
+    "|player|p1|cf8e1441b3|1|",
+    "|player|p2|2b1eed1729|1|",
+    "|teamsize|p1|6",
+    "|teamsize|p2|6",
+    "|gen|9",
+    "|tier|[Gen 9] VGC 2023 Regulation C",
+    "|rated|",
+    "|rule|Species Clause: Limit one of each Pokémon",
+    "|rule|Item Clause: Limit one of each item",
+    "|clearpoke",
+    "|poke|p1|Wo-Chien, L50|",
+    "|poke|p1|Glimmora, L50, F|",
+    "|poke|p1|Farigiraf, L50, F|",
+    "|poke|p1|Iron Hands, L50|",
+    "|poke|p1|Sableye, L50, M|",
+    "|poke|p1|Ting-Lu, L50|",
+    "|poke|p2|Azumarill, L50, M|",
+    "|poke|p2|Amoonguss, L50, M|",
+    "|poke|p2|Scizor, L50, M|",
+    "|poke|p2|Chien-Pao, L50|",
+    "|poke|p2|Sandy Shocks, L50|",
+    "|poke|p2|Volcarona, L50, F|",
+    "|teampreview|4",
+    "|",
+    "|start",
+    "|switch|p1a: 26dedf9529|Sableye, L50, M|157/157",
+    "|switch|p1b: 9364c56844|Glimmora, L50, F, shiny|159/159",
+    "|switch|p2a: ec2678b202|Sandy Shocks, L50|161/161",
+    "|switch|p2b: 6a56552ec9|Scizor, L50, M|177/177",
+    "|-enditem|p2a: ec2678b202|Booster Energy",
+    "|-activate|p2a: ec2678b202|ability: Protosynthesis||[fromitem]",
+    "|-start|p2a: ec2678b202|protosynthesisspa",
+    "|turn|1",
+    "|",
+    "|-terastallize|p2b: 6a56552ec9|Fire",
+    "|move|p1a: 26dedf9529|Protect|p1a: 26dedf9529",
+    "|-singleturn|p1a: 26dedf9529|Protect",
+    "|move|p1b: 9364c56844|Spiky Shield|p1b: 9364c56844",
+    "|-singleturn|p1b: 9364c56844|move: Protect",
+    "|move|p2a: ec2678b202|Earth Power|p1b: 9364c56844",
+    "|-block|p1b: 9364c56844|move: Protect||",
+    "|move|p2b: 6a56552ec9|U-turn|p1b: 9364c56844",
+    "|-block|p1b: 9364c56844|move: Protect||",
+    "|-damage|p2b: 6a56552ec9|155/177|[from] Spiky Shield|[of] p1b: 9364c56844",
+    "|",
+    "|upkeep",
+    "|turn|2",
+    "|",
+    "|move|p1a: 26dedf9529|Disable|p2a: ec2678b202",
+    "|-start|p2a: ec2678b202|Disable|Earth Power",
+    "|cant|p2a: ec2678b202|Disable|Earth Power",
+    "|move|p1b: 9364c56844|Power Gem|p2b: 6a56552ec9",
+    "|-supereffective|p2b: 6a56552ec9",
+    "|-damage|p2b: 6a56552ec9|0 fnt",
+    "|faint|p2b: 6a56552ec9",
+    "|",
+    "|upkeep",
+    "|",
+    "|switch|p2b: ac949a893a|Chien-Pao, L50|155/155",
+    "|-ability|p2b: ac949a893a|Sword of Ruin",
+    "|turn|3",
+    "|",
+    "|move|p1a: 26dedf9529|Encore|p2a: ec2678b202",
+    "|-start|p2a: ec2678b202|Encore",
+    "|move|p2b: ac949a893a|Sacred Sword|p1b: 9364c56844",
+    "|-damage|p1b: 9364c56844|51/159",
+    "|-activate|p1b: 9364c56844|ability: Toxic Debris|",
+    "|-sidestart|p2: 2b1eed1729|move: Toxic Spikes",
+    "|-damage|p2b: ac949a893a|140/155|[from] item: Life Orb",
+    "|cant|p2a: ec2678b202|Disable|Earth Power",
+    "|move|p1b: 9364c56844|Power Gem|p2b: ac949a893a",
+    "|-supereffective|p2b: ac949a893a",
+    "|-damage|p2b: ac949a893a|0 fnt",
+    "|faint|p2b: ac949a893a",
+    "|",
+    "|upkeep",
+    "|",
+    "|win|cf8e1441b3",
+    ""
+  ],
+  "inputLog": [
+    ">p1 team 5, 2, 4, 1",
+    ">p2 team 5, 3, 2, 4",
+    ">p1 move protect, move spikyshield",
+    ">p2 move earthpower +2, move uturn +2 terastallize",
+    ">p1 move disable +1, move powergem +2",
+    ">p2 move earthpower +2, move uturn +2",
+    ">p2 pass, switch 4",
+    ">p1 move encore +1, move powergem +2",
+    ">p2 move thunderbolt +1, move sacredsword +2"
+  ]
+}

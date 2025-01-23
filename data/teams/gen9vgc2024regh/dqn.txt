@@ -1,0 +1,45 @@
+Sentret @ Eviolite  
+Ability: Frisk  
+Level: 50  
+Tera Type: Dark  
+EVs: 252 HP / 252 Def / 4 SpD  
+Relaxed Nature  
+IVs: 0 Atk  
+- Follow Me  
+- Helping Hand  
+- Super Fang  
+- Protect  
+
+Furret @ Leftovers  
+Ability: Run Away  
+Tera Type: Steel  
+EVs: 4 HP / 252 Atk / 252 Spe  
+Lonely Nature  
+- Tidy Up  
+- Charm  
+- Double-Edge  
+- Protect  
+
+Indeedee-F @ Aguav Berry  
+Ability: Own Tempo  
+Level: 50  
+Tera Type: Fairy  
+EVs: 252 HP / 4 Def / 252 SpD  
+Sassy Nature  
+IVs: 0 Atk  
+- Trick Room  
+- Follow Me  
+- Protect  
+- Heal Pulse  
+
+Hatterene (F) @ Sitrus Berry  
+Ability: Magic Bounce  
+Level: 50  
+Tera Type: Psychic  
+EVs: 252 HP / 252 SpA / 4 SpD  
+Quiet Nature  
+IVs: 0 Atk  
+- Calm Mind  
+- Trick Room  
+- Expanding Force  
+- Dazzling Gleam  

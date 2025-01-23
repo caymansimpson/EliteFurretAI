@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""This script scrapes pokepast.es and turns them into text files for elitefurretai. 
+"""This script scrapes pokepast.es and turns them into text files for elitefurretai.
 It accepts a csv in the format of regulation -> pokepaste link.
 """
 
@@ -203,7 +203,7 @@ def main():
 
     # Now process the results
     for r in results:
-        team_name, mons, frmt, url = r["team_name"], r["mons"], r["format"], r["url"]
+        team_name, mons, frmt, _ = r["team_name"], r["mons"], r["format"], r["url"]
 
         # Just to remove less valuable teams
         if (

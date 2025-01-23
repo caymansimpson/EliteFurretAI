@@ -23,9 +23,9 @@ from poke_env.ps_client.server_configuration import ServerConfiguration
 from poke_env.teambuilder.teambuilder import Teambuilder
 
 from elitefurretai.inference.battle_inference import BattleInference
-from elitefurretai.inference.inference_utils import battle_to_str
 from elitefurretai.inference.item_inference import ItemInference
 from elitefurretai.inference.speed_inference import SpeedInference
+from elitefurretai.utils.inference_utils import battle_to_str
 
 
 class CustomPlayer(RandomPlayer):
