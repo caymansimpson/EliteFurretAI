@@ -197,7 +197,6 @@ class BattleData:
         return battle
 
     # To help with some corrupted logs that we have
-    @property
     def is_valid_for_supervised_learning(self) -> bool:
         # Old showdown protool
         if any(map(lambda x: "[ability2] " in x, self.logs)):
@@ -218,6 +217,17 @@ class BattleData:
 
         # Creates a bunch of edge-cases that technically shouldn't be supported
         elif any(map(lambda x: "Metronome" in x, self.logs)):
+            return False
+
+        #  Eject Pack proc after Moody gets merged into a preturn switch
+        elif any(map(
+            lambda x: self.logs[x].endswith("Eject Pack") and self.logs[max(0, x - 3)].endswith("|Moody|boost"),
+            range(len(self.logs))
+        )):
+            return False
+
+        # This particular file in 0408230.json has the edge-case where Dancer activates before Eject Button activates
+        elif any(map(lambda x: x == "|-enditem|p2b: 780b3dada7|Eject Button", self.logs)):
             return False
 
         # Old showdown protocol
