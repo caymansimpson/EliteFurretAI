@@ -6,9 +6,9 @@ import sys
 import os.path
 import random
 import time
-import cProfile
-import pstats
 from torch.utils.data import DataLoader
+
+import torch
 
 from elitefurretai.model_utils import BattleDataset, BattleData
 
@@ -16,7 +16,7 @@ from elitefurretai.model_utils import BattleDataset, BattleData
 def main(files, frmt):
 
     # For tracking progress through iterations
-    count, start, last, step, total_battles, batch_size = 0, time.time(), 0, 0, len(files), 32
+    count, start, last, step, total_battles, batch_size = 0, time.time(), 0, 0, len(files), 10
 
     print(f"Starting dry run for {total_battles} battles...")
 
@@ -30,27 +30,27 @@ def main(files, frmt):
     data_loader = DataLoader(
         dataset,
         batch_size=batch_size,
-        num_workers=1  # min(os.cpu_count() or 1, 4),
+        num_workers=min(os.cpu_count() or 1, 4),
     )
 
     print("Dataset and Dataloader created... starting to load data...")
-    for batch_X, batch_Y in data_loader:
+    for batch_X, batch_Y, batch_mask in data_loader:
         count += batch_size
-        step += len(batch_X)
+        step += int(sum(map(lambda x: torch.sum(x, dim=0), batch_mask)))
 
         if time.time() - start > last + 10:  # Print every 10 seconds
-            hours = (time.time() - start) // 3600
-            minutes = (time.time() - start) // 60
-            seconds = (time.time() - start) % 60
+            hours = int((time.time() - start) // 3600)
+            minutes = int((time.time() - start) // 60)
+            seconds = int((time.time() - start) % 60)
             print(
-                f"Processed {batch_size} battles and {step} steps in {hours}h {minutes}m {seconds}s"
+                f"Processed {count} battles and {step} steps in {hours}h {minutes}m {seconds}s"
                 + f" ({round(count / total_battles * 100, 3)}% battles done)..."
             )
             last += 10
 
-    hours = (time.time() - start) // 3600
-    minutes = (time.time() - start) // 60
-    seconds = (time.time() - start) % 60
+    hours = int((time.time() - start) // 3600)
+    minutes = int((time.time() - start) // 60)
+    seconds = int((time.time() - start) % 60)
     print(f"Done! Read {count} battles with {step} steps in {hours}h {minutes}m {seconds}s")
 
 
@@ -61,10 +61,4 @@ if __name__ == "__main__":
     files = files[:1000]
 
     # Profile code too
-    with cProfile.Profile() as pr:
-        main(files, "gen9vgc2023regulationc")
-
-        print("\nResults of profiling:")
-        stats = pstats.Stats(pr)
-        stats.sort_stats('cumtime')  # Sort by cumulative time
-        stats.print_stats(100)  # Print top 100 lines
+    main(files, "gen9vgc2023regulationc")

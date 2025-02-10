@@ -25,7 +25,6 @@ class BattleIterator:
         battle: AbstractBattle,
         bd: BattleData,
         perspective: str = "p1",
-        custom_parse=BattleData.showdown_translation,
     ):
         self._battle: AbstractBattle = battle
         self._bd: BattleData = bd
@@ -34,9 +33,6 @@ class BattleIterator:
         self._prev_turn_index = 0
         self._perspective = perspective
         self._last_input_type: Optional[str] = None
-
-        # We use this to parse messages
-        self._custom_parse = custom_parse
 
     def __str__(self):
         return f"""
@@ -68,7 +64,7 @@ class BattleIterator:
         elif split_message[1] == "tie":
             self._battle.tied()
         else:
-            self._battle.parse_message(self._custom_parse(split_message))
+            self._battle.parse_message(split_message)
 
         # Find input and set _last_input to this; use _input_index to track where we are
         # in the input log; we should leave it where we should start from next time

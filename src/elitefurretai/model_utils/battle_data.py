@@ -226,7 +226,7 @@ class BattleData:
         )):
             return False
 
-        # This particular file in 0408230.json has the edge-case where Dancer activates before Eject Button activates
+        # There is an edge-case that has Dancer activating before Eject Button activates
         elif any(map(lambda x: x == "|-enditem|p2b: 780b3dada7|Eject Button", self.logs)):
             return False
 
@@ -254,13 +254,13 @@ class BattleData:
         return True
 
     # From anonymous logs, we need to make the following changes to ensure compatability
-    @staticmethod
-    def showdown_translation(msg):
-        if msg[1] == "move" and msg[-1].startswith("[from] "):
-            msg[-1] = msg[-1].replace("[from] ", "[from]")
-        elif msg[1] == "move" and msg[-2].startswith("[from] "):
-            msg[-2] = msg[-2].replace("[from] ", "[from]")
-        return msg
+    # @staticmethod
+    # def showdown_translation(msg):
+    #     if msg[1] == "move" and msg[-1].startswith("[from] "):
+    #         msg[-1] = msg[-1].replace("[from] ", "[from]")
+    #     elif msg[1] == "move" and msg[-2].startswith("[from] "):
+    #         msg[-2] = msg[-2].replace("[from] ", "[from]")
+    #     return msg
 
 
 def team_from_json(team: List[Dict[str, Any]]) -> List[ObservedPokemon]:

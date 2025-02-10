@@ -4,6 +4,7 @@ import orjson
 import numpy as np
 from torch.utils.data import Dataset, DataLoader
 import torch
+import time
 
 from elitefurretai.model_utils.embedder import Embedder
 from elitefurretai.model_utils.battle_data import BattleData
@@ -22,8 +23,9 @@ class BattleDataset(Dataset):
             self,
             files: List[str],
             format: str,
-            label_type: Optional[str] = None,
+            label_type: Optional[str] = "win",
             bd_eligibility_func: Optional[Callable] = None,
+            max_turns: int = 17,
             means: Optional[List[float]] = None,
             stds: Optional[List[float]] = None
     ):
@@ -33,27 +35,35 @@ class BattleDataset(Dataset):
         self.files = files
         self.embedder = Embedder(format=format, simple=False)
         self.label_type = label_type
-        self.means = means if means is not None else [0] * self.embedder.embedding_size
-        self.stds = stds if stds is not None else [1.0] * self.embedder.embedding_size
+
+        self.means = torch.tensor(means).unsqueeze(0).expand(max_turns, -1) if means is not None else torch.zeros(max_turns, self.embedder.embedding_size)
+        self.stds = torch.tensor(stds).unsqueeze(0).expand(max_turns, -1) if stds is not None else torch.ones(max_turns, self.embedder.embedding_size)
         self.bd_eligibility_func = bd_eligibility_func if bd_eligibility_func is not None else self._dummy_func
+        self.max_turns = max_turns
 
     def __len__(self) -> int:
         return len(self.files)
 
-    def __getitem__(self, idx) -> Tuple[torch.Tensor, torch.Tensor]:
+    def __getitem__(self, idx) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         file_path = self.files[idx]
 
         # Load and process the showdown files
         X, Y = self.load_battle_data(file_path)
 
-        # Normalize the data
-        for i, x in enumerate(X):
-            X[i] = [(x - mean) / std for x, mean, std in zip(x, self.means, self.stds)]
+        # Create mask for valid steps
+        mask = torch.cat((torch.ones(min(len(X), self.max_turns)), torch.zeros(max(0, self.max_turns - len(X)))))
 
-        return torch.FloatTensor(X), torch.FloatTensor(Y)
+        if len(X) < self.max_turns:
+            X = torch.cat((X, torch.zeros(self.max_turns - len(X), self.embedder.embedding_size)))
+            Y = torch.cat((Y, torch.zeros(self.max_turns - len(Y)))).int()
+        else:
+            X = X[:self.max_turns]
+            Y = Y[:self.max_turns].int()
+
+        return (X - self.means) / self.stds, Y, mask
 
     # Loads and encodes a battle in the official da ta format to an embedding
-    def load_battle_data(self, file_path: str) -> Tuple[List[List[float]], List[float]]:
+    def load_battle_data(self, file_path: str) -> Tuple[torch.Tensor, torch.Tensor]:
 
         # Read the file into BattleData
         bd = None
@@ -62,7 +72,7 @@ class BattleDataset(Dataset):
 
         # Check if the battle is valid for whatever task we have
         if not self.bd_eligibility_func(bd):
-            return [], []
+            return torch.tensor([]), torch.tensor([])
 
         X, Y = [], []
 
@@ -75,7 +85,7 @@ class BattleDataset(Dataset):
                 battle,
                 bd,
                 perspective=perspective,
-                custom_parse=BattleData.showdown_translation,
+                # custom_parse=BattleData.showdown_translation, TODO
             )
 
             # Iterate through the battle and get the player's input commands
@@ -97,14 +107,15 @@ class BattleDataset(Dataset):
                 elif self.label_type == "filename":
                     Y.append(int(os.path.basename(file_path.split(".")[0])))
 
-        return (X, Y)
+        return torch.tensor(X), torch.tensor(Y)
 
     @staticmethod
     def generate_normalizations(
         files: List[str],
         format: str,
         bd_eligibility_func: Optional[Callable] = None,
-        batch_size: int = 32
+        batch_size: int = 32,
+        verbose: bool = False
     ) -> Tuple[List[float], List[float]]:
 
         dataset = BattleDataset(
@@ -118,12 +129,17 @@ class BattleDataset(Dataset):
             num_workers=min(os.cpu_count() or 1, 4),
         )
 
+        # Caculate progress
+        start, last, total_battles = time.time(), 0, len(files)
+        if verbose:
+            print(f"Starting to calculate means and stds for {total_battles} battles to normalize input data...")
+
         # Calculate means and stds across all batches
         total_sum = None
         total_sq_sum = None
         total_count = 0
 
-        for batch_X, _ in data_loader:
+        for batch_X, _, _ in data_loader:
             batch_sum = torch.sum(batch_X, dim=0)
             batch_sq_sum = torch.sum(batch_X ** 2, dim=0)
             batch_count = batch_X.shape[0]
@@ -137,9 +153,25 @@ class BattleDataset(Dataset):
 
             total_count += batch_count
 
+            if time.time() - start > last + 10 and verbose:  # Print every 10 seconds
+                hours = int((time.time() - start) // 3600)
+                minutes = int((time.time() - start) // 60)
+                seconds = int((time.time() - start) % 60)
+                print(
+                    f"Calculated means and stds for {total_count}/{total_battles} battles "
+                    f"({round(total_count / total_battles * 100, 2)}% complete) in "
+                    f"{hours}h {minutes}m {seconds}s"
+                )
+                last += 10
+
         assert total_sum is not None and total_sq_sum is not None
         means = (total_sum / total_count).tolist()
         variances = (total_sq_sum / total_count - (total_sum / total_count) ** 2).tolist()
-        stds = [max(np.sqrt(var), 1e-6) for var in variances]  # Avoid division by zero
+        stds = [np.maximum(np.sqrt(var), 1e-6) for var in variances]  # Avoid division by zero
+
+        hours = int((time.time() - start) // 3600)
+        minutes = int((time.time() - start) // 60)
+        seconds = int((time.time() - start) % 60)
+        print(f"Done generating normalizations for {total_battles} battles in {hours}h {minutes}m {seconds}s!")
 
         return means, stds

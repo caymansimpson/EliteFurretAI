@@ -144,8 +144,37 @@ class PolicyNetwork(nn.Module):
         return avg_loss, accuracy
 
 
+class LogisticRegression(nn.Module):
+    def __init__(self, input_dim):
+        super(LogisticRegression, self).__init__()
+        self.model = nn.Linear(input_dim, 1)
+        self.criterion = nn.BCELoss()
+        self.optimizer = optim.SGD(self.model.parameters(), lr=0.01)
+        self.scheduler = None
+
+    def forward(self, x):
+        outputs = torch.sigmoid(self.model(x))
+        return outputs
+
+    def train_batch(
+        self,
+        X_train,
+        y_train,
+    ):
+        self.optimizer.zero_grad()
+        outputs = self.model(X_train)
+        loss = self.criterion(outputs, y_train.view(-1, 1))
+        loss.backward()
+        self.optimizer.step()
+        return loss
+
+    def validate(self, data_loader: DataLoader, device="cpu", v=True):
+        return None, None
+
+
 def main(cfg):
 
+    desktop_path = "/Users/cayman/Desktop"
     torch.manual_seed(cfg["seed"])
     torch.cuda.manual_seed(cfg["seed"])
 
@@ -153,8 +182,10 @@ def main(cfg):
     wandb.init(project="elitefurretai-perish", config=cfg)
     embedder = Embedder(format=cfg["format"], simple=False)
     model = PolicyNetwork(input_size=embedder.embedding_size, cfg=cfg)
+    if cfg["model"] == "LR":
+        model = LogisticRegression(embedder.embedding_size)
     wandb.watch(model, log="all", log_freq=10)
-    files = os.listdir(cfg["data"])
+    files = sorted(map(lambda x: os.path.join(sys.argv[1], x), os.listdir(sys.argv[1])))
 
     # For tracking progress through iterations
     start, last, batch_num, steps = time.time(), 0, 0, 0
@@ -173,16 +204,20 @@ def main(cfg):
     # Generate normalizations
     means, stds = [0.0] * embedder.embedding_size, [1.0] * embedder.embedding_size
     if cfg["normalization"]:
-        print("Generating Normalizations...")
+        # means, stds = BattleDataset.generate_normalizations(
+        #     files[int(cfg["normalization"][0] * len(files)) : int(cfg["normalization"][1] * len(files))],
+        #     cfg["format"],
+        #     bd_eligibility_func=BattleData.is_valid_for_supervised_learning,
+        #     verbose=True,
+        # )
 
-        means, stds = BattleDataset.generate_normalizations(
-            files[int(cfg["normalization"][0] * len(files)) : int(cfg["normalization"][1] * len(files))],
-            cfg["format"],
-            bd_eligibility_func=lambda x: x.is_valid_for_supervised_learning,
-        )
-        print("Finished!\n")
+        # torch.save(means, os.path.join(desktop_path, "means.pt"))
+        # torch.save(stds, os.path.join(desktop_path, "stds.pt"))
+        means = torch.load(os.path.join(desktop_path, "means.pt"), weights_only=False)
+        stds = torch.load(os.path.join(desktop_path, "stds.pt"), weights_only=False)
 
     # Generate dataset
+    print("Generating Dataset...")
     dataset = BattleDataset(
         files=files[int(cfg["train_slice"][0] * len(files)) : int(cfg["train_slice"][1] * len(files))],
         format=cfg["format"],
@@ -199,6 +234,7 @@ def main(cfg):
         num_workers=min(os.cpu_count() or 1, 4),
         shuffle=True
     )
+    print("Finished!")
 
     # Iterate through datasets by batches
     print("\rProcessed 0 steps in 0 secs; (0% done)...", end="")
@@ -231,10 +267,10 @@ def main(cfg):
                 minutes_left = time_left // 60
                 print(
                     f"\rProcessed {steps} steps in {round(time.time() - start, 2)}s; {round(perc_done, 2)}% done "
-                    + f"with an estimated {hours_left}h {minutes_left}m left...",
+                    f"with an estimated {hours_left}h {minutes_left}m left...",
                     end="",
                 )
-                last += 2
+                last += 1
 
             # Checkpoint each hour
             if last % (60 * 60) == 0 and last > 0:
@@ -264,7 +300,7 @@ def main(cfg):
                 }
                 torch.save(
                     checkpoint,
-                    f"/Users/cayman/Desktop/checkpoint_hour_{int(last / 60 / 60)}.pth",
+                    f"{desktop_path}/checkpoint_hour_{int(last / 60 / 60)}.pth",
                 )
 
                 wandb.log(checkpoint)
@@ -282,7 +318,7 @@ def main(cfg):
     wandb.finish()
 
     # Save the model
-    torch.save(model.state_dict(), "/Users/cayman/Desktop/final_model.pth")
+    torch.save(model.state_dict(), f"{desktop_path}/final_model.pth")
 
     # Evaluate Model by creating Dataset/Loader
     eval_dataset = BattleDataset(
@@ -303,6 +339,7 @@ def main(cfg):
 
 if __name__ == "__main__":
     config = {
+        "model": "LR",
         "learning_rate": 1e-3,
         "epochs": 1,
         "loss": "BCE",
@@ -312,7 +349,7 @@ if __name__ == "__main__":
         "scheduler": True,
         "batch_norm": True,
         "initializer": "He",
-        "train_slice": (0, 0.98),
+        "train_slice": (0.01, 0.1),
         "val_slice": (0.98, 1),
         "data": sys.argv[1],
         "seed": 21,
