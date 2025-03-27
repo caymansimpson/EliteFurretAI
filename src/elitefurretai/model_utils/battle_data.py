@@ -197,14 +197,17 @@ class BattleData:
         return battle
 
     # To help with some corrupted logs that we have
-    @property
     def is_valid_for_supervised_learning(self) -> bool:
+
         # Old showdown protool
         if any(map(lambda x: "[ability2] " in x, self.logs)):
             return False
 
         # Player error
         elif self.p1_rating is None or self.p2_rating is None:
+            return False
+
+        elif self.p1_rating < 1500 or self.p2_rating < 1500:
             return False
 
         # Battle didnt start
@@ -218,6 +221,17 @@ class BattleData:
 
         # Creates a bunch of edge-cases that technically shouldn't be supported
         elif any(map(lambda x: "Metronome" in x, self.logs)):
+            return False
+
+        #  Eject Pack proc after Moody gets merged into a preturn switch
+        elif any(map(
+            lambda x: self.logs[x].endswith("Eject Pack") and self.logs[max(0, x - 3)].endswith("|Moody|boost"),
+            range(len(self.logs))
+        )):
+            return False
+
+        # There is an edge-case that has Dancer activating before Eject Button activates
+        elif any(map(lambda x: x == "|-enditem|p2b: 780b3dada7|Eject Button", self.logs)):
             return False
 
         # Old showdown protocol
@@ -242,15 +256,6 @@ class BattleData:
             return False
 
         return True
-
-    # From anonymous logs, we need to make the following changes to ensure compatability
-    @staticmethod
-    def showdown_translation(msg):
-        if msg[1] == "move" and msg[-1].startswith("[from] "):
-            msg[-1] = msg[-1].replace("[from] ", "[from]")
-        elif msg[1] == "move" and msg[-2].startswith("[from] "):
-            msg[-2] = msg[-2].replace("[from] ", "[from]")
-        return msg
 
 
 def team_from_json(team: List[Dict[str, Any]]) -> List[ObservedPokemon]:

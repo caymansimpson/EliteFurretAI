@@ -4,10 +4,12 @@ from elitefurretai.utils import (
     inference_utils,
     meta_db,
     team_repo,
+    damage_estimator
 )
 from elitefurretai.utils.battle_order_validator import is_valid_order
 from elitefurretai.utils.meta_db import MetaDB
 from elitefurretai.utils.team_repo import TeamRepo
+from elitefurretai.utils.damage_estimator import calculate_damage
 
 __all__ = [
     "is_valid_order",
@@ -17,4 +19,6 @@ __all__ = [
     "team_repo",
     "TeamRepo",
     "inference_utils",
+    "damage_estimator",
+    "calculate_damage",
 ]

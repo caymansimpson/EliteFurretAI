@@ -91,7 +91,7 @@ def test_next_input(vgc_json_anon2):
 
     battle = bd.to_battle(perspective="p2")
     iter = BattleIterator(
-        battle, bd, custom_parse=BattleData.showdown_translation, perspective="p2"
+        battle, bd, perspective="p2"
     )
     assert iter.log == vgc_json_anon2["log"][0]
     assert iter.last_input is None
@@ -115,7 +115,7 @@ def test_next_input_3(vgc_json_anon3):
 
     battle = bd.to_battle(perspective="p2")
     iter = BattleIterator(
-        battle, bd, custom_parse=BattleData.showdown_translation, perspective="p2"
+        battle, bd, perspective="p2"
     )
     assert iter.last_input is None
     iter.next_input()
@@ -154,7 +154,7 @@ def test_next_input_4(vgc_json_anon4):
 
     battle = bd.to_battle(perspective="p1")
     iter = BattleIterator(
-        battle, bd, custom_parse=BattleData.showdown_translation, perspective="p1"
+        battle, bd, perspective="p1"
     )
     assert iter.last_input is None
 
@@ -192,7 +192,7 @@ def test_next_input_5(vgc_json_anon5):
 
     battle = bd.to_battle(perspective=p)
     iter = BattleIterator(
-        battle, bd, custom_parse=BattleData.showdown_translation, perspective=p
+        battle, bd, perspective=p
     )
     assert iter.last_input is None
 
@@ -232,7 +232,7 @@ def test_next_input_5(vgc_json_anon5):
     p = "p2"
     battle = bd.to_battle(perspective=p)
     iter = BattleIterator(
-        battle, bd, custom_parse=BattleData.showdown_translation, perspective=p
+        battle, bd, perspective=p
     )
     assert iter.last_input is None
 
@@ -276,7 +276,7 @@ def test_next_input_6(vgc_json_anon6):
 
     battle = bd.to_battle(perspective=p)
     iter = BattleIterator(
-        battle, bd, custom_parse=BattleData.showdown_translation, perspective=p
+        battle, bd, perspective=p
     )
     assert iter.last_input is None
 
@@ -347,7 +347,7 @@ def test_next_input_7(vgc_json_anon7):
 
     battle = bd.to_battle(perspective=p)
     iter = BattleIterator(
-        battle, bd, custom_parse=BattleData.showdown_translation, perspective=p
+        battle, bd, perspective=p
     )
     assert iter.last_input is None
 
@@ -369,7 +369,7 @@ def test_next_input_7(vgc_json_anon7):
     p = "p2"
     battle = bd.to_battle(perspective=p)
     iter = BattleIterator(
-        battle, bd, custom_parse=BattleData.showdown_translation, perspective=p
+        battle, bd, perspective=p
     )
     assert iter.last_input is None
 
@@ -401,7 +401,7 @@ def test_next_input_8(vgc_json_anon8):
 
     battle = bd.to_battle(perspective=p)
     iter = BattleIterator(
-        battle, bd, custom_parse=BattleData.showdown_translation, perspective=p
+        battle, bd, perspective=p
     )
     assert iter.last_input is None
 
@@ -432,7 +432,7 @@ def test_next_input_8(vgc_json_anon8):
     p = "p2"
     battle = bd.to_battle(perspective=p)
     iter = BattleIterator(
-        battle, bd, custom_parse=BattleData.showdown_translation, perspective=p
+        battle, bd, perspective=p
     )
     assert iter.last_input is None
 
@@ -470,7 +470,7 @@ def test_next_input_9(vgc_json_anon9):
 
     battle = bd.to_battle(perspective=p)
     iter = BattleIterator(
-        battle, bd, custom_parse=BattleData.showdown_translation, perspective=p
+        battle, bd, perspective=p
     )
     assert iter.last_input is None
 
@@ -501,7 +501,7 @@ def test_next_input_9(vgc_json_anon9):
     p = "p2"
     battle = bd.to_battle(perspective=p)
     iter = BattleIterator(
-        battle, bd, custom_parse=BattleData.showdown_translation, perspective=p
+        battle, bd, perspective=p
     )
     assert iter.last_input is None
 
@@ -539,7 +539,7 @@ def test_next_input_10(vgc_json_anon10):
 
     battle = bd.to_battle(perspective=p)
     iter = BattleIterator(
-        battle, bd, custom_parse=BattleData.showdown_translation, perspective=p
+        battle, bd, perspective=p
     )
     assert iter.last_input is None
 
@@ -564,7 +564,7 @@ def test_next_input_10(vgc_json_anon10):
     p = "p2"
     battle = bd.to_battle(perspective=p)
     iter = BattleIterator(
-        battle, bd, custom_parse=BattleData.showdown_translation, perspective=p
+        battle, bd, perspective=p
     )
     assert iter.last_input is None
 
@@ -593,7 +593,7 @@ def test_next_input_11(vgc_json_anon11):
 
     battle = bd.to_battle(perspective=p)
     iter = BattleIterator(
-        battle, bd, custom_parse=BattleData.showdown_translation, perspective=p
+        battle, bd, perspective=p
     )
     assert iter.last_input is None
 
@@ -627,7 +627,7 @@ def test_next_input_11(vgc_json_anon11):
     p = "p2"
     battle = bd.to_battle(perspective=p)
     iter = BattleIterator(
-        battle, bd, custom_parse=BattleData.showdown_translation, perspective=p
+        battle, bd, perspective=p
     )
     assert iter.last_input is None
 
@@ -680,7 +680,7 @@ def test_next_input_12(vgc_json_anon12):
 
     battle = bd.to_battle(perspective=p)
     iter = BattleIterator(
-        battle, bd, custom_parse=BattleData.showdown_translation, perspective=p
+        battle, bd, perspective=p
     )
     assert iter.last_input is None
 
@@ -714,7 +714,7 @@ def test_next_input_12(vgc_json_anon12):
     p = "p2"
     battle = bd.to_battle(perspective=p)
     iter = BattleIterator(
-        battle, bd, custom_parse=BattleData.showdown_translation, perspective=p
+        battle, bd, perspective=p
     )
     assert iter.last_input is None
 
@@ -752,7 +752,7 @@ def test_next_input_13(vgc_json_anon13):
 
     battle = bd.to_battle(perspective=p)
     iter = BattleIterator(
-        battle, bd, custom_parse=BattleData.showdown_translation, perspective=p
+        battle, bd, perspective=p
     )
     assert iter.last_input is None
 
@@ -777,7 +777,7 @@ def test_next_input_13(vgc_json_anon13):
     p = "p2"
     battle = bd.to_battle(perspective=p)
     iter = BattleIterator(
-        battle, bd, custom_parse=BattleData.showdown_translation, perspective=p
+        battle, bd, perspective=p
     )
     assert iter.last_input is None
 
@@ -809,7 +809,7 @@ def test_next_input_14(vgc_json_anon14):
 
     battle = bd.to_battle(perspective=p)
     iter = BattleIterator(
-        battle, bd, custom_parse=BattleData.showdown_translation, perspective=p
+        battle, bd, perspective=p
     )
     assert iter.last_input is None
 
@@ -828,7 +828,7 @@ def test_next_input_14(vgc_json_anon14):
     p = "p2"
     battle = bd.to_battle(perspective=p)
     iter = BattleIterator(
-        battle, bd, custom_parse=BattleData.showdown_translation, perspective=p
+        battle, bd, perspective=p
     )
     assert iter.last_input is None
 
@@ -854,7 +854,7 @@ def test_next_input_15(vgc_json_anon15):
 
     battle = bd.to_battle(perspective=p)
     iter = BattleIterator(
-        battle, bd, custom_parse=BattleData.showdown_translation, perspective=p
+        battle, bd, perspective=p
     )
     assert iter.last_input is None
 
@@ -885,7 +885,7 @@ def test_next_input_15(vgc_json_anon15):
     p = "p2"
     battle = bd.to_battle(perspective=p)
     iter = BattleIterator(
-        battle, bd, custom_parse=BattleData.showdown_translation, perspective=p
+        battle, bd, perspective=p
     )
     assert iter.last_input is None
 
@@ -923,7 +923,7 @@ def test_next_input_16(vgc_json_anon16):
 
     battle = bd.to_battle(perspective=p)
     iter = BattleIterator(
-        battle, bd, custom_parse=BattleData.showdown_translation, perspective=p
+        battle, bd, perspective=p
     )
     assert iter.last_input is None
 
@@ -951,7 +951,7 @@ def test_next_input_16(vgc_json_anon16):
     p = "p2"
     battle = bd.to_battle(perspective=p)
     iter = BattleIterator(
-        battle, bd, custom_parse=BattleData.showdown_translation, perspective=p
+        battle, bd, perspective=p
     )
     assert iter.last_input is None
 
@@ -975,3 +975,251 @@ def test_next_input_16(vgc_json_anon16):
 
     iter.next_input()
     assert iter.last_input == ">p2 move protect, move reflect"
+
+
+def test_next_input_17(vgc_json_anon17):
+    bd = BattleData.from_showdown_json(vgc_json_anon17)
+    p = "p1"
+
+    battle = bd.to_battle(perspective=p)
+    iter = BattleIterator(
+        battle, bd, perspective=p
+    )
+    assert iter.last_input is None
+
+    iter.next_input()
+    assert iter.last_input == ">p1 team 1, 3, 5, 2"
+
+    iter.next_input()
+    assert iter.last_input == ">p1 switch 3, move voltswitch +1"
+
+    iter.next_input()
+    assert iter.last_input == ">p1 pass, switch 3"
+
+    iter.next_input()
+    assert iter.last_input == ">p1 move hurricane +2, move protect"
+
+    iter.next_input()
+    assert iter.last_input == ">p1 move tailwind, move jetpunch +2"
+
+    iter.next_input()
+    assert iter.last_input == ">p1 move hurricane +1, move protect"
+
+    iter.next_input()
+    assert iter.last_input == ">p1 move hurricane +2, move jetpunch +1"
+
+    iter.next_input()
+    assert iter.last_input == ">p1 move hurricane +2, move protect"
+
+    iter.next_input()
+    assert iter.last_input == ">p1 move hurricane +2, move jetpunch +1"
+
+
+def test_next_input_18(vgc_json_anon18):
+    bd = BattleData.from_showdown_json(vgc_json_anon18)
+    p = "p1"
+
+    battle = bd.to_battle(perspective=p)
+    iter = BattleIterator(
+        battle, bd, perspective=p
+    )
+    assert iter.last_input is None
+
+    iter.next_input()
+    assert iter.last_input == ">p1 team 5, 6, 4, 3"
+
+    iter.next_input()
+    assert iter.last_input == ">p1 move snarl terastallize, move protect"
+
+    iter.next_input()
+    assert iter.last_input == ">p1 move fissure +1, switch 4"
+
+    iter.next_input()
+    assert iter.last_input == ">p1 switch 3, move flareblitz +1"
+
+    iter.next_input()
+    assert iter.last_input == ">p1 move spore +1, move protect"
+
+    iter.next_input()
+    assert iter.last_input == ">p1 move pollenpuff -2, move flareblitz +1"
+
+    iter.next_input()
+    assert iter.last_input == ">p1 switch 3, move flareblitz +1"
+
+    iter.next_input()
+    assert iter.last_input == ">p1 move fissure +2, move willowisp +1"
+
+    iter.next_input()
+    assert iter.last_input == ">p1 move fissure +2, move flareblitz +1"
+
+    iter.next_input()
+    assert iter.last_input == ">p1 move fissure +2, switch 3"
+
+    iter.next_input()
+    assert iter.last_input == ">p1 move fissure +2, switch 3"
+
+    iter.next_input()
+    assert iter.last_input == ">p1 switch 4, move flareblitz +1"
+
+    iter.next_input()
+    assert iter.last_input == ">p1 pass, switch 3"
+
+    iter.next_input()
+    assert iter.last_input == ">p1 move protect, move protect"
+
+    iter.next_input()
+    assert iter.last_input == ">p1 move icespinner +2, move ragepowder"
+
+
+def test_next_input_19(vgc_json_anon19):
+    bd = BattleData.from_showdown_json(vgc_json_anon19)
+    p = "p1"
+
+    battle = bd.to_battle(perspective=p)
+    iter = BattleIterator(
+        battle, bd, perspective=p
+    )
+    assert iter.last_input is None
+
+    iter.next_input()
+    assert iter.last_input == ">p1 team 3, 5, 1, 6"
+
+    iter.next_input()
+    assert iter.last_input == ">p1 move dazzlinggleam, move heatwave terastallize"
+
+    iter.next_input()
+    assert iter.last_input == ">p1 switch 4, pass"
+
+    iter.next_input()
+    assert iter.last_input == ">p1 move iceshard +2, move heatwave"
+
+    iter.next_input()
+    assert iter.last_input == ">p1 move glaiverush +2, switch 3"
+
+    iter.next_input()
+    assert iter.last_input == ">p1 move protect, move heavyslam +2"
+
+    iter.next_input()
+    assert iter.last_input == ">p1 move glaiverush +1, move stompingtantrum +1"
+
+
+def test_next_input_20(vgc_json_anon20):
+    bd = BattleData.from_showdown_json(vgc_json_anon20)
+    p = "p1"
+
+    battle = bd.to_battle(perspective=p)
+    iter = BattleIterator(
+        battle, bd, perspective=p
+    )
+    assert iter.last_input is None
+
+    iter.next_input()
+    assert iter.last_input == ">p1 team 1, 2, 5, 6"
+
+    iter.next_input()
+    assert iter.last_input == ">p1 move yawn +1, move leafstorm +2"
+
+    iter.next_input()
+    assert iter.last_input == ">p1 move overheat +2, move tailwind"
+
+    iter.next_input()
+    assert iter.last_input == ">p1 move icespinner +1, move encore +2"
+
+    p = "p2"
+
+    battle = bd.to_battle(perspective=p)
+    iter = BattleIterator(
+        battle, bd, perspective=p
+    )
+    assert iter.last_input is None
+
+    iter.next_input()
+    assert iter.last_input == ">p2 team 6, 4, 3, 1"
+
+    iter.next_input()
+    assert iter.last_input == ">p2 move protect, move surf"
+
+    iter.next_input()
+    assert iter.last_input == ">p2 pass, switch 3"
+
+    iter.next_input()
+    assert iter.last_input == ">p2 move uturn +2, move lightscreen"
+
+    iter.next_input()
+    assert iter.last_input == ">p2 switch 4, pass"
+
+    iter.next_input()
+    assert iter.last_input == ">p2 move leechlife +1 terastallize, move reflect"
+
+
+def test_next_input_21(vgc_json_anon21):
+    bd = BattleData.from_showdown_json(vgc_json_anon21)
+    p = "p1"
+
+    battle = bd.to_battle(perspective=p)
+    iter = BattleIterator(
+        battle, bd, perspective=p
+    )
+    assert iter.last_input is None
+
+    iter.next_input()
+    assert iter.last_input == ">p1 team 2, 1, 3, 4"
+
+    iter.next_input()
+    assert iter.last_input == ">p1 move tailwind, move closecombat +2"
+
+    iter.next_input()
+    assert iter.last_input == ">p1 move featherdance +1, move closecombat +1"
+
+    iter.next_input()
+    assert iter.last_input == ">p1 move voltswitch +1, move makeitrain terastallize"
+
+    iter.next_input()
+    assert iter.last_input == ">p1 switch 4, pass"
+
+    iter.next_input()
+    assert iter.last_input == ">p1 move overheat +2, move makeitrain"
+
+    iter.next_input()
+    assert iter.last_input == ">p1 move overheat +1, move makeitrain"
+
+    iter.next_input()
+    assert iter.last_input == ">p1 switch 4, move makeitrain"
+
+
+def test_next_input_22(vgc_json_anon22):
+    bd = BattleData.from_showdown_json(vgc_json_anon22)
+    p = "p1"
+
+    battle = bd.to_battle(perspective=p)
+    iter = BattleIterator(
+        battle, bd, perspective=p
+    )
+    assert iter.last_input is None
+
+    iter.next_input()
+    assert iter.last_input == ">p1 team 1, 3, 2, 6"
+
+    iter.next_input()
+    assert iter.last_input == ">p1 move protect, move suckerpunch +1"
+
+    iter.next_input()
+    assert iter.last_input == ">p1 move trickroom, move suckerpunch +1"
+
+    iter.next_input()
+    assert iter.last_input == ">p1 move shadowball +1, move spiritbreak +1"
+
+    iter.next_input()
+    assert iter.last_input == ">p1 move shadowball +1, move partingshot +2"
+
+    iter.next_input()
+    assert iter.last_input == ">p1 pass, switch 4"
+
+    iter.next_input()
+    assert iter.last_input == ">p1 pass, switch 4"
+
+    iter.next_input()
+    assert iter.last_input == ">p1 move shadowball +1, move fakeout +2"
+
+    iter.next_input()
+    assert iter.last_input == ">p1 switch 3, move spiritbreak +1"

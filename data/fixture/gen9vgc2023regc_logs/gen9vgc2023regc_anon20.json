@@ -1,0 +1,567 @@
+{
+    "format": "gen9vgc2023regulationc",
+    "endType": "forfeit",
+    "turns": 4,
+    "score": [
+      4,
+      3
+    ],
+    "p1rating": {
+      "rpr": 1422.977876664648,
+      "rprd": 64.68972041322247
+    },
+    "p2rating": {
+      "rpr": 1269.415337832896,
+      "rprd": 56.46023216923869
+    },
+    "p1team": [
+      {
+        "name": "7a326e0802",
+        "species": "Torkoal",
+        "item": "Eject Pack",
+        "ability": "Drought",
+        "moves": [
+          "Overheat",
+          "Helping Hand",
+          "Yawn",
+          "Protect"
+        ],
+        "nature": "Calm",
+        "evs": {
+          "hp": 252,
+          "atk": 0,
+          "def": 4,
+          "spa": 4,
+          "spd": 156,
+          "spe": 92
+        },
+        "ivs": {
+          "hp": 31,
+          "atk": 0,
+          "def": 31,
+          "spa": 31,
+          "spd": 31,
+          "spe": 31
+        },
+        "level": 50,
+        "happiness": 255,
+        "hpType": "",
+        "pokeball": "",
+        "gigantamax": false,
+        "dynamaxLevel": 10,
+        "teraType": "Flying"
+      },
+      {
+        "name": "057ba47ea9",
+        "species": "Jumpluff",
+        "item": "Covert Cloak",
+        "ability": "Chlorophyll",
+        "moves": [
+          "Sleep Powder",
+          "Tailwind",
+          "Leaf Storm",
+          "Encore"
+        ],
+        "nature": "Timid",
+        "evs": {
+          "hp": 244,
+          "atk": 0,
+          "def": 60,
+          "spa": 4,
+          "spd": 4,
+          "spe": 196
+        },
+        "ivs": {
+          "hp": 31,
+          "atk": 0,
+          "def": 31,
+          "spa": 31,
+          "spd": 31,
+          "spe": 31
+        },
+        "level": 50,
+        "happiness": 255,
+        "hpType": "",
+        "pokeball": "",
+        "gigantamax": false,
+        "dynamaxLevel": 10,
+        "teraType": "Water"
+      },
+      {
+        "name": "EliteFurretAI",
+        "species": "Furret",
+        "item": "Custap Berry",
+        "ability": "Frisk",
+        "moves": [
+          "Quick Attack",
+          "Super Fang",
+          "Follow Me",
+          "Helping Hand"
+        ],
+        "nature": "Timid",
+        "evs": {
+          "hp": 252,
+          "atk": 0,
+          "def": 4,
+          "spa": 0,
+          "spd": 0,
+          "spe": 252
+        },
+        "gender": "N",
+        "ivs": {
+          "hp": 31,
+          "atk": 31,
+          "def": 31,
+          "spa": 31,
+          "spd": 31,
+          "spe": 31
+        },
+        "level": 50,
+        "happiness": 255,
+        "hpType": "",
+        "pokeball": "",
+        "gigantamax": false,
+        "dynamaxLevel": 10,
+        "teraType": "Ghost"
+      },
+      {
+        "name": "420cf2a8a9",
+        "species": "Great Tusk",
+        "item": "Choice Scarf",
+        "ability": "Protosynthesis",
+        "moves": [
+          "Earthquake",
+          "Headlong Rush",
+          "Close Combat",
+          "Rock Slide"
+        ],
+        "nature": "Jolly",
+        "evs": {
+          "hp": 0,
+          "atk": 252,
+          "def": 0,
+          "spa": 0,
+          "spd": 4,
+          "spe": 252
+        },
+        "gender": "N",
+        "level": 50,
+        "happiness": 255,
+        "hpType": "Fighting",
+        "pokeball": "",
+        "gigantamax": false,
+        "dynamaxLevel": 10,
+        "teraType": "Fire",
+        "ivs": {
+          "hp": 31,
+          "atk": 31,
+          "def": 31,
+          "spa": 31,
+          "spd": 31,
+          "spe": 31
+        }
+      },
+      {
+        "name": "ac949a893a",
+        "species": "Chien-Pao",
+        "item": "Focus Sash",
+        "ability": "Sword of Ruin",
+        "moves": [
+          "Ice Spinner",
+          "Sucker Punch",
+          "Taunt",
+          "Protect"
+        ],
+        "nature": "Jolly",
+        "evs": {
+          "hp": 4,
+          "atk": 252,
+          "def": 0,
+          "spa": 0,
+          "spd": 0,
+          "spe": 252
+        },
+        "gender": "N",
+        "level": 50,
+        "happiness": 255,
+        "hpType": "",
+        "pokeball": "",
+        "gigantamax": false,
+        "dynamaxLevel": 10,
+        "teraType": "Flying",
+        "ivs": {
+          "hp": 31,
+          "atk": 31,
+          "def": 31,
+          "spa": 31,
+          "spd": 31,
+          "spe": 31
+        }
+      },
+      {
+        "name": "20955f385f",
+        "species": "Kingambit",
+        "item": "Assault Vest",
+        "ability": "Defiant",
+        "moves": [
+          "Iron Head",
+          "Kowtow Cleave",
+          "Sucker Punch",
+          "Tera Blast"
+        ],
+        "nature": "Adamant",
+        "evs": {
+          "hp": 252,
+          "atk": 204,
+          "def": 20,
+          "spa": 0,
+          "spd": 4,
+          "spe": 28
+        },
+        "level": 50,
+        "happiness": 255,
+        "hpType": "",
+        "pokeball": "",
+        "gigantamax": false,
+        "dynamaxLevel": 10,
+        "teraType": "Fire",
+        "ivs": {
+          "hp": 31,
+          "atk": 31,
+          "def": 31,
+          "spa": 31,
+          "spd": 31,
+          "spe": 31
+        }
+      }
+    ],
+    "p2team": [
+      {
+        "name": "6c94441b7e",
+        "species": "Lurantis",
+        "item": "Assault Vest",
+        "ability": "Contrary",
+        "moves": [
+          "Tera Blast",
+          "Leech Life",
+          "Brick Break",
+          "Leaf Storm"
+        ],
+        "nature": "Brave",
+        "evs": {
+          "hp": 252,
+          "atk": 252,
+          "def": 4,
+          "spa": 0,
+          "spd": 0,
+          "spe": 0
+        },
+        "gender": "F",
+        "level": 50,
+        "happiness": 255,
+        "hpType": "",
+        "pokeball": "",
+        "gigantamax": false,
+        "dynamaxLevel": 10,
+        "teraType": "Fire",
+        "ivs": {
+          "hp": 31,
+          "atk": 31,
+          "def": 31,
+          "spa": 31,
+          "spd": 31,
+          "spe": 31
+        }
+      },
+      {
+        "name": "bc99286daa",
+        "species": "Staraptor",
+        "item": "Focus Sash",
+        "ability": "Intimidate",
+        "moves": [
+          "Tailwind",
+          "Protect",
+          "U-turn",
+          "Brave Bird"
+        ],
+        "nature": "Jolly",
+        "evs": {
+          "hp": 4,
+          "atk": 252,
+          "def": 0,
+          "spa": 0,
+          "spd": 0,
+          "spe": 252
+        },
+        "gender": "M",
+        "level": 50,
+        "happiness": 255,
+        "hpType": "",
+        "pokeball": "",
+        "gigantamax": false,
+        "dynamaxLevel": 10,
+        "teraType": "Steel",
+        "ivs": {
+          "hp": 31,
+          "atk": 31,
+          "def": 31,
+          "spa": 31,
+          "spd": 31,
+          "spe": 31
+        }
+      },
+      {
+        "name": "1b26b17d61",
+        "species": "Sableye",
+        "item": "Red Card",
+        "ability": "Prankster",
+        "moves": [
+          "Light Screen",
+          "Protect",
+          "Reflect",
+          "Foul Play"
+        ],
+        "nature": "Careful",
+        "evs": {
+          "hp": 252,
+          "atk": 4,
+          "def": 0,
+          "spa": 0,
+          "spd": 252,
+          "spe": 0
+        },
+        "gender": "M",
+        "ivs": {
+          "hp": 31,
+          "atk": 0,
+          "def": 31,
+          "spa": 31,
+          "spd": 31,
+          "spe": 31
+        },
+        "level": 50,
+        "happiness": 255,
+        "hpType": "",
+        "pokeball": "",
+        "gigantamax": false,
+        "dynamaxLevel": 10,
+        "teraType": "Dark"
+      },
+      {
+        "name": "094be40738",
+        "species": "Gastrodon-East",
+        "item": "Sitrus Berry",
+        "ability": "Storm Drain",
+        "moves": [
+          "Earth Power",
+          "Ice Beam",
+          "Surf",
+          "Protect"
+        ],
+        "nature": "Relaxed",
+        "evs": {
+          "hp": 4,
+          "atk": 0,
+          "def": 252,
+          "spa": 252,
+          "spd": 0,
+          "spe": 0
+        },
+        "gender": "F",
+        "ivs": {
+          "hp": 31,
+          "atk": 0,
+          "def": 31,
+          "spa": 31,
+          "spd": 31,
+          "spe": 31
+        },
+        "shiny": true,
+        "level": 50,
+        "happiness": 255,
+        "hpType": "",
+        "pokeball": "",
+        "gigantamax": false,
+        "dynamaxLevel": 10,
+        "teraType": "Ground"
+      },
+      {
+        "name": "12fe8cb448",
+        "species": "Masquerain",
+        "item": "Safety Goggles",
+        "ability": "Intimidate",
+        "moves": [
+          "U-turn",
+          "Protect",
+          "Giga Drain",
+          "Shadow Ball"
+        ],
+        "nature": "Timid",
+        "evs": {
+          "hp": 4,
+          "atk": 0,
+          "def": 0,
+          "spa": 252,
+          "spd": 0,
+          "spe": 252
+        },
+        "level": 50,
+        "happiness": 255,
+        "hpType": "",
+        "pokeball": "",
+        "gigantamax": false,
+        "dynamaxLevel": 10,
+        "teraType": "Bug",
+        "ivs": {
+          "hp": 31,
+          "atk": 31,
+          "def": 31,
+          "spa": 31,
+          "spd": 31,
+          "spe": 31
+        }
+      },
+      {
+        "name": "d51aa6dd2e",
+        "species": "Dragapult",
+        "item": "Kasib Berry",
+        "ability": "Cursed Body",
+        "moves": [
+          "Surf",
+          "U-turn",
+          "Sucker Punch",
+          "Protect"
+        ],
+        "nature": "Hasty",
+        "evs": {
+          "hp": 4,
+          "atk": 252,
+          "def": 0,
+          "spa": 0,
+          "spd": 0,
+          "spe": 252
+        },
+        "level": 50,
+        "happiness": 255,
+        "hpType": "",
+        "pokeball": "",
+        "gigantamax": false,
+        "dynamaxLevel": 10,
+        "teraType": "Water",
+        "ivs": {
+          "hp": 31,
+          "atk": 31,
+          "def": 31,
+          "spa": 31,
+          "spd": 31,
+          "spe": 31
+        }
+      }
+    ],
+    "p1": "88d051b1ea",
+    "p2": "76af400b80",
+    "winner": "76af400b80",
+    "log": [
+      "|gametype|doubles",
+      "|player|p1|88d051b1ea|1|",
+      "|player|p2|76af400b80|1|",
+      "|teamsize|p1|6",
+      "|teamsize|p2|6",
+      "|gen|9",
+      "|tier|[Gen 9] VGC 2023 Regulation C",
+      "|rated|",
+      "|rule|Species Clause: Limit one of each Pokémon",
+      "|rule|Item Clause: Limit one of each item",
+      "|clearpoke",
+      "|poke|p1|Torkoal, L50, F|",
+      "|poke|p1|Jumpluff, L50, M|",
+      "|poke|p1|Flutter Mane, L50|",
+      "|poke|p1|Great Tusk, L50|",
+      "|poke|p1|Chien-Pao, L50|",
+      "|poke|p1|Kingambit, L50, F|",
+      "|poke|p2|Lurantis, L50, F|",
+      "|poke|p2|Staraptor, L50, M|",
+      "|poke|p2|Sableye, L50, M|",
+      "|poke|p2|Gastrodon-East, L50, F|",
+      "|poke|p2|Masquerain, L50, F|",
+      "|poke|p2|Dragapult, L50, M|",
+      "|teampreview|4",
+      "|",
+      "|start",
+      "|switch|p1a: 7a326e0802|Torkoal, L50, F|177/177",
+      "|switch|p1b: 057ba47ea9|Jumpluff, L50, M|181/181",
+      "|switch|p2a: d51aa6dd2e|Dragapult, L50, M|164/164",
+      "|switch|p2b: 094be40738|Gastrodon-East, L50, F, shiny|187/187",
+      "|-weather|SunnyDay|[from] ability: Drought|[of] p1a: 7a326e0802",
+      "|turn|1",
+      "|",
+      "|move|p2a: d51aa6dd2e|Protect|p2a: d51aa6dd2e",
+      "|-singleturn|p2a: d51aa6dd2e|Protect",
+      "|move|p1b: 057ba47ea9|Leaf Storm|p2b: 094be40738",
+      "|-supereffective|p2b: 094be40738",
+      "|-damage|p2b: 094be40738|0 fnt",
+      "|-unboost|p1b: 057ba47ea9|spa|2",
+      "|faint|p2b: 094be40738",
+      "|move|p1a: 7a326e0802|Yawn|p2a: d51aa6dd2e",
+      "|-block|p2a: d51aa6dd2e|move: Protect||",
+      "|",
+      "|-weather|SunnyDay|[upkeep]",
+      "|upkeep",
+      "|",
+      "|switch|p2b: 1b26b17d61|Sableye, L50, M|157/157",
+      "|turn|2",
+      "|",
+      "|move|p2b: 1b26b17d61|Light Screen|p2b: 1b26b17d61",
+      "|-sidestart|p2: 76af400b80|move: Light Screen",
+      "|move|p1b: 057ba47ea9|Tailwind|p1b: 057ba47ea9",
+      "|-sidestart|p1: 88d051b1ea|move: Tailwind",
+      "|move|p2a: d51aa6dd2e|U-turn|p1b: 057ba47ea9",
+      "|-damage|p1b: 057ba47ea9|127/181",
+      "|",
+      "|switch|p2a: 6c94441b7e|Lurantis, L50, F|177/177|[from] U-turn",
+      "|move|p1a: 7a326e0802|Overheat|p2b: 1b26b17d61",
+      "|-damage|p2b: 1b26b17d61|87/157",
+      "|-unboost|p1a: 7a326e0802|spa|2",
+      "|-enditem|p1a: 7a326e0802|Eject Pack",
+      "|-enditem|p2b: 1b26b17d61|Red Card|[of] p1a: 7a326e0802",
+      "|drag|p1a: ac949a893a|Chien-Pao, L50|156/156",
+      "|-ability|p1a: ac949a893a|Sword of Ruin",
+      "|",
+      "|-weather|SunnyDay|[upkeep]",
+      "|upkeep",
+      "|turn|3",
+      "|player|p1|",
+      "|",
+      "|-terastallize|p2a: 6c94441b7e|Fire",
+      "|move|p2b: 1b26b17d61|Reflect|p2b: 1b26b17d61",
+      "|-sidestart|p2: 76af400b80|Reflect",
+      "|move|p1b: 057ba47ea9|Encore|p2b: 1b26b17d61",
+      "|-start|p2b: 1b26b17d61|Encore",
+      "|move|p1a: ac949a893a|Ice Spinner|p2a: 6c94441b7e",
+      "|-resisted|p2a: 6c94441b7e",
+      "|-damage|p2a: 6c94441b7e|146/177",
+      "|move|p2a: 6c94441b7e|Leech Life|p1a: ac949a893a",
+      "|-supereffective|p1a: ac949a893a",
+      "|-damage|p1a: ac949a893a|36/156",
+      "|-heal|p2a: 6c94441b7e|177/177|[from] drain|[of] p1a: ac949a893a",
+      "|",
+      "|-weather|SunnyDay|[upkeep]",
+      "|upkeep",
+      "|turn|4",
+      "|",
+      "|win|76af400b80",
+      ""
+    ],
+    "inputLog": [
+      ">p1 team 1, 2, 5, 6",
+      ">p2 team 6, 4, 3, 1",
+      ">p1 move yawn +1, move leafstorm +2",
+      ">p2 move protect, move surf",
+      ">p2 pass, switch 3",
+      ">p1 move overheat +2, move tailwind",
+      ">p2 move uturn +2, move lightscreen",
+      ">p2 switch 4, pass",
+      ">p1 move icespinner +1, move encore +2",
+      ">p2 move leechlife +1 terastallize, move reflect"
+    ]
+  }

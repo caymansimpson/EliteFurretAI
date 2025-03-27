@@ -160,7 +160,8 @@ def main(cfg):
     print("===== Training Stats =====")
     print(f"Total Battles:  {total_battles}")
     print(f"Train Slice:    {cfg['train_slice']}")
-    print(f"Val Slice:    {cfg['val_slice']}")
+    print(f"Val Slice:      {cfg['val_slice']}")
+    print(f"Label:          {cfg['label']}")
     print(f"Estimate Steps: {int(total_steps)}")
     print(f"Estimate Time:  {hours}h {minutes}m")
     print(f"Layers:         {cfg['layers']}")
@@ -206,7 +207,7 @@ def main(cfg):
             # After each 1s, print
             if time.time() - start > last:
                 perc_done = 100 * steps / total_steps
-                time_left = time.time() - start / (perc_done / 100)
+                time_left = (time.time() - start) / (perc_done / 100)
                 hours_left = time_left // 3600
                 minutes_left = time_left // 60
                 print(
@@ -262,5 +263,6 @@ if __name__ == "__main__":
         "data": sys.argv[1],
         "seed": 21,
         "format": "gen9vgc2024regc",
+        "label": "order",
     }
     main(config)

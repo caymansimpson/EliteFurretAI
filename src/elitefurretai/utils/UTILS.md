@@ -23,7 +23,16 @@ This folder contains general utilities for EliteFurretAI. So far, these include:
     - get_segments
     - battle_to_str
     - DISCERNABLE_ITEMS, MEGASTONES_THAT_CAN_PUBLICLY_ACTIVATE_ABILITIES_OR_ITEMS, FIRST_BLOCK_RESIDUALS, ABILITIES_THAT_CAN_PUBLICLY_ACTIVATE_ABILITIES_OR_ITEMS
-
+5. **Damage Estimator**: nearly fully functional Damage Calculator for Gen9 VGC. Caveats:
+- It's not quite ready for singles -- I do some things like assume battle.active_pokemon is a list of pokemon that I'd need to address, but honestly it'll only be ~60-90 minutes of work to add and test
+- It needs perfect information, including stats, abilities and items of mons to make it work, which is not what we have access to in vanilla poke-env. Probably the biggest downside.
+- Because of the above, it uses showdown's identifiers and not Pokemon objects to track the battle state and use it in calcs -- this is because I assume users will be modifying stats or keeping parallel battle states with assumptions on stats/items
+- NOTE: doesn't deal with multihits (just take average)
+- NOTE: doesn't deal with shell side arm, naturalgift, technoblast, pursuit, multiattack, aurawheel, fling
+- NOTE: doesn't deal with xerneas or zygarde or yveltal auras, or battlebond
+- NOTE: doesnt deal with metronome (the item) or stellar because we dont keep a log of historical move usage
+- NOTE: ignores dynamax, mega, primal,battlebond and parental bond (not legal in gen9)
+- NOTE: knockoff damage isnt realllllly right cuz I dont look at pokemon/item pairs, just items
 
 ## 1. MetaDB
 
