@@ -26,18 +26,33 @@ class BattleDataset(Dataset):
             label_type: Optional[str] = "win",
             bd_eligibility_func: Optional[Callable] = None,
             max_turns: int = 17,
-            means: Optional[List[float]] = None,
-            stds: Optional[List[float]] = None
+            means: Optional[torch.Tensor] = None,
+            stds: Optional[torch.Tensor] = None
     ):
         assert len(files) > 0
         assert label_type in ["win", "order", "filename"]
 
         self.files = files
-        self.embedder = Embedder(format=format, simple=False)
+        self.embedder = Embedder(format=format, type="full")
         self.label_type = label_type
 
-        self.means = torch.tensor(means).unsqueeze(0).expand(max_turns, -1) if means is not None else torch.zeros(max_turns, self.embedder.embedding_size)
-        self.stds = torch.tensor(stds).unsqueeze(0).expand(max_turns, -1) if stds is not None else torch.ones(max_turns, self.embedder.embedding_size)
+        if means is None:
+            self.means = torch.zeros(max_turns, self.embedder.embedding_size).to(torch.float32)
+        elif len(means.shape) == 1:
+            self.means = means.unsqueeze(0).repeat(max_turns, 1).to(torch.float32)
+        else:
+            self.means = means.to(torch.float32)
+
+        if stds is None:
+            self.stds = torch.ones(max_turns, self.embedder.embedding_size).to(torch.float32)
+        elif len(stds.shape) == 1:
+            self.stds = stds.unsqueeze(0).repeat(max_turns, 1).to(torch.float32)
+        else:
+            self.stds = stds.to(torch.float32)
+
+        assert self.stds.shape == (max_turns, self.embedder.embedding_size), f"Shape of stds is: {self.stds.shape} and should be {(max_turns, self.embedder.embedding_size)}"
+        assert self.means.shape == (max_turns, self.embedder.embedding_size), f"Shape of means is: {self.means.shape} and should be {(max_turns, self.embedder.embedding_size)}"
+
         self.bd_eligibility_func = bd_eligibility_func if bd_eligibility_func is not None else self._dummy_func
         self.max_turns = max_turns
 
@@ -55,12 +70,12 @@ class BattleDataset(Dataset):
 
         if len(X) < self.max_turns:
             X = torch.cat((X, torch.zeros(self.max_turns - len(X), self.embedder.embedding_size)))
-            Y = torch.cat((Y, torch.zeros(self.max_turns - len(Y)))).int()
+            Y = torch.cat((Y, torch.zeros(self.max_turns - len(Y))))
         else:
             X = X[:self.max_turns]
-            Y = Y[:self.max_turns].int()
+            Y = Y[:self.max_turns]
 
-        return (X - self.means) / self.stds, Y, mask
+        return (X - self.means) / self.stds, Y.int(), mask.bool()
 
     # Loads and encodes a battle in the official da ta format to an embedding
     def load_battle_data(self, file_path: str) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -107,7 +122,7 @@ class BattleDataset(Dataset):
                 elif self.label_type == "filename":
                     Y.append(int(os.path.basename(file_path.split(".")[0])))
 
-        return torch.tensor(X), torch.tensor(Y)
+        return torch.tensor(X, dtype=torch.float32), torch.tensor(Y, dtype=torch.float32)
 
     @staticmethod
     def generate_normalizations(
@@ -116,7 +131,7 @@ class BattleDataset(Dataset):
         bd_eligibility_func: Optional[Callable] = None,
         batch_size: int = 32,
         verbose: bool = False
-    ) -> Tuple[List[float], List[float]]:
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
 
         dataset = BattleDataset(
             files=files,
@@ -174,4 +189,4 @@ class BattleDataset(Dataset):
         seconds = int((time.time() - start) % 60)
         print(f"Done generating normalizations for {total_battles} battles in {hours}h {minutes}m {seconds}s!")
 
-        return means, stds
+        return torch.tensor(means, dtype=torch.float32), torch.tensor(stds, dtype=torch.float32)

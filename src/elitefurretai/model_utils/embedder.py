@@ -28,16 +28,22 @@ from elitefurretai.utils.inference_utils import get_showdown_identifier
 
 class Embedder:
 
+    SIMPLE = "simple"
+    RAW = "raw"
+    FULL = "full"
+
     def __init__(
-        self, format="gen9vgc2024regc", simple: bool = True, max_size: Optional[int] = None
+        self, format="gen9vgc2024regc", type: str = "full", max_size: int = 1
     ):
         self._history: List[Dict[str, float]] = []
         self._knowledge: Dict[str, Any] = {}
-        self._format = format
-        self._simple: bool = simple
-        self._max_size: int = (
-            max_size if max_size is not None else 10
-        )  # prevents memory leaking
+        self._format: str = format
+
+        assert max_size > 0
+        self._max_size: int = max_size
+
+        assert type in [self.SIMPLE, self.RAW, self.FULL]
+        self._type: str = type
 
         sets = [
             ("Status", Status),
@@ -57,8 +63,6 @@ class Embedder:
         self._knowledge["SideCondition"] = TRACKED_SIDE_CONDITIONS
         self._knowledge["Weather"] = TRACKED_WEATHERS
         self._knowledge["Field"] = TRACKED_FIELDS
-
-        # Sourced from https://github.com/smogon/pokemon-showdown/blob/67354c8f3d285b52a2e4cd4c6aa194a1bfd19c1c/data/abilities.ts
         self._knowledge["Ability"] = TRACKED_ABILITIES
 
         self._embedding_size = self._get_embedding_size()
@@ -70,21 +74,13 @@ class Embedder:
         """
         return string.lower().replace("_", " ")
 
-    # Does not currently support Singles; can be extended to do so by parsing format
-    def _create_dummy_battle(self) -> DoubleBattle:
+    def _get_embedding_size(self) -> int:
         dummy_battle = DoubleBattle(
             "tag", "elitefurretai", logging.Logger("example"), gen=int(self._format[3])
         )
         dummy_battle._format = self._format
         dummy_battle.player_role = "p1"
-        return dummy_battle
-
-    def _get_embedding_size(self) -> int:
-        dummy_battle = self._create_dummy_battle()
-        if self._simple:
-            return len(self._simplify_features(self.featurize_double_battle(dummy_battle)))
-        else:
-            return len(self.featurize_double_battle(dummy_battle))
+        return len(self.featurize_double_battle(dummy_battle))
 
     def history(self, last_n: Optional[int] = None) -> List[List[float]]:
         if last_n is None:
@@ -113,7 +109,6 @@ class Embedder:
             vec.append(float(features[key]))
         return vec
 
-    # As of writing, this is 1449 features, mostly due to OHE of pokemon types
     def _simplify_features(self, features: Dict[str, Any]) -> Dict[str, Any]:
         """
         Converts a normal feature dictionary into a heavily simplified one.
@@ -126,6 +121,51 @@ class Embedder:
                 if feature_str in k:
                     simple_features[k] = v
         return simple_features
+
+    def _add_full_features(self, battle: DoubleBattle, bi: Optional[BattleInference] = None) -> Dict[str, float]:
+        """Adds supplementary engineered features that should help with learning"""
+        features: Dict[str, float] = {}
+        """
+        Features to consider:
+        - Move orders for each mon
+        - Type matchups for each mon
+        - num non-fainted mons on my side
+        - num non-fainted mons on their side
+        - can they knock me out?
+        - can I knock them out?
+        - do i have a move that can change the number of move orders (speed)
+        - do they have a move that can change the number of move orders (speed)
+        - number of moves i have revealed
+        - number of moves they have revealed
+        - number of mons i have revealed
+        - number of moves they have revealed
+        - % hp I have left
+        - % hp they have left
+        """
+        return {}
+
+        # TODO: implement
+        perc_hp = 1.0
+        for i, mon in enumerate((list(battle.teampreview_team) + [None] * 6)[:6]):
+            prefix = "MON:" + str(i) + ":"
+
+            # TODO: does mon in teampreview and batte.team stay the same? no.
+
+            if (mon.name if mon else "") in map(lambda x: x.name if x else None, battle.active_pokemon):
+                pass
+
+            for move in mon.moves:
+                pass
+
+        opp_perc_hp = 1.0
+        for i, mon in enumerate((list(battle.teampreview_opponent_team) + [None] * 6)[:6]):
+            prefix = "OPP_MON:" + str(i) + ":"
+
+            for move in mon.moves:
+                pass
+
+        # TODO: add
+        return features
 
     def featurize_move(self, move: Optional[Move], prefix: str = "") -> Dict[str, float]:
         """
@@ -479,8 +519,8 @@ class Embedder:
 
             features[prefix + "sent"] = sent
             features[prefix + "active"] = int(
-                (mon.species if mon else "")
-                in map(lambda x: x.species if x else None, battle.active_pokemon)
+                (mon.name if mon else "")
+                in map(lambda x: x.name if x else None, battle.active_pokemon)
             )
 
             # To maintain representation of public belief state
@@ -553,8 +593,8 @@ class Embedder:
                 else sent
             )
             features[prefix + "active"] = int(
-                (mon.species if mon else "")
-                in map(lambda x: x.species if x else None, battle.opponent_active_pokemon)
+                (mon.name if mon else "")
+                in map(lambda x: x.name if x else None, battle.opponent_active_pokemon)
             )
 
             emb.update(features)
@@ -593,12 +633,16 @@ class Embedder:
         emb["turn"] = battle.turn
         emb["bias"] = 1
 
+        # Convert embedding to the specified type
+        if self._type == self.SIMPLE:
+            emb = self._simplify_features(emb)
+        elif self._type == self.FULL:
+            emb.update(self._add_full_features(battle, bi))
+
+        # Store the embedding in our history
         if len(self._history) == self._max_size:
             self._history.pop(0)
         self._history.append(emb)
-
-        if self._simple:
-            emb = self._simplify_features(emb)
 
         return emb
 
@@ -618,32 +662,49 @@ BASIC_FEATURES = {
     "id",
 }
 
-# TODO: need to revisit once I have showdown data to understand usage
 TRACKED_EFFECTS = {
-    Effect.DISABLE,
-    Effect.ENCORE,
-    Effect.SPOTLIGHT,
-    Effect.SILK_TRAP,
-    Effect.HEAL_BLOCK,
-    Effect.TAUNT,
-    Effect.YAWN,
-    Effect.IMPRISON,
-    Effect.FOLLOW_ME,
-    Effect.GLAIVE_RUSH,
-    Effect.CONFUSION,
-    Effect.BANEFUL_BUNKER,
-    Effect.PROTECT,
-    Effect.BURNING_BULWARK,
-    Effect.HELPING_HAND,
-    Effect.FLINCH,
-    Effect.SUBSTITUTE,
-    Effect.RAGE_POWDER,
-    Effect.ROOST,
-    Effect.SALT_CURE,
-    Effect.LEECH_SEED,
-    Effect.POWDER,
-    Effect.SPIKY_SHIELD,
-    Effect.ENDURE,
+    Effect.from_showdown_message("ability: Protosynthesis"),
+    Effect.from_showdown_message("ability: Protosynthesis"),
+    Effect.from_showdown_message("ability: Quark Drive"),
+    Effect.from_showdown_message("protosynthesisspe"),
+    Effect.from_showdown_message("quarkdrivespe"),
+    Effect.from_showdown_message("ability: Zero to Hero"),
+    Effect.from_showdown_message("protosynthesisspa"),
+    Effect.from_showdown_message("perish3"),
+    Effect.from_showdown_message("move: Taunt"),
+    Effect.from_showdown_message("protosynthesisatk"),
+    Effect.from_showdown_message("Substitute"),
+    Effect.from_showdown_message("ability: Toxic Debris"),
+    Effect.from_showdown_message("move: Leech Seed"),
+    Effect.from_showdown_message("perish2"),
+    Effect.from_showdown_message("Salt Cure"),
+    Effect.from_showdown_message("ability: Commander"),
+    Effect.from_showdown_message("perish1"),
+    Effect.from_showdown_message("Encore"),
+    Effect.from_showdown_message("move: Yawn"),
+    Effect.from_showdown_message("confusion"),
+    Effect.from_showdown_message("Throat Chop"),
+    Effect.from_showdown_message("Disable"),
+    Effect.from_showdown_message("perish0"),
+    Effect.from_showdown_message("move: Substitute"),
+    Effect.from_showdown_message("quarkdriveatk"),
+    Effect.from_showdown_message("move: Trick"),
+    Effect.from_showdown_message("ability: Flash Fire"),
+    Effect.from_showdown_message("quarkdrivespa"),
+    Effect.from_showdown_message("typechange"),
+    Effect.from_showdown_message("Charge"),
+    Effect.from_showdown_message("move: After You"),
+    Effect.from_showdown_message("move: Sand Tomb"),
+    Effect.from_showdown_message("trapped"),
+    Effect.from_showdown_message("ability: Storm Drain"),
+    Effect.from_showdown_message("move: Struggle"),
+    Effect.from_showdown_message("ability: Dancer"),
+    Effect.from_showdown_message("protosynthesisspd"),
+    Effect.from_showdown_message("move: Quash"),
+    Effect.from_showdown_message("move: Endure"),
+    Effect.from_showdown_message("ability: Supreme Overlord"),
+    Effect.from_showdown_message("move: Imprison"),
+    Effect.from_showdown_message("move: Focus Energy"),
 }
 
 TRACKED_TARGET_TYPES = {
@@ -674,255 +735,100 @@ TRACKED_SIDE_CONDITIONS = {
 }
 
 TRACKED_ABILITIES = {
-    "embodyaspecthearthflame",
-    "trace",
-    "waterveil",
-    "gooey",
-    "mountaineer",
-    "static",
-    "schooling",
-    "icescales",
-    "thickfat",
-    "ripen",
-    "liquidooze",
-    "imposter",
-    "simple",
-    "sandforce",
-    "desolateland",
-    "quickfeet",
-    "goodasgold",
-    "poisonpuppeteer",
-    "roughskin",
-    "whitesmoke",
-    "comatose",
-    "scrappy",
-    "tintedlens",
-    "stakeout",
-    "overgrow",
-    "moxie",
-    "solidrock",
-    "stancechange",
-    "innardsout",
-    "stamina",
-    "thermalexchange",
-    "sapsipper",
-    "moody",
-    "chillingneigh",
-    "eartheater",
-    "flashfire",
-    "myceliummight",
-    "magnetpull",
-    "prismarmor",
-    "illusion",
-    "opportunist",
-    "slushrush",
-    "wonderguard",
-    "motordrive",
-    "forecast",
-    "turboblaze",
-    "toxicboost",
-    "waterbubble",
-    "fluffy",
-    "guts",
-    "lightningrod",
-    "primordialsea",
-    "asoneglastrier",
-    "mistysurge",
-    "teravolt",
-    "harvest",
-    "toxicdebris",
-    "wonderskin",
-    "poisontouch",
-    "psychicsurge",
-    "teraformzero",
-    "pixilate",
-    "aerilate",
-    "tanglinghair",
-    "swordofruin",
-    "shieldsdown",
-    "electricsurge",
-    "mummy",
-    "cursedbody",
-    "magicguard",
-    "sniper",
-    "serenegrace",
-    "clearbody",
-    "shadowshield",
-    "marvelscale",
-    "sturdy",
-    "guarddog",
-    "skilllink",
-    "limber",
-    "regenerator",
-    "toughclaws",
-    "ironbarbs",
-    "filter",
-    "embodyaspectwellspring",
-    "electromorphosis",
-    "fairyaura",
-    "heatproof",
-    "rebound",
-    "chlorophyll",
-    "unseenfist",
-    "persistent",
-    "magicbounce",
-    "gulpmissile",
-    "embodyaspectteal",
-    "reckless",
-    "transistor",
-    "voltabsorb",
-    "shielddust",
-    "angershell",
-    "hustle",
+    "protosynthesis",
     "quarkdrive",
-    "fullmetalbody",
-    "cudchew",
-    "adaptability",
-    "tabletsofruin",
-    "noguard",
-    "drought",
-    "aromaveil",
-    "download",
-    "hadronengine",
-    "moldbreaker",
-    "asonespectrier",
-    "steelworker",
-    "galvanize",
-    "competitive",
-    "contrary",
-    "dragonsmaw",
-    "cottondown",
-    "wanderingspirit",
-    "hugepower",
     "intimidate",
+    "beadsofruin",
+    "regenerator",
+    "vesselofruin",
+    "swordofruin",
     "defiant",
-    "ironfist",
-    "shedskin",
-    "waterabsorb",
-    "flareboost",
-    "sandstream",
-    "bulletproof",
-    "pastelveil",
-    "sweetveil",
-    "dauntlessshield",
-    "refrigerate",
-    "unburden",
-    "synchronize",
-    "darkaura",
-    "shadowtag",
-    "furcoat",
-    "cheekpouch",
-    "blaze",
-    "mirrorarmor",
-    "solarpower",
-    "rockypayload",
-    "surgesurfer",
+    "multiscale",
     "zerotohero",
-    "iceface",
-    "battlebond",
-    "queenlymajesty",
-    "lingeringaroma",
-    "purifyingsalt",
-    "supremeoverlord",
-    "analytic",
-    "windrider",
-    "libero",
-    "arenatrap",
+    "prankster",
+    "goodasgold",
+    "commander",
+    "unaware",
+    "galewings",
+    "friendguard",
+    "toxicdebris",
+    "thermalexchange",
+    "drought",
+    "innerfocus",
     "snowwarning",
     "technician",
-    "immunity",
-    "prankster",
-    "strongjaw",
-    "unaware",
-    "toxicchain",
-    "multitype",
-    "terashift",
-    "torrent",
-    "pressure",
-    "poisonheal",
-    "punkrock",
-    "rkssystem",
-    "disguise",
-    "seedsower",
-    "multiscale",
-    "orichalcumpulse",
-    "sharpness",
-    "protean",
-    "steamengine",
+    "roughskin",
+    "psychicsurge",
     "levitate",
-    "purepower",
-    "screencleaner",
-    "infiltrator",
-    "parentalbond",
-    "effectspore",
-    "aftermath",
-    "soundproof",
-    "triage",
-    "deltastream",
-    "corrosion",
-    "wellbakedbody",
-    "flamebody",
-    "megalauncher",
-    "terashell",
-    "soulheart",
-    "vesselofruin",
-    "beadsofruin",
-    "swarm",
-    "beastboost",
-    "stormdrain",
-    "rockhead",
-    "naturalcure",
-    "dryskin",
-    "dazzling",
-    "steelyspirit",
-    "victorystar",
-    "grimneigh",
-    "protosynthesis",
-    "sheerforce",
-    "swiftswim",
-    "armortail",
-    "overcoat",
-    "berserk",
-    "neutralizinggas",
-    "intrepidsword",
-    "gorillatactics",
-    "speedboost",
-    "quickdraw",
-    "justified",
-    "compoundeyes",
-    "powerconstruct",
-    "neuroforce",
+    "mirrorarmor",
+    "flashfire",
+    "sandstream",
+    "tabletsofruin",
+    "oblivious",
+    "hugepower",
     "drizzle",
-    "grassysurge",
+    "clearbody",
+    "eartheater",
+    "purifyingsalt",
+    "vitalspirit",
+    "chlorophyll",
     "sandrush",
-    "embodyaspectcornerstone",
-    "frisk",
-    "stall",
+    "shadowtag",
+    "armortail",
+    "magicbounce",
+    "stormdrain",
+    "flamebody",
+    "swiftswim",
+    "corrosion",
+    "pixilate",
+    "disguise",
+    "telepathy",
+    "weakarmor",
+    "wellbakedbody",
+    "unburden",
+    "sharpness",
+    "sandveil",
+    "guts",
 }
 
 TRACKED_ITEMS = {
-    "aguavberry",
-    "assaultvest",
-    "safetygoggles",
-    "clearamulet",
-    "covertcloak",
-    "heavydutyboots",
-    "leftovers",
-    "sitrusberry",
     "focussash",
-    "choicescarf",
-    "lifeorb",
-    "choiceband",
-    "choicespecs",
-    "wikiberry",
-    "elecrticseed",
-    "grassyseed",
-    "psychicseed",
-    "rockyhelmet",
+    "assaultvest",
     "boosterenergy",
-    "flameorb",
+    "safetygoggles",
+    "sitrusberry",
+    "leftovers",
+    "choicespecs",
+    "lifeorb",
+    "choicescarf",
+    "choiceband",
+    "clearamulet",
+    "mysticwater",
+    "lumberry",
+    "covertcloak",
+    "rockyhelmet",
     "lightclay",
-    "laggingtail",
+    "eviolite",
+    "weaknesspolicy",
+    "charcoal",
+    "loadeddice",
+    "aguavberry",
+    "mentalherb",
+    "widelens",
+    "psychicseed",
+    "ejectpack",
+    "throatspray",
+    "damprock",
+    "figyberry",
+    "expertbelt",
+    "blackglasses",
+    "iapapaberry",
+    "mirrorherb",
+    "blacksludge",
+    "wikiberry",
+    "airballoon",
+    "flameorb",
+    "ejectbutton",
 }
 
 TRACKED_FORMATS = {

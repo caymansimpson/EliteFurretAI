@@ -198,12 +198,16 @@ class BattleData:
 
     # To help with some corrupted logs that we have
     def is_valid_for_supervised_learning(self) -> bool:
+
         # Old showdown protool
         if any(map(lambda x: "[ability2] " in x, self.logs)):
             return False
 
         # Player error
         elif self.p1_rating is None or self.p2_rating is None:
+            return False
+
+        elif self.p1_rating < 1500 or self.p2_rating < 1500:
             return False
 
         # Battle didnt start
@@ -252,15 +256,6 @@ class BattleData:
             return False
 
         return True
-
-    # From anonymous logs, we need to make the following changes to ensure compatability
-    # @staticmethod
-    # def showdown_translation(msg):
-    #     if msg[1] == "move" and msg[-1].startswith("[from] "):
-    #         msg[-1] = msg[-1].replace("[from] ", "[from]")
-    #     elif msg[1] == "move" and msg[-2].startswith("[from] "):
-    #         msg[-2] = msg[-2].replace("[from] ", "[from]")
-    #     return msg
 
 
 def team_from_json(team: List[Dict[str, Any]]) -> List[ObservedPokemon]:

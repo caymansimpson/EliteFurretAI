@@ -4,6 +4,7 @@ to try to play like humans.
 """
 import os.path
 import sys
+import random
 import time
 
 import torch
@@ -12,7 +13,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 
 import wandb
-from elitefurretai.model_utils import Embedder, ModelBattleOrder, BattleDataset
+from elitefurretai.model_utils import Embedder, ModelBattleOrder, BattleDataset, BattleData
 
 
 class PolicyNetwork(nn.Module):
@@ -40,6 +41,13 @@ class PolicyNetwork(nn.Module):
         layers.append(nn.Linear(cfg["layers"][-1], last_layer_size))
         self.network = nn.Sequential(*layers)
 
+        # Use Cross Entropy Loss for policy learning
+        self.criterion = nn.HuberLoss()
+        if self._config["loss"] == "CrossEntropy":
+            self.criterion = nn.CrossEntropyLoss()  # Should aim for 0.05
+        elif self._config["loss"] == "BCE":
+            self.criterion = nn.BCEWithLogitsLoss()
+
         if self._config["optimizer"] == "SGD":
             self.optimizer = optim.SGD(self.parameters(), lr=self._config["learning_rate"])
         elif self._config["optimizer"] == "RMSprop":
@@ -55,9 +63,7 @@ class PolicyNetwork(nn.Module):
 
         self.scheduler = None
         if cfg["scheduler"]:
-            self.scheduler = torch.optim.lr_scheduler.ExponentialLR(
-                self.optimizer, gamma=0.1
-            )
+            self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=10, gamma=0.5)
 
         # Assuming 'model' is your neural network module
         for m in self.network.modules():
@@ -73,28 +79,23 @@ class PolicyNetwork(nn.Module):
         self,
         X_train,
         y_train,
+        mask_train,
     ):
-        # Convert numpy arrays to PyTorch tensors
-        X_tensor = torch.FloatTensor(X_train)
-        y_tensor = torch.FloatTensor(y_train)
 
-        y_tensor = y_tensor.view(-1, 1)  # Add this line to reshape to [batch_size, 1]
-
-        # Use Cross Entropy Loss for policy learning
-        criterion = nn.HuberLoss()
-        if self._config["loss"] == "CrossEntropy":
-            criterion = nn.CrossEntropyLoss()  # Should aim for 0.05
-        elif self._config["loss"] == "BCE":
-            criterion = nn.BCEWithLogitsLoss()
+        y_train = y_train.view(-1, 1)  # Add this line to reshape to [batch_size, 1]
 
         # Zero gradients
         self.optimizer.zero_grad()
 
         # Forward pass
-        policy_outputs = self(X_tensor)
+        policy_outputs = self(X_train)
 
         # Compute loss
-        loss = criterion(policy_outputs, y_tensor)
+        policy_outputs = policy_outputs[mask_train]
+        y_train = y_train[mask_train].view(-1, 1).float()
+
+        # Compute loss
+        loss = self.criterion(policy_outputs, y_train)
 
         # Backward pass
         loss.backward()
@@ -104,117 +105,82 @@ class PolicyNetwork(nn.Module):
 
         return loss.item()
 
-    def validate(self, data_loader: DataLoader, device="cpu", v=True):
-        self.network.eval()  # Set model to evaluation mode
+    def validate(self, data_loader: DataLoader, steps: int, device="cpu", v=True):
+        self.eval()
         total_loss = 0
-        total_correct = 0
-        total_samples = 0
-
-        criterion = nn.HuberLoss()
-        if self._config["loss"] == "CrossEntropy":
-            criterion = nn.CrossEntropyLoss()  # Should aim for 0.05
-
-        with torch.no_grad():  # Disable gradient computation
-            for inputs, targets in data_loader:
-                # Move to device
-                inputs = inputs.to(device)
-                targets = targets.to(device)
-
-                # Forward pass
+        correct = 0
+        tp, tn, fp, fn = 0, 0, 0, 0
+        with torch.no_grad():
+            for inputs, labels, mask in data_loader:
+                inputs = inputs.flatten(start_dim=0, end_dim=1).to(device)
+                labels = labels.flatten(start_dim=0, end_dim=1).to(device)
+                mask = mask.flatten(start_dim=0, end_dim=1).to(device)
                 outputs = self.network(inputs)
-                loss = criterion(outputs, targets)
+                loss = self.criterion(outputs[mask], labels[mask].view(-1, 1).float())
+                total_loss += loss.item()
+                predicted = torch.round(outputs)
+                correct += (predicted == labels).sum().item()
 
-                # Accumulate loss
-                total_loss += loss.item() * inputs.size(0)
+                for i in range(len(labels)):
+                    if not mask[i]:
+                        continue
+                    if labels[i] == 1 and predicted[i] == 1:
+                        tp += 1
+                    elif labels[i] == 1 and predicted[i] == 0:
+                        fn += 1
+                    elif labels[i] == 0 and predicted[i] == 1:
+                        fp += 1
+                    elif labels[i] == 0 and predicted[i] == 0:
+                        tn += 1
 
-                # Calculate accuracy (for classification)
-                predictions = outputs.argmax(dim=1)  # or threshold for binary
-                total_correct += (predictions == targets).sum().item()
-                total_samples += inputs.size(0)
-
-        # Calculate averages
-        avg_loss = total_loss / total_samples
-        accuracy = total_correct / total_samples
+        accuracy = (tp + fn) / (tp + tn + fp + fn)
+        average_loss = total_loss / (tp + tn + fp + fn)
 
         if v:
-            print(f"\nValidation Loss: {avg_loss:.4f}, Accuracy: {accuracy:.4f}")
+            print(f"Validation Loss: {average_loss:.4f}")
+            print(f"Validation Accuracy: {accuracy:.4f}")
+            print(f"TP: {tp}, TN: {tn}, FP: {fp}, FN: {fn}")
 
-        self.network.train()
+        checkpoint = {
+            "step": steps,
+            "avg_validation_loss": average_loss,
+            "validation_accuracy": accuracy,
+        }
+        wandb.log(checkpoint)
 
-        return avg_loss, accuracy
+        self.train()
 
-
-class LogisticRegression(nn.Module):
-    def __init__(self, input_dim):
-        super(LogisticRegression, self).__init__()
-        self.model = nn.Linear(input_dim, 1)
-        self.criterion = nn.BCELoss()
-        self.optimizer = optim.SGD(self.model.parameters(), lr=0.01)
-        self.scheduler = None
-
-    def forward(self, x):
-        outputs = torch.sigmoid(self.model(x))
-        return outputs
-
-    def train_batch(
-        self,
-        X_train,
-        y_train,
-    ):
-        self.optimizer.zero_grad()
-        outputs = self.model(X_train)
-        loss = self.criterion(outputs, y_train.view(-1, 1))
-        loss.backward()
-        self.optimizer.step()
-        return loss
-
-    def validate(self, data_loader: DataLoader, device="cpu", v=True):
-        return None, None
+        return average_loss, accuracy
 
 
 def main(cfg):
-
-    desktop_path = "/Users/cayman/Desktop"
     torch.manual_seed(cfg["seed"])
     torch.cuda.manual_seed(cfg["seed"])
+    random.seed(cfg["seed"])
 
     # Initialize everything
     wandb.init(project="elitefurretai-perish", config=cfg)
-    embedder = Embedder(format=cfg["format"], simple=False)
+    embedder = Embedder(format=cfg["format"], type="full")
     model = PolicyNetwork(input_size=embedder.embedding_size, cfg=cfg)
-    if cfg["model"] == "LR":
-        model = LogisticRegression(embedder.embedding_size)
     wandb.watch(model, log="all", log_freq=10)
     files = sorted(map(lambda x: os.path.join(sys.argv[1], x), os.listdir(sys.argv[1])))
-
-    # For tracking progress through iterations
-    start, last, batch_num, steps = time.time(), 0, 0, 0
 
     # Print training run
     est_steps_per_battle = 8.8
     total_battles = len(files) * (cfg["train_slice"][1] - cfg["train_slice"][0])
     total_steps = total_battles * 2 * est_steps_per_battle * cfg["epochs"]
     cfg["num_params"] = sum(p.numel() for p in model.parameters())
-    cfg["estimated_training_steps"] = int(total_steps)
-    print("===== Training Stats =====")
+    cfg["est_steps"] = int(total_steps)
+    print("===== Training Information =====")
     for key, value in cfg.items():
         print(f"{key:<15} {value}")  # Left-align key with 15 spaces
     print()
 
     # Generate normalizations
-    means, stds = [0.0] * embedder.embedding_size, [1.0] * embedder.embedding_size
+    means, stds = None, None
     if cfg["normalization"]:
-        # means, stds = BattleDataset.generate_normalizations(
-        #     files[int(cfg["normalization"][0] * len(files)) : int(cfg["normalization"][1] * len(files))],
-        #     cfg["format"],
-        #     bd_eligibility_func=BattleData.is_valid_for_supervised_learning,
-        #     verbose=True,
-        # )
-
-        # torch.save(means, os.path.join(desktop_path, "means.pt"))
-        # torch.save(stds, os.path.join(desktop_path, "stds.pt"))
-        means = torch.load(os.path.join(desktop_path, "means.pt"), weights_only=False)
-        stds = torch.load(os.path.join(desktop_path, "stds.pt"), weights_only=False)
+        means = torch.load(os.path.join(cfg["desktop_path"], "means.pt"), weights_only=False, map_location=torch.device('cpu'))
+        stds = torch.load(os.path.join(cfg["desktop_path"], "stds.pt"), weights_only=False, map_location=torch.device('cpu'))
 
     # Generate dataset
     print("Generating Dataset...")
@@ -222,7 +188,7 @@ def main(cfg):
         files=files[int(cfg["train_slice"][0] * len(files)) : int(cfg["train_slice"][1] * len(files))],
         format=cfg["format"],
         label_type=cfg["label"],
-        bd_eligibility_func=lambda x: x.is_valid_for_supervised_learning,
+        bd_eligibility_func=BattleData.is_valid_for_supervised_learning,
         means=means,
         stds=stds
     )
@@ -234,24 +200,32 @@ def main(cfg):
         num_workers=min(os.cpu_count() or 1, 4),
         shuffle=True
     )
-    print("Finished!")
+    print("Finished generating dataset!")
+
+    # For tracking progress through training iterations
+    start, last, batch_num, steps = time.time(), 0, 0, 0
 
     # Iterate through datasets by batches
     print("\rProcessed 0 steps in 0 secs; (0% done)...", end="")
     for epoch in range(cfg["epochs"]):
-        for batch_X, batch_Y in data_loader:
+        for batch_X, batch_Y, batch_mask in data_loader:
+
+            # Since each X, Y and mask is a battle, we need to flatten them
+            batch_X = batch_X.flatten(start_dim=0, end_dim=1)
+            batch_Y = batch_Y.flatten(start_dim=0, end_dim=1)
+            batch_mask = batch_mask.flatten(start_dim=0, end_dim=1)
 
             # Update progress
             batch_num += 1
             steps += len(batch_X)
 
             # Train the model based on the batch
-            loss = model.train_batch(batch_X, batch_Y)
+            loss = model.train_batch(batch_X, batch_Y, batch_mask)
 
             # Log metrics
             wandb.log({"batch_loss": loss, "step": steps, "epoch": epoch})
             for name, param in model.named_parameters():
-                if param.grad is not None:
+                if param.grad is not None and param.grad.numel() > 1:
                     wandb.log(
                         {
                             f"mean_gradients/{name}": param.grad.mean(),
@@ -262,48 +236,46 @@ def main(cfg):
             # After each 1s, print
             if time.time() - start > last:
                 perc_done = 100 * steps / total_steps
-                time_left = (time.time() - start) / (perc_done / 100)
-                hours_left = time_left // 3600
-                minutes_left = time_left // 60
+                time_left = (time.time() - start) / (perc_done / 100) - (time.time() - start)
+                hours_left = int(time_left / (60 * 60))
+                minutes_left = int((time_left % (60 * 60)) / 60)
                 print(
                     f"\rProcessed {steps} steps in {round(time.time() - start, 2)}s; {round(perc_done, 2)}% done "
                     f"with an estimated {hours_left}h {minutes_left}m left...",
                     end="",
                 )
-                last += 1
+                last = time.time() - start + 1
 
-            # Checkpoint each hour
-            if last % (60 * 60) == 0 and last > 0:
+        # Checkpoint each 5 epochs
+        if (epoch + 1) % 5 == 0 and epoch != cfg["epochs"] - 1:
 
-                # Evaluate Model by creating Dataset/Loader
-                eval_dataset = BattleDataset(
-                    files=files[int(cfg["val_slice"][0] * len(files)) : int(cfg["val_slice"][1] * len(files))],
-                    format=cfg["format"],
-                    label_type=cfg["label"],
-                    bd_eligibility_func=lambda x: x.is_valid_for_supervised_learning,
-                    means=means,
-                    stds=stds
-                )
-                eval_data_loader = DataLoader(
-                    eval_dataset,
-                    batch_size=cfg["batch_size"],
-                    num_workers=min(os.cpu_count() or 1, 4),
-                )
-                avg_loss, accuracy = model.validate(eval_data_loader)
+            # Evaluate Model by creating Dataset/Loader
+            eval_dataset = BattleDataset(
+                files=files[int(cfg["val_slice"][0] * len(files)) : int(cfg["val_slice"][1] * len(files))],
+                format=cfg["format"],
+                label_type=cfg["label"],
+                bd_eligibility_func=BattleData.is_valid_for_supervised_learning,
+                means=means,
+                stds=stds
+            )
+            eval_data_loader = DataLoader(
+                eval_dataset,
+                batch_size=cfg["batch_size"],
+                num_workers=min(os.cpu_count() or 1, 4),
+            )
+            avg_loss, accuracy = model.validate(eval_data_loader, steps=steps)
 
-                checkpoint = {
-                    "epoch": epoch,
-                    "model_state_dict": model.state_dict(),
-                    "loss": loss,
-                    "avg_validation_loss": avg_loss,
-                    "validation_accuracy": accuracy,
-                }
-                torch.save(
-                    checkpoint,
-                    f"{desktop_path}/checkpoint_hour_{int(last / 60 / 60)}.pth",
-                )
+            checkpoint = {
+                "epoch": epoch,
+                "model_state_dict": model.state_dict(),
+                "avg_validation_loss": avg_loss,
+                "validation_accuracy": accuracy,
+            }
 
-                wandb.log(checkpoint)
+            torch.save(
+                checkpoint,
+                f"{cfg['desktop_path']}/checkpoint_epoch_{epoch}.pth",
+            )
 
         # Update scheduler
         if model.scheduler is not None:
@@ -311,21 +283,20 @@ def main(cfg):
 
     # Finish up
     total_time = (time.time() - start)
-    hours = total_time // 3600
-    mins = total_time // 60
-    secs = total_time % 60
+    hours = int(total_time / (60 * 60))
+    mins = int((total_time % (60 * 60)) / 60)
+    secs = int(total_time % 60)
     print(f"Finished training in {hours}h {mins}m {secs}s")
-    wandb.finish()
 
     # Save the model
-    torch.save(model.state_dict(), f"{desktop_path}/final_model.pth")
+    torch.save(model.state_dict(), f"{cfg['desktop_path']}/final_model.pth")
 
     # Evaluate Model by creating Dataset/Loader
     eval_dataset = BattleDataset(
         files=files[int(cfg["val_slice"][0] * len(files)) : int(cfg["val_slice"][1] * len(files))],
         format=cfg["format"],
         label_type=cfg["label"],
-        bd_eligibility_func=lambda x: x.is_valid_for_supervised_learning,
+        bd_eligibility_func=BattleData.is_valid_for_supervised_learning,
         means=means,
         stds=stds
     )
@@ -334,27 +305,29 @@ def main(cfg):
         batch_size=cfg["batch_size"],
         num_workers=min(os.cpu_count() or 1, 4),
     )
-    model.validate(eval_data_loader)
+    model.validate(eval_data_loader, steps=steps)
+    wandb.finish()
 
 
 if __name__ == "__main__":
     config = {
-        "model": "LR",
+        "model": "NN",
         "learning_rate": 1e-3,
-        "epochs": 1,
+        "epochs": 100,
         "loss": "BCE",
-        "layers": (256,),
+        "layers": (256, 256),
         "batch_size": 512,
         "optimizer": "Adam",
         "scheduler": True,
         "batch_norm": True,
-        "initializer": "He",
-        "train_slice": (0.01, 0.1),
-        "val_slice": (0.98, 1),
+        "initializer": None,
+        "train_slice": (0.0, 0.25),
+        "val_slice": (0.52, 0.525),
         "data": sys.argv[1],
         "seed": 21,
         "format": "gen9vgc2024regc",
         "label": "win",
         "normalization": (0, .01),
+        "desktop_path": sys.argv[1],
     }
     main(config)
