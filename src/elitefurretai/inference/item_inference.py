@@ -27,7 +27,6 @@ from elitefurretai.inference.battle_inference import BattleInference
 from elitefurretai.utils.inference_utils import (
     battle_to_str,
     copy_bare_battle,
-    get_pokemon,
     get_segments,
     get_showdown_identifier,
     has_flinch_immunity,
@@ -73,8 +72,8 @@ class ItemInference:
         turn_of_events = max(battle.observations.keys())
         obs = battle.observations[max(battle.observations.keys())]
 
-        # TODO: because of a poke_env bug, we should only do one inference per turn.
-        # So if we've already touched this turn, we're just going to update the battle
+        # TODO: showdown reversing requests and inputs should fix order of operations
+        # We should revisit this tracking
         if (isinstance(battle.force_switch, list) and any(battle.force_switch)) or (
             isinstance(battle.force_switch, bool) and battle.force_switch
         ):
@@ -368,7 +367,7 @@ class ItemInference:
             )
 
         ident = standardize_pokemon_ident(events[0][2])
-        mon = get_pokemon(ident, self._battle)
+        mon = self._battle.get_pokemon(ident)
 
         # Reset mon flags
         self._inferences.set_flag(ident, "num_moves_since_switch", 0)
@@ -410,10 +409,10 @@ class ItemInference:
                     idents.remove(mon_ident)
                 elif has_unboost_immunity(mon_ident, "atk", self._battle):
                     idents.remove(mon_ident)
-                elif get_pokemon(mon_ident, self._battle).ability == "innerfocus" or (
-                    get_pokemon(mon_ident, self._battle).ability is None
+                elif self._battle.get_pokemon(mon_ident).ability == "innerfocus" or (
+                    self._battle.get_pokemon(mon_ident).ability is None
                     and "innerfocus"
-                    in get_pokemon(mon_ident, self._battle).possible_abilities
+                    in self._battle.get_pokemon(mon_ident).possible_abilities
                 ):
                     idents.remove(mon_ident)
 
@@ -506,7 +505,7 @@ class ItemInference:
         if active_pokemon[0] and Effect.RAGE_POWDER in active_pokemon[0].effects:
             index = 0
 
-        is_rage_powder_immune = has_rage_powder_immunity(get_pokemon(actor, self._battle))
+        is_rage_powder_immune = has_rage_powder_immunity(self._battle.get_pokemon(actor))
         if move.target in [
             Target.ALL,
             Target.SELF,
@@ -541,7 +540,7 @@ class ItemInference:
                 active_pokemon[index], self._battle.player_role  # pyright: ignore
             )
             and not is_rage_powder_immune
-            and get_pokemon(actor, self._battle).item
+            and self._battle.get_pokemon(actor).item
             in [None, GenData.UNKNOWN_ITEM, "safetygoggles"]
         ):
             self._inferences.set_flag(actor, "can_be_choice", False)
@@ -820,9 +819,9 @@ class ItemInference:
                 if (
                     events[j][1] == "move"
                     and standardize_pokemon_ident(events[j][2]) == target
-                    and not has_flinch_immunity(get_pokemon(target, self._battle))
+                    and not has_flinch_immunity(self._battle.get_pokemon(target))
                     and "magicbounce"
-                    not in get_pokemon(target, self._battle).possible_abilities
+                    not in self._battle.get_pokemon(target).possible_abilities
                 ):
                     if (
                         not self._opp_has_item(target)
@@ -874,7 +873,7 @@ class ItemInference:
             opp_actives = [
                 ident
                 for ident in opp_actives
-                if not has_sandstorm_immunity(get_pokemon(ident, self._battle))
+                if not has_sandstorm_immunity(self._battle.get_pokemon(ident))
             ]
 
             if len(opp_actives) == 1 and (

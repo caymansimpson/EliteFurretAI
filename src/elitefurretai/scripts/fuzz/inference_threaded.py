@@ -13,7 +13,7 @@ import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
-from elitefurretai.scripts.fuzz_test import (
+from elitefurretai.scripts.fuzz.inference import (
     FuzzTestPlayer,
     check_ground_truth,
     get_players,

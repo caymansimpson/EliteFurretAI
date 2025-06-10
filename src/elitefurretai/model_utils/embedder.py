@@ -3,9 +3,9 @@
 """
 
 import logging
-import math
 from typing import Any, Dict, List, Optional
 
+from poke_env.calc import calculate_damage
 from poke_env.data import GenData
 from poke_env.environment import (
     DoubleBattle,
@@ -33,17 +33,14 @@ class Embedder:
     FULL = "full"
 
     def __init__(
-        self, format="gen9vgc2024regc", type: str = "full", max_size: int = 1
+        self, format="gen9vgc2023regulationc", feature_set: str = "raw", omniscient=False
     ):
-        self._history: List[Dict[str, float]] = []
         self._knowledge: Dict[str, Any] = {}
         self._format: str = format
+        self._omniscient: bool = omniscient
 
-        assert max_size > 0
-        self._max_size: int = max_size
-
-        assert type in [self.SIMPLE, self.RAW, self.FULL]
-        self._type: str = type
+        assert feature_set in [self.SIMPLE, self.RAW, self.FULL]
+        self._feature_set: str = feature_set
 
         sets = [
             ("Status", Status),
@@ -65,7 +62,11 @@ class Embedder:
         self._knowledge["Field"] = TRACKED_FIELDS
         self._knowledge["Ability"] = TRACKED_ABILITIES
 
-        self._embedding_size = self._get_embedding_size()
+        # Generate embedding size and feature names programatically upon instanciation
+        # because I muck with Embedder too much to hard code it
+        dummy_features = self._generate_dummy_features()
+        self._embedding_size = len(dummy_features)
+        self._feature_names = list(dummy_features.keys())
 
     @staticmethod
     def _prep(string) -> str:
@@ -74,30 +75,33 @@ class Embedder:
         """
         return string.lower().replace("_", " ")
 
-    def _get_embedding_size(self) -> int:
+    def _generate_dummy_features(self) -> Dict[str, float]:
         dummy_battle = DoubleBattle(
             "tag", "elitefurretai", logging.Logger("example"), gen=int(self._format[3])
         )
         dummy_battle._format = self._format
         dummy_battle.player_role = "p1"
-        return len(self.featurize_double_battle(dummy_battle))
-
-    def history(self, last_n: Optional[int] = None) -> List[List[float]]:
-        if last_n is None:
-            return list(map(lambda x: self.feature_dict_to_vector(x), self._history))
-        else:
-            to_return = []
-
-            for i in range(last_n):
-                if len(self._history) > i:
-                    to_return.append(self.feature_dict_to_vector(self._history[i]))
-                else:
-                    to_return.insert(0, [-1] * self.embedding_size)
-            return to_return
+        return self.featurize_double_battle(dummy_battle)
 
     @property
-    def embedding_size(self):
+    def embedding_size(self) -> int:
         return self._embedding_size
+
+    @property
+    def feature_names(self) -> List[str]:
+        return self._feature_names
+
+    @property
+    def feature_set(self) -> str:
+        return self._feature_set
+
+    @property
+    def format(self) -> str:
+        return self._format
+
+    @property
+    def omniscient(self) -> bool:
+        return self._omniscient
 
     def feature_dict_to_vector(self, features: Dict[str, Any]) -> List[float]:
         """
@@ -122,49 +126,189 @@ class Embedder:
                     simple_features[k] = v
         return simple_features
 
-    def _add_full_features(self, battle: DoubleBattle, bi: Optional[BattleInference] = None) -> Dict[str, float]:
+    def generate_feature_engineered_features(
+        self, battle: DoubleBattle, bi: Optional[BattleInference] = None
+    ) -> Dict[str, float]:
         """Adds supplementary engineered features that should help with learning"""
+        assert battle.player_role is not None and battle.opponent_role is not None
+
         features: Dict[str, float] = {}
-        """
-        Features to consider:
-        - Move orders for each mon
-        - Type matchups for each mon
-        - num non-fainted mons on my side
-        - num non-fainted mons on their side
-        - can they knock me out?
-        - can I knock them out?
-        - do i have a move that can change the number of move orders (speed)
-        - do they have a move that can change the number of move orders (speed)
-        - number of moves i have revealed
-        - number of moves they have revealed
-        - number of mons i have revealed
-        - number of moves they have revealed
-        - % hp I have left
-        - % hp they have left
-        """
-        return {}
 
-        # TODO: implement
-        perc_hp = 1.0
-        for i, mon in enumerate((list(battle.teampreview_team) + [None] * 6)[:6]):
-            prefix = "MON:" + str(i) + ":"
+        # Look at their type matchup against me
+        for i, mon in enumerate(fill_with_none(battle.teampreview_team, 6)):
+            for j, opp_mon in enumerate(
+                fill_with_none(battle.teampreview_opponent_team, 6)
+            ):
+                if mon is None or opp_mon is None:
+                    features["TYPE_MATCHUP:OPP_MON:" + str(j) + ":MON:" + str(i)] = -1
+                else:
+                    multiplier = max(
+                        opp_type.damage_multiplier(
+                            *mon.types, type_chart=GenData.from_gen(9).type_chart
+                        )
+                        for opp_type in opp_mon.types
+                    )
+                    features["TYPE_MATCHUP:OPP_MON:" + str(j) + ":MON:" + str(i)] = (
+                        multiplier
+                    )
 
-            # TODO: does mon in teampreview and batte.team stay the same? no.
+        # Calculate total state
+        num_fainted, hp_left, total_hp, num_status, num_revealed = 0, 0, 0, 0, 0
+        for mon in battle.team.values():
+            num_fainted += int(mon.fainted)
+            hp_left += mon.current_hp
+            total_hp += mon.max_hp
+            num_status += int(mon.status is not None)
+            num_revealed += sum(
+                map(lambda x: int(x.current_pp < x.max_pp), mon.moves.values())
+            )
+        features["NUM_FAINTED"] = num_fainted
+        features["PERC_HP_LEFT"] = hp_left * 1.0 / total_hp if total_hp > 0 else -1
+        features["NUM_STATUSED"] = num_status
+        features["NUM_MOVES_REVEALED"] = num_revealed
+        features["NUM_MONS_REVEALED"] = sum(
+            map(lambda x: x.revealed, battle.team.values())
+        )
 
-            if (mon.name if mon else "") in map(lambda x: x.name if x else None, battle.active_pokemon):
-                pass
+        # Now do it for the opponent
+        num_fainted, hp_frac, total_hp, num_status = 0, 0, 0, 0
+        for mon in fill_with_none(list(battle.opponent_team.values()), 4):
+            if mon is None:
+                hp_frac += 1
+            else:
+                num_fainted += int(mon.fainted)
+                hp_frac += mon.current_hp_fraction
+                num_status += int(mon.status is not None)
+            total_hp += 1
+        features["OPP_NUM_FAINTED"] = num_fainted
+        features["OPP_PERC_HP_LEFT"] = hp_frac * 1.0 / total_hp
+        features["OPP_NUM_STATUSED"] = num_status
+        features["NUM_OPP_MONS_REVEALED"] = len(battle.opponent_team)
 
-            for move in mon.moves:
-                pass
+        # Need to create temporary opp_team because teampreview doesnt have nicknames, and so normal
+        # comparisons via identifiers will fail
+        opp_team = {opp_mon.species: opp_mon for opp_mon in battle.opponent_team.values()}
 
-        opp_perc_hp = 1.0
-        for i, mon in enumerate((list(battle.teampreview_opponent_team) + [None] * 6)[:6]):
-            prefix = "OPP_MON:" + str(i) + ":"
+        # Grab list of mons that are either in teampreview or in the team/opponent team
+        opp = [
+            (i, x if x is None or x.species not in opp_team else opp_team[x.species])
+            for i, x in enumerate(
+                fill_with_none(list(battle.teampreview_opponent_team), 6)
+            )
+        ]
+        me = [
+            (
+                i,
+                (
+                    None
+                    if x is None or x.identifier(battle.player_role) not in battle.team
+                    else battle.team[x.identifier(battle.player_role)]
+                ),
+            )
+            for i, x in enumerate(fill_with_none(list(battle.team.values()), 4))
+        ]
 
-            for move in mon.moves:
-                pass
+        # Iterate through all mon and opp_mon combos
+        for (i, opp_mon), (j, mon) in zip(opp, me):
+            opp_moves = (
+                fill_with_none(list(opp_mon.moves.keys()), 4)
+                if opp_mon is not None
+                else [None] * 4
+            )
+            for k, move in enumerate(opp_moves):
+                dmg, ko = (-1, -1), -1
+                if mon is not None and opp_mon is not None and move is not None:
+                    # TODO: guess opponent stats using MetaDB cache; I wonder if I can "warmstart" MetaDB by creating temp tables of possible mons
+                    # need these if we don't have an opponent's stats, or if theyre not in the team object. We need to insert them cuz the calculate_damage
+                    # function relies on the pokemon being in opponent_team via the get_pokemon function
+                    stats_flag, teampreview_flag = False, False
+                    if opp_mon.stats is None or opp_mon.stats.get("hp", None) is None:
+                        opp_mon.stats = compute_stats(opp_mon, "max")  # type: ignore
+                        stats_flag = True
+                    if (
+                        opp_mon.identifier(battle.opponent_role)
+                        not in battle.opponent_team
+                    ):
+                        battle.opponent_team[opp_mon.identifier(battle.opponent_role)] = (
+                            opp_mon
+                        )
+                        teampreview_flag = True
 
-        # TODO: add
+                    dmg = calculate_damage(
+                        opp_mon.identifier(battle.opponent_role),
+                        mon.identifier(battle.player_role),
+                        opp_mon.moves[move],
+                        battle,
+                        False,
+                    )
+                    dmg = (-1, -1) if dmg[0] is None else dmg
+                    ko = int(dmg[1] > mon.current_hp)
+                    if stats_flag:
+                        opp_mon.stats = None
+                    if teampreview_flag:
+                        battle.opponent_team.pop(opp_mon.identifier(battle.opponent_role))
+                features[
+                    "EST_DAMAGE:OPP_MON:" + str(i) + ":MON:" + str(j) + ":MOVE:" + str(k)
+                ] = (sum(dmg) / 2)
+                features["KO:OPP_MON:" + str(i) + ":MON:" + str(j) + ":MOVE:" + str(k)] = (
+                    ko
+                )
+
+            moves = (
+                fill_with_none(list(mon.moves.keys()), 4)
+                if mon is not None
+                else [None] * 4
+            )
+            for k, move in enumerate(moves):
+                dmg, ko = (-1, -1), -1
+                if (
+                    mon is not None
+                    and opp_mon is not None
+                    and move is not None
+                    and mon.identifier(battle.player_role) in battle.team
+                ):
+                    stats_flag, teampreview_flag = False, False
+                    if opp_mon.stats is None or opp_mon.stats.get("hp", None) is None:
+                        opp_mon.stats = compute_stats(opp_mon, "max")  # type: ignore
+                        stats_flag = True
+                    if (
+                        opp_mon.identifier(battle.opponent_role)
+                        not in battle.opponent_team
+                    ):
+                        battle.opponent_team[opp_mon.identifier(battle.opponent_role)] = (
+                            opp_mon
+                        )
+                        teampreview_flag = True
+
+                    dmg = calculate_damage(
+                        mon.identifier(battle.player_role),
+                        opp_mon.identifier(battle.opponent_role),
+                        mon.moves[move],
+                        battle,
+                        False,
+                    )
+                    dmg = (-1, -1) if dmg[0] is None else dmg
+
+                    # Current HP fraction is 0 if a mon isn't set out to the field
+                    current_hp_fraction = (
+                        1
+                        if opp_mon.current_hp_fraction == 0
+                        and opp_mon.status != Status.FNT
+                        else opp_mon.current_hp_fraction
+                    )
+                    ko = int(dmg[1] > opp_mon.stats["hp"] * current_hp_fraction)  # type: ignore
+
+                    if stats_flag:
+                        opp_mon.stats = None
+                    if teampreview_flag:
+                        battle.opponent_team.pop(opp_mon.identifier(battle.opponent_role))
+                features[
+                    "EST_DAMAGE:MON:" + str(j) + ":OPP_MON:" + str(i) + ":MOVE:" + str(k)
+                ] = (sum(dmg) / 2)
+                features["KO:MON:" + str(j) + ":OPP_MON:" + str(i) + ":MOVE:" + str(k)] = (
+                    ko
+                )
+
         return features
 
     def featurize_move(self, move: Optional[Move], prefix: str = "") -> Dict[str, float]:
@@ -426,34 +570,27 @@ class Embedder:
         minstats, maxstats = [-1] * 6, [-1] * 6
 
         if mon:
-            minstats = map(
-                lambda x: math.floor(x[1] * 0.9) if x[0] != 0 else x[1],
-                enumerate(
-                    compute_raw_stats(
-                        mon.species, [0] * 6, [0] * 6, mon.level, "serious", mon._data
-                    )
-                ),
-            )
-            maxstats = map(
-                lambda x: math.floor(x[1] * 1.1) if x[0] != 0 else x[1],
-                enumerate(
-                    compute_raw_stats(
-                        mon.species, [252] * 6, [31] * 6, mon.level, "serious", mon._data
-                    )
-                ),
-            )
+            minstats = list(compute_stats(mon, "min").values())
+            maxstats = list(compute_stats(mon, "max").values())
 
-        for stat, minstat, maxstat in zip(stats, minstats, maxstats):
-            if mon and inference_flags and stat in inference_flags:
-                minstat, maxstat = inference_flags[stat][0], inference_flags[stat][1]
-            elif mon and mon.stats and stat in mon.stats and mon.stats[stat]:
-                minstat, maxstat = mon.stats[stat], mon.stats[stat]
-            emb[prefix + "STAT_MIN:" + stat] = (
-                minstat if mon and minstat is not None else -1
-            )
-            emb[prefix + "STAT_MAX:" + stat] = (
-                maxstat if mon and maxstat is not None else -1
-            )
+        if self._omniscient:
+            for stat in ["hp", "atk", "def", "spa", "spd", "spe"]:
+                val = -1
+                if mon and mon.stats and stat in mon.stats and mon.stats[stat]:
+                    val = mon.stats[stat]  # type:ignore
+                emb[prefix + "STAT:" + stat] = val if val is not None else -1
+        else:
+            for stat, minstat, maxstat in zip(stats, minstats, maxstats):
+                if mon and inference_flags and stat in inference_flags:
+                    minstat, maxstat = inference_flags[stat][0], inference_flags[stat][1]
+                elif mon and mon.stats and stat in mon.stats and mon.stats[stat]:
+                    minstat, maxstat = mon.stats[stat], mon.stats[stat]
+                emb[prefix + "STAT_MIN:" + stat] = (
+                    minstat if mon and minstat is not None else -1
+                )
+                emb[prefix + "STAT_MAX:" + stat] = (
+                    maxstat if mon and maxstat is not None else -1
+                )
 
         # Add boosts; don't add evasion
         for stat in ["accuracy", "atk", "def", "spa", "spd", "spe"]:
@@ -517,64 +654,75 @@ class Embedder:
             else:
                 features = self.featurize_pokemon(mon, battle.last_request, prefix)
 
+            # OHE which switch the pokemon is
+            for j in range(6):
+                features[prefix + "SWITCH_NUM" + str(j)] = int(i == j)
+
+            # Get pokemon battle attributes
             features[prefix + "sent"] = sent
-            features[prefix + "active"] = int(
-                (mon.name if mon else "")
-                in map(lambda x: x.name if x else None, battle.active_pokemon)
+            active_names = list(
+                map(lambda x: x.name if x else None, battle.active_pokemon)
             )
+            name = mon.name if mon else ""
+            features[prefix + "active"] = int(name in active_names)
+
+            trapped, force_switch = 0, 0
+            if name in active_names:
+                trapped = battle.trapped[active_names.index(name)]
+                force_switch = battle.force_switch[active_names.index(name)]
+
+            emb[prefix + "trapped"] = int(trapped)
+            emb[prefix + "force_switch"] = int(force_switch)
 
             # To maintain representation of public belief state
-            features[prefix + "revealed"] = int(mon.revealed if mon else 0)
+            mon = battle.team.get(
+                mon.identifier(battle.player_role) if mon and battle.player_role else "",
+                mon,
+            )
+            features[prefix + "revealed"] = (
+                int(mon.revealed if mon else 0) if sent == 1 else -1
+            )
 
             # Record whether mon is an available switch for active_pokemon1 and 2
-            for j, switches in enumerate(battle.available_switches):
-                val = -1
-                if battle.active_pokemon[j] is not None:
-                    val = 1 if mon in switches else 0
-                features[prefix + "available_switch:" + str(j)] = val
-
-            # Record the number that corresponds to the mon switch (eg #3, #4)
-            # We don't look at the request if there isn't one
-            val = -1
-            mons = battle.last_request.get("side", {}).get("pokemon", [])
-            for j, json_mon in enumerate((mons + [None] * 6)[:6]):
-                if (
-                    mon is not None
-                    and json_mon is not None
-                    and json_mon.get("identifier", "")
-                    == get_showdown_identifier(mon, battle.player_role)
-                ):
-                    val = j + 1
-            features[prefix + "switch_number"] = val
+            features[prefix + "is_available_to_switch"] = int(
+                (mon.name if mon else "")
+                in map(lambda x: x.name if x else None, battle.available_switches[0])
+                or (mon.name if mon else "")
+                in map(lambda x: x.name if x else None, battle.available_switches[1])
+            )
 
             emb.update(features)
 
         # Featurize each opponent mon
+        species_list = list(
+            map(lambda x: x.species if x else "none", battle.opponent_team.values())
+        )
         for i, mon in enumerate((list(battle.teampreview_opponent_team) + [None] * 6)[:6]):
             prefix = "OPP_MON:" + str(i) + ":"
             features = {}
             sent = 0
 
-            # Meaning we have seen this mon on the field
-            if (
-                battle.opponent_role
-                and mon
-                and get_showdown_identifier(mon, battle.opponent_role)
-                in battle.opponent_team
-            ):
-                flags = (
-                    bi.get_flags(get_showdown_identifier(mon, battle.opponent_role))
-                    if bi
-                    else None
-                )
+            if battle.opponent_role and mon and mon.species in species_list:
+
+                # Find the mon in our team
+                for team_mon in battle.opponent_team.values():
+                    if team_mon.species == mon.species:
+                        mon = team_mon
+                        break
+
+                # Get inferences
+                flags = bi.get_flags(mon.identifier(battle.opponent_role)) if bi else None
+
+                # Generate Features
                 features = self.featurize_opponent_pokemon(
-                    battle.opponent_team[
-                        get_showdown_identifier(mon, battle.opponent_role)
-                    ],
+                    mon,
                     inference_flags=flags,
                     prefix=prefix,
                 )
-                sent = 1
+
+                # battle.opponent_team is basically teampreview_team for teampreview
+                if not battle.teampreview:
+                    sent = 1
 
             # We saw this mon in teampreview
             else:
@@ -598,13 +746,6 @@ class Embedder:
             )
 
             emb.update(features)
-
-        # Add additional things about the battle state
-        for i, trapped in enumerate(battle.trapped):
-            emb["TRAPPED:" + str(i)] = int(trapped)
-
-        for i, fs in enumerate(battle.force_switch):
-            emb["FORCE_SWITCH:" + str(i)] = int(fs)
 
         # Add Fields
         for field in self._knowledge["Field"]:
@@ -634,17 +775,42 @@ class Embedder:
         emb["bias"] = 1
 
         # Convert embedding to the specified type
-        if self._type == self.SIMPLE:
+        if self._feature_set == self.SIMPLE:
             emb = self._simplify_features(emb)
-        elif self._type == self.FULL:
-            emb.update(self._add_full_features(battle, bi))
-
-        # Store the embedding in our history
-        if len(self._history) == self._max_size:
-            self._history.pop(0)
-        self._history.append(emb)
+        elif self._feature_set == self.FULL:
+            emb.update(self.generate_feature_engineered_features(battle, bi))
 
         return emb
+
+
+def fill_with_none(to_fill: List[Any], n: int) -> List[Any | None]:
+    return to_fill + [None] * (n - len(to_fill))
+
+
+def compute_stats(mon: Pokemon, type="max") -> Dict[str, int]:
+    assert type in ["max", "min"]
+    stat_types = ["hp", "atk", "def", "spa", "spd", "spe"]
+
+    if type == "min":
+        stats = {}
+        for k, v in zip(
+            stat_types,
+            compute_raw_stats(
+                mon.species, [0] * 6, [0] * 6, mon.level, "serious", mon._data
+            ),
+        ):
+            stats[k] = int(0.9 * v) if k != "hp" else v
+        return stats
+    else:
+        stats = {}
+        for k, v in zip(
+            stat_types,
+            compute_raw_stats(
+                mon.species, [252] * 6, [31] * 6, mon.level, "serious", mon._data
+            ),
+        ):
+            stats[k] = int(1.1 * v) if k != "hp" else v
+        return stats
 
 
 BASIC_FEATURES = {
@@ -662,49 +828,59 @@ BASIC_FEATURES = {
     "id",
 }
 
+# top effects
 TRACKED_EFFECTS = {
-    Effect.from_showdown_message("ability: Protosynthesis"),
-    Effect.from_showdown_message("ability: Protosynthesis"),
-    Effect.from_showdown_message("ability: Quark Drive"),
-    Effect.from_showdown_message("protosynthesisspe"),
-    Effect.from_showdown_message("quarkdrivespe"),
-    Effect.from_showdown_message("ability: Zero to Hero"),
-    Effect.from_showdown_message("protosynthesisspa"),
-    Effect.from_showdown_message("perish3"),
-    Effect.from_showdown_message("move: Taunt"),
-    Effect.from_showdown_message("protosynthesisatk"),
-    Effect.from_showdown_message("Substitute"),
-    Effect.from_showdown_message("ability: Toxic Debris"),
-    Effect.from_showdown_message("move: Leech Seed"),
-    Effect.from_showdown_message("perish2"),
-    Effect.from_showdown_message("Salt Cure"),
-    Effect.from_showdown_message("ability: Commander"),
-    Effect.from_showdown_message("perish1"),
-    Effect.from_showdown_message("Encore"),
-    Effect.from_showdown_message("move: Yawn"),
-    Effect.from_showdown_message("confusion"),
-    Effect.from_showdown_message("Throat Chop"),
-    Effect.from_showdown_message("Disable"),
-    Effect.from_showdown_message("perish0"),
-    Effect.from_showdown_message("move: Substitute"),
-    Effect.from_showdown_message("quarkdriveatk"),
-    Effect.from_showdown_message("move: Trick"),
-    Effect.from_showdown_message("ability: Flash Fire"),
-    Effect.from_showdown_message("quarkdrivespa"),
-    Effect.from_showdown_message("typechange"),
-    Effect.from_showdown_message("Charge"),
-    Effect.from_showdown_message("move: After You"),
-    Effect.from_showdown_message("move: Sand Tomb"),
-    Effect.from_showdown_message("trapped"),
-    Effect.from_showdown_message("ability: Storm Drain"),
-    Effect.from_showdown_message("move: Struggle"),
-    Effect.from_showdown_message("ability: Dancer"),
-    Effect.from_showdown_message("protosynthesisspd"),
-    Effect.from_showdown_message("move: Quash"),
-    Effect.from_showdown_message("move: Endure"),
-    Effect.from_showdown_message("ability: Supreme Overlord"),
-    Effect.from_showdown_message("move: Imprison"),
-    Effect.from_showdown_message("move: Focus Energy"),
+    Effect.PROTECT,
+    Effect.RAGE_POWDER,
+    Effect.FLINCH,
+    Effect.HELPING_HAND,
+    Effect.FOLLOW_ME,
+    Effect.ENCORE,
+    Effect.SUBSTITUTE,
+    Effect.GLAIVE_RUSH,
+    Effect.YAWN,
+    Effect.LEECH_SEED,
+    Effect.PHANTOM_FORCE,
+    Effect.ROOST,
+    Effect.SPIKY_SHIELD,
+    Effect.PERISH0,
+    Effect.PERISH1,
+    Effect.PERISH2,
+    Effect.PERISH3,
+    Effect.SALT_CURE,
+    Effect.DISABLE,
+    Effect.QUICK_GUARD,
+    Effect.SAND_TOMB,
+    Effect.AFTER_YOU,
+    Effect.INSTRUCT,
+    Effect.IMPRISON,
+    Effect.SAFEGUARD,
+    Effect.QUASH,
+    Effect.WHIRLPOOL,
+    Effect.ENDURE,
+    Effect.DESTINY_BOND,
+    Effect.BANEFUL_BUNKER,
+    Effect.INFESTATION,
+    Effect.FOCUS_ENERGY,
+    Effect.CONFUSION,
+    Effect.PROTOSYNTHESIS,
+    Effect.PROTOSYNTHESISATK,
+    Effect.PROTOSYNTHESISDEF,
+    Effect.PROTOSYNTHESISSPA,
+    Effect.PROTOSYNTHESISSPD,
+    Effect.PROTOSYNTHESISSPE,
+    Effect.QUARK_DRIVE,
+    Effect.QUARKDRIVEATK,
+    Effect.QUARKDRIVEDEF,
+    Effect.QUARKDRIVESPA,
+    Effect.QUARKDRIVESPD,
+    Effect.QUARKDRIVESPE,
+    Effect.ZERO_TO_HERO,
+    Effect.TAUNT,
+    Effect.TOXIC_DEBRIS,
+    Effect.COMMANDER,
+    Effect.TYPECHANGE,
+    Effect.SUPREME_OVERLORD,
 }
 
 TRACKED_TARGET_TYPES = {
@@ -734,111 +910,143 @@ TRACKED_SIDE_CONDITIONS = {
     SideCondition.WIDE_GUARD,
 }
 
+# 99.5% of tracked abilities
 TRACKED_ABILITIES = {
-    "protosynthesis",
-    "quarkdrive",
-    "intimidate",
-    "beadsofruin",
-    "regenerator",
-    "vesselofruin",
-    "swordofruin",
-    "defiant",
-    "multiscale",
-    "zerotohero",
-    "prankster",
-    "goodasgold",
-    "commander",
-    "unaware",
-    "galewings",
-    "friendguard",
-    "toxicdebris",
-    "thermalexchange",
-    "drought",
-    "innerfocus",
-    "snowwarning",
-    "technician",
-    "roughskin",
-    "psychicsurge",
-    "levitate",
-    "mirrorarmor",
-    "flashfire",
-    "sandstream",
-    "tabletsofruin",
-    "oblivious",
-    "hugepower",
     "drizzle",
     "clearbody",
-    "eartheater",
-    "purifyingsalt",
-    "vitalspirit",
+    "steamengine",
     "chlorophyll",
-    "sandrush",
+    "commander",
+    "innerfocus",
     "shadowtag",
-    "armortail",
-    "magicbounce",
-    "stormdrain",
-    "flamebody",
+    "sandrush",
+    "mirrorarmor",
+    "lightningrod",
+    "competitive",
+    "effectspore",
+    "powerspot",
+    "unaware",
+    "sturdy",
+    "slushrush",
+    "electricsurge",
+    "intimidate",
+    "owntempo",
+    "waterabsorb",
+    "moldbreaker",
+    "cursedbody",
+    "costar",
+    "sapsipper",
+    "toxicdebris",
     "swiftswim",
+    "guts",
+    "zerotohero",
+    "windrider",
+    "wellbakedbody",
+    "beadsofruin",
+    "vitalspirit",
+    "overgrow",
+    "disguise",
+    "tabletsofruin",
+    "moxie",
+    "voltabsorb",
+    "sharpness",
+    "dazzling",
+    "thickfat",
+    "electromorphosis",
+    "defiant",
+    "multiscale",
     "corrosion",
     "pixilate",
-    "disguise",
-    "telepathy",
-    "weakarmor",
-    "wellbakedbody",
-    "unburden",
-    "sharpness",
+    "naturalcure",
+    "protosynthesis",
+    "goodasgold",
+    "flamebody",
     "sandveil",
-    "guts",
+    "oblivious",
+    "galewings",
+    "thermalexchange",
+    "swordofruin",
+    "speedboost",
+    "regenerator",
+    "stormdrain",
+    "vesselofruin",
+    "roughskin",
+    "flashfire",
+    "magicbounce",
+    "sandstream",
+    "armortail",
+    "protean",
+    "waterveil",
+    "weakarmor",
+    "drought",
+    "psychicsurge",
+    "purifyingsalt",
+    "prankster",
+    "unburden",
+    "snowwarning",
+    "technician",
+    "quarkdrive",
+    "eartheater",
+    "queenlymajesty",
+    "telepathy",
+    "levitate",
+    "hugepower",
+    "friendguard",
+    "moody",
 }
 
 TRACKED_ITEMS = {
     "focussash",
     "assaultvest",
     "boosterenergy",
-    "safetygoggles",
     "sitrusberry",
-    "leftovers",
+    "safetygoggles",
     "choicespecs",
+    "leftovers",
     "lifeorb",
     "choicescarf",
     "choiceband",
+    "lumberry",
     "clearamulet",
     "mysticwater",
-    "lumberry",
-    "covertcloak",
     "rockyhelmet",
+    "covertcloak",
     "lightclay",
     "eviolite",
+    "loadeddice",
     "weaknesspolicy",
     "charcoal",
-    "loadeddice",
     "aguavberry",
-    "mentalherb",
     "widelens",
+    "mentalherb",
     "psychicseed",
+    "blackglasses",
+    "figyberry",
     "ejectpack",
     "throatspray",
-    "damprock",
-    "figyberry",
-    "expertbelt",
-    "blackglasses",
-    "iapapaberry",
-    "mirrorherb",
-    "blacksludge",
     "wikiberry",
-    "airballoon",
+    "iapapaberry",
+    "damprock",
+    "mirrorherb",
+    "occaberry",
+    "sharpbeak",
+    "roseliberry",
+    "expertbelt",
     "flameorb",
+    "airballoon",
+    "magoberry",
     "ejectbutton",
 }
 
 TRACKED_FORMATS = {
     "gen6doubblesou",
-    "gen9vgc2024regf",
-    "gen9vgc2024regg",
-    "gen9vgc2024regh",
-    "gen9vgc2024regc",
-    "gen9vgc2024regb",
-    "gen9vgc2024rega",
+    "gen9vgc2025regulationi",
+    "gen9vgc2024regulationf",
+    "gen9vgc2024regulationg",
+    "gen9vgc2024regulationh",
+    "gen9vgc2023regulationc",
+    "gen9vgc2023regulationb",
+    "gen9vgc2023regulationa",
 }
 
 TRACKED_FIELDS = {

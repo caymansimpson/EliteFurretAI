@@ -1,9 +1,8 @@
 # SCRIPTS
 
-This folder contains scripts I run as one-offs as I have gone through my development process. Descriptions of each:
-- Scrape Pastes: scrapes a list of pokepastes using multithreading from a CSV and then stores them in a file structure that we use for EliteFurretAI
-- Standardize VGC Levels: standardizes the pastes that we scraped so that we can accurately calculate pokemons' stats from teampreview using pokepaste information
-- Fuzz Test: Runs our various inference programs tens of thousands of times with various teams to identify any poke-env or inference bugs. If you do any development, I encourage you to lean on this type of testing given VGC's complexity.
-- Fuzz Test Threaded: Same deal as Fuzz Test, but goes 2x as fast
-- Training Data Dry Run: Goes through training data to make sure there are no surprises or bugs when parsing
-- Train Move Prediction Model: Trains a neural network to play like humans. If you have a bunch of replay data (saved, community sourced or scraped from Showdown public replays), you can use this script to build a model that behaves like players in the dataset.
+This folder contains a bunch of scripts I've used on and off throughout development:
+1. **Analyze** -- generate statistics of training data or EliteFurretAI's performance in ingesting the training data. 
+2. **Fuzz** -- play a bunch of players against each other to find errors in our Inference classes.
+3. **Pastes** -- scrape pokepast.es and clean them into text files for EliteFurretAI to ingest.
+4. **Prepare** -- prepare training data for supervised learning by cleaning and aggregating it.
+5. **Train** -- train supervised models for win and move prediction. I've left an example to train a sklearn model with utilities in `model_utils`.

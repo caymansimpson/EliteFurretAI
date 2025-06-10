@@ -32,7 +32,6 @@ from elitefurretai.utils.inference_utils import (
     THIRD_BLOCK_RESIDUALS,
     copy_bare_battle,
     get_ability_and_identifier,
-    get_pokemon,
     get_priority_and_identifier,
     get_residual_and_identifier,
     get_segments,
@@ -79,8 +78,8 @@ class SpeedInference:
         turn_of_events = max(battle.observations.keys())
         obs = battle.observations[max(battle.observations.keys())]
 
-        # TODO: because of a poke_env bug, we should only do one inference per turn.
-        # So if we've already touched this turn, we're just going to update the battle
+        # TODO: showdown reversing requests and inputs should fix order of operations
+        # We should revisit this tracking
         if (isinstance(battle.force_switch, list) and any(battle.force_switch)) or (
             isinstance(battle.force_switch, bool) and battle.force_switch
         ):
@@ -847,7 +846,7 @@ class SpeedInference:
         override_speed_boost: Optional[int] = None,
     ) -> Optional[float]:
 
-        mon = get_pokemon(mon_ident, self._battle)
+        mon = self._battle.get_pokemon(mon_ident)
         sc = (
             self._battle.side_conditions
             if mon_ident.startswith(self._battle.player_role or "p1")

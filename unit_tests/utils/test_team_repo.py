@@ -47,7 +47,7 @@ def test_team_repo():
 
 
 def test_validator():
-    tr = TeamRepo("data/fixture/teams")
+    tr = TeamRepo("data/fixture/teams", verbose=True)
 
     # test invalidity for all formats
     gibberish = get_paste("data/fixture/teams/test_format/gibberish.txt")

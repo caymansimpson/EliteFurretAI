@@ -9,7 +9,11 @@ from poke_env.environment.move import Move
 from poke_env.environment.pokemon import Pokemon
 from poke_env.environment.pokemon_type import PokemonType
 from poke_env.environment.target import Target
-from poke_env.player.battle_order import BattleOrder, DoubleBattleOrder
+from poke_env.player.battle_order import (
+    BattleOrder,
+    DefaultBattleOrder,
+    DoubleBattleOrder,
+)
 
 """
 This module holds several helper functions to determine the validity of moves.
@@ -31,10 +35,13 @@ def is_valid_order(order: DoubleBattleOrder, battle: DoubleBattle) -> bool:
 # what could be valid to a showdown battle -- it is just used to restrict what our AI considers the
 # right "protocol", setting the standard and bounds for the AI. It uses strict "typing"
 def is_valid_order(
-    order: Union[BattleOrder, DoubleBattleOrder], battle: Union[Battle, DoubleBattle]
+    order: Union[BattleOrder, DoubleBattleOrder, DefaultBattleOrder],
+    battle: Union[Battle, DoubleBattle],
 ) -> bool:
 
-    if isinstance(order, DoubleBattleOrder) and isinstance(battle, DoubleBattle):
+    if isinstance(order, DefaultBattleOrder):
+        return True
+    elif isinstance(order, DoubleBattleOrder) and isinstance(battle, DoubleBattle):
         return _is_valid_doubles_order(order, battle)
     elif isinstance(order, BattleOrder) and isinstance(battle, Battle):
         return _is_valid_singles_order(order, battle)

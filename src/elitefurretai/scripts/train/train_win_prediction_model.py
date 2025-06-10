@@ -3,8 +3,8 @@
 to try to play like humans.
 """
 import os.path
-import sys
 import random
+import sys
 import time
 
 import torch
@@ -13,12 +13,17 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 
 import wandb
-from elitefurretai.model_utils import Embedder, ModelBattleOrder, BattleDataset, BattleData
+from elitefurretai.model_utils import (
+    BattleData,
+    BattleDataset,
+    Embedder,
+    ModelBattleOrder,
+)
 
 
-class PolicyNetwork(nn.Module):
+class FCNN(nn.Module):
     def __init__(self, input_size, cfg):
-        super(PolicyNetwork, self).__init__()
+        super(FCNN, self).__init__()
 
         self._config = cfg
 
@@ -63,7 +68,9 @@ class PolicyNetwork(nn.Module):
 
         self.scheduler = None
         if cfg["scheduler"]:
-            self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=10, gamma=0.5)
+            self.scheduler = torch.optim.lr_scheduler.StepLR(
+                self.optimizer, step_size=10, gamma=0.5
+            )
 
         # Assuming 'model' is your neural network module
         for m in self.network.modules():
@@ -161,7 +168,9 @@ def main(cfg):
     # Initialize everything
     wandb.init(project="elitefurretai-perish", config=cfg)
     embedder = Embedder(format=cfg["format"], type="full")
-    model = PolicyNetwork(input_size=embedder.embedding_size, cfg=cfg)
+    model = FCNN(input_size=embedder.embedding_size, cfg=cfg)
+    if cfg["model"] == "LR":
+        model = LogisticRegression(input_dim=embedder.embedding_size)
     wandb.watch(model, log="all", log_freq=10)
     files = sorted(map(lambda x: os.path.join(sys.argv[1], x), os.listdir(sys.argv[1])))
 
@@ -179,18 +188,30 @@ def main(cfg):
     # Generate normalizations
     means, stds = None, None
     if cfg["normalization"]:
-        means = torch.load(os.path.join(cfg["desktop_path"], "means.pt"), weights_only=False, map_location=torch.device('cpu'))
-        stds = torch.load(os.path.join(cfg["desktop_path"], "stds.pt"), weights_only=False, map_location=torch.device('cpu'))
+        means = torch.load(
+            os.path.join(cfg["desktop_path"], "means.pt"),
+            weights_only=False,
+            map_location=torch.device("cpu"),
+        )
+        stds = torch.load(
+            os.path.join(cfg["desktop_path"], "stds.pt"),
+            weights_only=False,
+            map_location=torch.device("cpu"),
+        )
 
     # Generate dataset
     print("Generating Dataset...")
     dataset = BattleDataset(
-        files=files[int(cfg["train_slice"][0] * len(files)) : int(cfg["train_slice"][1] * len(files))],
+        files=files[
+            int(cfg["train_slice"][0] * len(files)) : int(
+                cfg["train_slice"][1] * len(files)
+            )
+        ],
         format=cfg["format"],
         label_type=cfg["label"],
         bd_eligibility_func=BattleData.is_valid_for_supervised_learning,
         means=means,
-        stds=stds
+        stds=stds,
     )
 
     # Generate Data Loader
@@ -198,7 +219,7 @@ def main(cfg):
         dataset,
         batch_size=cfg["batch_size"],
         num_workers=min(os.cpu_count() or 1, 4),
-        shuffle=True
+        shuffle=True,
     )
     print("Finished generating dataset!")
 
@@ -236,7 +257,9 @@ def main(cfg):
             # After each 1s, print
             if time.time() - start > last:
                 perc_done = 100 * steps / total_steps
-                time_left = (time.time() - start) / (perc_done / 100) - (time.time() - start)
+                time_left = (time.time() - start) / (perc_done / 100) - (
+                    time.time() - start
+                )
                 hours_left = int(time_left / (60 * 60))
                 minutes_left = int((time_left % (60 * 60)) / 60)
                 print(
@@ -246,17 +269,24 @@ def main(cfg):
                 )
                 last = time.time() - start + 1
 
+        # Optimize
+        model.optimizer.step()
+
         # Checkpoint each 5 epochs
         if (epoch + 1) % 5 == 0 and epoch != cfg["epochs"] - 1:
 
             # Evaluate Model by creating Dataset/Loader
             eval_dataset = BattleDataset(
-                files=files[int(cfg["val_slice"][0] * len(files)) : int(cfg["val_slice"][1] * len(files))],
+                files=files[
+                    int(cfg["val_slice"][0] * len(files)) : int(
+                        cfg["val_slice"][1] * len(files)
+                    )
+                ],
                 format=cfg["format"],
                 label_type=cfg["label"],
                 bd_eligibility_func=BattleData.is_valid_for_supervised_learning,
                 means=means,
-                stds=stds
+                stds=stds,
             )
             eval_data_loader = DataLoader(
                 eval_dataset,
@@ -277,28 +307,30 @@ def main(cfg):
                 f"{cfg['desktop_path']}/checkpoint_epoch_{epoch}.pth",
             )
 
-        # Update scheduler
-        if model.scheduler is not None:
-            model.scheduler.step()
+        # Update scheduler; TODO: figure this out
+        # if model.scheduler is not None:
+        #     model.scheduler.step()
 
     # Finish up
-    total_time = (time.time() - start)
+    total_time = time.time() - start
     hours = int(total_time / (60 * 60))
     mins = int((total_time % (60 * 60)) / 60)
     secs = int(total_time % 60)
     print(f"Finished training in {hours}h {mins}m {secs}s")
 
     # Save the model
-    torch.save(model.state_dict(), f"{cfg['desktop_path']}/final_model.pth")
+    torch.save(model.state_dict(), f"{cfg['desktop_path']}/final_lr_model.pth")
 
     # Evaluate Model by creating Dataset/Loader
     eval_dataset = BattleDataset(
-        files=files[int(cfg["val_slice"][0] * len(files)) : int(cfg["val_slice"][1] * len(files))],
+        files=files[
+            int(cfg["val_slice"][0] * len(files)) : int(cfg["val_slice"][1] * len(files))
+        ],
         format=cfg["format"],
         label_type=cfg["label"],
         bd_eligibility_func=BattleData.is_valid_for_supervised_learning,
         means=means,
-        stds=stds
+        stds=stds,
     )
     eval_data_loader = DataLoader(
         eval_dataset,
@@ -311,23 +343,23 @@ def main(cfg):
 
 if __name__ == "__main__":
     config = {
-        "model": "NN",
-        "learning_rate": 1e-3,
+        "model": "LR",
+        # "learning_rate": 1e-3,
         "epochs": 100,
-        "loss": "BCE",
-        "layers": (256, 256),
-        "batch_size": 512,
-        "optimizer": "Adam",
-        "scheduler": True,
-        "batch_norm": True,
-        "initializer": None,
-        "train_slice": (0.0, 0.25),
-        "val_slice": (0.52, 0.525),
+        # "loss": "BCE",
+        # "layers": (256, 256),
+        "batch_size": 96,
+        # "optimizer": "Adam",
+        # "scheduler": False,
+        # "batch_norm": False,
+        # "initializer": None,
+        "train_slice": (0.0, 0.02),
+        "val_slice": (0.52, 0.53),
         "data": sys.argv[1],
         "seed": 21,
         "format": "gen9vgc2024regc",
         "label": "win",
-        "normalization": (0, .01),
+        "normalization": (0, 0.01),
         "desktop_path": sys.argv[1],
     }
     main(config)

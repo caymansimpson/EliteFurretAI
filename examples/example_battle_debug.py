@@ -8,12 +8,22 @@ import asyncio
 from typing import Optional, Union
 
 from poke_env.environment.abstract_battle import AbstractBattle
+from poke_env.player.battle_order import BattleOrder
 from poke_env.player.random_player import RandomPlayer
 from poke_env.ps_client.account_configuration import AccountConfiguration
 from poke_env.ps_client.server_configuration import ServerConfiguration
 from poke_env.teambuilder.teambuilder import Teambuilder
 
 from elitefurretai.utils.inference_utils import battle_to_str
+
+
+class StringBattleOrder(BattleOrder):
+    def __init__(self, message):
+        self._message: str = message
+
+    @property
+    def message(self):
+        return self._message
 
 
 class CustomPlayer(RandomPlayer):
@@ -54,7 +64,11 @@ class CustomPlayer(RandomPlayer):
     # Place where I can implement basic logic; right now I just print that I'm in choose_move
     def choose_move(self, battle):
         if self.username == "elitefurretai":
+            print()
             print("in choose_move")
+            print("team:", list(map(lambda x: x.species, battle.team.values())))
+            print("request:", battle.last_request)
+            # return StringBattleOrder(input("Choose move: "))
 
         return self.choose_random_doubles_move(battle)  # pyright: ignore
 
@@ -62,6 +76,7 @@ class CustomPlayer(RandomPlayer):
     def teampreview(self, battle):
         if self.username == "elitefurretai":
             print("in teampreview")
+            print(list(map(lambda x: x.species, battle.team.values())))
 
         return "/team 1234"
 
@@ -118,10 +133,10 @@ async def main():
 
     p1 = CustomPlayer(
         AccountConfiguration("elitefurretai", None),
-        battle_format="gen9vgc2024regg",
+        battle_format="gen9vgc2025regi",
         team=pokepaste,
     )
-    p2 = CustomPlayer(battle_format="gen9vgc2024regg", team=pokepaste)
+    p2 = CustomPlayer(battle_format="gen9vgc2025regi", team=pokepaste)
 
     # Run the battle
     await p1.battle_against(p2)

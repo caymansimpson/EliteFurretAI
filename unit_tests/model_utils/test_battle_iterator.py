@@ -6,8 +6,7 @@ from elitefurretai.model_utils import BattleData, BattleIterator
 
 def test_battle_iterator(vgc_json_anon):
     bd = BattleData.from_showdown_json(vgc_json_anon)
-    battle = bd.to_battle(perspective="p1")
-    iter = BattleIterator(battle, bd)
+    iter = BattleIterator(bd)
     assert iter
 
     # Go to teampreview
@@ -33,7 +32,7 @@ def test_battle_iterator(vgc_json_anon):
     assert iter._input_nums == [4, 5]
 
     iter.finish()
-    assert battle.finished
+    assert iter.battle.finished
 
     with pytest.raises(StopIteration):
         iter.next()
@@ -41,9 +40,8 @@ def test_battle_iterator(vgc_json_anon):
 
 def test_next_input(vgc_json_anon2):
     bd = BattleData.from_showdown_json(vgc_json_anon2)
-    battle = bd.to_battle(perspective="p1")
 
-    iter = BattleIterator(battle, bd)
+    iter = BattleIterator(bd)
     assert iter.log == vgc_json_anon2["log"][0]
     assert iter.last_input is None
 
@@ -89,10 +87,7 @@ def test_next_input(vgc_json_anon2):
     iter.next_input()
     assert iter.finished
 
-    battle = bd.to_battle(perspective="p2")
-    iter = BattleIterator(
-        battle, bd, perspective="p2"
-    )
+    iter = BattleIterator(bd, perspective="p2")
     assert iter.log == vgc_json_anon2["log"][0]
     assert iter.last_input is None
     assert iter.next_input() == ">p2 team 1, 5, 4, 3"
@@ -113,10 +108,7 @@ def test_next_input(vgc_json_anon2):
 def test_next_input_3(vgc_json_anon3):
     bd = BattleData.from_showdown_json(vgc_json_anon3)
 
-    battle = bd.to_battle(perspective="p2")
-    iter = BattleIterator(
-        battle, bd, perspective="p2"
-    )
+    iter = BattleIterator(bd, perspective="p2")
     assert iter.last_input is None
     iter.next_input()
     assert iter.last_input == ">p2 team 3, 6, 1, 2"
@@ -152,10 +144,7 @@ def test_next_input_3(vgc_json_anon3):
 def test_next_input_4(vgc_json_anon4):
     bd = BattleData.from_showdown_json(vgc_json_anon4)
 
-    battle = bd.to_battle(perspective="p1")
-    iter = BattleIterator(
-        battle, bd, perspective="p1"
-    )
+    iter = BattleIterator(bd, perspective="p1")
     assert iter.last_input is None
 
     iter.next_input()
@@ -190,10 +179,7 @@ def test_next_input_5(vgc_json_anon5):
     bd = BattleData.from_showdown_json(vgc_json_anon5)
     p = "p1"
 
-    battle = bd.to_battle(perspective=p)
-    iter = BattleIterator(
-        battle, bd, perspective=p
-    )
+    iter = BattleIterator(bd, perspective=p)
     assert iter.last_input is None
 
     iter.next_input()
@@ -230,10 +216,7 @@ def test_next_input_5(vgc_json_anon5):
     assert iter.last_input == ">p1 move suckerpunch +2, move waterfall +2"
 
     p = "p2"
-    battle = bd.to_battle(perspective=p)
-    iter = BattleIterator(
-        battle, bd, perspective=p
-    )
+    iter = BattleIterator(bd, perspective=p)
     assert iter.last_input is None
 
     iter.next_input()
@@ -274,10 +257,7 @@ def test_next_input_6(vgc_json_anon6):
     bd = BattleData.from_showdown_json(vgc_json_anon6)
     p = "p1"
 
-    battle = bd.to_battle(perspective=p)
-    iter = BattleIterator(
-        battle, bd, perspective=p
-    )
+    iter = BattleIterator(bd, perspective=p)
     assert iter.last_input is None
 
     iter.next_input()
@@ -345,10 +325,7 @@ def test_next_input_7(vgc_json_anon7):
     bd = BattleData.from_showdown_json(vgc_json_anon7)
     p = "p1"
 
-    battle = bd.to_battle(perspective=p)
-    iter = BattleIterator(
-        battle, bd, perspective=p
-    )
+    iter = BattleIterator(bd, perspective=p)
     assert iter.last_input is None
 
     iter.next_input()
@@ -367,10 +344,7 @@ def test_next_input_7(vgc_json_anon7):
     assert iter.last_input == ">p1 move spore +1, move bitterblade +2"
 
     p = "p2"
-    battle = bd.to_battle(perspective=p)
-    iter = BattleIterator(
-        battle, bd, perspective=p
-    )
+    iter = BattleIterator(bd, perspective=p)
     assert iter.last_input is None
 
     iter.next_input()
@@ -399,10 +373,7 @@ def test_next_input_8(vgc_json_anon8):
     bd = BattleData.from_showdown_json(vgc_json_anon8)
     p = "p1"
 
-    battle = bd.to_battle(perspective=p)
-    iter = BattleIterator(
-        battle, bd, perspective=p
-    )
+    iter = BattleIterator(bd, perspective=p)
     assert iter.last_input is None
 
     iter.next_input()
@@ -430,10 +401,7 @@ def test_next_input_8(vgc_json_anon8):
     assert iter.last_input == ">p1 move bitterblade +2, move spore +2"
 
     p = "p2"
-    battle = bd.to_battle(perspective=p)
-    iter = BattleIterator(
-        battle, bd, perspective=p
-    )
+    iter = BattleIterator(bd, perspective=p)
     assert iter.last_input is None
 
     iter.next_input()
@@ -468,10 +436,7 @@ def test_next_input_9(vgc_json_anon9):
     bd = BattleData.from_showdown_json(vgc_json_anon9)
     p = "p1"
 
-    battle = bd.to_battle(perspective=p)
-    iter = BattleIterator(
-        battle, bd, perspective=p
-    )
+    iter = BattleIterator(bd, perspective=p)
     assert iter.last_input is None
 
     iter.next_input()
@@ -499,10 +464,7 @@ def test_next_input_9(vgc_json_anon9):
     assert iter.last_input == ">p1 switch 4, move protect"
 
     p = "p2"
-    battle = bd.to_battle(perspective=p)
-    iter = BattleIterator(
-        battle, bd, perspective=p
-    )
+    iter = BattleIterator(bd, perspective=p)
     assert iter.last_input is None
 
     iter.next_input()
@@ -537,10 +499,7 @@ def test_next_input_10(vgc_json_anon10):
     bd = BattleData.from_showdown_json(vgc_json_anon10)
     p = "p1"
 
-    battle = bd.to_battle(perspective=p)
-    iter = BattleIterator(
-        battle, bd, perspective=p
-    )
+    iter = BattleIterator(bd, perspective=p)
     assert iter.last_input is None
 
     iter.next_input()
@@ -562,10 +521,7 @@ def test_next_input_10(vgc_json_anon10):
     assert iter.last_input == ">p1 move heatwave, move icespinner +2"
 
     p = "p2"
-    battle = bd.to_battle(perspective=p)
-    iter = BattleIterator(
-        battle, bd, perspective=p
-    )
+    iter = BattleIterator(bd, perspective=p)
     assert iter.last_input is None
 
     iter.next_input()
@@ -591,10 +547,7 @@ def test_next_input_11(vgc_json_anon11):
     bd = BattleData.from_showdown_json(vgc_json_anon11)
     p = "p1"
 
-    battle = bd.to_battle(perspective=p)
-    iter = BattleIterator(
-        battle, bd, perspective=p
-    )
+    iter = BattleIterator(bd, perspective=p)
     assert iter.last_input is None
 
     iter.next_input()
@@ -625,10 +578,7 @@ def test_next_input_11(vgc_json_anon11):
     assert iter.last_input == ">p1 move jetpunch +1 terastallize, move psychic +2"
 
     p = "p2"
-    battle = bd.to_battle(perspective=p)
-    iter = BattleIterator(
-        battle, bd, perspective=p
-    )
+    iter = BattleIterator(bd, perspective=p)
     assert iter.last_input is None
 
     iter.next_input()
@@ -678,10 +628,7 @@ def test_next_input_12(vgc_json_anon12):
     bd = BattleData.from_showdown_json(vgc_json_anon12)
     p = "p1"
 
-    battle = bd.to_battle(perspective=p)
-    iter = BattleIterator(
-        battle, bd, perspective=p
-    )
+    iter = BattleIterator(bd, perspective=p)
     assert iter.last_input is None
 
     iter.next_input()
@@ -712,10 +659,7 @@ def test_next_input_12(vgc_json_anon12):
     assert iter.last_input == ">p1 pass, move voltswitch +2"
 
     p = "p2"
-    battle = bd.to_battle(perspective=p)
-    iter = BattleIterator(
-        battle, bd, perspective=p
-    )
+    iter = BattleIterator(bd, perspective=p)
     assert iter.last_input is None
 
     iter.next_input()
@@ -750,10 +694,7 @@ def test_next_input_13(vgc_json_anon13):
     bd = BattleData.from_showdown_json(vgc_json_anon13)
     p = "p1"
 
-    battle = bd.to_battle(perspective=p)
-    iter = BattleIterator(
-        battle, bd, perspective=p
-    )
+    iter = BattleIterator(bd, perspective=p)
     assert iter.last_input is None
 
     iter.next_input()
@@ -775,10 +716,7 @@ def test_next_input_13(vgc_json_anon13):
     assert iter.last_input == ">p1 move jetpunch +2 terastallize, move freezedry +2"
 
     p = "p2"
-    battle = bd.to_battle(perspective=p)
-    iter = BattleIterator(
-        battle, bd, perspective=p
-    )
+    iter = BattleIterator(bd, perspective=p)
     assert iter.last_input is None
 
     iter.next_input()
@@ -807,10 +745,7 @@ def test_next_input_14(vgc_json_anon14):
     bd = BattleData.from_showdown_json(vgc_json_anon14)
     p = "p1"
 
-    battle = bd.to_battle(perspective=p)
-    iter = BattleIterator(
-        battle, bd, perspective=p
-    )
+    iter = BattleIterator(bd, perspective=p)
     assert iter.last_input is None
 
     iter.next_input()
@@ -826,10 +761,7 @@ def test_next_input_14(vgc_json_anon14):
     assert iter.last_input == ">p1 move encore +1, move powergem +2"
 
     p = "p2"
-    battle = bd.to_battle(perspective=p)
-    iter = BattleIterator(
-        battle, bd, perspective=p
-    )
+    iter = BattleIterator(bd, perspective=p)
     assert iter.last_input is None
 
     iter.next_input()
@@ -852,10 +784,7 @@ def test_next_input_15(vgc_json_anon15):
     bd = BattleData.from_showdown_json(vgc_json_anon15)
     p = "p1"
 
-    battle = bd.to_battle(perspective=p)
-    iter = BattleIterator(
-        battle, bd, perspective=p
-    )
+    iter = BattleIterator(bd, perspective=p)
     assert iter.last_input is None
 
     iter.next_input()
@@ -883,10 +812,7 @@ def test_next_input_15(vgc_json_anon15):
     assert iter.last_input == ">p1 move dragondarts +2, move dazzlinggleam"
 
     p = "p2"
-    battle = bd.to_battle(perspective=p)
-    iter = BattleIterator(
-        battle, bd, perspective=p
-    )
+    iter = BattleIterator(bd, perspective=p)
     assert iter.last_input is None
 
     iter.next_input()
@@ -921,10 +847,7 @@ def test_next_input_16(vgc_json_anon16):
     bd = BattleData.from_showdown_json(vgc_json_anon16)
     p = "p1"
 
-    battle = bd.to_battle(perspective=p)
-    iter = BattleIterator(
-        battle, bd, perspective=p
-    )
+    iter = BattleIterator(bd, perspective=p)
     assert iter.last_input is None
 
     iter.next_input()
@@ -949,10 +872,7 @@ def test_next_input_16(vgc_json_anon16):
     assert iter.last_input == ">p1 move pollenpuff +1, move ruination +1"
 
     p = "p2"
-    battle = bd.to_battle(perspective=p)
-    iter = BattleIterator(
-        battle, bd, perspective=p
-    )
+    iter = BattleIterator(bd, perspective=p)
     assert iter.last_input is None
 
     iter.next_input()
@@ -981,10 +901,7 @@ def test_next_input_17(vgc_json_anon17):
     bd = BattleData.from_showdown_json(vgc_json_anon17)
     p = "p1"
 
-    battle = bd.to_battle(perspective=p)
-    iter = BattleIterator(
-        battle, bd, perspective=p
-    )
+    iter = BattleIterator(bd, perspective=p)
     assert iter.last_input is None
 
     iter.next_input()
@@ -1019,10 +936,7 @@ def test_next_input_18(vgc_json_anon18):
     bd = BattleData.from_showdown_json(vgc_json_anon18)
     p = "p1"
 
-    battle = bd.to_battle(perspective=p)
-    iter = BattleIterator(
-        battle, bd, perspective=p
-    )
+    iter = BattleIterator(bd, perspective=p)
     assert iter.last_input is None
 
     iter.next_input()
@@ -1075,10 +989,7 @@ def test_next_input_19(vgc_json_anon19):
     bd = BattleData.from_showdown_json(vgc_json_anon19)
     p = "p1"
 
-    battle = bd.to_battle(perspective=p)
-    iter = BattleIterator(
-        battle, bd, perspective=p
-    )
+    iter = BattleIterator(bd, perspective=p)
     assert iter.last_input is None
 
     iter.next_input()
@@ -1107,10 +1018,7 @@ def test_next_input_20(vgc_json_anon20):
     bd = BattleData.from_showdown_json(vgc_json_anon20)
     p = "p1"
 
-    battle = bd.to_battle(perspective=p)
-    iter = BattleIterator(
-        battle, bd, perspective=p
-    )
+    iter = BattleIterator(bd, perspective=p)
     assert iter.last_input is None
 
     iter.next_input()
@@ -1127,10 +1035,7 @@ def test_next_input_20(vgc_json_anon20):
 
     p = "p2"
 
-    battle = bd.to_battle(perspective=p)
-    iter = BattleIterator(
-        battle, bd, perspective=p
-    )
+    iter = BattleIterator(bd, perspective=p)
     assert iter.last_input is None
 
     iter.next_input()
@@ -1156,10 +1061,7 @@ def test_next_input_21(vgc_json_anon21):
     bd = BattleData.from_showdown_json(vgc_json_anon21)
     p = "p1"
 
-    battle = bd.to_battle(perspective=p)
-    iter = BattleIterator(
-        battle, bd, perspective=p
-    )
+    iter = BattleIterator(bd, perspective=p)
     assert iter.last_input is None
 
     iter.next_input()
@@ -1191,10 +1093,7 @@ def test_next_input_22(vgc_json_anon22):
     bd = BattleData.from_showdown_json(vgc_json_anon22)
     p = "p1"
 
-    battle = bd.to_battle(perspective=p)
-    iter = BattleIterator(
-        battle, bd, perspective=p
-    )
+    iter = BattleIterator(bd, perspective=p)
     assert iter.last_input is None
 
     iter.next_input()
@@ -1223,3 +1122,40 @@ def test_next_input_22(vgc_json_anon22):
 
     iter.next_input()
     assert iter.last_input == ">p1 switch 3, move spiritbreak +1"
+
+
+def test_next_input_23(vgc_json_anon23):
+    bd = BattleData.from_showdown_json(vgc_json_anon23)
+    iter = BattleIterator(bd, perspective="p1")
+    assert iter.last_input is None
+
+    iter.next_input()
+    assert iter.last_input == ">p1 team 4, 2, 6, 1"
+
+    iter.next_input()
+    assert iter.last_input == ">p1 move trickroom, move fakeout +1"
+
+    iter.next_input()
+    assert iter.last_input == ">p1 move willowisp +1, move spiritbreak +1"
+
+    iter.next_input()
+    assert iter.last_input == ">p1 pass, switch 4"
+
+    # TODO: problem: input_nums are 7-9 when they should be 8-10
+    iter.next_input()
+    assert iter.last_input == ">p1 move curse +2, move rockslide"
+
+    iter.next_input()
+    assert iter.last_input == ">p1 switch 4, pass"
+
+    iter.next_input()
+    assert iter.last_input == ">p1 move spiritbreak +1, move rockslide"
+
+    iter.next_input()
+    assert iter.last_input == ">p1 move reflect, move rockslide"
+
+    iter.next_input()
+    assert iter.last_input == ">p1 switch 3, pass"
+
+    iter.next_input()
+    assert iter.last_input == ">p1 move shadowball +2, move rockslide"

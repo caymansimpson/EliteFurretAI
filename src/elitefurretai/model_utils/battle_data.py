@@ -163,13 +163,12 @@ class BattleData:
             serialized = self.to_dict()
             f.write(orjson.dumps(serialized))
 
-    def to_battle(self, perspective: str) -> DoubleBattle:
+    def to_battle(self, perspective: str, omniscient: bool = False) -> DoubleBattle:
         assert perspective in ["p1", "p2"]
 
         player = self.p1 if perspective == "p1" else self.p2
         team = self.p1_team if perspective == "p1" else self.p2_team
         opp_player = self.p2 if perspective == "p1" else self.p1
-        opp_team = self.p2_team if perspective == "p1" else self.p1_team
 
         battle = DoubleBattle(
             self.battle_tag, player, logging.getLogger(player), gen=int(self.format[3])
@@ -177,7 +176,7 @@ class BattleData:
         battle.player_role = perspective
 
         battle.player_username = player
-        battle.teampreview_team = {mon.to_pokemon() for mon in team}
+        battle.teampreview_team = [mon.to_pokemon() for mon in team]
 
         # Assumes an order in inputLog
         index = 0 if perspective == "p1" else 1
@@ -191,71 +190,27 @@ class BattleData:
             sent_team[get_showdown_identifier(mon, perspective)] = mon
         battle.team = sent_team
 
+        # Fill opponent team
+        if omniscient:
+            opp_perspective = "p1" if perspective == "p2" else "p2"
+            opp_team = self.p1_team if opp_perspective == "p1" else self.p2_team
+
+            index = 0 if opp_perspective == "p1" else 1
+            choices = map(
+                lambda x: int(x) - 1,
+                self.input_logs[index]
+                .replace(f">{opp_perspective} team ", "")
+                .split(", "),
+            )
+            opp_sent_team = {}
+            for omon in [opp_team[choice] for choice in choices]:
+                mon = omon.to_pokemon()
+                opp_sent_team[mon.identifier(opp_perspective)] = mon
+            battle._opponent_team = opp_sent_team
+
         battle.opponent_username = opp_player
-        battle._teampreview_opponent_team = {mon.to_pokemon() for mon in opp_team}
 
         return battle
-
-    # To help with some corrupted logs that we have
-    def is_valid_for_supervised_learning(self) -> bool:
-
-        # Old showdown protool
-        if any(map(lambda x: "[ability2] " in x, self.logs)):
-            return False
-
-        # Player error
-        elif self.p1_rating is None or self.p2_rating is None:
-            return False
-
-        elif self.p1_rating < 1500 or self.p2_rating < 1500:
-            return False
-
-        # Battle didnt start
-        elif self.input_logs == []:
-            return False
-
-        # Edge-case where an active mon just faints in the same turn and you can revival blessing it.
-        # Adding this to model_battle_order will increase the size and inaccuracy of the model
-        elif any(map(lambda x: "switch 1" in x or "switch 2" in x, self.input_logs)):
-            return False
-
-        # Creates a bunch of edge-cases that technically shouldn't be supported
-        elif any(map(lambda x: "Metronome" in x, self.logs)):
-            return False
-
-        #  Eject Pack proc after Moody gets merged into a preturn switch
-        elif any(map(
-            lambda x: self.logs[x].endswith("Eject Pack") and self.logs[max(0, x - 3)].endswith("|Moody|boost"),
-            range(len(self.logs))
-        )):
-            return False
-
-        # There is an edge-case that has Dancer activating before Eject Button activates
-        elif any(map(lambda x: x == "|-enditem|p2b: 780b3dada7|Eject Button", self.logs)):
-            return False
-
-        # Old showdown protocol
-        elif any(map(lambda x: "|-ability||Zero to Hero" in x, self.logs)):
-            return False
-
-        # Can't do these battles properly without requests
-        elif any(map(lambda x: "-transform" in x, self.logs)):
-            return False
-
-        # Too lazy to implement this edge-case
-        elif any(
-            map(
-                lambda x: "0 fnt|[from] Stealth Rock" in x or "0 fnt|[from] Spikes" in x,
-                self.logs,
-            )
-        ):
-            return False
-
-        # ef this noise
-        elif any(map(lambda x: "Zoroark" in x or "Zorua" in x, self.logs)):
-            return False
-
-        return True
 
 
 def team_from_json(team: List[Dict[str, Any]]) -> List[ObservedPokemon]:
@@ -294,7 +249,7 @@ def pokemon_from_json(mon_info: Dict[str, Any], gen=9) -> ObservedPokemon:
 
     moves = OrderedDict()
     for m in mon_info["moves"]:
-        moves[str(m)] = Move(to_id_str(m), gen=gen)
+        moves[to_id_str(m)] = Move(to_id_str(m), gen=gen)
 
     gender = None
     if mon_info.get("gender", None) == "M":

@@ -50,29 +50,6 @@ def standardize_pokemon_ident(pokemon_str: str) -> str:
         return groups[0][1] + ": " + groups[0][2]
 
 
-# Gets pokemon from a battle given a pokemon identifier; battle.team stores "p1: Furret"
-# But this method will get: "p1a: Furret", "p1: Furret", "furret" from either our team
-# or the opponent's
-def get_pokemon(
-    mon_ident: str, battle: Union[Battle, DoubleBattle, AbstractBattle]
-) -> Pokemon:
-    if mon_ident in battle.team:
-        return battle.team[mon_ident]
-    elif mon_ident in battle.opponent_team:
-        return battle.opponent_team[mon_ident]
-    elif mon_ident[:2] + mon_ident[3:] in battle.team:
-        return battle.team[mon_ident[:2] + mon_ident[3:]]
-    elif mon_ident[:2] + mon_ident[3:] in battle.opponent_team:
-        return battle.opponent_team[mon_ident[:2] + mon_ident[3:]]
-
-    raise ValueError(
-        f"Couldn't get a pokemon with ident {mon_ident} from \n"
-        + f"\tOur team: {battle.team}"
-        + f"\n\tOpponent team: {battle.opponent_team}"
-        + f"\n\tOpponent Teampreview team: {battle.teampreview_opponent_team}"
-    )
-
-
 # Note that this doesn't copy objects like Dicts
 def copy_pokemon(orig: Pokemon, gen: int) -> Pokemon:
     mon = Pokemon(gen, species=orig.species)
@@ -114,7 +91,7 @@ def copy_bare_battle(
 
     # Since this can't be replicated via events; it's populated by
     # player
-    b.teampreview_team = {mon for mon in battle.teampreview_team}
+    b.teampreview_team = [mon for mon in battle.teampreview_team]
 
     # Copy player information we have
     b._player_role = battle._player_role
@@ -179,7 +156,7 @@ def has_status_immunity(
     if battle.opponent_role is None:
         return False
 
-    mon = get_pokemon(ident, battle)
+    mon = battle.get_pokemon(ident)
 
     # Already have a status
     if mon.status is not None or Effect.SUBSTITUTE in mon.effects:
@@ -342,7 +319,7 @@ def has_unboost_immunity(
     else:
         raise NotImplementedError()
 
-    mon = get_pokemon(mon_ident, battle)
+    mon = battle.get_pokemon(mon_ident)
     if mon.item == "clearamulet":
         return True
 
@@ -397,7 +374,7 @@ def has_unboost_immunity(
 def is_grounded(
     mon_ident: str, battle: Union[Battle, DoubleBattle, AbstractBattle]
 ) -> bool:
-    mon = get_pokemon(mon_ident, battle)
+    mon = battle.get_pokemon(mon_ident)
     if Field.GRAVITY in battle.fields:
         return True
 
@@ -476,7 +453,7 @@ def get_priority_and_identifier(
 
     mon_ident = standardize_pokemon_ident(event[2])
 
-    mon = get_pokemon(mon_ident, battle)
+    mon = battle.get_pokemon(mon_ident)
     move = Move(re.sub("[^a-zA-Z]", "", event[3].lower()), battle.gen)
 
     # First set our priority to the move's

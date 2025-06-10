@@ -1,6 +1,14 @@
 # EliteFurretAI
 **The goal of this project is to build a superhuman bot to play Pokemon VGC**. It is not to further research, nor is it to build a theoretically sound approach -- the goal is to be the best that no one ever was. We will only contribute to research or take sound approaches if it will help us towards our ultimate goal.
 
+Table of Contents:
+1. [Summary of the VGC Problem Space](#summary-of-the-vgc-problem-space)
+2. [Goals & Priorities](#goals-and-priorities)
+2. [Current Proposed Approach](#current-proposed-approach)
+3. [Why the name?](#why-the-name-elitefurretai)
+4. [Resources](#resources)
+5. [Contributors & Acknowledgements](#contributors--acknowledgements)
+
 ![AI Pokeball](docs/images/aipokeball.png)
 
 ### Summary of the VGC Problem Space
@@ -15,6 +23,14 @@
     - **Capacity** – CPU for generating training data, GPU for inference
     - **Human Training Data** – while not essential, this will accelerate training convergence by orders of magnitude, reduce capacity needs and accelerate our own internal learning speed tremendously. It will also help our bot transition to playing humans more easily.
 
+## Goals and Priorities
+This project is pretty big, and so there is a sequence of milestones we want to accomplish:
+1. **Basic Foundation**s: We want to build simple utilities extending off of poke-env to make it easier to build a VGC RL or supervised learning bot off-the-shelf for me and researchers.
+2. **Build a VGC Bot**: We want to build a bot using the above utilities.
+3. **Derive Teambuilding**: Once our bot gets to superhuman, we can use it and a sample of teams in the current Meta to derive an optimal team-building strategy via brute force.
+4. **Create Furret-based teams**: With the above, we can contain our bot to force it to have and bring Furret in matchups to help derive the most optimal usage of this monster of a Pokemon. Imagine a world in which Furret dominates a VGC meta!
+5. **Incorporate into games**: With a strong bot, games will become intensely challenging and strategic.
+
 ## Current Proposed Approach
 From our synthesis of [available literature](https://docs.google.com/document/d/14menCHw8z06KJWZ5F_K-MjgWVo_b7PESR7RlG-em4ic/edit#heading=h.p6dz1cv0mnpx), we’ve gleaned:
 - Model-free alone is unlikely to produce superhuman performance without the capacity that we don’t have available
@@ -22,43 +38,17 @@ From our synthesis of [available literature](https://docs.google.com/document/d/
 - The behavior of VGC from a game-theoretic perspective is still unknown, and theory might not help the practical purposes of making a superhuman bot.
 
 Because of this last point, any approach we suggest pre-hoc is very likely to change as we learn more about what works in practice and how VGC behaves. That being said, we feel the best approach will likely be:
+- **Policy-based** – based on Nash Equilibrium using Deep Learning to create the best policy/value networks that generalize to the game well. This allows for most flexibility for decision-time planning. These will likely have to be from a combination of classic self-play RL and imitation learning.
+- **Search-based** – during decision-time planning, we should expore MCTS guided by our Policy and Value networks. This allows us to better deal with nuances of game mechanics that RL might not be able to fully grasp. We can use different types of game abstractions to speed up this process and make it more tractable.
 
-**Basic Foundation**:
-- **Policy** – based on Nash Equilibrium using Deep Learning to create the best policy/value networks that generalize to the game well. This allows for most flexibility for decision-time planning.
-- **Search** – during decision-time planning, we can explore the following options:
-  - Using the above networks directly if sufficiently accurate
-  - Using Depth-Limited search
-  - Using MCTS
-- **Game Abstractions** – these will help speed up both training our networks and our speed. We will explore the following abstractions:
-  - **Decision Abstractions**
-    - Using a network to pick top N likely actions from opponents and only rely on search using these
-    - Using a network to eliminate exploring states that have low predicted value for our agents
-  - **State Abstractions**
-    - Use a network that embeds each state, and use Locality-Sensitive Hashing to quickly eliminate branches to explore if they are very similar to other previously explored
-    - Binning HP (exact HP values mostly don’t matter)
-    - Binning PP (exact PP values mostly don’t matter)
-    - Use a network to predict the opponent’s infostate/the worldstate
-    - Discarding unlikely relevant information
-  - **Chance Abstractions**
-    - Only explore good luck or bad luck (Athena assumes one RNG roll per turn per player)
-    - Ignore unlikely outcomes
-
-**Training Approach:** We will generate data via self-play, guided with human data
-
-**Self-Play:** given the complex game dynamics and partial observability, we need extraordinary amounts of data, which can only be reasonably generated by self-play.
-
-**Initializing with Human Data**: This will help encode game mechanics, improve performance against humans (by better exploring likely human-caused states)  and drastically speed up training, making this approach feasible. Concretely, we will generate some training samples based on human-like decisions learned from human data.
-
-**Increasing Problem Complexity**: Given the high degree of complexity of the properties VGC has, we believe we should start with more constrained problems (e.g. 2v2 and set teams), verify our approaches and gradually introduce complexities to overcome computational constraints.
+There is actually quite a lot of complexity encoded in the above, and we encourage you to check out the doc linked above if you want to learn more about the sequencing of steps and models to build out the above.
 
 ## Why the name EliteFurretAI?
-The ultimate goal of this work is to make Furret central to the VGC meta. Because Nintendo refuses to give Furret the Simple/Adaptability/Prankster buffs it desperately needs, only a superhuman AI will be able to build around this monster and use it in a way that unleashes its latent potential. This bot is the first step to doing so; once it can appropriately accurately value starting positions, we can use it to start building teams with basic meta stats.
+As mentioned above, the penultimate goal of this work is to make Furret central to the VGC meta. Because Nintendo refuses to give Furret the Simple/Adaptability/Prankster buffs it desperately needs, only a superhuman AI will be able to build around this monster and use it in a way that unleashes its latent potential. This bot is the first step to doing so; once it can appropriately accurately value starting positions, we can use it to start building teams with basic meta stats.
 
-Eventually, we hope that this AI can be used to build and use a competitive team centered around Furret -- one that will be deserving of surpassing all Elite Fours, hence the name "EliteFurret". We chose to stick with AI at the end of the name to be responsible denizens and make sure people internalize they are being owned by a robot.
+Eventually, we hope that this AI can be used to build and use a competitive team centered around Furret -- one that will be deserving of surpassing all Elite Fours, and even potentially replacing in-game AI. Hence the name "EliteFurret". We chose to stick with AI at the end of the name so players internalize they are being owned by a robot that loves this mon.
 
 ![OG Furret](docs/images/furret.png)
-
-Afterwards, we hope that we can integrate this AI into emulators.
 
 ## Resources
 More details on this approach, thinking and understanding that led to everything in this README can be found [here](https://docs.google.com/document/d/14menCHw8z06KJWZ5F_K-MjgWVo_b7PESR7RlG-em4ic/edit).

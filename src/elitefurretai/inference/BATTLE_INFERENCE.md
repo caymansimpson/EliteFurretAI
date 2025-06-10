@@ -1,17 +1,17 @@
 # Utils
 
-This folder contains the class that does Battle Inference for VGC. Development of this module requires a fair amount of mechanics studying, and thus is quite manual and hard to maintain. If you plan to use these, I would encourage you to read this document in its entirety.
+This folder contains the classes that do Battle Inference for VGC -- their goal is to leverage knowledge of game mechanics to supplement AI's knowledge of the game at hand. It is a side project; since this module requires a fair amount of mechanics knowledge, it's quite manual and hard to maintain. If you plan to use these, I would encourage you to be cautious read this document in its entirety.
 
-This module has gone through extensive Fuzz Testing, and so should work for most use-cases. However, it has many known bugs, because perfect is the enemy of done. I will not personally work on any Issues related to the Inference models I've implemented, but will take PR's with appropriate unit tests.
+This module has gone through extensive Fuzz Testing, and so should work for most use-cases. However, it has many known bugs (noted below). I will not personally work on any issues related to the Inference classes I've implemented, but will take PR's if you want to fix them.
 
 ## **BattleInference**
 This module stores inferences made by ItemInference and SpeedInference, and can be sent through the Embedder class to ameliorate an agent's understanding of the battle state. It is a glorified dicionary that has peresistent memory across both `SpeedInference` and `ItemInference` modules.
 
-Ideally, we would combine `BattleInference`, `SpeedInference` and `ItemInference` into one module so we only store one battle state and go through logs once, but the complexity of such a task would make these modules even more difficult to maintain. While not built for speed nor yet optimized, these haven't significaly slowed down battles, and so this is a small concern.
+Ideally, we would combine `BattleInference`, `SpeedInference` and `ItemInference` into one module so we only store one battle state and go through logs once, but the complexity of such a task would make these modules even more difficult to maintain.
 
 #### NOTES:
 - All inference items are tested on doubles only, and some methods do have pity singles implementations, but they are untested!
-- ItemInference and SpeedInference both independently track battle states because it is necessary to track battle states mid-turn to properly infer speed and items. This means that they triple the memory needed to play a battle! Just beware of this fact.
+- ItemInference and SpeedInference both independently track battle states because it is necessary to track battle states mid-turn to properly infer speed and items. This means that they triple the memory needed to play a battle! Just beware osf this fact.
 - Each inference will assume a mon has an advantageous ability if that ability isn't known. For example, we will always assume Venasaur has Chlorophyll if it is in the sun.
 
 ## SpeedInference
@@ -36,6 +36,10 @@ This module infers opponents' most common and inferrable items using it's undert
 6. **Choice Tracking**: Tracks whether a mon could be choice based on the moves it's used.
 7. **Assault Vest Tracking**: Trakvs whether a mon used a Status move, which would invalidate whether it has an Assault Vest. This can be ameliorated when we have Damage Calculation implemented.
 
+## DamageInference
+This module will infer an opponent's item/EV spread. Right now, I have not prioritized its development.
+
+
 ## Usage:
 ```python
 class InferencePlayer(RandomPlayer):
@@ -47,6 +51,7 @@ class InferencePlayer(RandomPlayer):
       self._inferences = {}
       self._speed_inferences = {}
       self._item_inferences = {}
+      self._damage_inferences = {}
 
    def teampreview(self, battle):
 
@@ -56,15 +61,18 @@ class InferencePlayer(RandomPlayer):
 
       # Initialize Speed and Item Inferences
       si = SpeedInference(battle, inferences)
-      ii = ItemInference( battle, inferences)
+      ii = ItemInference(battle, inferences)
+      di = DamageInference(battle, inferences)
 
       # Store them in Player
       self._speed_inferences[battle.battle_tag] = si
       self._item_inferences[battle.battle_tag] = ii
+      self._damage_inferences[battle.battle_tag] = di
 
       # Update them with what we've seen so far
       self._speed_inferences[battle.battle_tag].update(battle)
       self._item_inferences[battle.battle_tag].update(battle)
+      self._damage_inferences[battle.battle_tag].update(battle)
 
       # Whatever algo to choose teampreview; hardcoded in this example
       return "/team 1234"
@@ -77,6 +85,7 @@ class InferencePlayer(RandomPlayer):
          # Update Inferences
          self._speed_inferences[battle.battle_tag].update(battle)
          self._item_inferences[battle.battle_tag].update(battle)
+         self._damage_inferences[battle.battle_tag].update(battle)
 
       # Whatever algo to choose a move; random in this example
       return self.choose_random_doubles_move(battle)
