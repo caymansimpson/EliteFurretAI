@@ -1,8 +1,10 @@
 import re
 from typing import Any, Dict, List, Optional
 
+from poke_env.data.normalize import to_id_str
 from poke_env.environment import (
     AbstractBattle,
+    DoubleBattle,
     Effect,
     MoveCategory,
     Pokemon,
@@ -10,28 +12,26 @@ from poke_env.environment import (
 )
 
 from elitefurretai.model_utils.battle_data import BattleData
+from elitefurretai.model_utils.model_double_battle_order import MDBO
 from elitefurretai.utils.inference_utils import get_showdown_identifier
 
 
 # Iterates through BattleData; cannot switch perspectives
 class BattleIterator:
 
-    FORCE_SWITCH = "force_switch"
-    TEAMPREVIEW = "teampreview"
-    TURN = "turn"
-
     def __init__(
         self,
-        battle: AbstractBattle,
         bd: BattleData,
         perspective: str = "p1",
+        omniscient: bool = False,
     ):
-        self._battle: AbstractBattle = battle
+        self._battle: AbstractBattle = bd.to_battle(perspective, omniscient)
         self._bd: BattleData = bd
         self._index: int = 0
         self._input_nums: List[int] = [0, 0]
         self._prev_turn_index = 0
         self._perspective = perspective
+        self._omniscient = omniscient
         self._last_input_type: Optional[str] = None
 
     def __str__(self):
@@ -44,9 +44,9 @@ class BattleIterator:
         """
 
     def next(self):
-        assert (
-            self._battle.player_role == self._perspective
-        ), "Battle's player role was switched"
+        assert self._battle.player_role == self._perspective, (
+            "Battle's player role was switched; " + self.bd.battle_tag
+        )
 
         if self._index >= len(self.bd.logs):
             raise StopIteration("Attempt to iterate when no more logs\n", str(self))
@@ -66,15 +66,37 @@ class BattleIterator:
         else:
             self._battle.parse_message(split_message)
 
+            # To track input_logs in BattleData, we need to update the mons in battle.team
+            # so that they mirror what the input_logs expect (swap mon spots)
+            if split_message[1] == "switch" and split_message[2].startswith(
+                self._perspective
+            ):
+                assert isinstance(
+                    self.battle, DoubleBattle
+                ), self.bd.battle_tag  # implementation is doubles specific
+
+                # get ident of active pokemon from swapped spot, and to be swapped
+                swapped_ident = self.battle._active_pokemon[
+                    split_message[2][:3]
+                ].identifier(self._perspective)
+                to_be_swapped = split_message[2][:2] + split_message[2][3:]
+
+                # swap
+                keys = list(self.battle.team.keys())
+                index1 = keys.index(swapped_ident)
+                index2 = keys.index(to_be_swapped)
+                keys[index1], keys[index2] = keys[index2], keys[index1]
+                self.battle.team = {k: self.battle.team[k] for k in keys}
+
         # Find input and set _last_input to this; use _input_index to track where we are
         # in the input log; we should leave it where we should start from next time
         if self._is_pivot_trigger():
             self._input_nums = [self._input_nums[1], self._input_nums[1] + 1]
-            self._last_input_type = self.FORCE_SWITCH
+            self._last_input_type = MDBO.FORCE_SWITCH
 
         elif self._is_teampreview():
             self._input_nums = [self._input_nums[1], self._input_nums[1] + 2]
-            self._last_input_type = self.TEAMPREVIEW
+            self._last_input_type = MDBO.TEAMPREVIEW
 
         elif self._is_turn():
 
@@ -83,17 +105,18 @@ class BattleIterator:
             # if this goes off, it likely means a problem with the last input
             assert self._input_nums[1] >= len(self._bd.input_logs) or self._bd.input_logs[
                 self._input_nums[1]
-            ].startswith(
-                ">p1"
-            ), "We are starting a turn, but the next input in the inputlog doesnt start with p1, or starts at the end of the logs, both of which are invalid"
+            ].startswith(">p1"), (
+                "We are starting a turn, but the next input in the inputlog doesnt start with p1, or starts at the end of the logs, both of which are invalid; "
+                + self.bd.battle_tag
+            )
 
             self._input_nums = [self._input_nums[1], self._input_nums[1] + 2]
             self._prev_turn_index = self._index
-            self._last_input_type = self.TURN
+            self._last_input_type = MDBO.TURN
 
         elif self._is_revival_blessing():
             self._input_nums = [self._input_nums[1], self._input_nums[1] + 1]
-            self._last_input_type = self.FORCE_SWITCH
+            self._last_input_type = MDBO.FORCE_SWITCH
 
         # Can either be two or one, depending on who faints; we deduce whether we need
         # two or one by the order of the player inputs in the player log
@@ -102,7 +125,7 @@ class BattleIterator:
                 self._input_nums = [self._input_nums[1], self._input_nums[1] + 2]
             else:
                 self._input_nums = [self._input_nums[1], self._input_nums[1] + 1]
-            self._last_input_type = self.FORCE_SWITCH
+            self._last_input_type = MDBO.FORCE_SWITCH
 
         self._index += 1
 
@@ -164,9 +187,9 @@ class BattleIterator:
     # Assumes order of inputs is p1, p2
     @property
     def last_input(self) -> Optional[str]:
-        assert (
-            self._battle.player_role == self._perspective
-        ), "Battle's player role was switched"
+        assert self._battle.player_role == self._perspective, (
+            "Battle's player role was switched " + self.bd.battle_tag
+        )
         inputs = self.bd.input_logs[self._input_nums[0] : self._input_nums[1]]
         if len(inputs) == 0:
             return None
@@ -183,9 +206,9 @@ class BattleIterator:
 
     @property
     def last_opponent_input(self) -> Optional[str]:
-        assert (
-            self._battle.player_role == self._perspective
-        ), "Battle's player role was switched"
+        assert self._battle.player_role == self._perspective, (
+            "Battle's player role was switched " + self.bd.battle_tag
+        )
         inputs = self.bd.input_logs[self._input_nums[0] : self._input_nums[1]]
         if len(inputs) <= 1:
             return None
@@ -217,6 +240,10 @@ class BattleIterator:
     @property
     def perspective(self) -> str:
         return self._perspective
+
+    @property
+    def omniscient(self) -> bool:
+        return self._omniscient
 
     def _is_turn(self) -> bool:
         return self.log.startswith("|turn|")
@@ -293,10 +320,19 @@ class BattleIterator:
                 i += 1
 
             # -boost could come from Contrary
-            if any(map(lambda x: x[1] in ["-unboost", "-start", "-weather", "-boost"], next_logs)):
+            if any(
+                map(
+                    lambda x: x[1] in ["-unboost", "-start", "-weather", "-boost"],
+                    next_logs,
+                )
+            ):
                 return True
             # super edge-casE: if there is mirror armor activation, but I am holding a Clear Amulet (so I get "-fail")
-            elif len(next_logs) > 0 and len(next_logs[0]) > 3 and next_logs[0][3] == "Mirror Armor":
+            elif (
+                len(next_logs) > 0
+                and len(next_logs[0]) > 3
+                and next_logs[0][3] == "Mirror Armor"
+            ):
                 return True
 
         # Damaging Move-based pivot
@@ -394,7 +430,7 @@ class BattleIterator:
                 "[from] move: Corrosive Gas",
                 "[from] move: Switcheroo",
                 "[from] move: Thief",
-                "[from] move: Trick"
+                "[from] move: Trick",
             ]
             i, next_logs = self.index + 1, []
             while (
@@ -405,13 +441,28 @@ class BattleIterator:
                 next_logs.append(self.bd.logs[i].split("|"))
                 i += 1
 
-            if any(map(lambda x: len(x) > 2 and x[1] == "faint" and x[2] == split_message[2], next_logs)):
+            if any(
+                map(
+                    lambda x: len(x) > 2 and x[1] == "faint" and x[2] == split_message[2],
+                    next_logs,
+                )
+            ):
                 return False
             if len(split_message) >= 5 and split_message[4] in non_activations:
                 return False
             elif len(split_message) >= 6 and split_message[5] in non_activations:
                 return False
-            elif any(map(lambda x: len(x) > 3 and x[3] == "Red Card", next_logs)):
+
+            # Red Card will negate an Eject Pack/Button from allowing the user to switch. Here, we need to make sure
+            # that the Red Card is ejecting the Eject Pack mon
+            elif any(
+                map(
+                    lambda x: len(x) > 4
+                    and x[3] == "Red Card"
+                    and split_message[2] == x[4].replace("[of] ", ""),
+                    next_logs,
+                )
+            ):
                 return False
             else:
                 return True
@@ -593,25 +644,25 @@ class BattleIterator:
             "active": mon in self.battle.active_pokemon,
         }
 
-    def simulate_request(self) -> Dict[str, Any]:
+    def simulate_request(self):
         req = {}
         assert self.last_input is not None
-        if self.last_input_type == BattleIterator.TEAMPREVIEW:
-            assert self.last_input[4:].startswith("team")
+        if self.last_input_type == MDBO.TEAMPREVIEW:
+            assert self.last_input[4:].startswith("team"), self.bd.battle_tag
             req["maxChosenTeamSize"] = 4  # What Showdown uses now
             req["maxTeamSize"] = 4  # Backwards compatibility
             req["teamPreview"] = True
 
-        elif self.last_input_type == BattleIterator.FORCE_SWITCH:
+        elif self.last_input_type == MDBO.FORCE_SWITCH:
             assert (
                 self.last_input[1:3] == self.battle.player_role
                 and "move" not in self.last_input
-            )
+            ), self.bd.battle_tag
             orders = self.last_input[4:].split(",")
             req["forceSwitch"] = [orders[0].strip() != "pass", orders[1].strip() != "pass"]
 
-        elif self.last_input_type == BattleIterator.TURN:
-            assert not self.last_input[4:].startswith("team")
+        elif self.last_input_type == MDBO.TURN:
+            assert not self.last_input[4:].startswith("team"), self.bd.battle_tag
             req["actives"] = []
             active_pokemon = self.battle._active_pokemon  # type: ignore
             req["actives"].append(
@@ -621,14 +672,121 @@ class BattleIterator:
                 self._generate_active_mon(active_pokemon.get(f"{self.perspective}b"))
             )
 
+        # Get identifiers of mons we chose in teampreviwe, so we only populate request with the team we sent
+        team_choice, team = "", []
+        if self._perspective == "p1":
+            team_choice, team = self.bd.input_logs[0], self.bd.p1_team
+        else:
+            team_choice, team = self.bd.input_logs[1], self.bd.p2_team
+        team_choice = list(map(lambda x: int(x) - 1, team_choice[9:].split(", ")))
+        identifiers = list(
+            map(lambda x: self._perspective + ": " + team[x].name, team_choice)
+        )
+
         req["side"] = {
             "name": self.battle.player_username,
             "id": self.battle.player_role,
             "pokemon": [
-                self._generate_request_mon(mon) for mon in self.battle.team.values()
+                self._generate_request_mon(mon)
+                for mon in self.battle.team.values()
+                if mon.identifier(self._perspective) in identifiers
             ],
         }
 
         req["rqid"] = self.index
 
-        return req
+        self.battle.parse_request(req)
+
+    # Creates a MDBO from the last input
+    def last_order(self) -> MDBO:
+        # Remove player identifier; inputs start with ">p1 " or ">p2
+        if self.last_input is None or self.last_input_type is None:
+            return MDBO(MDBO.DEFAULT)
+
+        label = self.last_input[4:]
+
+        # If teampreview order: Remove "team "; Replace all spaces and commas with just order of numbers
+        if label.startswith("team "):
+            return MDBO(MDBO.TEAMPREVIEW, "/" + label)
+
+        # If move order
+        else:
+
+            # Remove the all the +[num] and convert to [num]
+            label = re.sub(r"\+([012])", r"\1", label)
+            orders = []
+
+            # Parse each single order separately, where i is the index of battle.active_pokemon
+            for i, order in enumerate(label.split(", ")):
+                order = order.strip()
+
+                # If the single order is a move
+                if order.startswith("move "):
+
+                    # Get the mon_entry of the ith active pokemon from json
+                    actor = None
+                    team = (
+                        self.bd.p1_team
+                        if self.battle.player_role == "p1"
+                        else self.bd.p2_team
+                    )
+                    for mon in team:
+                        if (
+                            self.battle.active_pokemon[i]
+                            and mon.name == self.battle.active_pokemon[i].name
+                        ):
+                            actor = mon
+                            break
+
+                    # Check to see if we could find the mon
+                    assert actor is not None, (
+                        f"Could not find actor [{self.battle.active_pokemon[i]}] from the order [{order}] in team [{list(map(lambda x: x.name, team))}]; "
+                        + self.bd.battle_tag
+                    )
+
+                    # Get the move_index of the move
+                    move_index = -1
+                    for j, move in enumerate(actor.moves):
+                        if to_id_str(order[5:]).startswith(to_id_str(move)):
+                            move_index = j + 1  # Moves are 1-based
+                            break
+
+                    # Edge case for struggle, where any input is the right one. We should technically
+                    # skip these, since any input is correct
+                    if to_id_str(order[5:]).startswith("struggle") or to_id_str(
+                        order[5:]
+                    ).startswith("recharge"):
+                        move_index = 1
+
+                    # Check to see if we could find the move
+                    assert move_index > -1, (
+                        f"Could not find move [{order[5:]}] from the order [{order}] in the actor [{actor.name}] moves [{list(map(lambda x: x, actor.moves))}]; "
+                        + self.bd.battle_tag
+                    )
+
+                    # Find whether there's a mechanic, and if so, remove it
+                    mechanic = None
+                    for ending in ["mega", "dynamax", "zmove", "terastallize"]:
+                        if order.endswith(ending):
+                            mechanic = ending
+                            order = order[: -(len(ending) + 1)]
+                            break
+
+                    # Extract the target from the string, and default to 0
+                    target = 0
+                    if re.search(r".*?\s(-?[0-2])$", order):
+                        target = int(re.findall(r".*?\s(-?[0-2])$", order)[0])
+
+                    o = "move " + str(move_index)
+                    if target != 0:
+                        o += " " + str(target)
+                    if mechanic is not None:
+                        o += " " + mechanic
+                    # Replace move name with move index
+                    orders.append(o)
+
+                # This is going to be either "pass", "default" or "switch" which is already good to go
+                else:
+                    orders.append(order.strip())
+
+            return MDBO(self.last_input_type, "/choose " + ", ".join(orders))

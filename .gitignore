@@ -8,8 +8,11 @@ __pycache__/*
 *.pyc
 src/elitefurretai/scripts/print_battle_debug.py
 coverage.xml
-src/eitefurretai/scripts/train_move_prediction_model.py
+src/eitefurretai/scripts/train/train_two_head_transformer.py
+src/eitefurretai/scripts/train/train_win_prediction_model.py
 wandb/*
 src/elitefurretai/agents/*
 src/elitefurretai/environment/*
 src/elitefurretai/models/*
+.mypy_cache/*
+.pytest_cache/*

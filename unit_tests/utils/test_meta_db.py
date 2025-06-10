@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-from unittest.mock import MagicMock
+from collections import OrderedDict
 
-from poke_env.environment import Move, ObservedPokemon, PokemonGender, PokemonType
+from poke_env.environment import Move, ObservedPokemon, PokemonType
 
 from elitefurretai.utils.meta_db import MetaDB
 
@@ -10,47 +10,15 @@ def test_query():
     f = MetaDB("test_frisk.db", write=True)
 
     # Set up database
-    f.query("""DROP TABLE IF EXISTS team_gen9;""")
-    f.query("""DROP TABLE IF EXISTS pokemon_gen9;""")
+    f.drop_all_tables()
+    f.create_new_tables()
 
+    # Insert into database via multiple methods
+    f.write("team_gen9", [1, 1])
     f.query(
         """
-    CREATE TABLE IF NOT EXISTS team_gen9 (
-        team_id INTEGER NOT NULL,
-        mon_id INTEGER NOT NULL
-    );"""
-    )
-
-    f.query(
-        """
-    CREATE TABLE IF NOT EXISTS pokemon_gen9 (
-        mon_id INTEGER PRIMARY KEY,
-        species TEXT NOT NULL,
-        gender TEXT,
-        tera_type TEXT,
-        item TEXT,
-        hp INTEGER NOT NULL,
-        atk INTEGER NOT NULL,
-        def INTEGER NOT NULL,
-        spa INTEGER NOT NULL,
-        spd INTEGER NOT NULL,
-        spe INTEGER NOT NULL,
-        ability TEXT NOT NULL,
-        level INTEGER NOT NULL,
-        shiny BOOLEAN NOT NULL,
-        move1_id TEXT,
-        move2_id TEXT,
-        move3_id TEXT,
-        move4_id TEXT
-    );"""
-    )
-
-    # Insert into database
-    f.query("INSERT INTO team_gen9 (team_id, mon_id) VALUES(1, 1);")
-    f.query(
-        """
-    INSERT INTO pokemon_gen9 (mon_id, species, gender, tera_type, item, hp, atk, def, spa, spd, spe, ability, level, shiny, move1_id, move2_id, move3_id, move4_id)
-    VALUES(1, "furret", "f", "normal", "focussash", 100, 100, 100, 100, 100, 100, "frisk", 100, TRUE, "endeavor", "followme", "protect", "superfang"
+    INSERT INTO pokemon_gen9 (mon_id, species, gender, tera_type, item, hp, atk, def, spa, spd, spe, ability, level, move1, move2, move3, move4)
+    VALUES(1, "furret", "f", "NORMAL", "focussash", 100, 100, 100, 100, 100, 100, "frisk", 100, "endeavor", "followme", "protect", "superfang"
     );"""
     )
 
@@ -64,7 +32,10 @@ def test_query():
     """
     )
 
+    print(results)
+
     # Verify that the query worked
+    assert results is not None
     assert results[0][0] == 1
     assert results[0][1] == "furret"
 
@@ -75,50 +46,8 @@ def test_predict_vgc_team():
     f = MetaDB("test_frisk.db", write=True)
 
     # Create database and data structures
-    f.query("""DROP TABLE IF EXISTS team_gen9;""")
-    f.query("""DROP TABLE IF EXISTS pokemon_gen9;""")
-    f.query("""DROP TABLE IF EXISTS team_counts_gen9;""")
-
-    f.query(
-        """
-    CREATE TABLE IF NOT EXISTS team_gen9 (
-        team_id INTEGER NOT NULL,
-        mon_id INTEGER NOT NULL
-    );"""
-    )
-
-    f.query(
-        """
-    CREATE TABLE IF NOT EXISTS pokemon_gen9 (
-        mon_id INTEGER PRIMARY KEY,
-        species TEXT NOT NULL,
-        gender TEXT,
-        tera_type TEXT,
-        item TEXT,
-        hp INTEGER NOT NULL,
-        atk INTEGER NOT NULL,
-        def INTEGER NOT NULL,
-        spa INTEGER NOT NULL,
-        spd INTEGER NOT NULL,
-        spe INTEGER NOT NULL,
-        ability TEXT NOT NULL,
-        level INTEGER NOT NULL,
-        shiny BOOLEAN NOT NULL,
-        move1_id TEXT,
-        move2_id TEXT,
-        move3_id TEXT,
-        move4_id TEXT
-    );"""
-    )
-
-    f.query(
-        """
-    CREATE TABLE IF NOT EXISTS team_counts_gen9 (
-        team_id INTEGER PRIMARY KEY,
-        format TEXT NOT NULL,
-        num INTEGER NOT NULL
-    );"""
-    )
+    f.drop_all_tables()
+    f.create_new_tables()
 
     f.query(
         """
@@ -126,19 +55,21 @@ def test_predict_vgc_team():
     VALUES
         (1, 1),
         (1, 2),
-        (1, 3),
+        (1, 4),
         (2, 1),
-        (2, 2);
+        (2, 2),
+        (2, 3);
     """
     )
 
     f.query(
         """
-    INSERT INTO pokemon_gen9 (mon_id, species, gender, tera_type, item, hp, atk, def, spa, spd, spe, ability, level, shiny, move1_id, move2_id, move3_id, move4_id)
+    INSERT INTO pokemon_gen9 (mon_id, species, gender, tera_type, item, hp, atk, def, spa, spd, spe, ability, level, move1, move2, move3, move4)
     VALUES
-        (1, "furret", "female", "normal", "focussash", 100, 100, 100, 100, 100, 100, "frisk", 100, TRUE, "endeavor", "followme", "protect", "superfang"),
-        (2, "sentret", "female", "normal", "sitrusberry", 100, 100, 100, 100, 100, 100, "runaway", 100, FALSE, "endeavor", "followme", "protect", "superfang"),
-        (3, "shuckle", "male", "steel", "leftovers", 100, 100, 100, 100, 100, 100, "contrary", 100, FALSE, "shellsmash", "powertrick", "toxic", "infestation");
+        (1, "furret", "female", "normal", "focussash", 100, 100, 100, 100, 100, 100, "frisk", 100, "endeavor", "followme", "protect", "superfang"),
+        (2, "sentret", "female", "normal", "sitrusberry", 100, 100, 100, 100, 100, 100, "runaway", 100, "endeavor", "followme", "protect", "superfang"),
+        (3, "shuckle", "male", "steel", "leftovers", 100, 100, 100, 100, 100, 100, "contrary", 100, "shellsmash", "powertrick", "toxic", "infestation"),
+        (4, "shuckle", "male", "steel", "leftovers", 100, 100, 100, 100, 100, 100, "sturdy", 100, "shellsmash", "powertrick", "toxic", "infestation");
     """
     )
 
@@ -152,36 +83,35 @@ def test_predict_vgc_team():
     )
 
     # Simulate what we observed in battle
-    m = MagicMock()
-    moves = {
-        "followme": Move("followme", gen=9),
-        "superfang": Move("superfang", gen=9),
-    }
-    m._teampreview_opponent_team = [
-        ObservedPokemon(species="furret", level=100, name="elitefurretai"),
-        ObservedPokemon(species="sentret", level=100, name="elitesentretai"),
+    moves = OrderedDict(
+        {
+            "followme": Move("followme", gen=9),
+            "superfang": Move("superfang", gen=9),
+        }
+    )
+    observed_mons = [
+        ObservedPokemon(species="furret", level=100, name="elitefurretai", moves=moves),
+        ObservedPokemon(species="sentret", level=100, name="elitesentretai", moves=moves),
+        ObservedPokemon(species="shuckle", level=100, name="eliteshuckleai"),
     ]
-    m.opponent_team = {
-        "furret": ObservedPokemon(
-            species="furret", level=100, name="elitefurretai", moves=moves
-        )
-    }
-    team = f.predict_vgc_team(m, battle_format="gen9vgc2024regg")
+    team = f.predict_vgc_team(observed_mons, battle_format="gen9vgc2024regg")
 
     # Verify that all properties and entries in the database are right
+    assert isinstance(team[0], ObservedPokemon)
+    assert isinstance(team[1], ObservedPokemon)
+    assert isinstance(team[2], ObservedPokemon)
     assert team[0].species == "furret"
     assert team[1].species == "sentret"
     assert team[2].species == "shuckle"
-    assert team[2].gender == PokemonGender.MALE
     assert team[2].tera_type == PokemonType.STEEL
     assert team[2].item == "leftovers"
-    assert team[2].ability == "contrary"
+    assert team[2].ability == "sturdy"
     assert team[2].level == 100
-    assert team[2].shiny is False
     assert "shellsmash" in team[2].moves.keys()
     assert "powertrick" in team[2].moves.keys()
     assert "toxic" in team[2].moves.keys()
     assert "infestation" in team[2].moves.keys()
+    assert team[2].stats
     assert team[2].stats["hp"] == 100
     assert team[2].stats["atk"] == 100
     assert team[2].stats["def"] == 100
@@ -189,8 +119,10 @@ def test_predict_vgc_team():
     assert team[2].stats["spd"] == 100
     assert team[2].stats["spe"] == 100
 
-    teams = f.predict_vgc_team(m, battle_format="gen9vgc2024regg", probabilities=True)
-
-    team, probability = teams[0]
+    teams = f.predict_vgc_team(
+        observed_mons, battle_format="gen9vgc2024regg", probabilities=True
+    )
+    team, probability = teams[0]  # type: ignore
+    assert team[2].ability == "sturdy"  # type: ignore
     assert probability == 0.8
-    assert teams[1][1] == 0.2
+    assert teams[1][1] == 0.2  # type: ignore

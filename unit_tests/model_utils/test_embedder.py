@@ -1,12 +1,11 @@
 # -*- coding: utf-8 -*-
 from logging import Logger
-from unittest.mock import MagicMock
 
 from poke_env.data import GenData
 from poke_env.environment import DoubleBattle, Move, Pokemon, PokemonType
 from poke_env.teambuilder.constant_teambuilder import ConstantTeambuilder
 
-from elitefurretai.model_utils.embedder import Embedder
+from elitefurretai.model_utils import BattleData, BattleIterator, Embedder
 
 
 def move_generator(gen=9):
@@ -103,31 +102,15 @@ def test_featurize_move():
     assert emb["TARGET:ALL_ADJACENT"] == 0
     assert emb["TARGET:ALLY_SIDE"] == 1
 
-    emb = embedder.featurize_move(Move("burningbulwark", gen=9))
-    assert emb["EFFECT:SPIKY_SHIELD"] == 0
-    assert emb["EFFECT:BANEFUL_BUNKER"] == 0
+    emb = embedder.featurize_move(Move("yawn", gen=9))
     assert emb["EFFECT:SUBSTITUTE"] == 0
     assert emb["EFFECT:PROTECT"] == 0
-    assert emb["EFFECT:DISABLE"] == 0
-    assert emb["EFFECT:SILK_TRAP"] == 0
-    assert emb["EFFECT:POWDER"] == 0
-    assert emb["EFFECT:SALT_CURE"] == 0
     assert emb["EFFECT:HELPING_HAND"] == 0
-    assert emb["EFFECT:IMPRISON"] == 0
-    assert emb["EFFECT:SPOTLIGHT"] == 0
-    assert emb["EFFECT:CONFUSION"] == 0
-    assert emb["EFFECT:BURNING_BULWARK"] == 1
     assert emb["EFFECT:TAUNT"] == 0
     assert emb["EFFECT:ENCORE"] == 0
-    assert emb["EFFECT:GLAIVE_RUSH"] == 0
-    assert emb["EFFECT:YAWN"] == 0
+    assert emb["EFFECT:YAWN"] == 1
     assert emb["EFFECT:FOLLOW_ME"] == 0
-    assert emb["EFFECT:HEAL_BLOCK"] == 0
-    assert emb["EFFECT:ROOST"] == 0
     assert emb["EFFECT:FLINCH"] == 0
-    assert emb["EFFECT:LEECH_SEED"] == 0
-    assert emb["EFFECT:ENDURE"] == 0
-    assert emb["EFFECT:RAGE_POWDER"] == 0
 
     emb = embedder.featurize_move(Move("spore", gen=9))
     assert emb["STATUS:FRZ"] == 0
@@ -198,9 +181,7 @@ def test_featurize_pokemon():
 
     assert emb["ITEM:lightclay"] == 0
     assert emb["ITEM:leftovers"] == 1
-    assert emb["ITEM:laggingtail"] == 0
     assert emb["ITEM:lifeorb"] == 0
-    assert emb["ITEM:heavydutyboots"] == 0
     assert emb["current_hp_fraction"] == 0.13125
     assert emb["level"] == 50
     assert emb["weight"] == 32.5
@@ -237,7 +218,7 @@ def test_featurize_pokemon():
     assert emb["TERA_TYPE:GRASS"] == 0
 
 
-def test_featurize_oponent_pokemon(vgc_battle_p1_logs):
+def test_featurize_opponent_pokemon(vgc_battle_p1_logs):
     embedder = Embedder()
 
     # Test that we featurize none correctly
@@ -276,12 +257,7 @@ def test_featurize_oponent_pokemon(vgc_battle_p1_logs):
     assert emb["MOVE:2:max_hits"] == -1  # Dont know it
     assert emb["MOVE:1:current_pp"] == 5
     assert emb["ABILITY:thermalexchange"] == 0
-    assert emb["ABILITY:immunity"] == 0
-    assert emb["ABILITY:punkrock"] == 0
     assert emb["ABILITY:moody"] == 1
-    assert emb["ABILITY:stall"] == 0
-    assert emb["ABILITY:pixilate"] == 0
-    assert emb["ABILITY:powerconstruct"] == 0
 
     # We don't know Smeargle's item
     for key in emb:
@@ -344,56 +320,75 @@ def test_featurize_oponent_pokemon(vgc_battle_p1_logs):
     assert emb["TYPE:PSYCHIC"] == 1
 
 
-def test_featurize_turn(vgc_battle_p1_logs):
+def test_featurize_turn(vgc_json_anon):
 
-    embedder = Embedder()
-    emb_length = None
+    embedder = Embedder(feature_set="raw")
 
     # Generate battle
-    p1_battle = DoubleBattle("tag", "elitefurretai", Logger("example"), gen=9)
-    for turn in vgc_battle_p1_logs:
-        for log in turn:
-            if len(log) > 1 and log[1] not in ["", "t:", "win"]:
-                p1_battle.parse_message(log)
-            elif len(log) > 1 and log[1] == "win":
-                p1_battle.won_by(log[2])
+    bd = BattleData.from_showdown_json(vgc_json_anon)
+    iterator = BattleIterator(bd, perspective="p1")
 
-            # If we just went through a turn
-            if len(log) > 1 and log[1] == "-turn" and log[2] == "1":
-                p1_battle.parse_message(log)
+    iterator.next_turn()
+    iterator.simulate_request()
+    iterator.battle._force_switch = [False, True]
 
-                emb = embedder.featurize_double_battle(p1_battle)
+    emb = embedder.featurize_double_battle(iterator.battle)  # type: ignore
 
-                assert emb["MON:0:sent"] == 1
-                assert emb["MON:5:TYPE:ROCK"] == -1
-                assert emb["MON:5:sent"] == -1
-                assert emb["MON:0:active"] == 1
-                assert emb["MON:3:active"] == 0
-                assert emb["MON:5:active"] == -1
+    assert emb["MON:0:sent"] == 1
+    assert emb["MON:0:active"] == 0
+    assert emb["MON:0:revealed"] == 0
+    assert emb["MON:0:is_available_to_switch"] == 1
+    assert emb["MON:0:force_switch"] == 0
+    assert emb["MON:0:trapped"] == 0
 
-                assert emb["OPP_MON:0:sent"] == 1
-                assert emb["OPP_MON:0:active"] == 1
+    assert emb["MON:4:sent"] == 1
+    assert emb["MON:4:active"] == 1
+    assert emb["MON:4:revealed"] == 1
+    assert emb["MON:4:is_available_to_switch"] == 0
+    assert emb["MON:4:force_switch"] == 1
+    assert emb["MON:4:trapped"] == 0
 
-                assert emb["OPP_MON:0:sent"] == 0
-                assert emb["OPP_MON:0:active"] == 0
+    assert emb["MON:5:sent"] == 0
+    assert emb["MON:5:active"] == 0
+    assert emb["MON:5:revealed"] == -1
 
-                assert emb["FORCE_SWITCH:0"] == 0
-                assert emb["FORCE_SWITCH:1"] == 0
+    assert emb["OPP_MON:0:sent"] == 1
+    assert emb["OPP_MON:0:active"] == 1
 
-                assert emb["teampreview"] == 0
-                assert emb["turn"] == 1
-                assert emb["bias"] == 1
+    assert emb["FORMAT:gen9vgc2023regulationc"] == 1
+    assert emb["teampreview"] == 0
+    assert emb["turn"] == 1
+    assert emb["bias"] == 1
 
-                if emb_length is None:
-                    emb_length = len(emb.keys())
-                else:
-                    assert len(emb.keys()) == emb_length
+    # TODO: problem is that get_pokemon in damage_estimator only looks in battle.team, and so cant estimate damage for pokemon
+    # in teampreview team that arent in battle.opponent_team. May have to keep a separate refactor, or put them into battle.team and then pop them out
+    emb = embedder.generate_feature_engineered_features(iterator.battle)  # type: ignore
+
+    assert emb["NUM_FAINTED"] == 0
+    assert emb["PERC_HP_LEFT"] == 1
+    assert emb["NUM_STATUSED"] == 0
+    assert emb["NUM_MOVES_REVEALED"] == 0
+    assert emb["NUM_MONS_REVEALED"] == 2
+
+    assert emb["OPP_NUM_FAINTED"] == 0
+    assert emb["OPP_PERC_HP_LEFT"] == 1
+    assert emb["OPP_NUM_STATUSED"] == 0
+    assert emb["NUM_OPP_MONS_REVEALED"] == 2
+
+    assert emb["TYPE_MATCHUP:OPP_MON:0:MON:0"] == 1
+    assert emb["TYPE_MATCHUP:OPP_MON:1:MON:0"] == 1
+    assert emb["TYPE_MATCHUP:OPP_MON:2:MON:0"] == 2
+
+    assert emb["EST_DAMAGE:MON:2:OPP_MON:2:MOVE:0"] == 24.5
+    assert emb["KO:MON:2:OPP_MON:2:MOVE:0"] == 0
+
+    # Dont know move
+    assert emb["KO:OPP_MON:3:MON:3:MOVE:2"] == -1
 
 
 def test_simplify_features(vgc_battle_p1_logs):
     embedder = Embedder()
-    simple_embedder = Embedder(simple=True)
-    emb_length = None
+    simple_embedder = Embedder(feature_set="simple")
 
     # Generate battle
     p1_battle = DoubleBattle("tag", "elitefurretai", Logger("example"), gen=9)
@@ -411,67 +406,27 @@ def test_simplify_features(vgc_battle_p1_logs):
                 emb = embedder.featurize_double_battle(p1_battle)
                 simple_emb = simple_embedder.featurize_double_battle(p1_battle)
 
-                print(len(emb.keys()))
-                print(len(simple_emb.keys()))
-                assert False
-
                 assert len(simple_emb) < len(emb)
 
-                if emb_length is None:
-                    emb_length = len(emb.keys())
-                else:
-                    assert len(emb.keys()) == emb_length
 
+def test_featurize_teampreview(vgc_json_anon):
 
-def test_featurize_teampreview(example_vgc_teampreview_request):
-    logger = MagicMock()
-    battle = DoubleBattle("tag", "elitefurretai", logger, gen=9)
+    embedder = Embedder(feature_set="raw")
 
-    # Initiate battle
-    messages = [
-        ["", "init", "battle"],
-        ["", "title", "elitefurretai vs. CustomPlayer 1"],
-        ["", "j", "☆elitefurretai"],
-        ["", "j", "☆CustomPlayer 1"],
-        ["", "gametype", "doubles"],
-        ["", "player", "p1", "elitefurretai", "266", ""],
-        ["", "player", "p2", "CustomPlayer 1", "265", ""],
-        ["", "teamsize", "p1", "5"],
-        ["", "teamsize", "p2", "5"],
-        ["", "gen", "9"],
-        ["", "tier", "[Gen 9] VGC 2024 Reg G"],
-        ["", "rule", "Species Clause: Limit one of each Pokémon"],
-        ["", "rule", "Item Clause: Limit 1 of each item"],
-        ["", "clearpoke"],
-        ["", "poke", "p1", "Delibird, L50, F", ""],
-        ["", "poke", "p1", "Raichu, L50, F", ""],
-        ["", "poke", "p1", "Tyranitar, L50, F", ""],
-        ["", "poke", "p1", "Smeargle, L50, M", ""],
-        ["", "poke", "p1", "Furret, L50, F", ""],
-        ["", "poke", "p2", "Delibird, L50, F", ""],
-        ["", "poke", "p2", "Raichu, L50, F", ""],
-        ["", "poke", "p2", "Tyranitar, L50, F", ""],
-        ["", "poke", "p2", "Smeargle, L50, F", ""],
-        ["", "poke", "p2", "Furret, L50, M", ""],
-        ["", "teampreview", "4"],
-    ]
-    for msg in messages:
-        battle.parse_message(msg)
+    # Generate battle
+    bd = BattleData.from_showdown_json(vgc_json_anon)
+    iterator = BattleIterator(bd, perspective="p1")
 
-    # Parse Teampreview request
-    battle.parse_request(example_vgc_teampreview_request)
+    iterator.next_input()
+    iterator.simulate_request()
 
-    # Need to add teampreview since Teampreview team is usually registered in Player
-    battle.teampreview_team = set(battle.team.values())
-
-    embedder = Embedder()
-    emb = embedder.featurize_double_battle(battle)
+    emb = embedder.featurize_double_battle(iterator.battle)  # type: ignore
 
     for key in emb:
         if "active" in key or "sent" in key or "revealed" in key:
             if emb[key] != 0:
-                print(key)
-            assert emb[key] == 0
+                print(key, emb[key])
+            assert emb[key] <= 0
         elif "TRAPPED" in key:
             assert emb[key] == 0
         elif "FORCE_SWITCH" in key:

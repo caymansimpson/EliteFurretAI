@@ -1,31 +1,31 @@
 # -*- coding: utf-8 -*-
-import sys
+import os
 
 import orjson
+from torch.utils.data import DataLoader
 
 from elitefurretai.model_utils import (
     BattleData,
+    BattleDataset,
     BattleIterator,
     Embedder,
-    ModelBattleOrder,
 )
 
 
-# This scripts reads through a BattleData file and generates training data from those files
-def main(filename):
+# This function reads through a single BattleData file and generates training data from that file
+def one_file_example(filename):
     for perspective in ["p1", "p2"]:
 
         bd = None
         with open(filename, "r") as f:
             bd = BattleData.from_showdown_json(orjson.loads(f.read()))
 
-        battle = bd.to_battle(perspective)
-        assert battle is not None and battle.format is not None
+        iter = BattleIterator(bd, perspective=perspective)
+        assert iter.battle.format is not None
 
-        embedder = Embedder(format=battle.format, simple=False)
-        iter = BattleIterator(battle, bd, perspective=perspective)
+        embedder = Embedder(format=iter.battle.format, feature_set="full", omniscient=True)
 
-        while iter.next_input() and not battle.finished:
+        while iter.next_input() and not iter.battle.finished:
 
             # Get the last input command found by the iterator
             input = iter.last_input
@@ -33,23 +33,34 @@ def main(filename):
                 break
 
             request = iter.simulate_request()
-            battle.parse_request(request)
+            if request is not None:
+                iter.battle.parse_request(request)
 
-            embedder.feature_dict_to_vector(embedder.featurize_double_battle(battle))
-
-            # Standardize the input (remove identifiers names and convert to ints)
-            order = ModelBattleOrder.from_battle_data(input, battle, bd)  # Human order
-            win = int(
-                bd.winner == (bd.p1 if perspective == "p1" else bd.p2)
-            )  # Win prediction
+            features = embedder.featurize_double_battle(iter.battle)  # type: ignore
+            order = iter.last_order()
 
             print(
-                f"Got {input} -> {order.message} -> {order.to_int()} w/ {perspective} {'' if win else 'not '}winning on event #{iter.index} ({bd.logs[iter.index + 1]})"
+                f"Got {len(features)} features -> {order.message} on {perspective}'s turn #{iter.battle.turn}"
             )
-            print()
 
         print(f"Done with perspective {perspective}!\n")
 
+    print("Done with both perspectives!")
 
-if __name__ == "__main__":
-    main(sys.argv[1])
+
+# This function takes a list of filepaths and generates training data in batches from them
+def list_of_files(files):
+    dataset = BattleDataset(files)
+    data_loader = DataLoader(
+        dataset,
+        batch_size=64,
+        num_workers=min(os.cpu_count() or 1, 4),
+    )
+
+    # Iterate through batches of battles with data_loader
+    for states, actions, action_masks, wins, masks in data_loader:
+
+        # Do training things
+        pass
+
+    print("Done with training loop!")
