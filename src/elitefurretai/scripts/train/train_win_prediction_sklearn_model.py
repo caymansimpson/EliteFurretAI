@@ -65,11 +65,14 @@ def main():
 
     # Takes 18m with 5000 battles and 100 evaluation
     print(f"\nStarting! Preparing dataset of {total_battles}...")
-    files, eval_files = [], [],
+    files, eval_files = (
+        [],
+        [],
+    )
     with open(sys.argv[1], "rb") as f:
         files = sorted(orjson.loads(f.read()), key=lambda x: random.random())
-        eval_files = files[int(total_battles / 2):int(total_battles / 2) + eval_size]
-        files = files[:int(total_battles / 2)]
+        eval_files = files[int(total_battles / 2) : int(total_battles / 2) + eval_size]
+        files = files[: int(total_battles / 2)]
 
     # Generate data
     dataset = BattleDataset(files)
@@ -120,7 +123,7 @@ def main():
     model = HistGradientBoostingClassifier(
         learning_rate=0.01,
         early_stopping=True,
-        max_features=.01,
+        max_features=0.01,
         n_iter_no_change=10,
         l2_regularization=1.0,
         max_depth=5,
@@ -144,7 +147,11 @@ def main():
 
     # Evaluate data
     print(f"Now going to evaluate model on eval set of {eval_size} entirely new battles!")
-    eval_data_loader = DataLoader(BattleDataset(eval_files), batch_size=batch_size, num_workers=min(os.cpu_count() or 1, 4))
+    eval_data_loader = DataLoader(
+        BattleDataset(eval_files),
+        batch_size=batch_size,
+        num_workers=min(os.cpu_count() or 1, 4),
+    )
 
     X_list, y_list, i = [], [], 0
     for states, _, _, wins, masks in eval_data_loader:
@@ -171,7 +178,9 @@ def main():
     y = np.concatenate(y_list, axis=0)
 
     hours, mins, secs = get_hms(benchmark)
-    print(f"Finished loading evaluation data in {hours}h {mins}m {secs}s! Evaluation Results:\n")
+    print(
+        f"Finished loading evaluation data in {hours}h {mins}m {secs}s! Evaluation Results:\n"
+    )
     benchmark = time.time()
 
     evaluate(model.predict(X), y)
