@@ -7,8 +7,8 @@ import time
 import orjson
 from poke_env.data.normalize import to_id_str
 
+from elitefurretai.inference.meta_db import MetaDB
 from elitefurretai.model_utils.battle_data import BattleData
-from elitefurretai.utils.meta_db import MetaDB
 
 
 def load_files(files):

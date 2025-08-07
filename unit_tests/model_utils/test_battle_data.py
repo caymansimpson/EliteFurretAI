@@ -2,8 +2,8 @@
 import os.path
 
 import orjson
+from poke_env.battle import PokemonGender
 from poke_env.data.normalize import to_id_str
-from poke_env.environment import PokemonGender
 
 from elitefurretai.model_utils.battle_data import BattleData
 

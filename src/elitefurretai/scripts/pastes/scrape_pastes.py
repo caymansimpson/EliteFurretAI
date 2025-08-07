@@ -12,13 +12,14 @@ import threading
 import time
 from collections import deque
 from queue import Queue
+from typing import Dict, List
 
 import requests
 from bs4 import BeautifulSoup
 from poke_env.data.normalize import to_id_str
 
-queue = Queue()
-results = deque()
+queue: Queue = Queue()
+results: deque = deque()
 lock = threading.Lock()
 tried = 0
 
@@ -151,7 +152,7 @@ def main():
     file_to_pokepastes = sys.argv[1]
 
     # CSV columns are letters of the regulation for VGC2024
-    links = {
+    links: Dict[str, List[str]] = {
         "G": [],
         "H": [],
         "F": [],
@@ -199,7 +200,7 @@ def main():
 
     # Prepare variables for parsing
     errors = 0
-    error_msgs = {"bad_name": [], "zoroark": [], "missing_EVs": []}
+    error_msgs: Dict[str, List[str]] = {"bad_name": [], "zoroark": [], "missing_EVs": []}
 
     # Now process the results
     for r in results:

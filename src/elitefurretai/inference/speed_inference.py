@@ -7,8 +7,7 @@ import math
 from typing import Dict, List, Optional, Tuple, Union
 
 import pulp
-from poke_env.data.gen_data import GenData
-from poke_env.environment import (
+from poke_env.battle import (
     AbstractBattle,
     Battle,
     DoubleBattle,
@@ -19,10 +18,11 @@ from poke_env.environment import (
     Status,
     Weather,
 )
+from poke_env.data.gen_data import GenData
 from poke_env.stats import _raw_stat
 
 from elitefurretai.inference.battle_inference import BattleInference
-from elitefurretai.utils.inference_utils import (
+from elitefurretai.inference.inference_utils import (
     ABILITIES_THAT_CAN_PUBLICLY_ACTIVATE_ABILITIES_OR_ITEMS,
     FIRST_BLOCK_RESIDUALS,
     ITEMS_THAT_ACTIVATE_ON_SWITCH,
@@ -35,7 +35,6 @@ from elitefurretai.utils.inference_utils import (
     get_priority_and_identifier,
     get_residual_and_identifier,
     get_segments,
-    get_showdown_identifier,
     is_ability_event,
     standardize_pokemon_ident,
     update_battle,
@@ -187,6 +186,9 @@ class SpeedInference:
     # can find a speed that makes the set of equations work. If it's only one mon, we know it's choicescarf! If
     # we find an optimal solution, we set the new speed bounds.
     def _solve_speeds(self, orders: List[List[Tuple[str, float]]]):
+        assert (
+            self._battle.opponent_role is not None
+        ), "Battle must be set before solving speeds"
 
         # Add all our orders to full set of orders we've observed in the battle
         self._orders.extend(orders)
@@ -200,7 +202,7 @@ class SpeedInference:
         # Create the variables we're trying to solve for, which are opponent mons' speeds
         variables: Dict[str, pulp.LpVariable] = {}
         for mon in self._battle.opponent_team.values():
-            key = get_showdown_identifier(mon, self._battle.opponent_role)
+            key = mon.identifier(self._battle.opponent_role)
 
             variables[key] = pulp.LpVariable(
                 key,
@@ -491,7 +493,10 @@ class SpeedInference:
         self, events: List[List[str]]
     ) -> List[List[Tuple[str, Optional[float]]]]:
         priority_orders: List[List[Tuple[str, Optional[float]]]] = []
-        last_moved, last_priority, last_multipliers, temp_orders = None, None, {}, []
+        last_moved = None
+        last_priority = None
+        last_multipliers = {}
+        temp_orders: List[List[Tuple[str, Optional[float]]]] = []
 
         for i, event in enumerate(events):
 
@@ -637,7 +642,11 @@ class SpeedInference:
     def _parse_switch(
         self, events: List[List[str]]
     ) -> List[List[Tuple[str, Optional[float]]]]:
-        last_switched, last_multipliers = None, {}
+        assert (
+            self._battle.opponent_role is not None
+        ), "Battle must be set before solving speeds"
+        last_switched = None
+        last_multipliers: Dict[str, Optional[float]] = {}
         speed_orders: List[List[Tuple[str, Optional[float]]]] = []
         i = 0
 
@@ -658,9 +667,9 @@ class SpeedInference:
                     }
 
         else:
-            actives = self._battle.active_pokemon
-            opp_actives = self._battle.opponent_active_pokemon
-            for mon in [actives, opp_actives]:
+            active = self._battle.active_pokemon
+            opp_active = self._battle.opponent_active_pokemon
+            for mon in [active, opp_active]:
                 if mon:
                     info[mon] = {
                         "effects": {k: v for k, v in mon.effects.items()},
@@ -704,7 +713,7 @@ class SpeedInference:
                     )
 
                 # We grab the mon_ident, but without position information
-                mon_ident = get_showdown_identifier(mon, events[i][2][:2])
+                mon_ident = mon.identifier(events[i][2][:2])
 
                 # If we have a previous switch, let's add it to speed_orders
                 if last_switched is not None:
@@ -721,33 +730,33 @@ class SpeedInference:
                 for ident, mon in self._battle.team.items():
                     last_multipliers[ident] = self._generate_multiplier(
                         ident,
-                        override_ability=info[mon]["ability"] if mon in info else None,
-                        override_effects=info[mon]["effects"] if mon in info else None,
+                        override_ability=info[mon]["ability"] if mon in info else None,  # type: ignore
+                        override_effects=info[mon]["effects"] if mon in info else None,  # type: ignore
                         override_speed_boost=(
-                            info[mon]["speed_boost"] if mon in info else None
+                            info[mon]["speed_boost"] if mon in info else None  # type: ignore
                         ),
                     )
 
                 # Go through opponents mons and save speed multipliers, but using the ones at the beginning of the turn
                 for mon in self._battle.opponent_team.values():
-                    ident = get_showdown_identifier(mon, self._battle.opponent_role)
+                    ident = mon.identifier(self._battle.opponent_role)
                     last_multipliers[ident] = self._generate_multiplier(
                         ident,
-                        override_ability=info[mon]["ability"] if mon in info else None,
-                        override_effects=info[mon]["effects"] if mon in info else None,
+                        override_ability=info[mon]["ability"] if mon in info else None,  # type: ignore
+                        override_effects=info[mon]["effects"] if mon in info else None,  # type: ignore
                         override_speed_boost=(
-                            info[mon]["speed_boost"] if mon in info else None
+                            info[mon]["speed_boost"] if mon in info else None  # type: ignore
                         ),
                     )
 
                 for mon in self._battle.teampreview_opponent_team:
-                    ident = get_showdown_identifier(mon, self._battle.opponent_role)
+                    ident = mon.identifier(self._battle.opponent_role)
                     if ident not in last_multipliers:
                         last_multipliers[ident] = 1.0
 
             # Check if we have an ability event activated by the switch
             elif is_ability_event(events[i]):
-                ability, mon_ident = get_ability_and_identifier(events[i])
+                ability, _ = get_ability_and_identifier(events[i])
 
                 # If the ability triggers a field or a weather, this could trigger both abilities and items.
                 # First we update our observation class, and then we get activated orders of events.
@@ -878,6 +887,9 @@ class SpeedInference:
     # Supposed to be called at speed-order decision time (when we decide who goes next); this function
     # records all the speed multipliers that are at this moment so we can get what the calculation was
     def _save_multipliers(self) -> Dict[str, Optional[float]]:
+        assert (
+            self._battle.opponent_role is not None and self._battle.player_role is not None
+        ), "Battle must be set before solving speeds"
 
         multipliers: Dict[str, Optional[float]] = {}
         if isinstance(self._battle, DoubleBattle):
@@ -887,11 +899,11 @@ class SpeedInference:
             # and then another mon moves, we can still use my mon's info to ascertain something
             # about the opponent's speed
             for mon in self._battle._active_pokemon.values():
-                key = get_showdown_identifier(mon, self._battle.player_role)
+                key = mon.identifier(self._battle.player_role)
                 multipliers[key] = self._generate_multiplier(key)
 
             for mon in self._battle._opponent_active_pokemon.values():
-                key = get_showdown_identifier(mon, self._battle.opponent_role)
+                key = mon.identifier(self._battle.opponent_role)
                 multipliers[key] = self._generate_multiplier(key)
 
         else:
@@ -941,7 +953,7 @@ class SpeedInference:
     ) -> List[List[Tuple[str, float]]]:
         return list(
             filter(
-                lambda x: len(x) == 2 and x[0][1] is not None and x[1][1] is not None,
+                lambda x: len(x) == 2 and x[0][1] is not None and x[1][1] is not None,  # type: ignore
                 orders,
             )
         )  # pyright: ignore

@@ -1,8 +1,26 @@
-# Utils
+# Inference:
 
-This folder contains the classes that do Battle Inference for VGC -- their goal is to leverage knowledge of game mechanics to supplement AI's knowledge of the game at hand. It is a side project; since this module requires a fair amount of mechanics knowledge, it's quite manual and hard to maintain. If you plan to use these, I would encourage you to be cautious read this document in its entirety.
+This folder contains the classes that do Battle Inference for VGC -- their goal is to leverage knowledge of the Meta and game mechanics to supplement AI's knowledge of the game at hand.
 
-This module has gone through extensive Fuzz Testing, and so should work for most use-cases. However, it has many known bugs (noted below). I will not personally work on any issues related to the Inference classes I've implemented, but will take PR's if you want to fix them.
+Notes:
+1. Since this module requires a fair amount of mechanics knowledge, it's quite manual and hard to maintain. If you plan to use these, I would encourage you to be cautious read this document in its entirety.
+2. This module has gone through extensive Fuzz Testing, and so should work for most use-cases. 
+3. However, it has many known bugs (noted in this README), so beware when using this!
+
+## Meta DB
+This module that calls a database built on a history of battles that will allow an agent to make usage-based inferences (e.g. likelihood that Incineroar has assault vest | observations). 
+
+`predict_vgc_team` will take in what an agent has observed about the opponent's pokemon and return either the most common team that matches your observations, or a probability distribution of all teams that matches its observations based on data stored in the database.
+
+The probability distributions can then be used for probabilistic search for AI; the primary downside is that this method relies on having previously seen data -- it only memorizes.
+
+From my own testings MetaDB (seen in `src/elitefurretai/scripts/analyze/accuracy_of_mdb_predict_vgc.py`), this simple heuristic gets full team predictions (moves, abilities, EVs, IVs and items) perfect 42% of the time on turn 0 (w/ 83% of aforementioned hidden information predicted right) and 67% by turn 14 (95% accuracy on the teams' hidden information).
+
+However, I cannot share this database to respect the privacy of the people from which the data was collected. That being said, feel free to use your own repsository of battle data to build the database (via `src/elitefurretai/scripts/prepare/load_mdb.py`)
+
+## Inference Utils
+Has a long-tail of utility functions to aid `BattleIterator` and `BattleInference`. Nothing too notable
+
 
 ## **BattleInference**
 This module stores inferences made by ItemInference and SpeedInference, and can be sent through the Embedder class to ameliorate an agent's understanding of the battle state. It is a glorified dicionary that has peresistent memory across both `SpeedInference` and `ItemInference` modules.

@@ -1,16 +1,12 @@
 # -*- coding: utf-8 -*-
 from unittest.mock import MagicMock
 
+from poke_env.battle import DoubleBattle, Pokemon, PokemonType
 from poke_env.data.gen_data import GenData
-from poke_env.environment import DoubleBattle, Pokemon, PokemonType
 
 from elitefurretai.inference.battle_inference import BattleInference
 from elitefurretai.inference.item_inference import ItemInference
-from elitefurretai.utils.inference_utils import (
-    copy_pokemon,
-    get_pokemon,
-    get_showdown_identifier,
-)
+from elitefurretai.inference.inference_utils import copy_pokemon
 
 
 def generate_item_inference_and_inferences():
@@ -24,11 +20,9 @@ def generate_item_inference_and_inferences():
         Pokemon(gen=gen, species="Tyranitar"),
         Pokemon(gen=gen, species="Shuckle"),
     }
-    battle._teampreview_opponent_team = {copy_pokemon(mon, gen) for mon in tp}
-    battle.teampreview_team = {copy_pokemon(mon, gen) for mon in tp}
-    battle.team = {
-        get_showdown_identifier(mon, "p1"): copy_pokemon(mon, gen) for mon in tp
-    }
+    battle._teampreview_opponent_team = [copy_pokemon(mon, gen) for mon in tp]
+    battle.teampreview_team = [copy_pokemon(mon, gen) for mon in tp]
+    battle.team = {mon.identifier("p1"): copy_pokemon(mon, gen) for mon in tp}
 
     inferences = BattleInference(battle)
     ii = ItemInference(battle=battle, inferences=inferences)
@@ -61,7 +55,7 @@ def test_check_items_covertcloak_boost():
     ]
     ii.check_items(events)
     assert inferences.get_flag("p2: Shuckle", "item") == GenData.UNKNOWN_ITEM
-    assert get_pokemon("p2: Furret", ii._battle).item == "airballoon"
+    assert ii._battle.get_pokemon("p2: Furret").item == "airballoon"
     assert inferences.get_flag("p2: Furret", "can_be_clearamulet") is False
     assert inferences.get_flag("p2: Furret", "can_be_covertcloak") is False
     assert inferences.get_flag("p2: Shuckle", "can_be_clearamulet")

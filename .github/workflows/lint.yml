@@ -15,30 +15,46 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
+    # Setup Python (faster than using Python container)
     steps:
-      - name: Checkout repository code
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      # Setup Python (faster than using Python container)
-      - name: Setup Python
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
+          python-version: '3.11'
 
-      - name: Install dev dependencies
-        run: pip install -r requirements-dev.txt
+      - name: Install pip cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/pyproject.toml', '**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          python -m pip install --upgrade pip
+          pip install .
+          pip install pytest pytest-cov codecov mypy black isort pyright
+
+      - name: Run isort
+        run: isort src/ unit_tests/ --check --diff .
 
       - name: Run black
-        run: black --check src/ unit_tests/
+        run: black src/ unit_tests/ --check --diff .
 
       - name: Run flake8
         run: flake8 src/ unit_tests/
 
-      - name: Run isort
-        run: isort --check .
-
       - name: Run pyright
-        run: pyright src/
+        run: pyright src/ unit_tests/
+      
+      - name: Run mypy
+        run: mypy src/ unit_tests/ --check-untyped-defs
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}

@@ -2,15 +2,15 @@
 import itertools
 from unittest.mock import MagicMock
 
-from poke_env.environment import Battle, DoubleBattle, Move, Pokemon, Status, Target
-from poke_env.player import BattleOrder, DoubleBattleOrder
+from poke_env.battle import Battle, DoubleBattle, Move, Pokemon, Status, Target
+from poke_env.player import DoubleBattleOrder, PassBattleOrder, SingleBattleOrder
 
 from elitefurretai.utils.battle_order_validator import is_valid_order
 
 
 # Create helper functions to represent BattleOrder and DobuleBattleOrder; this will allow us to store
 # DoubleBattleOrders in a set, which enables faster lookup when looking for comparisons
-def repr_bo(bo: BattleOrder):
+def repr_bo(bo: SingleBattleOrder):
     if bo is None:
         return "There is no order"
     main = "None"
@@ -29,7 +29,7 @@ def repr_bo(bo: BattleOrder):
 
 
 def repr_dbo(dbo: DoubleBattleOrder):
-    return hash(repr_bo(dbo.first_order) + repr_bo(dbo.second_order))
+    return repr_bo(dbo.first_order) + repr_bo(dbo.second_order)
 
 
 def test_is_valid_singles_order(example_singles_request):
@@ -38,47 +38,51 @@ def test_is_valid_singles_order(example_singles_request):
 
     battle.parse_request(example_singles_request)
 
-    assert is_valid_order(BattleOrder(order=Pokemon(gen=8, species="necrozma")), battle)
-    assert is_valid_order(BattleOrder(order=Move("sludgebomb", gen=8)), battle)
-
-    assert not is_valid_order(BattleOrder(order=Pokemon(gen=8, species="furret")), battle)
-    assert not is_valid_order(
-        BattleOrder(order=Pokemon(gen=8, species="necrozma"), terastallize=True), battle
+    assert is_valid_order(
+        SingleBattleOrder(order=Pokemon(gen=8, species="necrozma")), battle
     )
-    assert not is_valid_order(
-        BattleOrder(order=Pokemon(gen=8, species="necrozma"), dynamax=True), battle
-    )
-    assert not is_valid_order(
-        BattleOrder(order=Pokemon(gen=8, species="necrozma"), mega=True), battle
-    )
+    assert is_valid_order(SingleBattleOrder(order=Move("sludgebomb", gen=8)), battle)
 
     assert not is_valid_order(
-        BattleOrder(order=Move("sludgebomb", gen=8), terastallize=True), battle
+        SingleBattleOrder(order=Pokemon(gen=8, species="furret")), battle
     )
     assert not is_valid_order(
-        BattleOrder(order=Move("sludgebomb", gen=8), dynamax=True), battle
+        SingleBattleOrder(order=Pokemon(gen=8, species="necrozma"), terastallize=True),
+        battle,
     )
     assert not is_valid_order(
-        BattleOrder(order=Move("sludgebomb", gen=8), mega=True), battle
+        SingleBattleOrder(order=Pokemon(gen=8, species="necrozma"), dynamax=True), battle
     )
     assert not is_valid_order(
-        BattleOrder(order=Move("sludgebomb", gen=8), z_move=True), battle
+        SingleBattleOrder(order=Pokemon(gen=8, species="necrozma"), mega=True), battle
+    )
+
+    assert not is_valid_order(
+        SingleBattleOrder(order=Move("sludgebomb", gen=8), terastallize=True), battle
     )
     assert not is_valid_order(
-        BattleOrder(order=Move("icywind", gen=8), z_move=True), battle
+        SingleBattleOrder(order=Move("sludgebomb", gen=8), dynamax=True), battle
+    )
+    assert not is_valid_order(
+        SingleBattleOrder(order=Move("sludgebomb", gen=8), mega=True), battle
+    )
+    assert not is_valid_order(
+        SingleBattleOrder(order=Move("sludgebomb", gen=8), z_move=True), battle
+    )
+    assert not is_valid_order(
+        SingleBattleOrder(order=Move("icywind", gen=8), z_move=True), battle
     )
 
     battle.trapped = True
     assert not is_valid_order(
-        BattleOrder(order=Pokemon(gen=8, species="necrozma")), battle
+        SingleBattleOrder(order=Pokemon(gen=8, species="necrozma")), battle
     )
 
     battle._force_switch = True
-    assert is_valid_order(BattleOrder(order=Pokemon(gen=8, species="necrozma")), battle)
-    assert not is_valid_order(BattleOrder(order=Move("sludgebomb", gen=8)), battle)
-
-    assert not is_valid_order(BattleOrder(order=None), battle)
-    assert not is_valid_order(None, battle)
+    assert is_valid_order(
+        SingleBattleOrder(order=Pokemon(gen=8, species="necrozma")), battle
+    )
+    assert not is_valid_order(SingleBattleOrder(order=Move("sludgebomb", gen=8)), battle)
 
 
 # This tests all possible orders for a double battle, and their validity under major conditions
@@ -111,20 +115,21 @@ def test_is_valid_doubles_order(example_doubles_request):
     z_move = [True, False]
     tera = [True, False]
 
-    battleorders = [None]
-    for order, dynamax, mega, z_move, tera, target in itertools.product(
+    battleorders = []
+    for order, dyn, meg, z, ter, target in itertools.product(
         possible_orders, dynamax, mega, z_move, tera, targets
     ):
         battleorders.append(
-            BattleOrder(
+            SingleBattleOrder(
                 order=order,
-                dynamax=dynamax,
-                mega=mega,
-                z_move=z_move,
-                terastallize=tera,
+                dynamax=dyn,
+                mega=meg,
+                z_move=z,
+                terastallize=ter,
                 move_target=target,
             )
         )
+    battleorders.append(PassBattleOrder())
 
     doublebattleorders = [
         DoubleBattleOrder(o1, o2)
@@ -133,86 +138,96 @@ def test_is_valid_doubles_order(example_doubles_request):
 
     # ========================== CREATING ALL POSSIBLE VALID ORDERS IN A 2v2 BATTLE ==========================
     # Create lists of all of the right moves and switches
-    switches, moves, dynamaxes, teras, megas, z_moves = (
-        [[], []],
-        [[], []],
-        [[], []],
-        [[], []],
-        [[], []],
-        [[], []],
-    )
+    switches: list[list] = [[], []]
+    moves: list[list] = [[], []]
+    dynamaxes: list[list] = [[], []]
+    teras: list[list] = [[], []]
+    megas: list[list] = [[], []]
+    z_moves: list[list] = [[], []]
 
     # i is the pokemon index
     for i in range(2):
 
         # Get switches
-        switches[i] = [BattleOrder(order=mon) for mon in battle.available_switches[i]]
+        switches[i] = [
+            SingleBattleOrder(order=mon) for mon in battle.available_switches[i]
+        ]
 
         # Get normal moves
         for move in battle.available_moves[i]:
             if move.target in (Target.ANY, Target.NORMAL):
                 moves[i].append(
-                    BattleOrder(
+                    SingleBattleOrder(
                         order=move,
                         move_target=battle.to_showdown_target(
                             move, battle.active_pokemon[1 - i]
                         ),
                     )
                 )
-                moves[i].append(BattleOrder(order=move, move_target=1))
-                moves[i].append(BattleOrder(order=move, move_target=2))
+                moves[i].append(SingleBattleOrder(order=move, move_target=1))
+                moves[i].append(SingleBattleOrder(order=move, move_target=2))
             elif move.target == Target.ADJACENT_FOE:
-                moves[i].append(BattleOrder(order=move, move_target=1))
-                moves[i].append(BattleOrder(order=move, move_target=2))
+                moves[i].append(SingleBattleOrder(order=move, move_target=1))
+                moves[i].append(SingleBattleOrder(order=move, move_target=2))
             else:
-                moves[i].append(BattleOrder(order=move))
+                moves[i].append(SingleBattleOrder(order=move))
 
             # Get Dynamax moves
             if battle.can_dynamax[i]:
                 if move.base_power > 0:
                     dynamaxes[i].append(
-                        BattleOrder(order=move, dynamax=True, move_target=1)
+                        SingleBattleOrder(order=move, dynamax=True, move_target=1)
                     )
                     dynamaxes[i].append(
-                        BattleOrder(order=move, dynamax=True, move_target=2)
+                        SingleBattleOrder(order=move, dynamax=True, move_target=2)
                     )
                     dynamaxes[i].append(
-                        BattleOrder(order=move, dynamax=True, move_target=1)
+                        SingleBattleOrder(order=move, dynamax=True, move_target=1)
                     )
                     dynamaxes[i].append(
-                        BattleOrder(order=move, dynamax=True, move_target=2)
+                        SingleBattleOrder(order=move, dynamax=True, move_target=2)
                     )
                 else:
-                    dynamaxes[i].append(BattleOrder(order=move, dynamax=True))
+                    dynamaxes[i].append(SingleBattleOrder(order=move, dynamax=True))
 
             # Get Mega moves
             if battle.can_mega_evolve[i]:
-                for order in moves[i]:
+                for single_order in moves[i]:
                     megas[i].append(
-                        BattleOrder(
-                            order=order.order,
+                        SingleBattleOrder(
+                            order=single_order.order,
                             mega=True,
-                            dynamax=order.dynamax,
-                            move_target=order.target,
+                            dynamax=single_order.dynamax,
+                            move_target=single_order.move_target,
                         )
                     )
 
             # Get Z-Move moves
             if battle.can_z_move[i]:
                 if move.base_power > 0:
-                    z_moves[i].append(BattleOrder(order=move, z_move=True, move_target=1))
-                    z_moves[i].append(BattleOrder(order=move, z_move=True, move_target=2))
-                    z_moves[i].append(BattleOrder(order=move, z_move=True, move_target=1))
-                    z_moves[i].append(BattleOrder(order=move, z_move=True, move_target=2))
+                    z_moves[i].append(
+                        SingleBattleOrder(order=move, z_move=True, move_target=1)
+                    )
+                    z_moves[i].append(
+                        SingleBattleOrder(order=move, z_move=True, move_target=2)
+                    )
+                    z_moves[i].append(
+                        SingleBattleOrder(order=move, z_move=True, move_target=1)
+                    )
+                    z_moves[i].append(
+                        SingleBattleOrder(order=move, z_move=True, move_target=2)
+                    )
                 else:
-                    z_moves[i].append(BattleOrder(order=move, z_move=True))
+                    z_moves[i].append(SingleBattleOrder(order=move, z_move=True))
 
             # Get Tera moves
             if battle.can_tera[i]:
-                for order in moves[i]:
+                for single_order in moves[i]:
                     teras[i].append(
-                        BattleOrder(
-                            order=order.order, terastallize=True, move_target=order.target
+                        SingleBattleOrder(
+                            order=single_order.order,
+                            terastallize=True,
+                            move_target=single_order.target,
                         )
                     )
 
@@ -232,20 +247,11 @@ def test_is_valid_doubles_order(example_doubles_request):
                 continue
             if isinstance(move1.order, Pokemon) and move1.order == move2.order:
                 continue
-
-            if (
-                str(DoubleBattleOrder(move1, move2))
-                == "/choose switch mrrime, switch thundurus"
-            ):
-                print("AAAAAA")
             valid_moves.add(repr_dbo(DoubleBattleOrder(move1, move2)))
 
     # Go through all orders
     for dbo in doublebattleorders:
         if repr_dbo(dbo) in valid_moves:
-            if not is_valid_order(dbo, battle):
-                print("a", dbo)
-                print("b", str(dbo))
             assert is_valid_order(dbo, battle)
         else:
             assert not is_valid_order(dbo, battle)
@@ -281,7 +287,7 @@ def test_is_valid_doubles_order(example_doubles_request):
     battle._force_switch = [False, True]
 
     force_switch_valid_moves = set()
-    mon1_moves = [None]
+    mon1_moves = [PassBattleOrder()]
     mon2_moves = switches[1]
     for move1 in mon1_moves:
         for move2 in mon2_moves:
@@ -296,7 +302,7 @@ def test_is_valid_doubles_order(example_doubles_request):
     # ========================== TEST FORCE SWITCH (OTHER MON) SCENARIO ==========================
     battle._force_switch = [True, False]
     mon1_moves = switches[0]
-    mon2_moves = [None]
+    mon2_moves = [PassBattleOrder()]
     force_switch_other_valid_moves = set()
     for move1 in mon1_moves:
         for move2 in mon2_moves:
@@ -311,6 +317,12 @@ def test_is_valid_doubles_order(example_doubles_request):
     # ========================== TEST ONE OPP MON SCENARIO ==========================
     battle._force_switch = [False, False]
     mon1._status = Status.FNT
+
+    # If there is one mon left, any target on the other side of the field is valid
+    for i in range(2):
+        for move in battle.available_moves[i]:
+            if move.target in (Target.ANY, Target.NORMAL):
+                moves[i].append(SingleBattleOrder(order=move, move_target=0))
 
     opp_one_faint_mon_moves = set()
     mon1_moves = switches[0] + moves[0] + dynamaxes[0] + teras[0] + megas[0] + z_moves[0]
@@ -340,11 +352,12 @@ def test_is_valid_doubles_order(example_doubles_request):
 
     # ========================== TEST 1v1 SCENARIO ==========================
     my_mon = battle.active_pokemon[0]
+    assert my_mon is not None
     my_mon._status = Status.FNT
     battle._available_switches = [[], []]
 
     moves_1v1 = set()
-    mon1_moves = [None]
+    mon1_moves = [PassBattleOrder()]
     mon2_moves = moves[1] + dynamaxes[1] + teras[1] + megas[1] + z_moves[1]
     for move1 in mon1_moves:
         for move2 in mon2_moves:

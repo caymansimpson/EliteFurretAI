@@ -10,7 +10,6 @@ import sys
 def main():
     print("Starting a script to edit all VGC teams to have level 50")
     directories = set()
-    teams = {}
     fp = sys.argv[1] if len(sys.argv) > 1 else "./data/teams"
 
     for format_folder in os.listdir(fp):
@@ -18,8 +17,6 @@ def main():
 
         if os.path.isdir(folder_path) and "vgc" in format_folder.lower():
             print(f"Found the format: {format_folder}")
-            if format_folder not in teams:
-                teams[format_folder] = {}
             directories.add(folder_path)
 
     print("Now finding all teams...")

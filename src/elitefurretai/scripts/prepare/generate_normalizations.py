@@ -1,15 +1,7 @@
-import os
-import random
-import sys
-import time
-
-import orjson
-import torch
-from torch.utils.data import DataLoader
-
-from elitefurretai.model_utils import BattleDataset, Embedder
-
 """
+This file loops over training data and generates means and standard deviations for each feature. Users can use these outputs to
+normalize inputs if they are not already doing batchnorm or layernorms
+
 =============== How to call via terminal ===============
 python src/elitefurretai/scripts/prepare/generate_normalizations.py /Users/username/Desktop/battle_file.jsons 1000 /Users/username/Desktop/
 
@@ -29,6 +21,17 @@ for batch in train_loader:
 
     # Rest of training logic...
 """
+
+import os
+import random
+import sys
+import time
+
+import orjson
+import torch
+from torch.utils.data import DataLoader
+
+from elitefurretai.model_utils import BattleDataset, Embedder
 
 
 # battle_files is a file that contains a list of filenames that contain BattleData to read from
@@ -80,7 +83,9 @@ def main(
 
         sum_x += torch.sum(masked_states, dim=0)
         sum_x2 += torch.sum(masked_states**2, dim=0)
-        step_count += torch.sum(masks_reshaped)  # Only count valid timesteps (eg turns)
+        step_count += int(
+            torch.sum(masks_reshaped).item()
+        )  # Only count valid timesteps (eg turns)
 
         # Print progress
         if time.time() - start > last + 1:
@@ -97,7 +102,7 @@ def main(
             processed = f"Processed {battle_count} battles ({round(battle_count * 100.0 / num_battles, 2)}%) in {hours}h {minutes}m {seconds}s"
             left = f" with an estimated {hours_left}h {minutes_left}m {seconds_left}s left      "
             print("\r" + processed + left, end="")
-            last = time.time()
+            last = int(time.time())
 
         # Stop after we read enough battles; we will go slightly over because of batches
         if battle_count >= num_battles:

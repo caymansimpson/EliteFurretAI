@@ -11,7 +11,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from elitefurretai.scripts.fuzz.inference import (
     FuzzTestPlayer,
@@ -62,7 +62,7 @@ class PlayerPool:
 
     def __init__(self, players: List[FuzzTestPlayer]):
         self.players = set(players)
-        self.in_use = set()
+        self.in_use: Set[FuzzTestPlayer] = set()
         self.lock = threading.Lock()
 
     async def acquire_pair(self) -> Optional[Tuple[FuzzTestPlayer, FuzzTestPlayer]]:
@@ -195,7 +195,7 @@ async def main():
     # Monitor progress and stop when we reach total_battles
     while result_aggregator.total_battles < total_battles:
         pct = result_aggregator.total_battles * 100.0 / total_battles
-        num = result_aggregator.total_battles
+        num = result_aggregator.total_battles  # type: ignore
         print(f"\r\tCompleted {pct}% battles with {num} done...", end="", flush=True)
         await asyncio.sleep(1)
 

@@ -1,9 +1,15 @@
 # -*- coding: utf-8 -*-
-from elitefurretai.inference import battle_inference, item_inference, speed_inference
+from elitefurretai.inference import (
+    battle_inference,
+    inference_utils,
+    item_inference,
+    meta_db,
+    speed_inference,
+)
 from elitefurretai.inference.battle_inference import BattleInference
 from elitefurretai.inference.item_inference import ItemInference
+from elitefurretai.inference.meta_db import MetaDB
 from elitefurretai.inference.speed_inference import SpeedInference
-from elitefurretai.utils import inference_utils
 
 __all__ = [
     "battle_inference",
@@ -13,4 +19,6 @@ __all__ = [
     "item_inference",
     "ItemInference",
     "inference_utils",
+    "MetaDB",
+    "meta_db",
 ]

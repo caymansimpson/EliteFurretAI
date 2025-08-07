@@ -1,19 +1,11 @@
 import re
 from typing import Any, Dict, List, Optional
 
+from poke_env.battle import AbstractBattle, Effect, MoveCategory, Pokemon, PokemonGender
 from poke_env.data.normalize import to_id_str
-from poke_env.environment import (
-    AbstractBattle,
-    DoubleBattle,
-    Effect,
-    MoveCategory,
-    Pokemon,
-    PokemonGender,
-)
 
 from elitefurretai.model_utils.battle_data import BattleData
 from elitefurretai.model_utils.model_double_battle_order import MDBO
-from elitefurretai.utils.inference_utils import get_showdown_identifier
 
 
 # Iterates through BattleData; cannot switch perspectives
@@ -66,38 +58,58 @@ class BattleIterator:
         else:
             self._battle.parse_message(split_message)
 
-            # To track input_logs in BattleData, we need to update the mons in battle.team
-            # so that they mirror what the input_logs expect (swap mon spots)
-            if split_message[1] == "switch" and split_message[2].startswith(
-                self._perspective
-            ):
-                assert isinstance(
-                    self.battle, DoubleBattle
-                ), self.bd.battle_tag  # implementation is doubles specific
+        # If we were just passed teampreview, fill in information from player's choices
+        if len(split_message) > 1 and split_message[1] == "start":
 
-                # get ident of active pokemon from swapped spot, and to be swapped
-                swapped_ident = self.battle._active_pokemon[
-                    split_message[2][:3]
-                ].identifier(self._perspective)
-                to_be_swapped = split_message[2][:2] + split_message[2][3:]
+            # Assumes an order in inputLog
+            index = 0 if self._perspective == "p1" else 1
+            choices = map(
+                lambda x: int(x) - 1,
+                self.bd.input_logs[index]
+                .replace(f">{self._perspective} team ", "")
+                .split(", "),
+            )
+            team = self.bd.p1_team if self._perspective == "p1" else self.bd.p2_team
+            sent_team = {}
+            for omon in [team[choice] for choice in choices]:
+                mon = omon.to_pokemon()
+                sent_team[mon.identifier(self._perspective)] = mon
+            self._battle.team = sent_team
 
-                # swap
-                keys = list(self.battle.team.keys())
-                index1 = keys.index(swapped_ident)
-                index2 = keys.index(to_be_swapped)
-                keys[index1], keys[index2] = keys[index2], keys[index1]
-                self.battle.team = {k: self.battle.team[k] for k in keys}
+            # Fill opponent team if we have omniscient perspective
+            if self._omniscient:
+                opp_perspective = "p1" if self._perspective == "p2" else "p2"
+                opp_team = self.bd.p1_team if opp_perspective == "p1" else self.bd.p2_team
+
+                index = 0 if opp_perspective == "p1" else 1
+                choices = map(
+                    lambda x: int(x) - 1,
+                    self.bd.input_logs[index]
+                    .replace(f">{opp_perspective} team ", "")
+                    .split(", "),
+                )
+                opp_sent_team = {}
+                for omon in [opp_team[choice] for choice in choices]:
+                    mon = omon.to_pokemon()
+                    opp_sent_team[mon.identifier(opp_perspective)] = mon
+                self._battle._opponent_team = opp_sent_team
 
         # Find input and set _last_input to this; use _input_index to track where we are
         # in the input log; we should leave it where we should start from next time
         if self._is_pivot_trigger():
             self._input_nums = [self._input_nums[1], self._input_nums[1] + 1]
             self._last_input_type = MDBO.FORCE_SWITCH
-
         elif self._is_teampreview():
             self._input_nums = [self._input_nums[1], self._input_nums[1] + 2]
             self._last_input_type = MDBO.TEAMPREVIEW
 
+            # if omniscient, populate opponent teampreview
+            if self._omniscient:
+                opp_perspective = "p1" if self._perspective == "p2" else "p2"
+                opp_team = self.bd.p1_team if opp_perspective == "p1" else self.bd.p2_team
+                self._battle._teampreview_opponent_team = [
+                    omon.to_pokemon() for omon in opp_team
+                ]
         elif self._is_turn():
 
             # If we're starting a turn, the first input_num of the new turn should always start
@@ -113,11 +125,9 @@ class BattleIterator:
             self._input_nums = [self._input_nums[1], self._input_nums[1] + 2]
             self._prev_turn_index = self._index
             self._last_input_type = MDBO.TURN
-
         elif self._is_revival_blessing():
             self._input_nums = [self._input_nums[1], self._input_nums[1] + 1]
             self._last_input_type = MDBO.FORCE_SWITCH
-
         # Can either be two or one, depending on who faints; we deduce whether we need
         # two or one by the order of the player inputs in the player log
         elif self._is_preturn_switch():
@@ -126,6 +136,21 @@ class BattleIterator:
             else:
                 self._input_nums = [self._input_nums[1], self._input_nums[1] + 1]
             self._last_input_type = MDBO.FORCE_SWITCH
+
+        # If I hit a new request for my perspective, I should simulate the request to fill in the
+        # battle object with synthesized request information
+        if (
+            self.last_input is not None
+            and (
+                self._is_pivot_trigger()
+                or self._is_revival_blessing()
+                or self._is_preturn_switch()
+                or self._is_turn()
+                or self._is_teampreview()
+            )
+            and self.last_input.startswith(">" + self._perspective)
+        ):
+            self.simulate_request()
 
         self._index += 1
 
@@ -557,7 +582,7 @@ class BattleIterator:
     # Used to simulate requests that would be sent by the server when replaying omniscient
     # battle logs (via BattleIterator)
     def _generate_active_mon(self, mon: Pokemon) -> Dict[str, Any]:
-        json = {"moves": []}
+        json: Dict[str, Any] = {"moves": []}
 
         for move_id, move in mon.moves.items():
             disabled = False
@@ -627,7 +652,7 @@ class BattleIterator:
             condition += f" {mon.status.name.lower()}"
 
         return {
-            "ident": get_showdown_identifier(mon, self.perspective),
+            "ident": mon.identifier(self.perspective),
             "details": details,
             "condition": condition,
             "stats": mon.stats,
@@ -645,7 +670,7 @@ class BattleIterator:
         }
 
     def simulate_request(self):
-        req = {}
+        req: Dict[str, Any] = {}
         assert self.last_input is not None
         if self.last_input_type == MDBO.TEAMPREVIEW:
             assert self.last_input[4:].startswith("team"), self.bd.battle_tag
@@ -657,28 +682,29 @@ class BattleIterator:
             assert (
                 self.last_input[1:3] == self.battle.player_role
                 and "move" not in self.last_input
-            ), self.bd.battle_tag
+            ), f"{self.last_input} {self.bd.battle_tag} {self.battle.player_role}"
             orders = self.last_input[4:].split(",")
             req["forceSwitch"] = [orders[0].strip() != "pass", orders[1].strip() != "pass"]
 
         elif self.last_input_type == MDBO.TURN:
             assert not self.last_input[4:].startswith("team"), self.bd.battle_tag
-            req["actives"] = []
+            req["active"] = []
             active_pokemon = self.battle._active_pokemon  # type: ignore
-            req["actives"].append(
+            req["active"].append(
                 self._generate_active_mon(active_pokemon.get(f"{self.perspective}a"))
             )
-            req["actives"].append(
+            req["active"].append(
                 self._generate_active_mon(active_pokemon.get(f"{self.perspective}b"))
             )
 
-        # Get identifiers of mons we chose in teampreviwe, so we only populate request with the team we sent
-        team_choice, team = "", []
+        # Get identifiers of mons we chose in teampreview, so we only populate request with the team we sent
+        choice = ""
+        team = []
         if self._perspective == "p1":
-            team_choice, team = self.bd.input_logs[0], self.bd.p1_team
+            choice, team = self.bd.input_logs[0], self.bd.p1_team
         else:
-            team_choice, team = self.bd.input_logs[1], self.bd.p2_team
-        team_choice = list(map(lambda x: int(x) - 1, team_choice[9:].split(", ")))
+            choice, team = self.bd.input_logs[1], self.bd.p2_team
+        team_choice = list(map(lambda x: int(x) - 1, choice[9:].split(", ")))
         identifiers = list(
             map(lambda x: self._perspective + ": " + team[x].name, team_choice)
         )
@@ -747,13 +773,13 @@ class BattleIterator:
                     # Get the move_index of the move
                     move_index = -1
                     for j, move in enumerate(actor.moves):
-                        if to_id_str(order[5:]).startswith(to_id_str(move)):
+                        if to_id_str(order[5:].split(" ")[0]) == (to_id_str(move)):
                             move_index = j + 1  # Moves are 1-based
                             break
 
                     # Edge case for struggle, where any input is the right one. We should technically
                     # skip these, since any input is correct
-                    if to_id_str(order[5:]).startswith("struggle") or to_id_str(
+                    if to_id_str(order[5:]) == "struggle" or to_id_str(
                         order[5:]
                     ).startswith("recharge"):
                         move_index = 1

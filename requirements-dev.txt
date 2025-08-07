@@ -8,3 +8,4 @@ pytest-cov
 requests
 bs4
 wandb
+colorama

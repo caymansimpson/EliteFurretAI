@@ -8,9 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List
 
 import orjson
-from poke_env.data.gen_data import GenData
-from poke_env.data.normalize import to_id_str
-from poke_env.environment import (
+from poke_env.battle import (
     AbstractBattle,
     DoubleBattle,
     Move,
@@ -18,9 +16,9 @@ from poke_env.environment import (
     PokemonGender,
     PokemonType,
 )
+from poke_env.data.gen_data import GenData
+from poke_env.data.normalize import to_id_str
 from poke_env.stats import compute_raw_stats
-
-from elitefurretai.utils.inference_utils import get_showdown_identifier
 
 
 @dataclass
@@ -82,11 +80,14 @@ class BattleData:
     def from_self_play(
         p1_battle: AbstractBattle, p2_battle: AbstractBattle, input_logs: List[str]
     ):
+        assert p1_battle.player_role is not None and p1_battle.opponent_role is not None
+        assert p1_battle.battle_tag is not None
+        assert p1_battle.format is not None
 
         # Construct teams
         p1_team: List[ObservedPokemon] = []
         for tp_mon in p1_battle.teampreview_team:
-            ident = get_showdown_identifier(tp_mon, "p1")
+            ident = tp_mon.identifier("p1")
             mon = (
                 p1_battle.team[ident] if ident in p1_battle.team else tp_mon
             )  # To handle transformed mons
@@ -97,7 +98,7 @@ class BattleData:
 
         p2_team: List[ObservedPokemon] = []
         for tp_mon in p2_battle.teampreview_team:
-            ident = get_showdown_identifier(tp_mon, "p2")
+            ident = tp_mon.identifier("p2")
             mon = (
                 p2_battle.team[ident] if ident in p2_battle.team else tp_mon
             )  # To handle transformed mons
@@ -106,9 +107,9 @@ class BattleData:
             p2_team.append(ObservedPokemon.from_pokemon(mon))  # type: ignore
 
         # Reconstruct logs
-        logs = []
+        logs: List[str] = []
         for turn in range(len(p1_battle.observations)):
-            logs.extend(p1_battle.observations[turn].events)
+            logs.extend(map(lambda x: "|".join(x), p1_battle.observations[turn].events))
 
         # According to: https://github.com/smogon/pokemon-showdown/blob/b719e950f1166406a1cbf225c2a263e0848e4b0f/server/room-battle.ts#L526
         # endType can be # 'forfeit' | 'forced' | 'normal' = 'normal'
@@ -177,36 +178,6 @@ class BattleData:
 
         battle.player_username = player
         battle.teampreview_team = [mon.to_pokemon() for mon in team]
-
-        # Assumes an order in inputLog
-        index = 0 if perspective == "p1" else 1
-        choices = map(
-            lambda x: int(x) - 1,
-            self.input_logs[index].replace(f">{perspective} team ", "").split(", "),
-        )
-        sent_team = {}
-        for omon in [team[choice] for choice in choices]:
-            mon = omon.to_pokemon()
-            sent_team[get_showdown_identifier(mon, perspective)] = mon
-        battle.team = sent_team
-
-        # Fill opponent team
-        if omniscient:
-            opp_perspective = "p1" if perspective == "p2" else "p2"
-            opp_team = self.p1_team if opp_perspective == "p1" else self.p2_team
-
-            index = 0 if opp_perspective == "p1" else 1
-            choices = map(
-                lambda x: int(x) - 1,
-                self.input_logs[index]
-                .replace(f">{opp_perspective} team ", "")
-                .split(", "),
-            )
-            opp_sent_team = {}
-            for omon in [opp_team[choice] for choice in choices]:
-                mon = omon.to_pokemon()
-                opp_sent_team[mon.identifier(opp_perspective)] = mon
-            battle._opponent_team = opp_sent_team
 
         battle.opponent_username = opp_player
 
@@ -281,9 +252,9 @@ def observed_pokemon_to_dict(omon: ObservedPokemon) -> Dict[str, Any]:
     elif omon.gender == PokemonGender.FEMALE:
         gender = "F"
 
-    tera = omon.tera_type
-    if tera is not None:
-        tera = tera.name.title()
+    tera = ""
+    if omon.tera_type is not None:
+        tera = omon.tera_type.name.title()
     else:
         tera = "null"
 

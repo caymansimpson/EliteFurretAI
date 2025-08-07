@@ -5,13 +5,13 @@
 import sys
 from typing import Any, Dict, Optional, Union
 
+from poke_env.battle import AbstractBattle, Battle, DoubleBattle, Pokemon
 from poke_env.data.gen_data import GenData
-from poke_env.environment import AbstractBattle, Battle, DoubleBattle, Pokemon
 from poke_env.stats import compute_raw_stats
 
-from elitefurretai.utils.inference_utils import battle_to_str
+from elitefurretai.inference.inference_utils import battle_to_str
 
-_FLAGS = {
+_FLAGS: Dict[str, Any] = {
     "has_status_move": False,  # Assault Vest Flag
     "can_be_choice": True,  # For checking Choice
     "can_be_clearamulet": None,  # Set None if we have no evidence; true if we have evidence, but not yet confirmed
@@ -48,7 +48,7 @@ class BattleInference:
 
     @staticmethod
     def load_opponent_set(mon: Pokemon) -> Dict[str, Any]:
-        opponent_info = {}
+        opponent_info: Dict[str, Any] = {}
 
         # Compute smallest and largest possible value for each stat
         for nature in mon._data.natures:

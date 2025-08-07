@@ -9,6 +9,9 @@ def test_battle_iterator(vgc_json_anon):
     iter = BattleIterator(bd)
     assert iter
 
+    assert len(iter.battle.opponent_team) == 0
+    assert len(iter.battle.teampreview_opponent_team) == 0
+
     # Go to teampreview
     iter.next_input()
     assert iter.log == "|"
@@ -17,6 +20,10 @@ def test_battle_iterator(vgc_json_anon):
         ">p2 team 1, 2, 6, 3",
     ]
     assert iter._input_nums == [0, 2]
+    assert len(iter.battle.teampreview_opponent_team) == 6
+    assert len(iter.battle.teampreview_team) == 6
+    assert len(iter.battle.opponent_team) == 6
+    assert len(iter.battle.team) == 0
 
     # Test ability to move to the next
     iter.next()
@@ -27,6 +34,9 @@ def test_battle_iterator(vgc_json_anon):
     assert iter.log == "|"
     assert iter._input_nums == [2, 4]
 
+    assert len(iter.battle.opponent_team) == 2
+    assert len(iter.battle.team) == 4
+
     iter.next_input()
     assert iter.log == "|"
     assert iter._input_nums == [4, 5]
@@ -36,6 +46,38 @@ def test_battle_iterator(vgc_json_anon):
 
     with pytest.raises(StopIteration):
         iter.next()
+
+    # Now try omniscience
+    iter = BattleIterator(bd, omniscient=True)
+    assert iter
+
+    assert len(iter.battle.opponent_team) == 0
+    assert len(iter.battle.teampreview_opponent_team) == 0
+
+    # Go to teampreview
+    iter.next_input()
+    assert iter.log == "|"
+    assert vgc_json_anon["inputLog"][iter._input_nums[0] : iter._input_nums[1]] == [
+        ">p1 team 4, 5, 1, 3",
+        ">p2 team 1, 2, 6, 3",
+    ]
+    assert iter._input_nums == [0, 2]
+    assert len(iter.battle.teampreview_opponent_team) == 6
+    assert len(iter.battle.team) == 0
+    assert len(iter.battle.teampreview_team) == 6
+    assert len(iter.battle.opponent_team) == 6
+
+    # Test ability to move to the next
+    iter.next()
+    iter.next()
+    assert iter.log == "|switch|p1a: 780b3dada7|Arcanine, L50, F|191/191"
+
+    iter.next_turn()
+    assert iter.log == "|"
+    assert iter._input_nums == [2, 4]
+
+    assert len(iter.battle.opponent_team) == 4
+    assert len(iter.battle.team) == 4
 
 
 def test_next_input(vgc_json_anon2):

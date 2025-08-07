@@ -2,7 +2,7 @@
 from unittest.mock import MagicMock
 
 import pytest
-from poke_env.environment import DoubleBattle, Pokemon
+from poke_env.battle import DoubleBattle, Pokemon
 
 from elitefurretai.inference.battle_inference import BattleInference
 

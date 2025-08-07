@@ -4,7 +4,7 @@
 from unittest.mock import MagicMock
 
 import pytest
-from poke_env.environment import (
+from poke_env.battle import (
     DoubleBattle,
     Effect,
     Field,
@@ -16,7 +16,7 @@ from poke_env.environment import (
 from poke_env.teambuilder.constant_teambuilder import ConstantTeambuilder
 
 from elitefurretai.inference.battle_inference import BattleInference
-from elitefurretai.inference.speed_inference import SpeedInference, get_pokemon
+from elitefurretai.inference.speed_inference import SpeedInference
 
 
 def generate_speed_inference():
@@ -51,8 +51,8 @@ def test_parse_preturn_switch():
     si._parse_preturn_switch(events)
     assert si._orders == []
     assert Field.GRASSY_TERRAIN in si._battle.fields
-    assert get_pokemon("p2a: Rillaboom", si._battle).item is None
-    assert get_pokemon("p1b: Raichu", si._battle).item == "airballoon"
+    assert si._battle.get_pokemon("p2a: Rillaboom").item is None
+    assert si._battle.get_pokemon("p1b: Raichu").item == "airballoon"
 
     si = generate_speed_inference()
     events = [
@@ -78,8 +78,8 @@ def test_parse_preturn_switch():
     assert [("p1: Raichu", 1.0), ("p2: Rillaboom", 1.0)] in orders
     assert len(orders) == 2
     assert Field.GRASSY_TERRAIN in si._battle.fields
-    assert get_pokemon("p2a: Rillaboom", si._battle).item is None
-    assert get_pokemon("p2a: Rillaboom", si._battle).boosts["def"] == 1
+    assert si._battle.get_pokemon("p2a: Rillaboom").item is None
+    assert si._battle.get_pokemon("p2a: Rillaboom").boosts["def"] == 1
 
     si = generate_speed_inference()
     events = [
@@ -119,8 +119,8 @@ def test_parse_preturn_switch():
     assert [("p1: Wo-Chien", 1.0), ("p2: Pincurchin", 1.0)] in orders
     assert len(orders) == 4
     assert Field.ELECTRIC_TERRAIN in si._battle.fields
-    assert get_pokemon("p2a: Rillaboom", si._battle).item is None
-    assert get_pokemon("p2b: Pincurchin", si._battle).boosts["def"] == 1
+    assert si._battle.get_pokemon("p2a: Rillaboom").item is None
+    assert si._battle.get_pokemon("p2b: Pincurchin").boosts["def"] == 1
 
     si = generate_speed_inference()
     events = [

@@ -5,9 +5,7 @@ This object is a companion class to BattleInference.
 
 from typing import Dict, List, Union
 
-from poke_env.data.gen_data import GenData
-from poke_env.data.normalize import to_id_str
-from poke_env.environment import (
+from poke_env.battle import (
     AbstractBattle,
     Battle,
     DoubleBattle,
@@ -22,13 +20,14 @@ from poke_env.environment import (
     Target,
     Weather,
 )
+from poke_env.data.gen_data import GenData
+from poke_env.data.normalize import to_id_str
 
 from elitefurretai.inference.battle_inference import BattleInference
-from elitefurretai.utils.inference_utils import (
+from elitefurretai.inference.inference_utils import (
     battle_to_str,
     copy_bare_battle,
     get_segments,
-    get_showdown_identifier,
     has_flinch_immunity,
     has_rage_powder_immunity,
     has_sandstorm_immunity,
@@ -388,7 +387,7 @@ class ItemInference:
             if not isinstance(self._battle.opponent_active_pokemon, list):
                 raise NotImplementedError()
             idents = [
-                get_showdown_identifier(m, self._battle.opponent_role) if m else None
+                m.identifier(self._battle.opponent_role) if m else None
                 for m in self._battle.opponent_active_pokemon
             ]
 
@@ -425,7 +424,7 @@ class ItemInference:
 
             for m in self._battle.opponent_active_pokemon:
                 if m is not None:
-                    other_ident = get_showdown_identifier(m, self._battle.opponent_role)
+                    other_ident = m.identifier(self._battle.opponent_role)
                     if other_ident not in idents and not has_unboost_immunity(
                         other_ident, "atk", self._battle
                     ):
@@ -527,7 +526,7 @@ class ItemInference:
             is_rage_powder_immune = True
         if (
             active_pokemon[1 - index] is not None
-            and Effect.FOLLOW_ME in active_pokemon[1 - index].effects  # pyright: ignore
+            and Effect.FOLLOW_ME in active_pokemon[1 - index].effects  # type: ignore
         ):
             is_rage_powder_immune = True
 
@@ -536,8 +535,8 @@ class ItemInference:
             active_pokemon[index] is not None
             and target is not None
             and target
-            != get_showdown_identifier(
-                active_pokemon[index], self._battle.player_role  # pyright: ignore
+            != active_pokemon[index].identifier(  # type: ignore
+                self._battle.player_role  # type: ignore
             )
             and not is_rage_powder_immune
             and self._battle.get_pokemon(actor).item
@@ -852,7 +851,7 @@ class ItemInference:
         elif isinstance(self._battle.opponent_active_pokemon, list):
             # We track all mons that should be hit by sandstorm
             opp_actives = [
-                get_showdown_identifier(mon, self._battle.opponent_role)
+                mon.identifier(self._battle.opponent_role)
                 for mon in self._battle.opponent_active_pokemon
                 if mon
             ]
@@ -903,8 +902,8 @@ class ItemInference:
                 )
             ):
                 # We found SafetyGoggles, but we need to make sure the mon has it
-                ident = get_showdown_identifier(
-                    self._battle.opponent_active_pokemon, self._battle.opponent_role
+                ident = self._battle.opponent_active_pokemon.identifier(
+                    self._battle.opponent_role
                 )
                 self._inferences.set_flag(ident, "can_be_choice", False)
                 self._inferences.set_flag(ident, "can_be_clearamulet", False)

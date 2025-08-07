@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 from logging import Logger
 
+from poke_env.battle import DoubleBattle, Move, Pokemon, PokemonType
 from poke_env.data import GenData
-from poke_env.environment import DoubleBattle, Move, Pokemon, PokemonType
 from poke_env.teambuilder.constant_teambuilder import ConstantTeambuilder
 
 from elitefurretai.model_utils import BattleData, BattleIterator, Embedder
@@ -19,31 +19,31 @@ def mon_generator(gen=9):
             yield Pokemon(gen=gen, species=species)
 
 
-def test_featurize_move():
+def test_embed_move():
     embedder = Embedder()
 
     # Test that we're featurizing None correctly
-    none_move = embedder.featurize_move(None)
+    none_move = embedder.generate_move_features(None)
     assert all(map(lambda x: none_move[x] == -1, none_move))
 
     # Test that every move has the same length
     len_none_move = len(embedder.feature_dict_to_vector(none_move))
     for move in move_generator():
         featurized_move = tuple(
-            embedder.feature_dict_to_vector(embedder.featurize_move(move))
+            embedder.feature_dict_to_vector(embedder.generate_move_features(move))
         )
         assert len(featurized_move) == len_none_move
 
     # Test each implemented feature is working properly
-    emb = embedder.featurize_move(Move("icywind", gen=9))
+    emb = embedder.generate_move_features(Move("icywind", gen=9))
     assert emb["accuracy"] == 0.95
     assert emb["base_power"] == 55
     assert emb["current_pp"] == 5
 
-    emb = embedder.featurize_move(Move("seismictoss", gen=9))
+    emb = embedder.generate_move_features(Move("seismictoss", gen=9))
     assert emb["damage"] == 50
 
-    emb = embedder.featurize_move(Move("gigadrain", gen=9))
+    emb = embedder.generate_move_features(Move("gigadrain", gen=9))
     assert emb["drain"] == 0.5
     assert emb["force_switch"] == 0
     assert emb["heal"] == 0
@@ -54,14 +54,14 @@ def test_featurize_move():
     assert emb["priority"] == 0
     assert emb["recoil"] == 0
 
-    emb = embedder.featurize_move(Move("foulplay", gen=9))
+    emb = embedder.generate_move_features(Move("foulplay", gen=9))
     assert emb["self_switch"] == 0
     assert emb["use_target_offensive"] == 1
     assert emb["OFF_CAT:STATUS"] == 0
     assert emb["OFF_CAT:PHYSICAL"] == 1
     assert emb["OFF_CAT:SPECIAL"] == 0
 
-    emb = embedder.featurize_move(Move("tailwind", gen=9))
+    emb = embedder.generate_move_features(Move("tailwind", gen=9))
     assert emb["TYPE:GHOST"] == 0
     assert emb["TYPE:WATER"] == 0
     assert emb["TYPE:PSYCHIC"] == 0
@@ -102,7 +102,7 @@ def test_featurize_move():
     assert emb["TARGET:ALL_ADJACENT"] == 0
     assert emb["TARGET:ALLY_SIDE"] == 1
 
-    emb = embedder.featurize_move(Move("yawn", gen=9))
+    emb = embedder.generate_move_features(Move("yawn", gen=9))
     assert emb["EFFECT:SUBSTITUTE"] == 0
     assert emb["EFFECT:PROTECT"] == 0
     assert emb["EFFECT:HELPING_HAND"] == 0
@@ -112,7 +112,7 @@ def test_featurize_move():
     assert emb["EFFECT:FOLLOW_ME"] == 0
     assert emb["EFFECT:FLINCH"] == 0
 
-    emb = embedder.featurize_move(Move("spore", gen=9))
+    emb = embedder.generate_move_features(Move("spore", gen=9))
     assert emb["STATUS:FRZ"] == 0
     assert emb["STATUS:BRN"] == 0
     assert emb["STATUS:PAR"] == 0
@@ -125,7 +125,7 @@ def test_featurize_move():
     assert emb["BOOST:spd"] == 0
     assert emb["BOOST:spe"] == 0
 
-    emb = embedder.featurize_move(Move("ominouswind", gen=9))
+    emb = embedder.generate_move_features(Move("ominouswind", gen=9))
     assert emb["SELFBOOST:atk"] == 1
     assert emb["SELFBOOST:def"] == 1
     assert emb["SELFBOOST:spa"] == 1
@@ -134,11 +134,15 @@ def test_featurize_move():
     assert emb["chance"] == 10
 
 
-def test_featurize_pokemon():
+def test_generate_pokemon_features():
     embedder = Embedder()
+    dummy_battle = DoubleBattle("tag", "elitefurretai", None, gen=9)  # type: ignore
+    dummy_battle._format = embedder.format
+    dummy_battle.player_role = "p1"
 
     # Test that we're creating correct features for None
-    none_mon = embedder.featurize_pokemon(None)
+    none_mon = embedder.generate_pokemon_features(None, dummy_battle)
+    assert isinstance(none_mon, dict)
     for feature in none_mon:
         if not isinstance(none_mon[feature], dict):
             assert none_mon[feature] == -1
@@ -146,7 +150,9 @@ def test_featurize_pokemon():
     # Test that every mon has the same length
     none_mon_len = len(embedder.feature_dict_to_vector(none_mon))
     for mon in mon_generator():
-        featurized_mon = embedder.feature_dict_to_vector(embedder.featurize_pokemon(mon))
+        featurized_mon = embedder.feature_dict_to_vector(
+            embedder.generate_pokemon_features(mon, dummy_battle)
+        )
         assert len(featurized_mon) == none_mon_len
 
     tb_furret = ConstantTeambuilder(
@@ -166,7 +172,7 @@ def test_featurize_pokemon():
     furret._terastallized_type = PokemonType.DARK
     furret.set_hp_status("21/160 slp")
     furret.set_boost("spe", 2)
-    emb = embedder.featurize_pokemon(furret)
+    emb = embedder.generate_pokemon_features(furret, dummy_battle)
 
     # We have move embeddings
     assert any(map(lambda x: x.startswith("MOVE:0:"), emb))
@@ -218,11 +224,14 @@ def test_featurize_pokemon():
     assert emb["TERA_TYPE:GRASS"] == 0
 
 
-def test_featurize_opponent_pokemon(vgc_battle_p1_logs):
+def test_generate_opponent_pokemon_features(vgc_battle_p1_logs):
     embedder = Embedder()
+    dummy_battle = DoubleBattle("tag", "elitefurretai", None, gen=9)  # type: ignore
+    dummy_battle._format = embedder.format
+    dummy_battle.player_role = "p1"
 
     # Test that we featurize none correctly
-    none_mon = embedder.featurize_opponent_pokemon(None)
+    none_mon = embedder.generate_opponent_pokemon_features(None, dummy_battle)
     for feature in none_mon:
         if not isinstance(none_mon[feature], dict):
             assert none_mon[feature] == -1
@@ -231,7 +240,7 @@ def test_featurize_opponent_pokemon(vgc_battle_p1_logs):
     none_mon_len = len(embedder.feature_dict_to_vector(none_mon))
     for mon in mon_generator():
         featurized_mon = embedder.feature_dict_to_vector(
-            embedder.featurize_opponent_pokemon(mon)
+            embedder.generate_opponent_pokemon_features(mon, dummy_battle)
         )
         assert len(featurized_mon) == none_mon_len
 
@@ -245,7 +254,7 @@ def test_featurize_opponent_pokemon(vgc_battle_p1_logs):
                 p1_battle.won_by(log[2])
 
     smeargle = p1_battle.opponent_team["p2: Smeargle"]
-    emb = embedder.featurize_opponent_pokemon(smeargle)
+    emb = embedder.generate_opponent_pokemon_features(smeargle, dummy_battle)
 
     assert any(map(lambda x: x.startswith("MOVE:0:"), emb))
     assert any(map(lambda x: x.startswith("MOVE:1:"), emb))
@@ -306,7 +315,7 @@ def test_featurize_opponent_pokemon(vgc_battle_p1_logs):
     assert emb["TERA_TYPE:ROCK"] == -1  # Don't know this is the ground truth
 
     ttar = p1_battle.opponent_team["p2: Tyranitar"]
-    emb = embedder.featurize_opponent_pokemon(ttar)
+    emb = embedder.generate_opponent_pokemon_features(ttar, dummy_battle)
 
     assert emb["MOVE:0:base_power"] == 60
     assert emb["MOVE:0:TYPE:DRAGON"] == 1
@@ -320,7 +329,7 @@ def test_featurize_opponent_pokemon(vgc_battle_p1_logs):
     assert emb["TYPE:PSYCHIC"] == 1
 
 
-def test_featurize_turn(vgc_json_anon):
+def test_embed_turn(vgc_json_anon):
 
     embedder = Embedder(feature_set="raw")
 
@@ -332,14 +341,14 @@ def test_featurize_turn(vgc_json_anon):
     iterator.simulate_request()
     iterator.battle._force_switch = [False, True]
 
-    emb = embedder.featurize_double_battle(iterator.battle)  # type: ignore
+    emb = embedder.embed(iterator.battle)  # type: ignore
 
     assert emb["MON:0:sent"] == 1
     assert emb["MON:0:active"] == 0
     assert emb["MON:0:revealed"] == 0
     assert emb["MON:0:is_available_to_switch"] == 1
-    assert emb["MON:0:force_switch"] == 0
-    assert emb["MON:0:trapped"] == 0
+    assert emb["MON:0:force_switch"] == -1
+    assert emb["MON:0:trapped"] == -1
 
     assert emb["MON:4:sent"] == 1
     assert emb["MON:4:active"] == 1
@@ -358,10 +367,7 @@ def test_featurize_turn(vgc_json_anon):
     assert emb["FORMAT:gen9vgc2023regulationc"] == 1
     assert emb["teampreview"] == 0
     assert emb["turn"] == 1
-    assert emb["bias"] == 1
 
-    # TODO: problem is that get_pokemon in damage_estimator only looks in battle.team, and so cant estimate damage for pokemon
-    # in teampreview team that arent in battle.opponent_team. May have to keep a separate refactor, or put them into battle.team and then pop them out
     emb = embedder.generate_feature_engineered_features(iterator.battle)  # type: ignore
 
     assert emb["NUM_FAINTED"] == 0
@@ -379,7 +385,7 @@ def test_featurize_turn(vgc_json_anon):
     assert emb["TYPE_MATCHUP:OPP_MON:1:MON:0"] == 1
     assert emb["TYPE_MATCHUP:OPP_MON:2:MON:0"] == 2
 
-    assert emb["EST_DAMAGE:MON:2:OPP_MON:2:MOVE:0"] == 24.5
+    assert emb["EST_DAMAGE_MIN:MON:2:OPP_MON:2:MOVE:0"] == 22
     assert emb["KO:MON:2:OPP_MON:2:MOVE:0"] == 0
 
     # Dont know move
@@ -403,13 +409,13 @@ def test_simplify_features(vgc_battle_p1_logs):
             if len(log) > 1 and log[1] == "-turn" and log[2] == "1":
                 p1_battle.parse_message(log)
 
-                emb = embedder.featurize_double_battle(p1_battle)
-                simple_emb = simple_embedder.featurize_double_battle(p1_battle)
+                emb = embedder.embed(p1_battle)
+                simple_emb = simple_embedder.embed(p1_battle)
 
                 assert len(simple_emb) < len(emb)
 
 
-def test_featurize_teampreview(vgc_json_anon):
+def test_embed_teampreview(vgc_json_anon):
 
     embedder = Embedder(feature_set="raw")
 
@@ -420,24 +426,36 @@ def test_featurize_teampreview(vgc_json_anon):
     iterator.next_input()
     iterator.simulate_request()
 
-    emb = embedder.featurize_double_battle(iterator.battle)  # type: ignore
+    emb = embedder.embed(iterator.battle)  # type: ignore
 
     for key in emb:
         if "active" in key or "sent" in key or "revealed" in key:
-            if emb[key] != 0:
-                print(key, emb[key])
             assert emb[key] <= 0
         elif "TRAPPED" in key:
             assert emb[key] == 0
         elif "FORCE_SWITCH" in key:
             assert emb[key] == 0
-        elif "FIELD" in key:
+        elif key.startswith("FIELD"):
             assert emb[key] == 0
-        elif "SIDE_CONDITION" in key:
+        elif key.startswith("SIDE_CONDITION"):
             assert emb[key] == 0
-        elif "WEATHER" in key:
+        elif key.startswith("OPP_SIDE_CONDITION"):
+            assert emb[key] == 0
+        elif key.startswith("WEATHER"):
             assert emb[key] == 0
 
     assert emb["teampreview"] == 1
     assert emb["turn"] == 0
-    assert emb["bias"] == 1
+
+
+def test_omniscience(vgc_json_anon):
+
+    e1 = Embedder(feature_set="full", omniscient=True)
+    e2 = Embedder(feature_set="full", omniscient=False)
+
+    assert e1.pokemon_embedding_size == e2.pokemon_embedding_size
+    assert e1.move_embedding_size == e2.move_embedding_size
+    assert e1.battle_embedding_size == e2.battle_embedding_size
+    assert e1.opponent_pokemon_embedding_size == e2.opponent_pokemon_embedding_size
+    assert e1.embedding_size == e2.embedding_size
+    assert e1.group_embedding_sizes == e2.group_embedding_sizes

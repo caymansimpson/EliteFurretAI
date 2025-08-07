@@ -1,13 +1,24 @@
 # -*- coding: utf-8 -*-
-"""This module defines a class that Embeds objects
+"""
+This module defines the Embedder class, which is responsible for converting battle state information
+from poke-env's DoubleBattle objects into feature vectors suitable for machine learning models.
+It supports multiple feature sets (SIMPLE, RAW, FULL) and can generate features for moves, Pokémon,
+opponent Pokémon, and the overall battle state. The embedder is designed to be flexible and extensible,
+allowing for engineered features and grouping of features for advanced architectures.
+
+Key responsibilities:
+- Extract and encode all relevant information from a DoubleBattle into a fixed-length vector.
+- Support different levels of feature complexity (SIMPLE, RAW, FULL).
+- Provide programmatic access to feature names and group sizes for model design.
+- Handle missing or incomplete information gracefully, especially during teampreview.
+- Generate engineered features to improve model learning.
+- Maintain knowledge of enums and tracked game elements for consistent encoding.
 """
 
 import logging
 from typing import Any, Dict, List, Optional
 
-from poke_env.calc import calculate_damage
-from poke_env.data import GenData
-from poke_env.environment import (
+from poke_env.battle import (
     DoubleBattle,
     Effect,
     Field,
@@ -20,13 +31,18 @@ from poke_env.environment import (
     Target,
     Weather,
 )
+from poke_env.calc import calculate_damage
+from poke_env.data import GenData
 from poke_env.stats import compute_raw_stats
 
 from elitefurretai.inference.battle_inference import BattleInference
-from elitefurretai.utils.inference_utils import get_showdown_identifier
 
 
 class Embedder:
+    """
+    The Embedder class converts battle state information into feature vectors for ML models.
+    It supports multiple feature sets and engineered features, and provides metadata for model design.
+    """
 
     SIMPLE = "simple"
     RAW = "raw"
@@ -35,6 +51,10 @@ class Embedder:
     def __init__(
         self, format="gen9vgc2023regulationc", feature_set: str = "raw", omniscient=False
     ):
+        """
+        Initialize the Embedder with a given format and feature set.
+        Sets up knowledge bases for enums and tracked elements, and computes embedding sizes.
+        """
         self._knowledge: Dict[str, Any] = {}
         self._format: str = format
         self._omniscient: bool = omniscient
@@ -52,6 +72,7 @@ class Embedder:
         for key, enum in sets:
             self._knowledge[key] = set(enum)
 
+        # Track all relevant game elements for encoding
         self._knowledge["Pokemon"] = set(GenData.from_gen(format[3]).pokedex.keys())
         self._knowledge["Effect_VolatileStatus"] = TRACKED_EFFECTS
         self._knowledge["Item"] = TRACKED_ITEMS
@@ -62,51 +83,132 @@ class Embedder:
         self._knowledge["Field"] = TRACKED_FIELDS
         self._knowledge["Ability"] = TRACKED_ABILITIES
 
-        # Generate embedding size and feature names programatically upon instanciation
-        # because I muck with Embedder too much to hard code it
-        dummy_features = self._generate_dummy_features()
-        self._embedding_size = len(dummy_features)
-        self._feature_names = list(dummy_features.keys())
+        # Generate embedding size and feature names programmatically upon instantiation
+        dummy_battle = self._generate_dummy_battle()
+        self._embedding_size = len(self.embed(dummy_battle))
+        self._move_embedding_size = len(self.generate_move_features(None))
+        self._pokemon_embedding_size = len(
+            self.generate_pokemon_features(None, dummy_battle)
+        )
+        self._opponent_pokemon_embedding_size = len(
+            self.generate_opponent_pokemon_features(None, dummy_battle)
+        )
+        self._battle_embedding_size = len(self.generate_battle_features(dummy_battle))
+        self._feature_engineered_embedding_size = len(
+            self.generate_feature_engineered_features(dummy_battle)
+        )
+        self._feature_names = sorted(list(self.embed(dummy_battle).keys()))
 
     @staticmethod
     def _prep(string) -> str:
         """
-        Used to convert names of various enumerations into their string variants
+        Utility to convert enum names to lowercase strings for consistent encoding.
         """
         return string.lower().replace("_", " ")
 
-    def _generate_dummy_features(self) -> Dict[str, float]:
+    def _generate_dummy_battle(self) -> DoubleBattle:
+        """
+        Generates a dummy DoubleBattle for feature size calculation and testing.
+        """
         dummy_battle = DoubleBattle(
             "tag", "elitefurretai", logging.Logger("example"), gen=int(self._format[3])
         )
         dummy_battle._format = self._format
         dummy_battle.player_role = "p1"
-        return self.featurize_double_battle(dummy_battle)
+        return dummy_battle
 
     @property
     def embedding_size(self) -> int:
+        """
+        Returns the total embedding size for the current feature set.
+        """
         return self._embedding_size
 
     @property
+    def move_embedding_size(self) -> int:
+        """
+        Returns the embedding size for a single move.
+        """
+        return self._move_embedding_size
+
+    @property
+    def pokemon_embedding_size(self) -> int:
+        """
+        Returns the embedding size for a single Pokémon.
+        """
+        return self._pokemon_embedding_size
+
+    @property
+    def opponent_pokemon_embedding_size(self) -> int:
+        """
+        Returns the embedding size for a single opponent Pokémon.
+        """
+        return self._opponent_pokemon_embedding_size
+
+    @property
+    def battle_embedding_size(self) -> int:
+        """
+        Returns the embedding size for the battle-level features.
+        """
+        return self._battle_embedding_size
+
+    @property
+    def feature_engineered_embedding_size(self) -> int:
+        """
+        Returns the embedding size for engineered features.
+        """
+        return self._feature_engineered_embedding_size
+
+    @property
+    def group_embedding_sizes(self) -> List[int]:
+        """
+        Returns the sizes of feature groups for advanced model architectures.
+        Only available for RAW and FULL feature sets.
+        """
+        assert (
+            self.feature_set != self.SIMPLE
+        ), "Group embedding sizes are not available for SIMPLE feature set"
+        group_sizes = (
+            [self._pokemon_embedding_size] * 6
+            + [self._opponent_pokemon_embedding_size] * 6
+            + [self._battle_embedding_size]
+        )
+        if self.feature_set == self.FULL:
+            group_sizes += [self._feature_engineered_embedding_size]
+        return group_sizes
+
+    @property
     def feature_names(self) -> List[str]:
+        """
+        Returns the sorted list of feature names for the current embedding.
+        """
         return self._feature_names
 
     @property
     def feature_set(self) -> str:
+        """
+        Returns the feature set type (SIMPLE, RAW, FULL).
+        """
         return self._feature_set
 
     @property
     def format(self) -> str:
+        """
+        Returns the battle format string.
+        """
         return self._format
 
     @property
     def omniscient(self) -> bool:
+        """
+        Returns whether the embedder is in omniscient mode (has access to all info).
+        """
         return self._omniscient
 
     def feature_dict_to_vector(self, features: Dict[str, Any]) -> List[float]:
         """
         Converts a feature dictionary returned by this class into a vector that
-        can be used as input into a network
+        can be used as input into a network. Features are sorted for consistency.
         """
         vec = []
         for key in sorted(features.keys()):
@@ -116,8 +218,7 @@ class Embedder:
     def _simplify_features(self, features: Dict[str, Any]) -> Dict[str, Any]:
         """
         Converts a normal feature dictionary into a heavily simplified one.
-        Features were chosen to be able to roughly mimic max damage player,
-        but should be enough to outperform it, if correct. Primarily used for testing.
+        Used for testing and ablation studies.
         """
         simple_features = {}
         for k, v in features.items():
@@ -129,7 +230,11 @@ class Embedder:
     def generate_feature_engineered_features(
         self, battle: DoubleBattle, bi: Optional[BattleInference] = None
     ) -> Dict[str, float]:
-        """Adds supplementary engineered features that should help with learning"""
+        """
+        Adds supplementary engineered features that should help with learning.
+        Includes type matchups, fainted counts, status, revealed moves, and estimated damage calculations.
+        Handles missing information gracefully, especially during teampreview.
+        """
         assert battle.player_role is not None and battle.opponent_role is not None
 
         features: Dict[str, float] = {}
@@ -183,7 +288,9 @@ class Embedder:
         features["OPP_NUM_FAINTED"] = num_fainted
         features["OPP_PERC_HP_LEFT"] = hp_frac * 1.0 / total_hp
         features["OPP_NUM_STATUSED"] = num_status
-        features["NUM_OPP_MONS_REVEALED"] = len(battle.opponent_team)
+        features["NUM_OPP_MONS_REVEALED"] = sum(
+            map(lambda x: x.revealed, battle.opponent_team.values())
+        )
 
         # Need to create temporary opp_team because teampreview doesnt have nicknames, and so normal
         # comparisons via identifiers will fail
@@ -205,7 +312,7 @@ class Embedder:
                     else battle.team[x.identifier(battle.player_role)]
                 ),
             )
-            for i, x in enumerate(fill_with_none(list(battle.team.values()), 4))
+            for i, x in enumerate(fill_with_none(list(battle.team.values()), 6))
         ]
 
         # Iterate through all mon and opp_mon combos
@@ -218,9 +325,6 @@ class Embedder:
             for k, move in enumerate(opp_moves):
                 dmg, ko = (-1, -1), -1
                 if mon is not None and opp_mon is not None and move is not None:
-                    # TODO: guess opponent stats using MetaDB cache; I wonder if I can "warmstart" MetaDB by creating temp tables of possible mons
-                    # need these if we don't have an opponent's stats, or if theyre not in the team object. We need to insert them cuz the calculate_damage
-                    # function relies on the pokemon being in opponent_team via the get_pokemon function
                     stats_flag, teampreview_flag = False, False
                     if opp_mon.stats is None or opp_mon.stats.get("hp", None) is None:
                         opp_mon.stats = compute_stats(opp_mon, "max")  # type: ignore
@@ -229,10 +333,15 @@ class Embedder:
                         opp_mon.identifier(battle.opponent_role)
                         not in battle.opponent_team
                     ):
-                        battle.opponent_team[opp_mon.identifier(battle.opponent_role)] = (
+                        battle._opponent_team[opp_mon.identifier(battle.opponent_role)] = (
                             opp_mon
                         )
                         teampreview_flag = True
+
+                    # This happens when we don't fill in mon's HP because it's not found in a request;
+                    # it's stored in another field
+                    if mon.stats["hp"] is None:
+                        mon.stats["hp"] = mon.max_hp
 
                     dmg = calculate_damage(
                         opp_mon.identifier(battle.opponent_role),
@@ -246,10 +355,23 @@ class Embedder:
                     if stats_flag:
                         opp_mon.stats = None
                     if teampreview_flag:
-                        battle.opponent_team.pop(opp_mon.identifier(battle.opponent_role))
+                        battle._opponent_team.pop(opp_mon.identifier(battle.opponent_role))
                 features[
-                    "EST_DAMAGE:OPP_MON:" + str(i) + ":MON:" + str(j) + ":MOVE:" + str(k)
-                ] = (sum(dmg) / 2)
+                    "EST_DAMAGE_MIN:OPP_MON:"
+                    + str(i)
+                    + ":MON:"
+                    + str(j)
+                    + ":MOVE:"
+                    + str(k)
+                ] = dmg[0]
+                features[
+                    "EST_DAMAGE_MAX:OPP_MON:"
+                    + str(i)
+                    + ":MON:"
+                    + str(j)
+                    + ":MOVE:"
+                    + str(k)
+                ] = dmg[1]
                 features["KO:OPP_MON:" + str(i) + ":MON:" + str(j) + ":MOVE:" + str(k)] = (
                     ko
                 )
@@ -273,12 +395,19 @@ class Embedder:
                         stats_flag = True
                     if (
                         opp_mon.identifier(battle.opponent_role)
-                        not in battle.opponent_team
+                        not in battle._opponent_team
                     ):
-                        battle.opponent_team[opp_mon.identifier(battle.opponent_role)] = (
-                            opp_mon
-                        )
+                        key = opp_mon.identifier(battle.opponent_role)
+                        battle._opponent_team[key] = opp_mon
                         teampreview_flag = True
+
+                    if mon.species == "tinglu":
+                        pass
+
+                    # This happens when we don't fill in mon's HP because it's not found in a request;
+                    # it's stored in another field                    try:
+                    if mon.stats["hp"] is None:
+                        mon.stats["hp"] = mon.max_hp
 
                     dmg = calculate_damage(
                         mon.identifier(battle.player_role),
@@ -301,17 +430,32 @@ class Embedder:
                     if stats_flag:
                         opp_mon.stats = None
                     if teampreview_flag:
-                        battle.opponent_team.pop(opp_mon.identifier(battle.opponent_role))
+                        battle._opponent_team.pop(opp_mon.identifier(battle.opponent_role))
                 features[
-                    "EST_DAMAGE:MON:" + str(j) + ":OPP_MON:" + str(i) + ":MOVE:" + str(k)
-                ] = (sum(dmg) / 2)
+                    "EST_DAMAGE_MIN:MON:"
+                    + str(j)
+                    + ":OPP_MON:"
+                    + str(i)
+                    + ":MOVE:"
+                    + str(k)
+                ] = dmg[0]
+                features[
+                    "EST_DAMAGE_MAX:MON:"
+                    + str(j)
+                    + ":OPP_MON:"
+                    + str(i)
+                    + ":MOVE:"
+                    + str(k)
+                ] = dmg[1]
                 features["KO:MON:" + str(j) + ":OPP_MON:" + str(i) + ":MOVE:" + str(k)] = (
                     ko
                 )
 
         return features
 
-    def featurize_move(self, move: Optional[Move], prefix: str = "") -> Dict[str, float]:
+    def generate_move_features(
+        self, move: Optional[Move], prefix: str = ""
+    ) -> Dict[str, float]:
         """
         Returns a feature dict representing a Move
         """
@@ -355,7 +499,7 @@ class Embedder:
 
         # OHE Defensive Category
         for cat in self._knowledge["MoveCategory"]:
-            emb[prefix + "OFF_CAT:" + cat.name] = (
+            emb[prefix + "DEF_CAT:" + cat.name] = (
                 int(move.defensive_category == cat) if move else -1
             )
 
@@ -371,6 +515,21 @@ class Embedder:
         # OHE Side Conditions
         for sc in self._knowledge["SideCondition"]:
             emb[prefix + "SC:" + sc.name] = int(move.side_condition == sc) if move else -1
+
+        # OHE Fields
+        for field in self._knowledge["Field"]:
+            val = -1
+            if move and move.terrain:
+                val = int(move.terrain == field)
+            elif move and move.pseudo_weather:
+                val = int(Field.from_showdown_message(move.entry["name"]) == field)
+            emb[prefix + "FIELD:" + field.name] = val
+
+        # OHE Weathers
+        for weather in self._knowledge["Weather"]:
+            emb[prefix + "WEATHER:" + weather.name] = (
+                int(move.weather == weather) if move else -1
+            )
 
         # OHE Targeting Types
         for t in self._knowledge["Target"]:
@@ -446,8 +605,8 @@ class Embedder:
 
         return emb
 
-    def featurize_pokemon(
-        self, mon: Optional[Pokemon], request: Dict[str, Any] = {}, prefix: str = ""
+    def generate_pokemon_features(
+        self, mon: Optional[Pokemon], battle: DoubleBattle, prefix: str = ""
     ) -> Dict[str, float]:
         """
         Returns a Dict of features representing the pokemon
@@ -458,11 +617,13 @@ class Embedder:
         # Add moves to feature dict (and account for the fact that the mon might have <4 moves)
         moves = list(mon.moves.values()) if mon else []
         available_moves = (
-            mon.available_moves_from_request(request) if mon and "moves" in request else []
+            mon.available_moves_from_request(battle.last_request)
+            if mon and "moves" in battle.last_request
+            else []
         )
         for i, move in enumerate((moves + [None, None, None, None])[:4]):
             move_prefix = prefix + "MOVE:" + str(i) + ":"
-            emb.update(self.featurize_move(move, move_prefix))
+            emb.update(self.generate_move_features(move, move_prefix))
 
             # Record whether a move is available
             available = -1
@@ -517,11 +678,66 @@ class Embedder:
                 int(ptype == mon.tera_type) if mon else -1
             )
 
+        # OHE which switch the pokemon is
+        for i, m in enumerate(fill_with_none(list(battle.team.values()), 6)):
+            emb[prefix + "SWITCH_NUM:" + str(i)] = (
+                -1
+                if mon is None
+                else int(
+                    m is not None
+                    and battle.player_role is not None
+                    and mon.identifier(battle.player_role)
+                    == m.identifier(battle.player_role)
+                )
+            )
+
+        # Get pokemon battle attributes
+        sent = (
+            -1
+            if mon is None
+            else int(
+                battle.player_role is not None
+                and mon.identifier(battle.player_role) in battle.team
+                and not battle.teampreview
+            )
+        )
+        emb[prefix + "sent"] = sent
+        active_names = list(map(lambda x: x.name if x else None, battle.active_pokemon))
+        name = mon.name if mon else ""
+        emb[prefix + "active"] = -1 if mon is None else int(name in active_names)
+
+        trapped, force_switch = -1, -1
+        if name in active_names:
+            trapped = battle.trapped[active_names.index(name)]
+            force_switch = battle.force_switch[active_names.index(name)]
+
+        emb[prefix + "trapped"] = -1 if mon is None else int(trapped)
+        emb[prefix + "force_switch"] = -1 if mon is None else int(force_switch)
+
+        # To maintain representation of public belief state
+        mon = battle.team.get(
+            mon.identifier(battle.player_role) if mon and battle.player_role else "", mon
+        )
+        emb[prefix + "revealed"] = int(mon.revealed if mon else 0) if sent == 1 else -1
+
+        # Record whether mon is an available switch for active_pokemon1 and 2
+        emb[prefix + "is_available_to_switch"] = (
+            -1
+            if mon is None
+            else int(
+                mon.name
+                in map(lambda x: x.name if x else None, battle.available_switches[0])
+                or mon.name
+                in map(lambda x: x.name if x else None, battle.available_switches[1])
+            )
+        )
+
         return emb
 
-    def featurize_opponent_pokemon(
+    def generate_opponent_pokemon_features(
         self,
         mon: Optional[Pokemon],
+        battle: DoubleBattle,
         inference_flags: Optional[Dict[str, Any]] = None,
         prefix: str = "",
     ) -> Dict[str, float]:
@@ -534,7 +750,7 @@ class Embedder:
         moves = list(mon.moves.values()) if mon else []
         for i, move in enumerate((moves + [None, None, None, None])[:4]):
             move_prefix = prefix + "MOVE:" + str(i) + ":"
-            emb.update(self.featurize_move(move, move_prefix))
+            emb.update(self.generate_move_features(move, move_prefix))
 
         # OHE abilities (and/or possibile abilities if we have them)
         for ability in self._knowledge["Ability"]:
@@ -578,13 +794,16 @@ class Embedder:
                 val = -1
                 if mon and mon.stats and stat in mon.stats and mon.stats[stat]:
                     val = mon.stats[stat]  # type:ignore
-                emb[prefix + "STAT:" + stat] = val if val is not None else -1
+
+                # Do both to preserve embedding size
+                emb[prefix + "STAT_MIN:" + stat] = val if val is not None else -1
+                emb[prefix + "STAT_MAX:" + stat] = val if val is not None else -1
         else:
             for stat, minstat, maxstat in zip(stats, minstats, maxstats):
                 if mon and inference_flags and stat in inference_flags:
                     minstat, maxstat = inference_flags[stat][0], inference_flags[stat][1]
                 elif mon and mon.stats and stat in mon.stats and mon.stats[stat]:
-                    minstat, maxstat = mon.stats[stat], mon.stats[stat]
+                    minstat, maxstat = mon.stats[stat], mon.stats[stat]  # type: ignore
                 emb[prefix + "STAT_MIN:" + stat] = (
                     minstat if mon and minstat is not None else -1
                 )
@@ -620,132 +839,30 @@ class Embedder:
 
             emb[prefix + "TERA_TYPE:" + ptype.name] = val
 
-        return emb
-
-    def featurize_double_battle(
-        self, battle: DoubleBattle, bi: Optional[BattleInference] = None
-    ) -> Dict[str, float]:
-        """
-        Returns a list of integers representing the state of the battle, at the beginning
-        of the specified turn. It is from the perspective of the player whose turn it is.
-        """
-        emb: Dict[str, float] = {}
-
-        # Add each of our mons as features. We want to add even our teampreview pokemon because
-        # our opponent may make moves dependent on this information
-        for i, mon in enumerate((list(battle.teampreview_team) + [None] * 6)[:6]):
-            prefix = "MON:" + str(i) + ":"
-            features = {}
-            sent = 0
-
-            # We should featurize the battle copy of the mon, otherwise, we featurize the teampreview mon
-            if (
-                battle.player_role
-                and mon
-                and get_showdown_identifier(mon, battle.player_role) in battle.team
+        # Generate features about this pokemon in the context of the battle
+        emb[prefix + "sent"] = (
+            -1
+            if mon is None
+            else int(  # battle.opponent_team is basically teampreview_team for teampreview
+                battle.opponent_role is not None
+                and mon.identifier(battle.opponent_role) in battle.opponent_team
                 and not battle.teampreview
-            ):
-                features = self.featurize_pokemon(
-                    battle.team[get_showdown_identifier(mon, battle.player_role)],
-                    battle.last_request,
-                    prefix,
-                )
-                sent = 1
-            else:
-                features = self.featurize_pokemon(mon, battle.last_request, prefix)
-
-            # OHE which switch the pokemon is
-            for j in range(6):
-                features[prefix + "SWITCH_NUM" + str(j)] = int(i == j)
-
-            # Get pokemon battle attributes
-            features[prefix + "sent"] = sent
-            active_names = list(
-                map(lambda x: x.name if x else None, battle.active_pokemon)
             )
-            name = mon.name if mon else ""
-            features[prefix + "active"] = int(name in active_names)
-
-            trapped, force_switch = 0, 0
-            if name in active_names:
-                trapped = battle.trapped[active_names.index(name)]
-                force_switch = battle.force_switch[active_names.index(name)]
-
-            emb[prefix + "trapped"] = int(trapped)
-            emb[prefix + "force_switch"] = int(force_switch)
-
-            # To maintain representation of public belief state
-            mon = battle.team.get(
-                mon.identifier(battle.player_role) if mon and battle.player_role else "",
-                mon,
-            )
-            features[prefix + "revealed"] = (
-                int(mon.revealed if mon else 0) if sent == 1 else -1
-            )
-
-            # Record whether mon is an available switch for active_pokemon1 and 2
-            features[prefix + "is_available_to_switch"] = int(
-                (mon.name if mon else "")
-                in map(lambda x: x.name if x else None, battle.available_switches[0])
-                or (mon.name if mon else "")
-                in map(lambda x: x.name if x else None, battle.available_switches[1])
-            )
-
-            emb.update(features)
-
-        # Featurize each opponent mon
-        species_list = list(
-            map(lambda x: x.species if x else "none", battle.opponent_team.values())
         )
-        for i, mon in enumerate((list(battle.teampreview_opponent_team) + [None] * 6)[:6]):
-            prefix = "OPP_MON:" + str(i) + ":"
-            features = {}
-            sent = 0
 
-            if battle.opponent_role and mon and mon.species in species_list:
-
-                # Find the mon in our team
-                for team_mon in battle.opponent_team.values():
-                    if team_mon.species == mon.species:
-                        mon = team_mon
-                        break
-
-                # Get inferences
-                flags = bi.get_flags(mon.identifier(battle.opponent_role)) if bi else None
-
-                # Generate Features
-                features = self.featurize_opponent_pokemon(
-                    mon,
-                    inference_flags=flags,
-                    prefix=prefix,
-                )
-
-                # battle.opponent_team is basically teampreview_team for teampreview
-                if not battle.teampreview:
-                    sent = 1
-
-            # We saw this mon in teampreview
-            else:
-                features = self.featurize_opponent_pokemon(mon, prefix=prefix)
-
-            max_team_size = battle.max_team_size if battle.max_team_size else 6
-
-            # We know a mon has to be sent if their teampreview team is < the amount of mons
-            # they need to send to battle
-            features[prefix + "sent"] = (
-                -1
-                if sent == 0
-                and len(battle.opponent_team)
-                == min(max_team_size, len(battle.teampreview_opponent_team))
-                and not battle.teampreview
-                else sent
-            )
-            features[prefix + "active"] = int(
-                (mon.name if mon else "")
+        emb[prefix + "active"] = (
+            -1
+            if mon is None
+            else int(
+                mon.name
                 in map(lambda x: x.name if x else None, battle.opponent_active_pokemon)
             )
+        )
 
-            emb.update(features)
+        return emb
+
+    def generate_battle_features(self, battle: DoubleBattle) -> Dict[str, float]:
+        emb: Dict[str, float] = {}
 
         # Add Fields
         for field in self._knowledge["Field"]:
@@ -772,7 +889,57 @@ class Embedder:
         emb["p1rating"] = battle.rating if battle.rating else -1
         emb["p2rating"] = battle.opponent_rating if battle.opponent_rating else -1
         emb["turn"] = battle.turn
-        emb["bias"] = 1
+
+        return emb
+
+    def embed(
+        self, battle: DoubleBattle, bi: Optional[BattleInference] = None
+    ) -> Dict[str, float]:
+        """
+        Returns a list of integers representing the state of the battle, at the beginning
+        of the specified turn. It is from the perspective of the player whose turn it is.
+        """
+        emb: Dict[str, float] = {}
+
+        # Add each of our mons as features. We want to add even our teampreview pokemon because
+        # our opponent may make moves dependent on this information
+        for i, mon in enumerate(fill_with_none(battle.teampreview_team, 6)):
+            prefix = "MON:" + str(i) + ":"
+
+            # We should featurize the battle copy of the mon, otherwise, we featurize the teampreview mon
+            if (
+                battle.player_role
+                and mon is not None
+                and not battle.teampreview
+                and mon.identifier(battle.player_role) in battle.team
+            ):
+                mon = battle.team[mon.identifier(battle.player_role)]
+
+            emb.update(self.generate_pokemon_features(mon, battle, prefix))
+
+        # Featurize each opponent mon
+        species = {
+            x.species: x for x in battle.opponent_team.values()
+        }  # teampreview mons don't have identifiers, so we have to look at species
+        for i, mon in enumerate(fill_with_none(battle.teampreview_opponent_team, 6)):
+            prefix = "OPP_MON:" + str(i) + ":"
+
+            mon = species.get(mon.species if mon else "", mon)
+
+            flags = (
+                bi.get_flags(mon.identifier(battle.opponent_role))
+                if bi and mon and battle.opponent_role is not None
+                else None
+            )
+
+            emb.update(
+                self.generate_opponent_pokemon_features(
+                    mon, battle, inference_flags=flags, prefix=prefix
+                )
+            )
+
+        # Add battle features
+        emb.update(self.generate_battle_features(battle))
 
         # Convert embedding to the specified type
         if self._feature_set == self.SIMPLE:

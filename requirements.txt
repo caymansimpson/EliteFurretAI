@@ -4,3 +4,4 @@ pulp
 pyscipopt
 numpy
 torch
+torch_geometric

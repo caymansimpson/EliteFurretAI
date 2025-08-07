@@ -8,19 +8,22 @@ import os.path
 import re
 import sys
 import time
-from typing import List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
+from poke_env.battle.move_category import MoveCategory
 from poke_env.data.gen_data import GenData
-from poke_env.environment.move_category import MoveCategory
-from poke_env.player.random_player import RandomPlayer
+from poke_env.player.baselines import RandomPlayer
 from poke_env.ps_client.account_configuration import AccountConfiguration
-from poke_env.ps_client.server_configuration import ServerConfiguration
+from poke_env.ps_client.server_configuration import (
+    LocalhostServerConfiguration,
+    ServerConfiguration,
+)
 from poke_env.teambuilder.teambuilder import Teambuilder
 
 from elitefurretai.inference.battle_inference import BattleInference
+from elitefurretai.inference.inference_utils import battle_to_str
 from elitefurretai.inference.item_inference import ItemInference
 from elitefurretai.inference.speed_inference import SpeedInference
-from elitefurretai.utils.inference_utils import battle_to_str, get_showdown_identifier
 from elitefurretai.utils.team_repo import TeamRepo
 
 
@@ -36,7 +39,7 @@ class FuzzTestPlayer(RandomPlayer):
         max_concurrent_battles: int = 1,
         accept_open_team_sheet: bool = False,
         save_replays: Union[bool, str] = False,
-        server_configuration: Optional[ServerConfiguration] = None,
+        server_configuration: ServerConfiguration = LocalhostServerConfiguration,
         start_timer_on_battle_start: bool = False,
         start_listening: bool = True,
         ping_interval: Optional[float] = 20.0,
@@ -58,9 +61,9 @@ class FuzzTestPlayer(RandomPlayer):
             ping_timeout=ping_timeout,
             team=team,
         )
-        self._inferences = {}
-        self._speed_inferences = {}
-        self._item_inferences = {}
+        self._inferences: Dict[str, Any] = {}
+        self._speed_inferences: Dict[str, Any] = {}
+        self._item_inferences: Dict[str, Any] = {}
 
     def teampreview(self, battle):
 
@@ -91,12 +94,12 @@ class FuzzTestPlayer(RandomPlayer):
 
 def check_ground_truth(p1, p2, battle_tag):
     msg = ""
-    counts = {}
+    counts: Dict[str, int] = {}
 
     # Check P2's BattleInference
     for mon in p1.battles[battle_tag].teampreview_team:
 
-        ident = get_showdown_identifier(mon, p2.battles[battle_tag].opponent_role)
+        ident = mon.identifier(p2.battles[battle_tag].opponent_role)
         if not p2._inferences[battle_tag].is_tracking(ident):
             continue
 
@@ -165,7 +168,7 @@ def check_ground_truth(p1, p2, battle_tag):
 
 
 def get_players(team_repo: TeamRepo, format: str) -> List[FuzzTestPlayer]:
-    players = []
+    players: List[FuzzTestPlayer] = []
     for team_name, team in team_repo.teams[format].items():
 
         name = team_name[:17]
@@ -268,7 +271,7 @@ async def main():
     # scarf if all other speeds resolve in a normal way without one)
     total_success = 0
     total = 0
-    counts = {}
+    counts: Dict[str, int] = {}
     for p1, p2 in itertools.combinations(players, 2):
 
         # Go through battle from each player's perspective; first have to find battles

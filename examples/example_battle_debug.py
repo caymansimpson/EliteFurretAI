@@ -7,23 +7,16 @@ to provide starter code for others.
 import asyncio
 from typing import Optional, Union
 
-from poke_env.environment.abstract_battle import AbstractBattle
-from poke_env.player.battle_order import BattleOrder
-from poke_env.player.random_player import RandomPlayer
+from poke_env.battle.abstract_battle import AbstractBattle
+from poke_env.player.baselines import RandomPlayer
 from poke_env.ps_client.account_configuration import AccountConfiguration
-from poke_env.ps_client.server_configuration import ServerConfiguration
+from poke_env.ps_client.server_configuration import (
+    LocalhostServerConfiguration,
+    ServerConfiguration,
+)
 from poke_env.teambuilder.teambuilder import Teambuilder
 
 from elitefurretai.utils.inference_utils import battle_to_str
-
-
-class StringBattleOrder(BattleOrder):
-    def __init__(self, message):
-        self._message: str = message
-
-    @property
-    def message(self):
-        return self._message
 
 
 class CustomPlayer(RandomPlayer):
@@ -38,7 +31,7 @@ class CustomPlayer(RandomPlayer):
         max_concurrent_battles: int = 1,
         accept_open_team_sheet: bool = False,
         save_replays: Union[bool, str] = False,
-        server_configuration: Optional[ServerConfiguration] = None,
+        server_configuration: ServerConfiguration = LocalhostServerConfiguration,
         start_timer_on_battle_start: bool = False,
         start_listening: bool = True,
         ping_interval: Optional[float] = 20.0,
@@ -88,42 +81,26 @@ class CustomPlayer(RandomPlayer):
 
 async def main():
     pokepaste = """
-        Delibird @ Safety Goggles
-        Ability: Vital Spirit
+        Oranguru @ Safety Goggles
+        Ability: Symbiosis
         Tera Type: Steel
         EVs: 1 HP
-        - Fake Out
-        - Icy Wind
-        - Spikes
-        - Substitute
+        - Psychic
 
-        Raichu @ Light Clay
-        Ability: Static
+        Rillaboom @ Grassy Seed
+        Ability: Grassy Surge
         Tera Type: Ground
         EVs: 1 HP
-        - Light Screen
-        - Fake Out
-        - Reflect
-        - Nuzzle
+        - Grassy Glide
+        - Wood Hammer
 
-        Tyranitar @ Heavy-Duty Boots
-        Ability: Sand Stream
-        Tera Type: Psychic
-        EVs: 1 HP
-        - Bulldoze
-        - Dragon Tail
-        - Stealth Rock
-
-        Smeargle @ Covert Cloak
+        Smeargle @ Wiki Berry
         Ability: Moody
         Tera Type: Rock
         EVs: 1 HP
-        - U-turn
         - Icy Wind
-        - Rage Powder
-        - Spikes
 
-        Furret @ Leftovers
+        Furret @ Mago Berry
         Ability: Frisk
         Tera Type: Rock
         EVs: 1 HP
