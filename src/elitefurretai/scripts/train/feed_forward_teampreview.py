@@ -1,0 +1,508 @@
+"""
+feed_forward_teampreview.py
+
+Description:
+    This script trains a neural network model (either a feedforward DNN or a GNN-based architecture)
+    on a dataset containing only Pokémon Showdown teampreview data. The goal is to predict the best team preview choices
+    given feature-engineered battle state embeddings from EliteFurretAI.
+
+    The script loads preprocessed datasets, builds the model, and runs training and evaluation loops.
+    It logs metrics and model checkpoints to Weights & Biases (wandb).
+
+    NOTE: This file is focused on teampreview prediction only (not full turn-by-turn battle actions).
+    Thus, it needs to be run with a dataset that contains only teampreview data.
+"""
+
+import os.path
+import random
+import sys
+import time
+
+import torch
+from torch_geometric.nn import GINConv
+
+import wandb
+from elitefurretai.model_utils import MDBO, Embedder, PreprocessedBattleDataset
+
+
+class ResidualBlock(torch.nn.Module):
+    def __init__(self, in_features, out_features, dropout=0.3):
+        super().__init__()
+        self.linear = torch.nn.Linear(in_features, out_features)
+        self.bn = torch.nn.BatchNorm1d(out_features)
+        self.dropout = torch.nn.Dropout(dropout)
+        self.relu = torch.nn.ReLU()
+        self.shortcut = torch.nn.Sequential()
+        if in_features != out_features:
+            self.shortcut = torch.nn.Sequential(
+                torch.nn.Linear(in_features, out_features),
+                torch.nn.BatchNorm1d(out_features),
+            )
+
+    def forward(self, x):
+        residual = self.shortcut(x)
+        x = self.linear(x)
+        x = self.bn(x)
+        x = self.relu(x)
+        x = self.dropout(x)
+        return self.relu(x + residual)  # Add ReLU after addition
+
+
+class DNN(torch.nn.Module):
+    def __init__(
+        self,
+        input_size,
+        hidden_sizes=[1024, 512, 256],
+        dropout=0.3,
+        embedder=Embedder(
+            format="gen9vgc2023regulationc", feature_set=Embedder.FULL, omniscient=True
+        ),
+    ):
+        super().__init__()
+        self.embedder = embedder
+        layers = []
+        prev_size = embedder.embedding_size
+
+        # Build residual blocks
+        for size in hidden_sizes:
+            layers.append(ResidualBlock(prev_size, size, dropout))
+            prev_size = size
+
+        self.backbone = torch.nn.Sequential(*layers)
+        self.action_head = torch.nn.Linear(prev_size, MDBO.action_space())
+
+        # Initialize weights
+        for layer in self.backbone:
+            if isinstance(layer, torch.nn.Linear):
+                torch.nn.init.kaiming_normal_(layer.weight, nonlinearity="relu")
+
+        torch.nn.init.xavier_normal_(self.action_head.weight)
+
+    def forward(self, x):
+        x = self.backbone(x)
+        action_logits = self.action_head(x)
+        return action_logits
+
+
+class TeamPreviewGNNModel(torch.nn.Module):
+    def __init__(
+        self,
+        embedder,
+        hidden_size=256,
+        gin_hidden_size=256,
+        num_gin_layers=2,
+        num_attention_heads=4,
+        dropout=0.3,
+    ):
+        super().__init__()
+        self.embedder = embedder
+        self.group_embedding_sizes = embedder.group_embedding_sizes
+        self.num_groups = len(embedder.group_embedding_sizes)
+        self.hidden_size = hidden_size
+
+        # Project each group to hidden_size
+        self.group_proj = torch.nn.ModuleList(
+            [torch.nn.Linear(size, hidden_size) for size in embedder.group_embedding_sizes]
+        )
+
+        # GIN layers
+        self.gin_layers = torch.nn.ModuleList()
+        for _ in range(num_gin_layers):
+            nn_gin = torch.nn.Sequential(
+                torch.nn.Linear(hidden_size, gin_hidden_size),
+                torch.nn.ReLU(),
+                torch.nn.Linear(gin_hidden_size, hidden_size),
+                torch.nn.ReLU(),
+            )
+            self.gin_layers.append(GINConv(nn_gin))
+
+        # Attention layer
+        self.attn = torch.nn.MultiheadAttention(
+            hidden_size, num_attention_heads, dropout=dropout, batch_first=True
+        )
+        self.norm = torch.nn.LayerNorm(hidden_size)
+        self.action_head = torch.nn.Linear(hidden_size, MDBO.action_space())
+
+    def forward(self, x):
+        # x: (batch, sum(group_embedding_sizes))
+        batch_size = x.size(0)
+        splits = torch.split(x, self.group_embedding_sizes, dim=1)
+        group_embeds = [
+            proj(split) for proj, split in zip(self.group_proj, splits)
+        ]  # list of (batch, hidden_size)
+        group_embeds = torch.stack(group_embeds, dim=1)  # (batch, num_groups, hidden_size)
+
+        # Prepare for GIN: flatten batch for PyG, build edge_index for fully connected graph
+        # We'll process each batch element separately for simplicity
+        outputs = []
+        device = x.device
+        edge_index = self._fully_connected_edge_index(
+            self.num_groups, device
+        )  # (2, num_edges)
+
+        for b in range(batch_size):
+            node_feats = group_embeds[b]  # (num_groups, hidden_size)
+            h = node_feats
+            for gin in self.gin_layers:
+                h = gin(h, edge_index)
+            outputs.append(h.unsqueeze(0))  # (1, num_groups, hidden_size)
+
+        gin_out = torch.cat(outputs, dim=0)  # (batch, num_groups, hidden_size)
+
+        # Attention over groups (self-attention)
+        attn_out, _ = self.attn(
+            gin_out, gin_out, gin_out
+        )  # (batch, num_groups, hidden_size)
+        attn_out = self.norm(attn_out + gin_out)
+
+        # Pool over groups (mean)
+        pooled = attn_out.mean(dim=1)  # (batch, hidden_size)
+
+        # Output head
+        action_logits = self.action_head(pooled)  # (batch, num_actions)
+        return action_logits
+
+    @staticmethod
+    def _fully_connected_edge_index(num_nodes, device):
+        # Returns edge_index for a fully connected undirected graph (including self-loops)
+        row = []
+        col = []
+        for i in range(num_nodes):
+            for j in range(num_nodes):
+                row.append(i)
+                col.append(j)
+        edge_index = torch.tensor([row, col], dtype=torch.long, device=device)
+        return edge_index
+
+
+# Alternative loss function
+def topk_cross_entropy_loss(logits, targets, k):
+    """
+    Returns 0 loss if target is in top-k predictions, else cross-entropy loss.
+    logits: [batch, num_classes]
+    targets: [batch] (long)
+    """
+    # Get top-k indices
+    topk = torch.topk(logits, k=k, dim=1).indices  # [batch, k]
+    # Check if target is in top-k
+    in_topk = (topk == targets.unsqueeze(1)).any(dim=1)  # [batch]
+    # Compute standard cross-entropy
+    ce_loss = torch.nn.functional.cross_entropy(logits, targets, reduction="none") / 7.0
+    # Only penalize if not in top-k
+    loss = ce_loss * (~in_topk)
+    return loss.mean()
+
+
+def train_epoch(model, dataloader, prev_steps, optimizer, config):
+    model.train()
+    running_action_loss = 0
+    steps = 0
+    start = time.time()
+    num_batches = 0
+
+    for batch in dataloader:
+        states, actions, action_masks, _, masks = batch
+        states = states.to(config["device"])
+        actions = actions.to(config["device"])
+        action_masks = action_masks.to(config["device"])
+        masks = masks.to(config["device"])
+
+        valid_mask = masks.bool()
+        if valid_mask.sum() == 0:
+            continue
+
+        # Forward pass
+        action_logits = model(states[valid_mask])
+
+        # Mask invalid actions
+        masked_action_logits = action_logits.clone()
+        masked_action_logits[~action_masks[valid_mask].bool()] = float("-inf")
+
+        # Filter out samples with no valid actions
+        valid_action_rows = action_masks[valid_mask].sum(dim=1) > 0
+        if valid_action_rows.sum() == 0:
+            continue
+
+        masked_action_logits = masked_action_logits[valid_action_rows]
+        actions_for_loss = actions[valid_mask][valid_action_rows]
+
+        if masked_action_logits.size(0) == 0:
+            continue
+
+        # Calculate loss using masked logits
+        mean_batch_loss = topk_cross_entropy_loss(
+            masked_action_logits, actions_for_loss, k=config["k"]
+        )
+
+        # Propogate loss
+        optimizer.zero_grad()
+        mean_batch_loss.backward()
+        torch.nn.utils.clip_grad_norm_(
+            model.action_head.parameters(), config["max_grad_norm"]
+        )
+        optimizer.step()
+
+        # Accumulate batch means
+        running_action_loss += mean_batch_loss.item()
+        steps += valid_mask.sum().item()
+        num_batches += 1
+
+        # Logging progress
+        wandb.log(
+            {
+                "steps": prev_steps + steps,
+                "train_mean_action_loss": running_action_loss / num_batches,
+                "learning_rate": optimizer.param_groups[0]["lr"],
+            }
+        )
+        # Print progress
+        hours = int(time.time() - start) // 3600
+        minutes = int(time.time() - start) // 60
+        seconds = int(time.time() - start) % 60
+
+        time_per_batch = (time.time() - start) * 1.0 / (num_batches + 1)
+        est_time_left = (len(dataloader) - num_batches) * time_per_batch
+        hours_left = int(est_time_left // 3600)
+        minutes_left = int((est_time_left % 3600) // 60)
+        seconds_left = int(est_time_left % 60)
+
+        processed = f"Processed {num_batches * dataloader.batch_size} battles ({round(num_batches * 100.0 / len(dataloader), 2)}%) in {hours}h {minutes}m {seconds}s"
+        left = f" with an estimated {hours_left}h {minutes_left}m {seconds_left}s left in this epoch"
+        print("\033[2K\r" + processed + left, end="")
+
+    hours = int(time.time() - start) // 3600
+    minutes = (int(time.time() - start) % 3600) // 60
+    seconds = int(time.time() - start) % 60
+    print(
+        "\033[2K\rDone training in "
+        + str(hours)
+        + "h "
+        + str(minutes)
+        + "m "
+        + str(seconds)
+        + "s!"
+    )
+
+    return running_action_loss / num_batches, steps
+
+
+@torch.no_grad()
+def evaluate(model, dataloader, config):
+    model.eval()
+    total_top1 = 0
+    total_top3 = 0
+    total_top5 = 0
+    total_samples = 0
+    running_action_loss = 0
+    num_batches = 0
+
+    for batch in dataloader:
+        states, actions, action_masks, _, masks = batch
+        states = states.to(config["device"])
+        actions = actions.to(config["device"])
+        action_masks = action_masks.to(config["device"])
+        masks = masks.to(config["device"])
+
+        valid_mask = masks.bool()
+        valid_action_rows = action_masks[valid_mask].sum(dim=1) > 0
+        if valid_mask.sum() == 0 or valid_action_rows.sum() == 0:
+            continue
+
+        # Forward pass
+        action_logits = model(states[valid_mask])
+        masked_action_logits = action_logits.clone()
+        masked_action_logits[~action_masks[valid_mask].bool()] = float("-inf")
+
+        # Mask invalid actions
+        masked_action_logits = masked_action_logits[valid_action_rows]
+        actions_for_loss = actions[valid_mask][valid_action_rows]
+
+        # no samples after filtering
+        if masked_action_logits.size(0) == 0:
+            continue
+
+        # Action predictions
+        top1_preds = torch.argmax(masked_action_logits, dim=1)
+        top3_preds = torch.topk(masked_action_logits, k=3, dim=1).indices
+        top5_preds = torch.topk(masked_action_logits, k=5, dim=1).indices
+
+        # Check correctness
+        top1_correct = top1_preds == actions_for_loss
+        top3_correct = (actions_for_loss.unsqueeze(1) == top3_preds).any(dim=1)
+        top5_correct = (actions_for_loss.unsqueeze(1) == top5_preds).any(dim=1)
+
+        # Calculate loss using masked logits
+        mean_batch_loss = topk_cross_entropy_loss(
+            masked_action_logits, actions_for_loss, k=config["k"]
+        )
+
+        # Accumulate metrics
+        total_top1 += top1_correct.sum().item()
+        total_top3 += top3_correct.sum().item()
+        total_top5 += top5_correct.sum().item()
+        total_samples += valid_action_rows.sum().item()
+        running_action_loss += mean_batch_loss.item()
+        num_batches += 1
+
+    action_top1 = total_top1 / total_samples if total_samples > 0 else 0
+    action_top3 = total_top3 / total_samples if total_samples > 0 else 0
+    action_top5 = total_top5 / total_samples if total_samples > 0 else 0
+    avg_action_loss = running_action_loss / num_batches if num_batches > 0 else 0
+    return action_top1, action_top3, action_top5, avg_action_loss
+
+
+def main(train_path, test_path, val_path):
+    print("Starting!")
+    config = {
+        "device": "cpu",  # "mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu"),
+        "batch_size": 4096,
+        "k": 3,
+        "learning_rate": 1e-4,
+        "dropout": 0.05,
+        "hidden_sizes": [1024, 512, 256, 128],
+        "weight_decay": 1e-4,
+        "max_grad_norm": 1.0,
+        "num_epochs": 20,
+        "save_path": "data/models/",
+        "seed": 21,
+        "notes": "best model, with little dropout",
+    }
+    wandb.init(project="elitefurretai-firstimpression", config=config)
+    wandb.save(__file__)
+
+    # Set Seeds
+    torch.manual_seed(config["seed"])
+    torch.cuda.manual_seed(config["seed"])
+    random.seed(config["seed"])
+
+    embedder = Embedder(
+        format="gen9vgc2023regulationc", feature_set=Embedder.FULL, omniscient=True
+    )
+
+    print("Loading datasets...")
+    start = time.time()
+
+    # Create datasets
+    train_dataset = PreprocessedBattleDataset(train_path, embedder=embedder)
+    test_dataset = PreprocessedBattleDataset(test_path, embedder=embedder)
+    val_dataset = PreprocessedBattleDataset(val_path, embedder=embedder)
+
+    # Create dataloaders
+    train_loader = torch.utils.data.DataLoader(
+        train_dataset, batch_size=config["batch_size"], shuffle=False, num_workers=0
+    )
+    test_loader = torch.utils.data.DataLoader(
+        test_dataset, batch_size=config["batch_size"], shuffle=False, num_workers=0
+    )
+    val_loader = torch.utils.data.DataLoader(
+        val_dataset, batch_size=config["batch_size"], shuffle=False, num_workers=0
+    )
+    print(f"Loaded datasets in {round(time.time() - start, 2)}s")
+
+    model = DNN(
+        input_size=embedder.embedding_size,
+        hidden_sizes=config["hidden_sizes"],
+        dropout=config["dropout"],
+    ).to(config["device"])
+    # model = TeamPreviewGNNModel(
+    #     embedder,
+    #     hidden_size=256,
+    #     gin_hidden_size=128,
+    #     num_gin_layers=2,
+    #     num_attention_heads=4,
+    #     dropout=0.3
+    # )
+
+    optimizer = torch.optim.Adam(
+        model.parameters(),
+        lr=config["learning_rate"],
+        weight_decay=config["weight_decay"],
+        betas=(0.9, 0.999),
+    )
+
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode="min", factor=0.5, patience=2
+    )
+
+    print(
+        f"Finished loading data and model! for a total of {sum(p.numel() for p in model.parameters() if p.requires_grad)} trainable parameters"
+    )
+    wandb.watch(model, log="all", log_freq=100)
+    print(f"Starting training with {config['num_epochs']} epochs!")
+
+    # Assuming you have train_loader and val_loader from your dataset
+    start, steps, epoch = time.time(), 0, 0
+    for epoch in range(config["num_epochs"]):
+        train_loss, training_steps = train_epoch(
+            model, train_loader, steps, optimizer, config
+        )
+        action_top1, action_top3, action_top5, test_loss = evaluate(
+            model, test_loader, config
+        )
+        steps += training_steps
+
+        print(f"Epoch #{epoch + 1}:")
+        print(f"=> Total Steps: {steps}")
+        print(f"=> Train Loss:  {train_loss:.3f}")
+        print(f"=> Test Loss:   {test_loss:.3f}")
+        print(
+            f"=> Test Acc:    {(action_top1 * 100):.3f}% (Top-1), {(action_top3 * 100):.3f}% (Top-3) {(action_top5 * 100):.3f}% (Top-5)"
+        )
+
+        wandb.log(
+            {
+                "epoch": epoch + 1,
+                "train_loss": train_loss,
+                "test_action_loss": test_loss,
+                "test_action_top1": action_top1,
+                "test_action_top3": action_top3,
+                "test_action_top5": action_top5,
+            }
+        )
+
+        total_time = time.time() - start
+        h, m, s = (
+            int(total_time / (60 * 60)),
+            int((total_time % (60 * 60)) / 60),
+            int(total_time % 60),
+        )
+        t_left = (config["num_epochs"] - epoch - 1) * total_time / (epoch + 1)
+        h_left, m_left, s_left = (
+            int(t_left / (60 * 60)),
+            int((t_left % (60 * 60)) / 60),
+            int(t_left % 60),
+        )
+        print(f"=> Time thus far: {h}h {m}m {s}s // ETA: {h_left}h {m_left}m {s_left}s")
+        print()
+
+        scheduler.step(test_loss)
+
+    print("Done training! Saving model...")
+    torch.save(
+        model.state_dict(),
+        os.path.join(config["save_path"], f"{wandb.run.name}.pth"),  # type: ignore
+    )
+
+    # Validate
+    print("Finished saving model... Now evaluating on validation set!")
+    action_top1, action_top3, action_top5, val_loss = evaluate(model, val_loader, config)
+
+    print("Final Validation:")
+    print(f"=> Val Loss:  {val_loss:.3f}")
+    print(f"=> Top-1 Acc: {(action_top1 * 100):.3f}%")
+    print(f"=> Top-3 Acc: {(action_top3 * 100):.3f}%")
+    print(f"=> Top-5 Acc: {(action_top5 * 100):.3f}%")
+
+    wandb.log(
+        {
+            "epoch": epoch + 1,
+            "val_action_loss": val_loss,
+            "val_action_top1": action_top1,
+            "val_action_top3": action_top3,
+            "val_action_top5": action_top5,
+        }
+    )
+
+
+if __name__ == "__main__":
+    main(sys.argv[1], sys.argv[2], sys.argv[3])
