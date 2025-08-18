@@ -2,12 +2,18 @@ import os.path
 import random
 import sys
 import time
-from collections import defaultdict
+from typing import Any, Dict
 
 import torch
 
 import wandb
 from elitefurretai.model_utils import MDBO, Embedder, PreprocessedBattleDataset
+from elitefurretai.scripts.train.train_utils import (
+    analyze,
+    evaluate,
+    format_time,
+    topk_cross_entropy_loss,
+)
 
 
 class ResidualBlock(torch.nn.Module):
@@ -54,34 +60,15 @@ class DNN(torch.nn.Module):
 
         torch.nn.init.xavier_normal_(self.action_head.weight)
 
-    def forward(self, x):
+    def forward(self, x, masks=None):
         x = self.backbone(x)
         action_logits = self.action_head(x)
         return action_logits
 
 
-def compute_loss(logits, targets, weights=None, k=1):
-    """
-    Returns 0 loss if target is in top-k predictions, else cross-entropy loss.
-    logits: [batch, num_classes]
-    targets: [batch] (long)
-    """
-    # Get top-k indices
-    topk = torch.topk(logits, k=k, dim=1).indices  # [batch, k]
-    # Check if target is in top-k
-    in_topk = (topk == targets.unsqueeze(1)).any(dim=1)  # [batch]
-    # Compute standard cross-entropy
-    ce_loss = torch.nn.functional.cross_entropy(logits, targets, reduction="none") / 7.0
-    # Only penalize if not in top-k
-    loss = ce_loss * (~in_topk)
-    if weights is not None:
-        loss = loss * weights
-    return loss.mean()
-
-
 def train_epoch(model, dataloader, prev_steps, optimizer, config):
     model.train()
-    running_action_loss = 0
+    running_action_loss = 0.0
     steps = 0
     start = time.time()
     num_batches = 0
@@ -125,7 +112,9 @@ def train_epoch(model, dataloader, prev_steps, optimizer, config):
         weights[turn_mask] = 1.14
 
         # Calculate loss using masked logits
-        mean_batch_loss = compute_loss(masked_action_logits, actions_for_loss, config["k"])
+        mean_batch_loss = topk_cross_entropy_loss(
+            masked_action_logits, actions_for_loss, config["k"]
+        )
 
         # Propogate loss
         optimizer.zero_grad()
@@ -148,227 +137,24 @@ def train_epoch(model, dataloader, prev_steps, optimizer, config):
                 "learning_rate": optimizer.param_groups[0]["lr"],
             }
         )
+
         # Print progress
-        hours = int(time.time() - start) // 3600
-        minutes = int(time.time() - start) // 60
-        seconds = int(time.time() - start) % 60
-
+        t = int(time.time() - start)
         time_per_batch = (time.time() - start) * 1.0 / (num_batches + 1)
-        est_time_left = (len(dataloader) - num_batches) * time_per_batch
-        hours_left = int(est_time_left // 3600)
-        minutes_left = int((est_time_left % 3600) // 60)
-        seconds_left = int(est_time_left % 60)
+        t_left = (len(dataloader) - num_batches) * time_per_batch
 
-        processed = f"Processed {num_batches * dataloader.batch_size} battles ({round(num_batches * 100.0 / len(dataloader), 2)}%) in {hours}h {minutes}m {seconds}s"
-        left = f" with an estimated {hours_left}h {minutes_left}m {seconds_left}s left in this epoch"
+        processed = f"Processed {num_batches * dataloader.batch_size} battles ({round(num_batches * 100.0 / len(dataloader), 2)}%) in {format_time(t)}"
+        left = f" with an estimated {format_time(t_left)} left in this epoch"
         print("\033[2K\r" + processed + left, end="")
 
-    hours = int(time.time() - start) // 3600
-    minutes = int(time.time() - start) // 60
-    seconds = int(time.time() - start) % 60
-    print(
-        "\033[2K\rDone training in "
-        + str(hours)
-        + "h "
-        + str(minutes)
-        + "m "
-        + str(seconds)
-        + "s!"
-    )
+    print(f"\033[2K\rDone training in {format_time(int(time.time() - start))}!")
 
     return running_action_loss / num_batches, steps
 
 
-@torch.no_grad()
-def evaluate(model, dataloader, config):
-    model.eval()
-    total_top1 = 0
-    total_top3 = 0
-    total_top5 = 0
-    total_samples = 0
-    running_action_loss = 0
-    num_batches = 0
-
-    for batch in dataloader:
-        states, actions, action_masks, _, masks = batch
-        states = states.to(config["device"])
-        actions = actions.to(config["device"])
-        action_masks = action_masks.to(config["device"])
-        masks = masks.to(config["device"])
-
-        valid_mask = masks.bool()
-        valid_action_rows = action_masks[valid_mask].sum(dim=1) > 0
-        if valid_mask.sum() == 0 or valid_action_rows.sum() == 0:
-            continue
-
-        # Forward pass
-        action_logits = model(states[valid_mask])
-        masked_action_logits = action_logits.clone()
-        masked_action_logits[~action_masks[valid_mask].bool()] = float("-inf")
-
-        # Mask invalid actions
-        masked_action_logits = masked_action_logits[valid_action_rows]
-        actions_for_loss = actions[valid_mask][valid_action_rows]
-
-        # no samples after filtering
-        if masked_action_logits.size(0) == 0:
-            print("no samples after filtering")
-            continue
-
-        # Action predictions
-        top1_preds = torch.argmax(masked_action_logits, dim=1)
-        top3_preds = torch.topk(masked_action_logits, k=3, dim=1).indices
-        top5_preds = torch.topk(masked_action_logits, k=5, dim=1).indices
-
-        # Check correctness
-        top1_correct = top1_preds == actions_for_loss
-        top3_correct = (actions_for_loss.unsqueeze(1) == top3_preds).any(dim=1)
-        top5_correct = (actions_for_loss.unsqueeze(1) == top5_preds).any(dim=1)
-
-        # Calculate loss using masked logits
-        mean_batch_loss = compute_loss(masked_action_logits, actions_for_loss)
-
-        # Accumulate metrics
-        total_top1 += top1_correct.sum().item()
-        total_top3 += top3_correct.sum().item()
-        total_top5 += top5_correct.sum().item()
-        total_samples += valid_action_rows.sum().item()
-        running_action_loss += mean_batch_loss.item()
-        num_batches += 1
-
-    action_top1 = total_top1 / total_samples if total_samples > 0 else 0
-    action_top3 = total_top3 / total_samples if total_samples > 0 else 0
-    action_top5 = total_top5 / total_samples if total_samples > 0 else 0
-    avg_action_loss = running_action_loss / num_batches if num_batches > 0 else 0
-    return action_top1, action_top3, action_top5, avg_action_loss
-
-
-# TODO: add calculation for turns til end
-def analyze(model, dataloader, feature_names):
-    model.eval()
-    eval_metrics = {"total_top1": 0, "total_top3": 0, "total_top5": 0, "total_samples": 0}
-    turns = defaultdict(lambda: eval_metrics.copy())
-    ko_can_be_taken = defaultdict(lambda: eval_metrics.copy())
-    mons_alive = defaultdict(lambda: eval_metrics.copy())
-    available_actions = defaultdict(lambda: eval_metrics.copy())
-    action_type = defaultdict(lambda: eval_metrics.copy())
-    elos = defaultdict(lambda: eval_metrics.copy())
-
-    feature_names = {name: i for i, name in enumerate(feature_names)}
-    ko_features = {v for k, v in feature_names.items() if "KO" in k}
-
-    print("Starting analysis...")
-    for batch in dataloader:
-        states, actions, action_masks, _, masks = batch
-        states = states.to("mps")
-        actions = actions.to("mps")
-        action_masks = action_masks.to("mps")
-        masks = masks.to("mps")
-
-        valid_mask = masks.bool()
-        if valid_mask.sum() == 0:
-            continue
-
-        # Forward pass
-        action_logits = model(states[valid_mask])
-
-        # Mask invalid actions
-        masked_action_logits = action_logits.clone()
-        masked_action_logits[~action_masks[valid_mask].bool()] = float("-inf")
-
-        # Filter out samples with no valid actions
-        valid_action_rows = action_masks[valid_mask].sum(dim=1) > 0
-        if valid_action_rows.sum() == 0 or masked_action_logits.size(0) == 0:
-            continue
-
-        masked_action_logits = masked_action_logits[valid_action_rows]
-        actions_for_loss = actions[valid_mask][valid_action_rows]
-
-        # Action predictions
-        top1_preds = torch.argmax(masked_action_logits, dim=1)
-        top3_preds = torch.topk(masked_action_logits, k=3, dim=1).indices
-        top5_preds = torch.topk(masked_action_logits, k=5, dim=1).indices
-
-        # Check correctness
-        top1_correct = top1_preds == actions_for_loss
-        top3_correct = (actions_for_loss.unsqueeze(1) == top3_preds).any(dim=1)
-        top5_correct = (actions_for_loss.unsqueeze(1) == top5_preds).any(dim=1)
-
-        for i, state in enumerate(states[valid_mask]):
-
-            # Generage Keys for analysis
-            elo = int(state[feature_names["p1rating"]] // 100) * 100
-            turn = state[feature_names["turn"]].item()
-            num_actions = int(action_masks[valid_mask][i].sum().item() / 10) * 10
-            turn_type = ""
-            action_msg = MDBO.from_int(int(actions[valid_mask][i]), MDBO.TURN).message
-            if int(state[feature_names["teampreview"]].item()) == 1:
-                turn_type = "teampreview"
-            elif any(
-                int(state[feature_names[f"MON:{j}:force_switch"]].item()) == 1
-                for j in range(6)
-            ):
-                turn_type = "force_switch"
-            elif "switch" in action_msg and "move" in action_msg:
-                turn_type = "both"
-            elif "move" in action_msg:
-                turn_type = "move"
-            elif "switch" in action_msg:
-                turn_type = "switch"
-            else:
-                continue  # Skip if we can't determine the turn type
-
-            can_ko = max(state[feature_idx] for feature_idx in ko_features).item()
-            num_alive = int(
-                8
-                - state[feature_names["OPP_NUM_FAINTED"]].item()
-                - state[feature_names["NUM_FAINTED"]].item()
-            )
-
-            for key, value in zip(
-                ["total_top1", "total_top3", "total_top5", "total_samples"],
-                [
-                    top1_correct[i].item(),
-                    top3_correct[i].item(),
-                    top5_correct[i].item(),
-                    1,
-                ],
-            ):
-                ko_can_be_taken[can_ko][key] += value
-                mons_alive[num_alive][key] += value
-                turns[turn][key] += value
-                available_actions[num_actions][key] += value
-                action_type[turn_type][key] += value
-                elos[elo][key] += value
-
-    # Print accuracy
-    print("Analysis complete! Results:")
-    data = [
-        (turns, "Turn"),
-        (available_actions, "Available Actions"),
-        (action_type, "Action Types"),
-        (elos, "Elos"),
-        (ko_can_be_taken, "Can KO"),
-        (mons_alive, "Alive"),
-    ]
-    for results, name in data:
-        print(f"\nAnalysis by {name}:")
-        for key in sorted(list(results.keys())):
-            metrics = results[key]
-            if metrics["total_samples"] > 0:
-                top1_acc = metrics["total_top1"] / metrics["total_samples"] * 100
-                top3_acc = metrics["total_top3"] / metrics["total_samples"] * 100
-                top5_acc = metrics["total_top5"] / metrics["total_samples"] * 100
-                print(
-                    f"  {key}: Top-1: {top1_acc:.1f}%, Top-3: {top3_acc:.1f}%, Top-5: {top5_acc:.1f}% | {metrics['total_samples']} samples"
-                )
-            else:
-                print(f"\t{key}: No samples")
-
-
 def main(train_path, test_path, val_path):
     print("Starting!")
-    config = {
+    config: Dict[str, Any] = {
         "device": (
             "mps"
             if torch.backends.mps.is_available()
@@ -453,68 +239,59 @@ def main(train_path, test_path, val_path):
         train_loss, training_steps = train_epoch(
             model, train_loader, steps, optimizer, config
         )
-        action_top1, action_top3, action_top5, action_loss = evaluate(
-            model, test_loader, config
-        )
+        metrics = evaluate(model, test_loader, config["device"], has_win_head=False)
         steps += training_steps
 
         print(f"Epoch #{epoch + 1}:")
         print(f"=> Total Steps:       {steps}")
         print(f"=> Train Loss:        {train_loss:.3f}")
-        print(f"=> Test Action Loss:  {action_loss:.3f}")
+        print(f"=> Test Action Loss:  {metrics['loss']:.3f}")
         print(
-            f"=> Test Action Acc:   {(action_top1 * 100):.3f}% (Top-1), {(action_top3 * 100):.3f}% (Top-3) {(action_top5 * 100):.3f}% (Top-5)"
+            f"=> Test Action Acc:   {(metrics['action_top1'] * 100):.3f}% (Top-1), {(metrics['action_top3'] * 100):.3f}% (Top-3) {(metrics['action_top5'] * 100):.3f}% (Top-5)"
         )
 
         wandb.log(
             {
                 "epoch": epoch + 1,
                 "train_loss": train_loss,
-                "test_action_loss": action_loss,
-                "test_action_top1": action_top1,
-                "test_action_top3": action_top3,
-                "test_action_top5": action_top5,
+                "test_action_loss": metrics["loss"],
+                "test_action_top1": metrics["action_top1"],
+                "test_action_top3": metrics["action_top3"],
+                "test_action_top5": metrics["action_top5"],
             }
         )
 
         total_time = time.time() - start
-        h, m, s = (
-            int(total_time / (60 * 60)),
-            int((total_time % (60 * 60)) / 60),
-            int(total_time % 60),
-        )
         t_left = (config["num_epochs"] - epoch - 1) * total_time / (epoch + 1)
-        h_left, m_left, s_left = (
-            int(t_left / (60 * 60)),
-            int((t_left % (60 * 60)) / 60),
-            int(t_left % 60),
+        print(
+            f"=> Time thus far: {format_time(total_time)}s // ETA: {format_time(t_left)}"
         )
-        print(f"=> Time thus far: {h}h {m}m {s}s // ETA: {h_left}h {m_left}m {s_left}s")
         print()
 
-        scheduler.step(action_loss)
+        scheduler.step(float(metrics["loss"]))
 
     torch.save(
-        model.state_dict(), os.path.join(config["save_path"], f"{wandb.run.name}.pth")
+        model.state_dict(), os.path.join(config["save_path"], f"{wandb.run.name}.pth")  # type: ignore
     )
 
     print("\nEvaluating on Validation Dataset:")
-    action_top1, action_top3, action_top5, action_loss = evaluate(
-        model, val_loader, config
-    )
-    print(f"=> Val Action Loss:   {action_loss:.3f}")
+    metrics = evaluate(model, val_loader, config["device"], has_win_head=False)
+    print(f"=> Val Action Loss:   {metrics['loss']:.3f}")
     print(
-        f"=> Val Action Acc:    {(action_top1 * 100):.3f}% (Top-1), {(action_top3 * 100):.3f}% (Top-3) {(action_top5 * 100):.3f}% (Top-5)"
+        f"=> Val Action Acc:    {(metrics['action_top1'] * 100):.3f}% (Top-1), {(metrics['action_top3'] * 100):.3f}% (Top-3) {(metrics['action_top5'] * 100):.3f}% (Top-5)"
     )
     wandb.log(
         {
-            "val_action_loss": action_loss,
-            "val_action_top1": action_top1,
-            "val_action_top3": action_top3,
-            "val_action_top5": action_top5,
+            "val_action_loss": metrics["loss"],
+            "val_action_top1": metrics["action_top1"],
+            "val_action_top3": metrics["action_top3"],
+            "val_action_top5": metrics["action_top5"],
         }
     )
-    analyze(model, val_loader, embedder.feature_names)
+    print("\nAnalyzing on Validation Dataset:")
+    analyze(
+        model, val_loader, embedder.feature_names, config["device"], has_win_head=False
+    )
 
 
 if __name__ == "__main__":

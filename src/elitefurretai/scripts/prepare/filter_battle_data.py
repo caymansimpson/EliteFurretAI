@@ -86,6 +86,10 @@ def is_valid_for_supervised_learning(bd: BattleData) -> bool:
     elif any(map(lambda x: "|-ability||Zero to Hero" in x, bd.logs)):
         return False
 
+    # Filter out logs with old protocol (Symbiosis)
+    elif any(map(lambda x: "|ability: Symbiosis" in x, bd.logs)):
+        return False
+
     # Remove battles without requests (can't process properly)
     elif any(map(lambda x: "-transform" in x, bd.logs)):
         return False

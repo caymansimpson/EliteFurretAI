@@ -42,7 +42,7 @@ jobs:
         run: coverage xml
 
       - name: Upload coverage report to Codecov
-        uses: codecov/codecov-action@v5.4.3
+        uses: codecov/codecov-action@v4
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: ./coverage.xml
@@ -50,5 +50,3 @@ jobs:
           name: codecov-umbrella
           fail_ci_if_error: true
           verbose: true
-          with:
-            file: coverage.xml

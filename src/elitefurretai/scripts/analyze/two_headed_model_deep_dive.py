@@ -25,8 +25,8 @@ import os
 import orjson
 import torch
 from colorama import Fore, Style, init
-from poke_env.player.battle_order import DoubleBattleOrder
 from poke_env.battle import Move, Pokemon
+from poke_env.player.battle_order import DoubleBattleOrder
 
 from elitefurretai.inference.inference_utils import battle_to_str
 from elitefurretai.model_utils import MDBO, BattleData, BattleIterator, Embedder
