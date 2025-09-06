@@ -45,7 +45,7 @@ skip = [
 
 [tool.pyright]
 include = ["src"]
-exclude = ["src/elitefurretai/scripts", "data/static", "data/database"]
+exclude = ["src/elitefurretai/scripts", "data/battles", "data/database", "data/models"]
 pythonVersion = "3.7"
 
 [tool.pytest.ini_options]

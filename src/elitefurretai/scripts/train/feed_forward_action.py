@@ -8,7 +8,7 @@ import torch
 
 import wandb
 from elitefurretai.model_utils import MDBO, Embedder, PreprocessedBattleDataset
-from elitefurretai.scripts.train.train_utils import (
+from elitefurretai.model_utils.train_utils import (
     analyze,
     evaluate,
     format_time,
@@ -74,11 +74,10 @@ def train_epoch(model, dataloader, prev_steps, optimizer, config):
     num_batches = 0
 
     for batch in dataloader:
-        states, actions, action_masks, _, masks = batch
-        states = states.to(config["device"])
-        actions = actions.to(config["device"])
-        action_masks = action_masks.to(config["device"])
-        masks = masks.to(config["device"])
+        states = batch["states"].to(config["device"])
+        actions = batch["actions"].to(config["device"])
+        action_masks = batch["action_masks"].to(config["device"])
+        masks = batch["masks"].to(config["device"])
 
         valid_mask = masks.bool()
         if valid_mask.sum() == 0:
@@ -113,7 +112,7 @@ def train_epoch(model, dataloader, prev_steps, optimizer, config):
 
         # Calculate loss using masked logits
         mean_batch_loss = topk_cross_entropy_loss(
-            masked_action_logits, actions_for_loss, config["k"]
+            masked_action_logits, actions_for_loss, weights, config["k"]
         )
 
         # Propogate loss
@@ -239,25 +238,37 @@ def main(train_path, test_path, val_path):
         train_loss, training_steps = train_epoch(
             model, train_loader, steps, optimizer, config
         )
-        metrics = evaluate(model, test_loader, config["device"], has_win_head=False)
+
+        metrics = evaluate(
+            model,
+            test_loader,
+            device=config["device"],
+            has_action_head=True,
+            has_win_head=False,
+            has_move_order_head=False,
+            has_ko_head=False,
+            has_switch_head=False,
+        )
         steps += training_steps
 
+        # Format metrics nicely for console output
         print(f"Epoch #{epoch + 1}:")
-        print(f"=> Total Steps:       {steps}")
-        print(f"=> Train Loss:        {train_loss:.3f}")
-        print(f"=> Test Action Loss:  {metrics['loss']:.3f}")
-        print(
-            f"=> Test Action Acc:   {(metrics['action_top1'] * 100):.3f}% (Top-1), {(metrics['action_top3'] * 100):.3f}% (Top-3) {(metrics['action_top5'] * 100):.3f}% (Top-5)"
-        )
+        print(f"=> Total Steps              : {steps}")
+        print(f"=> Train Loss               : {train_loss:.4f}")
+        print(f"=> Test Action Loss         : {metrics['top3_loss']:.4f}")
+        print(f"=> Test Action Acc (Top-1)  : {(metrics['top1_acc'] * 100):.2f}%")
+        print(f"=> Test Action Acc (Top-3)  : {(metrics['top3_acc'] * 100):.2f}%")
+        print(f"=> Test Action Acc (Top-5)  : {(metrics['top5_acc'] * 100):.2f}%")
 
+        # Updated to use new metric names from evaluate function
         wandb.log(
             {
                 "epoch": epoch + 1,
                 "train_loss": train_loss,
-                "test_action_loss": metrics["loss"],
-                "test_action_top1": metrics["action_top1"],
-                "test_action_top3": metrics["action_top3"],
-                "test_action_top5": metrics["action_top5"],
+                "test_action_loss": metrics["top3_loss"],
+                "test_action_top1": metrics["top1_acc"],
+                "test_action_top3": metrics["top3_acc"],
+                "test_action_top5": metrics["top5_acc"],
             }
         )
 
@@ -268,29 +279,47 @@ def main(train_path, test_path, val_path):
         )
         print()
 
-        scheduler.step(float(metrics["loss"]))
+        scheduler.step(float(metrics["top3_loss"]))
 
+    print("Done training! Saving model...")
     torch.save(
         model.state_dict(), os.path.join(config["save_path"], f"{wandb.run.name}.pth")  # type: ignore
     )
 
     print("\nEvaluating on Validation Dataset:")
-    metrics = evaluate(model, val_loader, config["device"], has_win_head=False)
-    print(f"=> Val Action Loss:   {metrics['loss']:.3f}")
-    print(
-        f"=> Val Action Acc:    {(metrics['action_top1'] * 100):.3f}% (Top-1), {(metrics['action_top3'] * 100):.3f}% (Top-3) {(metrics['action_top5'] * 100):.3f}% (Top-5)"
+    metrics = evaluate(
+        model,
+        val_loader,
+        device=config["device"],
+        has_action_head=True,
+        has_win_head=False,
+        has_move_order_head=False,
+        has_ko_head=False,
+        has_switch_head=False,
     )
+    print(f"=> Val Action Loss          : {metrics['top3_loss']:.4f}")
+    print(f"=> Val Action Acc (Top-1)   : {(metrics['top1_acc'] * 100):.2f}%")
+    print(f"=> Val Action Acc (Top-3)   : {(metrics['top3_acc'] * 100):.2f}%")
+    print(f"=> Val Action Acc (Top-5)   : {(metrics['top5_acc'] * 100):.2f}%")
+
     wandb.log(
         {
-            "val_action_loss": metrics["loss"],
-            "val_action_top1": metrics["action_top1"],
-            "val_action_top3": metrics["action_top3"],
-            "val_action_top5": metrics["action_top5"],
+            "val_action_loss": metrics["top3_loss"],
+            "val_action_top1": metrics["top1_acc"],
+            "val_action_top3": metrics["top3_acc"],
+            "val_action_top5": metrics["top5_acc"],
         }
     )
     print("\nAnalyzing on Validation Dataset:")
     analyze(
-        model, val_loader, embedder.feature_names, config["device"], has_win_head=False
+        model,
+        val_loader,
+        device=config["device"],
+        has_action_head=True,
+        has_win_head=False,
+        has_move_order_head=False,
+        has_ko_head=False,
+        has_switch_head=False,
     )
 
 

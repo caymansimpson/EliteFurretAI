@@ -5,8 +5,8 @@ from poke_env.battle import DoubleBattle, Pokemon, PokemonType
 from poke_env.data.gen_data import GenData
 
 from elitefurretai.inference.battle_inference import BattleInference
-from elitefurretai.inference.item_inference import ItemInference
 from elitefurretai.inference.inference_utils import copy_pokemon
+from elitefurretai.inference.item_inference import ItemInference
 
 
 def generate_item_inference_and_inferences():

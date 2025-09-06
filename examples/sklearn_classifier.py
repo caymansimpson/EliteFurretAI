@@ -24,7 +24,7 @@ from sklearn.metrics import (
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader
 
-from elitefurretai.model_utils import BattleDataset
+from elitefurretai.model_utils import BattleDataset, format_time
 
 
 def evaluate(y_true, y_pred):
@@ -33,9 +33,9 @@ def evaluate(y_true, y_pred):
     """
     cm = confusion_matrix(y_true, y_pred)
     accuracy = accuracy_score(y_true, y_pred)
-    precision = precision_score(y_true, y_pred)
-    recall = recall_score(y_true, y_pred)
-    f1 = f1_score(y_true, y_pred)
+    precision = precision_score(y_true, y_pred, average='macro')
+    recall = recall_score(y_true, y_pred, average='macro')
+    f1 = f1_score(y_true, y_pred, average='macro')
     fpr, tpr, _ = roc_curve(y_true, y_pred)
     roc_auc = auc(fpr, tpr)
 
@@ -49,18 +49,8 @@ def evaluate(y_true, y_pred):
     print()
 
 
-def get_hms(start):
-    """
-    Utility to convert elapsed time to hours, minutes, seconds.
-    """
-    total_time = time.time() - start
-    hours = int(total_time / (60 * 60))
-    mins = int((total_time % (60 * 60)) / 60)
-    secs = int(total_time % 60)
-    return hours, mins, secs
-
-
 # Arguments: link to json object with BattleData filepaths and number of battles to train/evalute on
+# Example usage: python examples/sklearn_classifier.py /path/to/battle_files.json 10000
 def main():
     # Parse command line arguments
     total_battles = int(sys.argv[2])  # Number of battles to use
@@ -88,13 +78,16 @@ def main():
         dataset, batch_size=batch_size, num_workers=min(os.cpu_count() or 1, 4)
     )
 
-    hours, mins, secs = get_hms(benchmark)
-    print(f"Finished preparing dataset in {hours}h {mins}m {secs}s!! Now loading data...")
+    print(f"Finished preparing dataset in {format_time(time.time() - benchmark)}! Now loading data...")
     benchmark = time.time()
 
     # Lists to accumulate features and labels from all batches
     X_list, y_list, i = [], [], 0
-    for states, _, _, wins, masks in data_loader:
+    for metrics in data_loader:
+        states = metrics["states"]
+        wins = metrics["wins"]
+        masks = metrics["masks"]
+
         # states: (batch_size, steps, features)
         # Reshape to 2D (batch_size * steps, features)
         batch_size, steps, features = states.shape
@@ -109,8 +102,7 @@ def main():
         y_list.append(y_flat[mask_flat])
 
         # Print progress
-        hours, minutes, seconds = get_hms(benchmark)
-        processed = f"Processed {i * batch_size} battles ({round(i * batch_size * 100.0 / total_battles, 2)}%) in {hours}h {minutes}m {seconds}s"
+        processed = f"Processed {i * batch_size} battles ({round(i * batch_size * 100.0 / total_battles, 2)}%) in {format_time(time.time() - benchmark)}"
         print("\r" + processed + "     ", end="")
         i += 1
 
@@ -123,9 +115,8 @@ def main():
         X, y, test_size=test_split, random_state=21
     )
 
-    hours, mins, secs = get_hms(benchmark)
     print(
-        f"\nFinished loading data in {hours}h {mins}m {secs}s with {len(y)} steps! Now training..."
+        f"\nFinished loading data in {format_time(time.time() - benchmark)} with {len(y)} steps! Now training..."
     )
     benchmark = time.time()
 
@@ -143,8 +134,7 @@ def main():
     )
     model.fit(X_train, y_train)
 
-    hours, mins, secs = get_hms(benchmark)
-    print(f"Finished training in {hours}h {mins}m {secs}s! Results:")
+    print(f"Finished training in {format_time(time.time() - benchmark)}! Results:")
     benchmark = time.time()
     # Evaluate on training set
     evaluate(model.predict(X_train), y_train)
@@ -153,8 +143,7 @@ def main():
     # Evaluate on test set
     evaluate(model.predict(X_test), y_test)
 
-    hours, mins, secs = get_hms(benchmark)
-    print(f"Finished evaluating on test set in {hours}h {mins}m {secs}s! Results:")
+    print(f"Finished evaluating on test set in {format_time(time.time() - benchmark)}! Results:")
     benchmark = time.time()
 
     # Evaluate on a separate evaluation set of new battles
@@ -166,7 +155,11 @@ def main():
     )
 
     X_list, y_list, i = [], [], 0
-    for states, _, _, wins, masks in eval_data_loader:
+    for metrics in eval_data_loader:
+        states = metrics["states"]
+        wins = metrics["wins"]
+        masks = metrics["masks"]
+
         # Reshape to 2D (batch_size * steps, features)
         batch_size, steps, features = states.shape
         X_flat = states.view(-1, features).numpy()
@@ -180,8 +173,7 @@ def main():
         y_list.append(y_flat[mask_flat])
 
         # Print progress
-        hours, minutes, seconds = get_hms(benchmark)
-        processed = f"Processed {i * batch_size} battles ({round(i * batch_size * 100.0 / len(eval_files), 2)}%) in {hours}h {minutes}m {seconds}s"
+        processed = f"Processed {i * batch_size} battles ({round(i * batch_size * 100.0 / len(eval_files), 2)}%) in {format_time(time.time() - benchmark)}"
         print("\r" + processed + "     ", end="")
         i += 1
 
@@ -189,18 +181,15 @@ def main():
     X = np.concatenate(X_list, axis=0)
     y = np.concatenate(y_list, axis=0)
 
-    hours, mins, secs = get_hms(benchmark)
     print(
-        f"Finished loading evaluation data in {hours}h {mins}m {secs}s! Evaluation Results:\n"
+        f"Finished loading evaluation data in {format_time(time.time() - benchmark)}! Evaluation Results:\n"
     )
     benchmark = time.time()
 
     # Evaluate on the evaluation set
     evaluate(model.predict(X), y)
-    hours, mins, secs = get_hms(benchmark)
-    print(f"Finished evaluating in {hours}h {mins}m {secs}s!")
-    hours, mins, secs = get_hms(start)
-    print(f"Done in {hours}h {mins}m {secs}s!")
+    print(f"Finished evaluating in {format_time(time.time() - benchmark)}!")
+    print(f"Done in {format_time(time.time() - start)}!")
 
 
 if __name__ == "__main__":

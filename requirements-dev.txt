@@ -9,3 +9,5 @@ requests
 bs4
 wandb
 colorama
+matplotlib
+pandas

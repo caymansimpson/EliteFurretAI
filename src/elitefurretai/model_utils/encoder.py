@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-model_double_battle_order.py
+encoder.py
 
 This module defines the MDBO (Model Double Battle Order) class and related utilities for encoding,
 decoding, and manipulating Pokémon Showdown double battle orders for use in machine learning models.
@@ -11,6 +11,8 @@ Key features:
 - Provides conversion between model-friendly integer actions and Showdown protocol strings.
 - Supports conversion to and from PokéEnv's BattleOrder/DoubleBattleOrder objects.
 - Encodes all possible move/switch/terastallize combinations for both active Pokémon.
+
+It also defines the move_encoder that encodes the move order of pokemon for a classification task
 """
 
 import itertools
@@ -250,3 +252,43 @@ class MDBO(BattleOrder):
             order_1 = _INT_TO_ORDER_MAPPINGS[i // len(_INT_TO_ORDER_MAPPINGS)]
             order_2 = _INT_TO_ORDER_MAPPINGS[i % len(_INT_TO_ORDER_MAPPINGS)]
             return MDBO(type, "/choose " + order_1 + ", " + order_2)
+
+
+_MOVE_ORDERS = (
+    list(itertools.permutations(["p1a", "p1b", "p2a", "p2b"], 4))
+    + [x + ("",) for x in itertools.permutations(["p1a", "p1b", "p2a", "p2b"], 3)]
+    + [x + ("", "") for x in itertools.permutations(["p1a", "p1b", "p2a", "p2b"], 2)]
+    + [x + ("", "", "") for x in itertools.permutations(["p1a", "p1b", "p2a", "p2b"], 1)]
+    + [("", "", "", "")]
+)
+_MOVE_ORDER_MAPPINGS = {order: i for i, order in enumerate(_MOVE_ORDERS)}
+
+
+class MoveOrderEncoder:
+
+    @staticmethod
+    def action_space() -> int:
+        """
+        Returns the total number of possible move orders (for model output size).
+        """
+        return len(_MOVE_ORDER_MAPPINGS)
+
+    @staticmethod
+    def encode(move_order: List[str]) -> int:
+        """
+        Encodes a list of up to 4 Pokémon IDs into an integer representing the move order.
+
+        move_order: List of Pokémon IDs (up to 4; eg [p1a, p2b, p3a])
+        """
+        assert len(move_order) <= 4, "move_order can have at most 4 Pokémon"
+        if len(move_order) < 4:
+            move_order = move_order + [""] * (
+                4 - len(move_order)
+            )  # Pad with empty strings
+        order: tuple[str, str, str, str] = (
+            move_order[0],
+            move_order[1],
+            move_order[2],
+            move_order[3],
+        )
+        return _MOVE_ORDER_MAPPINGS.get(order, -1)
