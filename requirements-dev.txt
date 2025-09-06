@@ -11,3 +11,5 @@ wandb
 colorama
 matplotlib
 pandas
+codecov
+mypy
