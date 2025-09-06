@@ -4,6 +4,7 @@ This folder contains general utilities for EliteFurretAI. So far, these include:
 
 1. **BattleOrderValidator**: This module simply validates which moves are available moves we should pick from. It has simple logic that first validates whether a move will even work. Note that this is _not_ representative of what will pass the showdown protocol -- it is a stricter protocol syntax (relative to what Showdown accepts) that we will force the AI to use. It separately contains simple heuristics that eliminate moves that are unlikely to help (e.g. self-attacks if the move doesnt heal or activate weakness policy).
 2. [**TeamRepo**](#3-teamrepo): This module simply just retrieves several pre-built teams to use, stored in data/teams. More on usage below.
+3. **EvaluateState**: a function ripped from [Foul Play's state evaluation](https://github.com/pmariglia/poke-engine-doubles/blob/main/src/genx/evaluate.rs#L205) to help evaluate the value of a state.
 
 ## TeamRepo
 
