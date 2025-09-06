@@ -6,9 +6,10 @@ Table of Contents:
 1. [Goals & Priorities](#goals-and-priorities)
 2. [Summary of the VGC Problem Space](#summary-of-the-vgc-problem-space)
 3. [Current Proposed Approach](#current-proposed-approach)
-4. [Why the name?](#why-the-name-elitefurretai)
-5. [Resources](#resources)
-6. [Contributors & Acknowledgements](#contributors--acknowledgements)
+4. [Multi-Headed Transformer Model](#multi-headed-transformer-model)
+5. [Why the name?](#why-the-name-elitefurretai)
+6. [Resources](#resources)
+7. [Contributors & Acknowledgements](#contributors--acknowledgements)
 
 ![AI Pokeball](docs/images/aipokeball.png)
 

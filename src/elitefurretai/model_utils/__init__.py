@@ -3,7 +3,8 @@ from elitefurretai.model_utils import (
     battle_data,
     battle_iterator,
     embedder,
-    model_double_battle_order,
+    encoder,
+    train_utils,
 )
 from elitefurretai.model_utils.battle_data import BattleData
 from elitefurretai.model_utils.battle_dataset import (
@@ -14,7 +15,14 @@ from elitefurretai.model_utils.battle_dataset import (
 )
 from elitefurretai.model_utils.battle_iterator import BattleIterator
 from elitefurretai.model_utils.embedder import Embedder
-from elitefurretai.model_utils.model_double_battle_order import MDBO
+from elitefurretai.model_utils.encoder import MDBO, MoveOrderEncoder
+from elitefurretai.model_utils.train_utils import (
+    analyze,
+    evaluate,
+    flatten_and_filter,
+    format_time,
+    topk_cross_entropy_loss,
+)
 
 __all__ = [
     "BattleData",
@@ -28,5 +36,12 @@ __all__ = [
     "Embedder",
     "embedder",
     "MDBO",
-    "model_double_battle_order",
+    "encoder",
+    "MoveOrderEncoder",
+    "train_utils",
+    "evaluate",
+    "analyze",
+    "flatten_and_filter",
+    "topk_cross_entropy_loss",
+    "format_time",
 ]

@@ -7,7 +7,7 @@ from poke_env.battle import AbstractBattle, DoubleBattle
 from poke_env.player import BattleOrder, DefaultBattleOrder, Player
 
 from elitefurretai.model_utils.embedder import Embedder
-from elitefurretai.model_utils.model_double_battle_order import MDBO
+from elitefurretai.model_utils.encoder import MDBO
 from elitefurretai.utils.battle_order_validator import is_valid_order
 
 

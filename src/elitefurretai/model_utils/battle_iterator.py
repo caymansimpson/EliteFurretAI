@@ -5,7 +5,7 @@ from poke_env.battle import AbstractBattle, Effect, MoveCategory, Pokemon, Pokem
 from poke_env.data.normalize import to_id_str
 
 from elitefurretai.model_utils.battle_data import BattleData
-from elitefurretai.model_utils.model_double_battle_order import MDBO
+from elitefurretai.model_utils.encoder import MDBO
 
 
 # Iterates through BattleData; cannot switch perspectives

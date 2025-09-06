@@ -6,12 +6,17 @@ import os.path
 import random
 import sys
 import time
-from typing import Any, Dict
+from typing import Any, Dict, Optional, Tuple
 
 import torch
 
 import wandb
-from elitefurretai.model_utils import MDBO, Embedder, PreprocessedTrajectoryDataset
+from elitefurretai.model_utils import (
+    MDBO,
+    Embedder,
+    MoveOrderEncoder,
+    PreprocessedTrajectoryDataset,
+)
 from elitefurretai.model_utils.train_utils import (
     analyze,
     evaluate,
@@ -21,127 +26,112 @@ from elitefurretai.model_utils.train_utils import (
 )
 
 
-class ResidualBlock(torch.nn.Module):
-    def __init__(self, in_features, out_features, dropout=0.3):
-        super().__init__()
-        self.linear = torch.nn.Linear(in_features, out_features)
-        self.ln = torch.nn.LayerNorm(out_features)
-        self.dropout = torch.nn.Dropout(dropout)
-        self.relu = torch.nn.ReLU()
-        self.shortcut = torch.nn.Sequential()
-        if in_features != out_features:
-            self.shortcut = torch.nn.Sequential(
-                torch.nn.Linear(in_features, out_features),
-                torch.nn.LayerNorm(out_features),
-            )
+class TwoHeadedTransformerModel(torch.nn.Module):
+    """
+    Pure Transformer encoder architecture:
 
-    def forward(self, x):
-        residual = self.shortcut(x)
-        x = self.linear(x)
-        x = self.ln(x)
-        x = self.relu(x)
-        x = self.dropout(x)
-        return self.relu(x + residual)  # Add ReLU after addition
+    Steps:
+      1. Linear projection of input_size -> d_model
+      2. Learned positional embedding added
+      3. TransformerEncoder (N layers)
+      4. LayerNorm
+      5. Two per-step heads:
+           - action logits (batch, seq_len, num_actions)
+           - win logits (batch, seq_len)
 
+    The forward interface matches the hybrid model.
+    """
 
-class TwoHeadedHybridModel(torch.nn.Module):
     def __init__(
         self,
-        input_size,
-        hidden_layers=[1024, 512, 256],
-        num_heads=4,
-        num_lstm_layers=1,
-        num_actions=MDBO.action_space(),
-        max_seq_len=17,
-        dropout=0.1,
+        input_size: int,
+        num_actions: int,
+        max_seq_len: int = 17,
+        d_model: int = 256,
+        num_layers: int = 4,
+        nhead: int = 4,
+        dim_feedforward: int = 1024,
+        dropout: float = 0.1,
+        layer_norm_eps: float = 1e-5,
+        activation: str = "gelu",
+        norm_first: bool = True,
     ):
         super().__init__()
         self.max_seq_len = max_seq_len
-        self.hidden_layers = hidden_layers
-        self.hidden_size = hidden_layers[-1]
         self.num_actions = num_actions
+        self.d_model = d_model
 
-        # Feedforward stack with residual blocks
-        layers = []
-        prev_size = input_size
-        for h in hidden_layers:
-            layers.append(ResidualBlock(prev_size, h, dropout=dropout))
-            prev_size = h
-        self.ff_stack = torch.nn.Sequential(*layers)
+        self.input_proj = torch.nn.Linear(input_size, d_model)
+        self.pos_embedding = torch.nn.Embedding(max_seq_len, d_model)
 
-        # Positional encoding (learned) for the final hidden size
-        self.pos_embedding = torch.nn.Embedding(max_seq_len, self.hidden_size)
-
-        # Bidirectional LSTM
-        self.lstm = torch.nn.LSTM(
-            self.hidden_size,
-            self.hidden_size,
-            num_layers=num_lstm_layers,
+        encoder_layer = torch.nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=nhead,
+            dim_feedforward=dim_feedforward,
+            dropout=dropout,
+            activation=activation,
             batch_first=True,
-            bidirectional=True,
+            norm_first=norm_first,
         )
-        self.lstm_proj = torch.nn.Linear(self.hidden_size * 2, self.hidden_size)
-
-        # Multihead Self-Attention block
-        self.self_attn = torch.nn.MultiheadAttention(
-            self.hidden_size, num_heads, batch_first=True
-        )
-
-        # Normalize outputs
-        self.norm = torch.nn.LayerNorm(self.hidden_size)
-
-        # Output heads
-        self.action_head = torch.nn.Linear(self.hidden_size, num_actions)
-        self.win_head = torch.nn.Linear(self.hidden_size, 1)
-
-    def forward(self, x, mask=None):
-        batch_size, seq_len, _ = x.shape
-
-        # Feedforward stack with residuals
-        x = self.ff_stack(x)
-
-        # Add positional encoding
-        positions = torch.arange(seq_len, device=x.device).unsqueeze(0)
-        x = (
-            x + self.pos_embedding(positions) * mask.unsqueeze(-1)
-            if mask is not None
-            else x + self.pos_embedding(positions)
+        self.encoder = torch.nn.TransformerEncoder(
+            encoder_layer,
+            num_layers=num_layers,
+            norm=torch.nn.LayerNorm(d_model, eps=layer_norm_eps),
         )
 
+        self.action_head = torch.nn.Linear(d_model, num_actions)
+        self.win_head = torch.nn.Linear(d_model, 1)  # Regression now, predicts advantage
+        self.move_order_head = torch.nn.Linear(
+            d_model, MoveOrderEncoder.action_space()
+        )  # 24 possible move orders
+        self.ko_head = torch.nn.Linear(
+            d_model, 4
+        )  # Binary classification for each position
+        self.switch_head = torch.nn.Linear(
+            d_model, 4
+        )  # Binary classification for each position
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        mask: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        x: (batch, seq_len, input_size)
+        mask: (batch, seq_len) with 1 where valid, 0 where padding
+        """
+        b, seq_len, _ = x.shape
         if mask is None:
-            mask = torch.ones(batch_size, seq_len, device=x.device)
+            mask = torch.ones(b, seq_len, device=x.device)
 
-        # LSTM (packed)
-        lengths = mask.sum(dim=1).long().cpu()
-        packed = torch.nn.utils.rnn.pack_padded_sequence(
-            x, lengths, batch_first=True, enforce_sorted=False
-        )
-        lstm_out, _ = self.lstm(packed)
-        lstm_out, _ = torch.nn.utils.rnn.pad_packed_sequence(
-            lstm_out, batch_first=True, total_length=seq_len
-        )
-        lstm_out = self.lstm_proj(lstm_out)
+        x = self.input_proj(x)
+        pos_idx = torch.arange(seq_len, device=x.device).unsqueeze(0)  # (1, seq_len)
+        x = x + self.pos_embedding(pos_idx) * mask.unsqueeze(-1)
 
-        # Multihead Self-Attention
-        attn_mask = ~mask.bool()
-        attn_out, _ = self.self_attn(
-            lstm_out, lstm_out, lstm_out, key_padding_mask=attn_mask
-        )
-        out = self.norm(attn_out + lstm_out)
+        # Transformer key_padding_mask expects True for padded positions
+        key_padding_mask = ~mask.bool()  # (batch, seq_len)
+        x = self.encoder(x, src_key_padding_mask=key_padding_mask)
 
-        # *** REMOVE POOLING ***
-        # Output heads: now per-step
-        action_logits = self.action_head(out)  # (batch, seq_len, num_actions)
-        win_logits = self.win_head(out).squeeze(-1)  # (batch, seq_len)
-
-        return action_logits, win_logits
+        action_logits = self.action_head(x)
+        win_logits = self.win_head(x).squeeze(-1)  # [batch, seq_len]
+        move_order_logits = self.move_order_head(x)  # [batch, seq_len, 24]
+        ko_logits = self.ko_head(x)  # [batch, seq_len, 4]
+        switch_logits = self.switch_head(x)  # [batch, seq_len, 4]
+        return action_logits, win_logits, move_order_logits, ko_logits, switch_logits
 
     def predict(self, x, mask=None):
         with torch.no_grad():
-            action_logits, win_logits = self.forward(x, mask)
+            action_logits, win_logits, move_order_logits, ko_logits, switch_logits = (
+                self.forward(x, mask)
+            )
             action_probs = torch.softmax(action_logits, dim=-1)
-            win_prob = torch.sigmoid(win_logits)
-        return action_probs, win_prob
+            win_values = win_logits  # Already regression values
+            move_order_probs = torch.softmax(move_order_logits, dim=-1)
+            ko_probs = torch.sigmoid(ko_logits)  # Binary classification per position
+            switch_probs = torch.sigmoid(
+                switch_logits
+            )  # Binary classification per position
+        return action_probs, win_values, move_order_probs, ko_probs, switch_probs
 
 
 def train_epoch(model, dataloader, prev_steps, optimizer, config):
@@ -149,6 +139,12 @@ def train_epoch(model, dataloader, prev_steps, optimizer, config):
     running_loss = 0.0
     running_action_loss = 0.0
     running_win_loss = 0.0
+    running_move_order_loss = 0.0
+    running_ko_loss = 0.0
+    running_switch_loss = 0.0
+    running_move_order_acc = 0.0
+    running_ko_acc = 0.0
+    running_switch_acc = 0.0
     steps = 0
     num_batches = 0
     start = time.time()
@@ -160,29 +156,50 @@ def train_epoch(model, dataloader, prev_steps, optimizer, config):
         action_masks = batch["action_masks"].to(config["device"])
         wins = batch["wins"].to(config["device"])
         masks = batch["masks"].to(config["device"])
+        move_orders = batch["move_orders"].to(config["device"])
+        kos = batch["kos"].to(config["device"])
+        switches = batch["switches"].to(config["device"])
 
-        # Forward pass
-        action_logits, win_logits = model(states, masks)
+        # Forward pass with all heads
+        action_logits, win_logits, move_order_logits, ko_logits, switch_logits = model(
+            states, masks
+        )
         masked_action_logits = action_logits.masked_fill(
             ~action_masks.bool(), float("-inf")
         )
 
-        # Use helper for flattening and filtering
+        # Use helper for flattening and filtering all tensors
         flat_data = flatten_and_filter(
-            states=states,
-            action_logits=masked_action_logits,
-            actions=actions,
-            win_logits=win_logits,
-            wins=wins,
-            action_masks=action_masks,
-            masks=masks,
+            states,
+            masked_action_logits,
+            actions,
+            win_logits,
+            wins,
+            action_masks,
+            masks,
+            move_orders,
+            move_order_logits,
+            kos,
+            ko_logits,
+            switches,
+            switch_logits,
         )
         if flat_data is None:
             continue
 
-        valid_states, valid_action_logits, valid_actions, valid_win_logits, valid_wins = (
-            flat_data
-        )
+        (
+            valid_states,
+            valid_action_logits,
+            valid_actions,
+            valid_win_logits,
+            valid_wins,
+            valid_move_order_logits,
+            valid_move_orders,
+            valid_ko_logits,
+            valid_kos,
+            valid_switch_logits,
+            valid_switches,
+        ) = flat_data
 
         # Build weights for loss
         weights = None
@@ -199,11 +216,37 @@ def train_epoch(model, dataloader, prev_steps, optimizer, config):
             weights[turn_mask] = 1.14
 
         # Losses
+        # Action loss (same as before)
         action_loss = topk_cross_entropy_loss(
             valid_action_logits, valid_actions, weights=weights, k=3
         )
+
+        # Win loss (now MSE since it's regression)
         win_loss = torch.nn.functional.mse_loss(valid_win_logits, valid_wins.float())
-        loss = config["action_weight"] * action_loss + config["win_weight"] * win_loss
+
+        # Move order loss (categorical cross-entropy)
+        move_order_loss = torch.nn.functional.cross_entropy(
+            valid_move_order_logits, valid_move_orders.long()
+        )
+
+        # KO loss (binary cross-entropy per position)
+        ko_loss = torch.nn.functional.binary_cross_entropy_with_logits(
+            valid_ko_logits, valid_kos
+        )
+
+        # Switch loss (binary cross-entropy per position)
+        switch_loss = torch.nn.functional.binary_cross_entropy_with_logits(
+            valid_switch_logits, valid_switches
+        )
+
+        # Combined loss with weights from config
+        loss = (
+            config["action_weight"] * action_loss
+            + config["win_weight"] * win_loss
+            + config["move_order_weight"] * move_order_loss
+            + config["ko_weight"] * ko_loss
+            + config["switch_weight"] * switch_loss
+        )
 
         # Backpropagation
         optimizer.zero_grad()
@@ -215,17 +258,39 @@ def train_epoch(model, dataloader, prev_steps, optimizer, config):
         running_loss += loss.item()
         running_action_loss += action_loss.item()
         running_win_loss += win_loss.item()
+        running_move_order_loss += move_order_loss.item()
+        running_ko_loss += ko_loss.item()
+        running_switch_loss += switch_loss.item()
 
+        # Move order accuracy
+        move_order_preds = torch.argmax(valid_move_order_logits, dim=-1)
+        running_move_order_acc = (
+            (move_order_preds == valid_move_orders).float().mean().item()
+        )
+
+        # KO accuracy (binary classification)
+        ko_preds = (torch.sigmoid(valid_ko_logits) > 0.5).float()
+        running_ko_acc = (ko_preds == valid_kos).float().mean().item()
+
+        # Switch accuracy (binary classification)
+        switch_preds = (torch.sigmoid(valid_switch_logits) > 0.5).float()
+        running_switch_acc = (switch_preds == valid_switches).float().mean().item()
         steps += valid_actions.size(0)
         num_batches += 1
 
-        # Logging progress
+        # Logging progress with all metrics
         wandb.log(
             {
                 "steps": prev_steps + steps,
                 "train_loss": running_loss / num_batches,
                 "train_action_loss": running_action_loss / num_batches,
                 "train_win_loss": running_win_loss / num_batches,
+                "train_move_order_loss": running_move_order_loss / num_batches,
+                "train_ko_loss": running_ko_loss / num_batches,
+                "train_switch_loss": running_switch_loss / num_batches,
+                "train_move_order_acc": running_move_order_acc,
+                "train_ko_acc": running_ko_acc,
+                "train_switch_acc": running_switch_acc,
                 "learning_rate": optimizer.param_groups[0]["lr"],
             }
         )
@@ -234,18 +299,22 @@ def train_epoch(model, dataloader, prev_steps, optimizer, config):
         time_taken = format_time(time.time() - start)
         time_per_batch = (time.time() - start) * 1.0 / (num_batches + 1)
         time_left = format_time((len(dataloader) - num_batches) * time_per_batch)
-        processed = f"Processed {num_batches * dataloader.batch_size} battles/trajectories ({round(num_batches * 100.0 / len(dataloader), 2)}%) in {time_taken}"
+        processed = f"Processed {num_batches * dataloader.batch_size} trajectories ({round(num_batches * 100.0 / len(dataloader), 2)}%) in {time_taken}"
         left = f" with an estimated {time_left} left in this epoch"
         print("\033[2K\r" + processed + left, end="")
 
     time_taken = format_time(time.time() - start)
-    print("\033[2K\rDone training in " + time_taken)
+    print("\033[2K\rDone training epoch in " + time_taken)
 
+    # Return all metrics
     return {
         "loss": running_loss / num_batches,
         "steps": steps,
         "action_loss": running_action_loss / num_batches,
         "win_loss": running_win_loss / num_batches,
+        "move_order_loss": running_move_order_loss / num_batches,
+        "ko_loss": running_ko_loss / num_batches,
+        "switch_loss": running_switch_loss / num_batches,
     }
 
 
@@ -256,11 +325,12 @@ def main(train_path, test_path, val_path):
         "learning_rate": 1e-3,
         "weight_decay": 1e-5,
         "num_epochs": 20,
-        "hidden_layers": [1024, 512, 256],
         "num_heads": 4,
-        "num_lstm_layers": 2,
-        "action_weight": 1.0,
-        "win_weight": 0.0,
+        "action_weight": 0.0,
+        "win_weight": 0.9,
+        "move_order_weight": 0.025,
+        "ko_weight": 0.05,
+        "switch_weight": 0.025,
         "max_grad_norm": 1.0,
         "device": (
             "mps"
@@ -269,8 +339,12 @@ def main(train_path, test_path, val_path):
         ),
         "save_path": "data/models/",
         "seed": 21,
+        "d_model": 256,
+        "num_transformer_layers": 4,
+        "ff_dim": 1024,
+        "dropout": 0.1,
     }
-    wandb.init(project="elitefurretai-scovillain", config=config)
+    wandb.init(project="elitefurretai-victini-new", config=config)
     wandb.save(__file__)
 
     # Set Seeds
@@ -290,7 +364,6 @@ def main(train_path, test_path, val_path):
     print("Embedder initialized. Embedding size:", embedder.embedding_size)
 
     print("Loading datasets...")
-    start = time.time()
 
     train_dataset = PreprocessedTrajectoryDataset(train_path, embedder=embedder)
     test_dataset = PreprocessedTrajectoryDataset(test_path, embedder=embedder)
@@ -308,12 +381,15 @@ def main(train_path, test_path, val_path):
     )
 
     # Initialize model
-    model = TwoHeadedHybridModel(
+    model = TwoHeadedTransformerModel(
         input_size=embedder.embedding_size,
-        hidden_layers=config["hidden_layers"],
-        num_heads=config["num_heads"],
-        num_lstm_layers=config["num_lstm_layers"],
         num_actions=MDBO.action_space(),
+        max_seq_len=17,
+        d_model=config.get("d_model", 256),
+        num_layers=config.get("num_transformer_layers", 4),
+        nhead=config["num_heads"],
+        dim_feedforward=config.get("ff_dim", 1024),
+        dropout=config.get("dropout", 0.1),
     ).to(config["device"])
     # wandb.watch(model, log="all", log_freq=1000)
     print(
@@ -338,16 +414,7 @@ def main(train_path, test_path, val_path):
     start, steps = time.time(), 0
     for epoch in range(config["num_epochs"]):
         train_metrics = train_epoch(model, train_loader, steps, optimizer, config)
-        metrics = evaluate(
-            model,
-            test_loader,
-            config["device"],
-            has_action_head=True,
-            has_win_head=True,
-            has_move_order_head=False,
-            has_ko_head=False,
-            has_switch_head=False,
-        )
+        metrics = evaluate(model, test_loader, config["device"], has_win_head=True)
         steps += train_metrics["steps"]
 
         log = {
@@ -365,6 +432,9 @@ def main(train_path, test_path, val_path):
             "Test Action Top1": metrics["top1_acc"],
             "Test Action Top3": metrics["top3_acc"],
             "Test Action Top5": metrics["top5_acc"],
+            "Test Move Order Acc": metrics["move_order_acc"],
+            "Test KO Acc": metrics["ko_acc"],
+            "Test Switch Acc": metrics["switch_acc"],
         }
 
         if "move_order_acc" in metrics:
@@ -400,16 +470,7 @@ def main(train_path, test_path, val_path):
         os.path.join(config["save_path"], f"{wandb.run.name}.pth"),  # type: ignore
     )
     print("\nEvaluating on Validation Dataset:")
-    metrics = evaluate(
-        model,
-        val_loader,
-        config["device"],
-        has_action_head=True,
-        has_win_head=True,
-        has_move_order_head=False,
-        has_ko_head=False,
-        has_switch_head=False,
-    )
+    metrics = evaluate(model, val_loader, config["device"], has_win_head=True)
     val_log = {
         "Total Steps": steps,
         "Validation Loss": (
@@ -443,9 +504,9 @@ def main(train_path, test_path, val_path):
         device=config["device"],
         has_action_head=True,
         has_win_head=True,
-        has_move_order_head=False,
-        has_ko_head=False,
-        has_switch_head=False,
+        has_move_order_head=True,
+        has_ko_head=True,
+        has_switch_head=True,
         teampreview_idx=config["teampreview_idx"],
         force_switch_indices=config["force_switch_indices"],
         verbose=True,

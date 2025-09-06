@@ -1,5 +1,5 @@
 import os
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List
 
 import orjson
 import torch
@@ -8,15 +8,25 @@ from torch.utils.data import Dataset
 from elitefurretai.model_utils.battle_data import BattleData
 from elitefurretai.model_utils.battle_iterator import BattleIterator
 from elitefurretai.model_utils.embedder import Embedder
-from elitefurretai.model_utils.model_double_battle_order import MDBO
+from elitefurretai.model_utils.encoder import MDBO, MoveOrderEncoder
 from elitefurretai.utils.battle_order_validator import is_valid_order
+from elitefurretai.utils.evaluate_state import evaluate_position_advantage
 
 
 # An implementation of Dataset for a series of showdown battles stored in a directory as BattleData
 class BattleDataset(Dataset):
     """
-    Loads raw battle files and produces (states, actions, action_masks, wins, masks) for each perspective.
-    Each file is processed twice (once for each player perspective).
+    Loads raw battlefiles and generates training data for them.
+    Returns (variable length ≤ steps_per_battle):
+
+    states         : (T, embed_dim)
+    actions        : (T,)
+    action_masks   : (T, action_space)
+    wins           : (T,) final outcome repeated each step (0/1)
+    move_orders    : (T,) move order on next step
+    kos            : (T, 4) ko order on next step
+    switches       : (T, 4) switch order on next step
+    masks          : (T,) 1 valid, 0 invalid
     """
 
     # files is a list of filepaths to BattleData files
@@ -41,9 +51,7 @@ class BattleDataset(Dataset):
         # Each battle is processed twice (once for each player perspective)
         return len(self.files) * 2
 
-    def __getitem__(
-        self, idx
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    def __getitem__(self, idx: int):
         # For each index, determine which file and which player perspective
         file_idx = idx // 2
         perspective = "p" + str((idx % 2) + 1)
@@ -58,7 +66,7 @@ class BattleDataset(Dataset):
         states = torch.zeros(self.steps_per_battle, self.embedder.embedding_size)
         actions = torch.zeros(self.steps_per_battle, dtype=torch.long)
         action_masks = torch.zeros(self.steps_per_battle, MDBO.action_space())
-        wins = torch.zeros(self.steps_per_battle)
+        wins = torch.full((self.steps_per_battle,), -1.0)
         masks = torch.zeros(self.steps_per_battle)
 
         # Create a battle iterator for this perspective
@@ -67,6 +75,10 @@ class BattleDataset(Dataset):
             perspective=perspective,
             omniscient=True,
         )
+
+        # Store advantage by turn, and log indices by input number
+        advantages: List[float] = []
+        input_indices: List[int] = []
 
         # Iterate through the battle and get the player's input commands until ended or we exceed the steps per battle parameter
         i = 0
@@ -98,8 +110,11 @@ class BattleDataset(Dataset):
             # Convert training data into embedding and state into a label
             states[i] = torch.tensor(self.embedder.feature_dict_to_vector(self.embedder.embed(iter.battle)))  # type: ignore
             actions[i] = action_idx
-            wins[i] = int(bd.winner == iter.battle.player_username)
             masks[i] = 1
+
+            # Store advantages and input_indices
+            advantages.append(evaluate_position_advantage(iter.battle))  # type: ignore
+            input_indices.append(iter.index)
 
             # Mask out struggle, revival blessing, and invalid actions
             if (
@@ -110,19 +125,146 @@ class BattleDataset(Dataset):
 
             i += 1
 
-        return states, actions, action_masks, wins, masks
+        # Compute advantages; need to do this after because advantages this turn
+        # I compute from advantages in future turns
+        wins = self._compute_ensemble_advantage(iter, advantages)
 
-    def get_filename(self, idx: int) -> str:
-        # Returns the filename for a given index (for debugging/analysis)
-        return self.files[idx // 2]
+        # Compute move order and KO status
+        move_orders = self._compute_move_order(iter, input_indices)
+        kos = self._compute_ko_status(iter, input_indices)
+        switches = self._compute_switch(iter, input_indices)
 
-    def get_perspective(self, idx: int) -> str:
-        # Returns the player perspective ("p1" or "p2") for a given index
-        return "p" + str((idx % 2) + 1)
+        return {
+            "states": states,
+            "actions": actions,
+            "action_masks": action_masks,
+            "wins": wins,
+            "move_orders": move_orders,
+            "kos": kos,
+            "switches": switches,
+            "masks": masks,
+        }
 
-    def embedding_size(self) -> int:
-        # Returns the embedding size used by the embedder
-        return self.embedder.embedding_size
+    def _compute_move_order(
+        self, iter: BattleIterator, input_indices: List[int]
+    ) -> torch.Tensor:
+        speed_orders = torch.zeros(self.steps_per_battle, dtype=torch.long)
+        prev_idx = 0
+        for i, end_idx in enumerate(input_indices):
+
+            # Look for move order in the log range
+            move_order = []
+            for log_idx in range(prev_idx, min(end_idx, len(iter.bd.logs))):
+                log = iter.bd.logs[log_idx]
+                if log.startswith("|move|"):
+                    split_message = log.split("|")
+                    if len(split_message) >= 3:
+                        pokemon_id = split_message[2][:3]
+                        move_order.append(pokemon_id)
+
+            # Encode the order (simplified to first 4 moves); things like Dancer/Instruct can mess with this
+            encoded_order = MoveOrderEncoder.encode(move_order[:4])
+            speed_orders[i] = encoded_order
+            prev_idx = end_idx
+
+        return speed_orders
+
+    def _compute_ko_status(
+        self, iter: BattleIterator, input_indices: List[int]
+    ) -> torch.Tensor:
+        prev_idx = 0
+        ko_targets = torch.zeros((self.steps_per_battle, 4), dtype=torch.float32)
+        for i, end_idx in enumerate(input_indices):
+
+            # Track which pokemon faint: [p1a, p1b, p2a, p2b]
+            positions = {"p1a": 0, "p1b": 1, "p2a": 2, "p2b": 3}
+            fainted = [0, 0, 0, 0]
+
+            # Look ahead in logs for faint messages
+            for log_idx in range(prev_idx, min(end_idx, len(iter.bd.logs))):
+                log = iter.bd.logs[log_idx]
+                if log.startswith("|faint|"):
+                    split_message = log.split("|")
+                    if len(split_message) >= 3:
+                        position = split_message[2][:3]
+                        fainted[positions[position]] = 1
+
+            ko_targets[i] = torch.Tensor(fainted)
+            prev_idx = end_idx
+
+        return ko_targets
+
+    def _compute_switch(
+        self, iter: BattleIterator, input_indices: List[int]
+    ) -> torch.Tensor:
+        switch_targets = torch.zeros((self.steps_per_battle, 4), dtype=torch.float32)
+        prev_idx = 0
+        for i, end_idx in enumerate(input_indices):
+
+            # Track which pokemon switch: [p1a, p1b, p2a, p2b]
+            positions = {"p1a": 0, "p1b": 1, "p2a": 2, "p2b": 3}
+            switches = [0, 0, 0, 0]
+
+            # Look for switch messages in the log range
+            for log_idx in range(prev_idx, min(end_idx, len(iter.bd.logs))):
+                log = iter.bd.logs[log_idx]
+                if log.startswith("|switch|"):
+                    split_message = log.split("|")
+                    if len(split_message) >= 3:
+                        position = split_message[2][:3]
+                        switches[positions[position]] = 1
+                elif log.startswith("|upkeep|"):
+                    break
+
+            switch_targets[i] = torch.Tensor(switches)
+            prev_idx = end_idx
+
+        return switch_targets
+
+    def _compute_ensemble_advantage(
+        self, iter: BattleIterator, advantages: List[float]
+    ) -> torch.Tensor:
+        """
+        Compute ensemble advantage combining multiple heuristics:
+        1. Estimated Position advantage of next few turns
+        2. Final outcome
+        3. Step-dependent weighting converging to true outcome
+        """
+
+        win_labels = torch.zeros(self.steps_per_battle)
+        n = len(advantages)
+        final_outcome = 1 if iter.bd.winner == iter.battle.player_username else -1
+
+        for i in range(n):
+            # How close are we to the end?
+            progress = i * 1.0 / max(n - 1, 1)  # 0.05 at start, 1 at end
+
+            # Final outcome weight ramps up near the end (e.g., quadratic ramp)
+            outcome_weight = max(progress**2, 0.05)
+            position_weight = 1.0 - outcome_weight
+
+            # Current advantage
+            current_adv = advantages[i]
+
+            # Average advantage over next 3 turns (including current)
+            next_window = advantages[i : min(i + 3, n)]
+            avg_next_adv = sum(next_window) / len(next_window)
+
+            # Blend: give current adv 50%, next adv 30%, outcome 20% at start,
+            # ramp outcome to 100% at end
+            if n > 1:
+                # At start: outcome_weight ~0, position_weight ~1
+                # At end: outcome_weight ~1, position_weight ~0
+                blended_adv = (
+                    position_weight * (0.5 * current_adv + 0.3 * avg_next_adv)
+                    + outcome_weight * final_outcome
+                )
+            else:
+                blended_adv = final_outcome  # degenerate case
+
+            win_labels[i] = blended_adv
+
+        return win_labels
 
 
 class BattleIteratorDataset(Dataset):
@@ -193,12 +335,10 @@ class PreprocessedBattleDataset(Dataset):
 
         # Build a mapping from global step index to (file_idx, traj_idx, step_idx)
         self._idx_map = []
-        self._file_traj_lengths = []  # For debugging/analysis
         for file_idx, file_path in enumerate(self.trajectory_files):
             trajectories = torch.load(file_path, map_location="cpu")
-            self._file_traj_lengths.append(len(trajectories))
-            for traj_idx, traj in enumerate(trajectories):
-                states, actions, action_masks, wins, masks = traj
+            for traj_idx, traj_data in enumerate(trajectories):
+                states = traj_data["states"]
                 num_steps = states.shape[0]
                 for step_idx in range(num_steps):
                     self._idx_map.append((file_idx, traj_idx, step_idx))
@@ -217,22 +357,24 @@ class PreprocessedBattleDataset(Dataset):
                 self.trajectory_files[file_idx], map_location="cpu"
             )
             self._cache["file_idx"] = file_idx
-        traj = self._cache["trajectories"][traj_idx]
-        states, actions, action_masks, wins, masks = traj
-        return (
-            states[step_idx],
-            actions[step_idx],
-            action_masks[step_idx],
-            wins[step_idx],
-            masks[step_idx],
-        )
+        data = self._cache["trajectories"][traj_idx]
+        return {
+            "states": data["states"][step_idx],
+            "actions": data["actions"][step_idx],
+            "action_masks": data["action_masks"][step_idx],
+            "wins": data["wins"][step_idx],
+            "move_orders": data["move_orders"][step_idx],
+            "kos": data["kos"][step_idx],
+            "switches": data["switches"][step_idx],
+            "masks": data["masks"][step_idx],
+        }
 
     def embedding_size(self) -> int:
         # Returns the embedding size used by the embedder
         return self.embedder.embedding_size
 
 
-class PreprocessedTrajectoryDataset(torch.utils.data.Dataset):
+class PreprocessedTrajectoryDataset(Dataset):
     """
     Loads full trajectories from multiple .pt files, only one file in memory at a time.
     Each __getitem__ returns (states, actions, action_masks, wins, masks) for one trajectory.

@@ -15,6 +15,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from elitefurretai.model_utils import BattleDataset, Embedder
+from elitefurretai.scripts.train.train_utils import format_time
 
 
 # This function takes in a list of filepaths for BattleData files and saves preprocessed trajectories in chunks
@@ -45,55 +46,66 @@ def trajectories(
     # Create a BattleDataset that yields full trajectories (one per __getitem__)
     dataset = BattleDataset(files, embedder=emb, steps_per_battle=40)
     # Use a DataLoader to iterate through the dataset one trajectory at a time
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=4)
-
-    start, num_batches = time.time(), 0
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=4)
 
     print("Starting training loop")
     os.makedirs(save_dir, exist_ok=True)
-    chunk = []  # Holds the current chunk of trajectories to be saved
-    file_idx = 0  # Index for naming output files
+    # Process batches and save trajectories
+    trajectories = []
+    batch_count = 0
+    file_count = 0
+    start = time.time()
 
-    # Iterate through all trajectories in the dataset
-    for idx, (states, actions, action_masks, wins, masks) in enumerate(dataloader):
-        batch_len = states.shape[0]
-        for i in range(batch_len):
-            traj = (
-                states[i],
-                actions[i],
-                action_masks[i],
-                wins[i],
-                masks[i],
+    for data in dataloader:
+        # data is a dictionary of tensors
+        batch_size = data["states"].size(0)
+
+        for i in range(batch_size):
+            # Get the valid steps for this trajectory
+            valid_steps = int(data["masks"][i].sum().item())
+            if valid_steps == 0:
+                continue
+
+            # Extract data for valid steps only
+            trajectories.append(
+                {
+                    "states": data["states"][i].clone(),
+                    "actions": data["actions"][i].clone(),
+                    "action_masks": data["action_masks"][i].clone(),
+                    "wins": data["wins"][i].clone(),
+                    "move_orders": data["move_orders"][i].clone(),
+                    "kos": data["kos"][i].clone(),
+                    "switches": data["switches"][i].clone(),
+                    "masks": data["masks"][i].clone(),
+                }
             )
-            chunk.append(traj)
-            if len(chunk) >= chunk_size:
-                torch.save(
-                    chunk, os.path.join(save_dir, f"trajectories_{file_idx:05d}.pt")
-                )
-                file_idx += 1
-                chunk = []
 
-        # Print progress information
-        now = time.time()
-        h, m, s = int(now - start) // 3600, int(now - start) // 60, int(now - start) % 60
-        time_per_batch = (now - start) * 1.0 / (num_batches + 1)
-        t_left = (len(dataloader) - num_batches) * time_per_batch
-        h_left, m_left, s_left = (
-            int(t_left // 3600),
-            int((t_left % 3600) // 60),
-            int(t_left % 60),
-        )
+            time_taken = format_time(time.time() - start)
+            time_left = format_time(
+                (time.time() - start) / (file_count + 1) * (len(files) - file_count)
+            )
+            print(
+                f"\033[2K\rProcessed trajectory #{file_count} in {time_taken}. Estimated time left: {time_left}",
+                end="",
+            )
 
-        processed = f"Processed {num_batches * int(dataloader.batch_size or 1)} battles ({round(num_batches * 100.0 / len(dataloader), 2)}%) in {h}h {m}m {s}s"
-        left = f"{h_left}h {m_left}m {s_left}s left"
-        print(f"\033[2K\r {processed} with an estimated {left}", end="")
-        num_batches += 1
+        batch_count += 1
 
-    # Save any remaining trajectories in the last chunk
-    if chunk:
-        torch.save(chunk, os.path.join(save_dir, f"trajectories_{file_idx:05d}.pt"))
+        # Save trajectories in chunks
+        if len(trajectories) >= chunk_size:
+            save_path = os.path.join(save_dir, f"trajectories_{file_count}.pt")
+            torch.save(trajectories, save_path)
+            trajectories = []
+            file_count += 1
 
-    print(f"\nAll batches saved to {save_dir}")
+    # Save any remaining trajectories
+    if trajectories:
+        save_path = os.path.join(save_dir, f"trajectories_{file_count}.pt")
+        torch.save(trajectories, save_path)
+
+    print(
+        f"Processing complete in {format_time(time.time() - start)}. {file_count + 1} trajectory files saved to {save_dir}"
+    )
 
 
 def teampreview(
@@ -126,53 +138,64 @@ def teampreview(
     dataset = BattleDataset(files, steps_per_battle=1)
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=4)
 
-    start, num_batches = time.time(), 0
-
     print("Starting training loop")
     os.makedirs(save_dir, exist_ok=True)
-    chunk = []  # Holds the current chunk of trajectories to be saved
-    file_idx = 0  # Index for naming output files
 
-    # Iterate through all trajectories in the dataset
-    for idx, (states, actions, action_masks, wins, masks) in enumerate(dataloader):
-        # Remove batch dimension (since batch_size=1)
-        for i in range(states.shape[0]):
-            chunk.append(
-                (
-                    states[i],
-                    actions[i],
-                    action_masks[i],
-                    wins[i],
-                    masks[i],
-                )
+    # Process batches and save teampreview data
+    teampreview_data = []
+    batch_count = 0
+    file_count = 0
+    start = time.time()
+
+    for data in dataloader:
+        # data is a dictionary of tensors
+        batch_size = data["states"].size(0)
+
+        for i in range(batch_size):
+            # Get only the first step (teampreview)
+            if data["masks"][i, 0].item() == 0:
+                continue
+
+            # Extract teampreview data
+            teampreview_data.append(
+                {
+                    "states": data["states"][i, 0].clone(),
+                    "actions": data["actions"][i, 0].clone(),
+                    "action_masks": data["action_masks"][i, 0].clone(),
+                    "wins": data["wins"][i, 0].clone(),
+                    "move_orders": data["move_orders"][i, 0].clone(),
+                    "kos": data["kos"][i, 0].clone(),
+                    "switches": data["switches"][i, 0].clone(),
+                    "masks": data["masks"][i, 0].clone(),
+                }
             )
-            # If chunk is full, save it to disk and start a new chunk
-            if len(chunk) >= chunk_size:
-                torch.save(chunk, os.path.join(save_dir, f"teampreview_{file_idx:05d}.pt"))
-                file_idx += 1
-                chunk = []
 
-        # Print progress information
-        now = time.time()
-        h, m, s = int(now - start) // 3600, int(now - start) // 60, int(now - start) % 60
-        time_per_batch = (now - start) * 1.0 / (num_batches + 1)
-        t_left = (len(dataloader) - num_batches) * time_per_batch
-        h_left, m_left, s_left = (
-            int(t_left // 3600),
-            int((t_left % 3600) // 60),
-            int(t_left % 60),
-        )
+            time_taken = format_time(time.time() - start)
+            time_left = format_time(
+                (time.time() - start) / (file_count + 1) * (len(files) - file_count)
+            )
+            print(
+                f"\033[2K\rProcessed trajectory #{file_count} in {time_taken}. Estimated time left: {time_left}",
+                end="",
+            )
 
-        processed = f"Processed {num_batches * int(dataloader.batch_size or 1)} battles ({round(num_batches * 100.0 / len(dataloader), 2)}%) in {h}h {m}m {s}s"
-        left = f"{h_left}h {m_left}m {s_left}s left"
-        print(f"\033[2K\r {processed} with an estimated {left}", end="")
-        num_batches += 1
+        batch_count += 1
 
-    # Save any remaining trajectories in the last chunk
-    if chunk:
-        torch.save(chunk, os.path.join(save_dir, f"teampreview_{file_idx:05d}.pt"))
+        # Save teampreview data in chunks
+        if len(teampreview_data) >= chunk_size:
+            save_path = os.path.join(save_dir, f"teampreview_{file_count}.pt")
+            torch.save(teampreview_data, save_path)
+            teampreview_data = []
+            file_count += 1
 
-    print(f"\nAll batches saved to {save_dir}")
+    # Save any remaining teampreview data
+    if teampreview_data:
+        save_path = os.path.join(save_dir, f"teampreview_{file_count}.pt")
+        torch.save(teampreview_data, save_path)
+
+    print(
+        f"Processing complete in {format_time(time.time() - start)}. {file_count + 1} trajectory files saved to {save_dir}"
+    )
 
 
 def parse_args():

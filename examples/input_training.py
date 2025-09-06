@@ -76,6 +76,7 @@ def list_of_files(files):
             int(t_left % 60),
         )
 
+        assert dataloader.batch_size is not None
         processed = f"Processed {num_batches * dataloader.batch_size} battles ({round(num_batches * 100.0 / len(dataloader), 2)}%) in {h}h {m}m {s}s"
         left = f" with an estimated {h_left}h {m_left}m {s_left}s left in this epoch"
         print("\033[2K\r" + processed + left, end="")

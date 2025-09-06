@@ -4,11 +4,13 @@ import tempfile
 import orjson
 import pytest
 
-from elitefurretai.model_utils.battle_data import BattleData
-from elitefurretai.model_utils.battle_dataset import BattleDataset
-from elitefurretai.model_utils.battle_iterator import BattleIterator
-from elitefurretai.model_utils.embedder import Embedder
-from elitefurretai.model_utils.model_double_battle_order import MDBO
+from elitefurretai.model_utils import (
+    MDBO,
+    BattleData,
+    BattleDataset,
+    BattleIterator,
+    Embedder,
+)
 from elitefurretai.utils.battle_order_validator import is_valid_order
 
 # List of all vgc_json_anon fixtures in conftest.py
@@ -55,7 +57,19 @@ def test_battle_dataset_actions_and_wins(request, fixture_name):
         dataset = BattleDataset([temp_path], embedder=embedder, steps_per_battle=17)
 
         for idx in range(2):
-            states, actions, action_masks, wins, masks = dataset[idx]
+            metrics = dataset[idx]
+            states = metrics["states"]
+            actions = metrics["actions"]
+            action_masks = metrics["action_masks"]
+            wins = metrics["wins"]
+            masks = metrics["masks"]
+            kos = metrics["kos"]
+            switches = metrics["switches"]
+
+            assert states is not None
+            assert kos is not None
+            assert switches is not None
+
             bd = BattleData.from_showdown_json(battle_json)
             perspective = "p" + str((idx % 2) + 1)
             iter = BattleIterator(bd, perspective=perspective, omniscient=True)

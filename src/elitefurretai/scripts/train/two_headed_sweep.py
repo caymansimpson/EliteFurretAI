@@ -18,7 +18,7 @@ import torch
 
 import wandb
 from elitefurretai.model_utils import MDBO, Embedder, PreprocessedTrajectoryDataset
-from elitefurretai.scripts.train.train_utils import (
+from elitefurretai.model_utils.train_utils import (
     evaluate,
     flatten_and_filter,
     format_time,
@@ -252,7 +252,7 @@ def train_epoch(
     prev_steps: int,
     optimizer: torch.optim.Optimizer,
     config: Dict[str, Any],
-) -> Tuple[float, int, float, float]:
+) -> Dict[str, Any]:
     model.train()
     running_loss = 0.0
     running_action_loss = 0.0
@@ -262,13 +262,12 @@ def train_epoch(
     num_batches = 0
     start = time.time()
 
-    for batch in dataloader:
-        states, actions, action_masks, wins, masks = batch
-        states = states.to(config["device"])
-        actions = actions.to(config["device"])
-        action_masks = action_masks.to(config["device"])
-        wins = wins.to(config["device"])
-        masks = masks.to(config["device"])
+    for metrics in dataloader:
+        states = metrics["states"].to(config["device"])
+        actions = metrics["actions"].to(config["device"])
+        action_masks = metrics["action_masks"].to(config["device"])
+        wins = metrics["wins"].to(config["device"])
+        masks = metrics["masks"].to(config["device"])
 
         # Forward pass
         action_logits, win_logits = model(states, masks)
@@ -305,9 +304,7 @@ def train_epoch(
         action_loss = topk_cross_entropy_loss(
             valid_action_logits, valid_actions, weights=weights, k=3
         )
-        win_loss = torch.nn.functional.binary_cross_entropy_with_logits(
-            valid_win_logits, valid_wins.float()
-        )
+        win_loss = torch.nn.functional.mse_loss(valid_win_logits, valid_wins.float())
         loss = config["action_weight"] * action_loss + config["win_weight"] * win_loss
 
         # Backpropagation
@@ -332,7 +329,6 @@ def train_epoch(
                 "train_loss": running_loss / num_batches,
                 "train_action_loss": running_action_loss / num_batches,
                 "train_win_loss": running_win_loss / num_batches,
-                "train_win_acc": running_win_acc / steps if steps > 0 else 0,
                 "learning_rate": optimizer.param_groups[0]["lr"],
             }
         )
@@ -349,12 +345,12 @@ def train_epoch(
     time_taken = format_time(time.time() - start)
     print("\033[2K\rDone training in " + time_taken)
 
-    return (
-        running_loss / num_batches if num_batches > 0 else 0,
-        steps,
-        running_action_loss / num_batches if num_batches > 0 else 0,
-        running_win_loss / num_batches if num_batches > 0 else 0,
-    )
+    return {
+        "loss": running_loss / num_batches,
+        "steps": steps,
+        "action_loss": running_action_loss / num_batches,
+        "win_loss": running_win_loss / num_batches,
+    }
 
 
 def train_model(
@@ -444,100 +440,109 @@ def train_model(
     # Training loop
     start, steps = time.time(), 0
     for epoch in range(config["num_epochs"]):
-        train_loss, training_steps, train_action_loss, train_win_loss = train_epoch(
-            model, train_loader, steps, optimizer, config
+        train_metrics = train_epoch(model, train_loader, steps, optimizer, config)
+        metrics = evaluate(
+            model,
+            test_loader,
+            config["device"],
+            has_action_head=True,
+            has_win_head=True,
+            has_move_order_head=False,
+            has_ko_head=False,
+            has_switch_head=False,
         )
-        action_top1, action_top3, action_top5, action_loss, win_acc, win_loss = evaluate(
-            model, test_loader, config["device"], has_win_head=True
-        )
-        steps += training_steps
+        steps += train_metrics["steps"]
 
-        # Print epoch results
+        log = {
+            "Total Steps": steps,
+            "Train Loss": train_metrics["loss"],
+            "Train Win Loss": train_metrics["win_loss"],
+            "Train Action Loss": train_metrics["action_loss"],
+            "Test Loss": (
+                metrics["win_mse"] * config["win_weight"]
+                + metrics["top3_loss"] * config["action_weight"]
+            ),
+            "Test Win Corr": metrics["win_corr"],
+            "Test Win MSE": metrics["win_mse"],
+            "Test Top3 Loss": metrics["top3_loss"],
+            "Test Action Top1": metrics["top1_acc"],
+            "Test Action Top3": metrics["top3_acc"],
+            "Test Action Top5": metrics["top5_acc"],
+        }
+
+        if "move_order_acc" in metrics:
+            log["Test Move Order Acc"] = metrics["move_order_acc"]
+        if "ko_acc" in metrics:
+            log["Test KO Acc"] = metrics["ko_acc"]
+        if "switch_acc" in metrics:
+            log["Test Switch Acc"] = metrics["switch_acc"]
+
         print(f"Epoch #{epoch + 1}:")
-        print(f"=> Total Steps:       {steps}")
-        print(f"=> Train Loss:        {train_loss:.4f}")
-        print(f"=> Train Win Loss:    {train_win_loss:.4f}")
-        print(f"=> Train Action Loss: {train_action_loss:.4f}")
-        print(
-            f"=> Test Loss:         {(win_loss * config['win_weight'] + action_loss * config['action_weight']):.4f}"
-        )
-        print(f"=> Test Win Acc:      {win_acc * 100:.3f}%")
-        print(f"=> Test Win Loss:     {win_loss:.4f}")
-        print(f"=> Test Action Loss:  {action_loss:.4f}")
-        print(
-            f"=> Test Action Acc:   {(action_top1 * 100):.3f}% (Top-1), {(action_top3 * 100):.3f}% (Top-3) {(action_top5 * 100):.3f}% (Top-5)"
-        )
+        for metric, value in log.items():
+            print(f"=> {metric:<25}: {value:>10.3f}")
 
-        wandb.log(
-            {
-                "epoch": epoch + 1,
-                "steps": steps,
-                "train_loss": train_loss,
-                "train_win_loss": train_win_loss,
-                "train_action_loss": train_action_loss,
-                "test_loss": win_loss * config["win_weight"]
-                + action_loss * config["action_weight"],
-                "test_action_loss": action_loss,
-                "test_win_loss": win_loss,
-                "test_win_acc": win_acc,
-                "test_action_top1": action_top1,
-                "test_action_top3": action_top3,
-                "test_action_top5": action_top5,
-            }
-        )
+        wandb.log(log)
 
-        # Print time progress
         total_time = time.time() - start
-        t_left = (config["num_epochs"] - epoch - 1) * total_time / (epoch + 1)
-        print(f"=> Time thus far: {format_time(total_time)} // ETA: {format_time(t_left)}")
+        time_taken = format_time(total_time)
+        time_left = format_time(
+            (config["num_epochs"] - epoch - 1) * total_time / (epoch + 1)
+        )
+        print(f"=> Time thus far: {time_taken} // ETA: {time_left}")
         print()
 
         scheduler.step(
-            win_loss * config["win_weight"] + action_loss * config["action_weight"]
+            float(
+                metrics["win_mse"] * config["win_weight"]
+                + metrics["top3_loss"] * config["action_weight"]
+            )
         )
 
     # Final evaluation on validation set
     print("\nEvaluating on Validation Dataset:")
-    (
-        val_action_top1,
-        val_action_top3,
-        val_action_top5,
-        val_action_loss,
-        val_win_acc,
-        val_win_loss,
-    ) = evaluate(model, val_loader, config["device"], has_win_head=True)
+    metrics = evaluate(
+        model,
+        val_loader,
+        config["device"],
+        has_action_head=True,
+        has_win_head=True,
+        has_move_order_head=False,
+        has_ko_head=False,
+        has_switch_head=False,
+    )
+    val_log = {
+        "Total Steps": steps,
+        "Validation Loss": (
+            metrics["win_mse"] * config["win_weight"]
+            + metrics["top3_loss"] * config["action_weight"]
+        ),
+        "Validation Win Corr": metrics["win_corr"],
+        "Validation Win MSE": metrics["win_mse"],
+        "Validation Top3 Loss": metrics["top3_loss"],
+        "Validation Action Top1": metrics["top1_acc"],
+        "Validation Action Top3": metrics["top3_acc"],
+        "Validation Action Top5": metrics["top5_acc"],
+    }
 
-    print(
-        f"=> Val Loss:          {(val_win_loss * config['win_weight'] + val_action_loss * config['action_weight']):.3f}"
-    )
-    print(f"=> Val Win Loss:      {val_win_loss:.3f}")
-    print(f"=> Val Action Loss:   {val_action_loss:.3f}")
-    print(f"=> Val Win Acc:       {val_win_acc:.3f}")
-    print(
-        f"=> Val Action Acc:    {(val_action_top1 * 100):.3f}% (Top-1), {(val_action_top3 * 100):.3f}% (Top-3) {(val_action_top5 * 100):.3f}% (Top-5)"
-    )
+    if "move_order_acc" in metrics:
+        val_log["Validation Move Order Acc"] = metrics["move_order_acc"]
+    if "ko_acc" in metrics:
+        val_log["Validation KO Acc"] = metrics["ko_acc"]
+    if "switch_acc" in metrics:
+        val_log["Validation Switch Acc"] = metrics["switch_acc"]
 
-    wandb.log(
-        {
-            "val_loss": val_win_loss * config["win_weight"]
-            + val_action_loss * config["action_weight"],
-            "val_win_loss": val_win_loss,
-            "val_win_acc": val_win_acc,
-            "val_action_loss": val_action_loss,
-            "val_action_top1": val_action_top1,
-            "val_action_top3": val_action_top3,
-            "val_action_top5": val_action_top5,
-        }
-    )
+    for metric, value in val_log.items():
+        print(f"==> {metric:<25}: {value:>10.3f}")
 
     # Return metrics for the sweep
     return {
-        "val_action_top1": float(val_action_top1),
-        "val_action_top3": float(val_action_top3),
-        "val_action_top5": float(val_action_top5),
-        "val_win_acc": float(val_win_acc),
+        "val_action_top1": float(metrics["top1_acc"]),
+        "val_action_top3": float(metrics["top3_acc"]),
+        "val_action_top5": float(metrics["top5_acc"]),
+        "val_win_acc": float(metrics["win_corr"]),
         "val_loss": float(
-            val_win_loss * config["win_weight"] + val_action_loss * config["action_weight"]
+            metrics["win_mse"] * config["win_weight"]
+            + metrics["top3_loss"] * config["action_weight"]
         ),
     }
 
@@ -596,7 +601,7 @@ def sweep_agent(train_path: str, test_path: str, val_path: str) -> None:
         # Add fixed parameters
         config.update(
             {
-                "num_epochs": 20,
+                "num_epochs": 10,
                 "action_weight": 1.0,
                 "win_weight": 0.0,
                 "max_grad_norm": 1.0,
