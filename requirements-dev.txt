@@ -1,6 +1,6 @@
-black==24.8.0
+black
 flake8
-isort==5.13.2
+isort
 pre-commit
 pyright
 pytest

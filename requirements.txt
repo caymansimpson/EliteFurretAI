@@ -1,4 +1,4 @@
-git+https://github.com/caymansimpson/poke-env.git
+git+https://github.com/caymansimpson/poke-env.git@development#egg=poke-env
 orjson
 pulp
 pyscipopt
