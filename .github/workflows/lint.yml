@@ -55,6 +55,6 @@ jobs:
         run: mypy src/ unit_tests/ --check-untyped-defs
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
