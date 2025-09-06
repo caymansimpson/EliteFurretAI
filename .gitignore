@@ -7,7 +7,6 @@ data/models/*
 data/logs*
 __pycache__/*
 *.pyc
-src/elitefurretai/scripts/print_battle_debug.py
 coverage.xml
 wandb/*
 src/elitefurretai/agents/abstract_vgc_model_player.py
