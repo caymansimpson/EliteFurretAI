@@ -11,7 +11,7 @@ from typing import Any, Dict
 import torch
 
 import wandb
-from elitefurretai.model_utils import MDBO, Embedder, PreprocessedTrajectoryDataset
+from elitefurretai.model_utils import MDBO, Embedder, OptimizedPreprocessedTrajectoryDataset, OptimizedPreprocessedTrajectorySampler
 from elitefurretai.model_utils.train_utils import (
     analyze,
     evaluate,
@@ -52,7 +52,7 @@ class TwoHeadedHybridModel(torch.nn.Module):
         num_heads=4,
         num_lstm_layers=1,
         num_actions=MDBO.action_space(),
-        max_seq_len=17,
+        max_seq_len=40,
         dropout=0.1,
     ):
         super().__init__()
@@ -152,6 +152,7 @@ def train_epoch(model, dataloader, prev_steps, optimizer, config):
     steps = 0
     num_batches = 0
     start = time.time()
+    scaler = torch.amp.GradScaler(config['device']) if config['device'] == 'cuda' else None
 
     for batch in dataloader:
         # Get data from dictionary
@@ -161,55 +162,63 @@ def train_epoch(model, dataloader, prev_steps, optimizer, config):
         wins = batch["wins"].to(config["device"])
         masks = batch["masks"].to(config["device"])
 
-        # Forward pass
-        action_logits, win_logits = model(states, masks)
-        masked_action_logits = action_logits.masked_fill(
-            ~action_masks.bool(), float("-inf")
-        )
+        autocast = torch.amp.autocast if config['device'] == 'cuda' else torch.autocast
+        with autocast(config['device']):
 
-        # Use helper for flattening and filtering
-        flat_data = flatten_and_filter(
-            states=states,
-            action_logits=masked_action_logits,
-            actions=actions,
-            win_logits=win_logits,
-            wins=wins,
-            action_masks=action_masks,
-            masks=masks,
-        )
-        if flat_data is None:
-            continue
+            # Forward pass
+            action_logits, win_logits = model(states, masks)
+            masked_action_logits = action_logits.masked_fill(
+                ~action_masks.bool(), float("-inf")
+            )
 
-        valid_states, valid_action_logits, valid_actions, valid_win_logits, valid_wins = (
-            flat_data
-        )
+            # Use helper for flattening and filtering
+            flat_data = flatten_and_filter(
+                states=states,
+                action_logits=masked_action_logits,
+                actions=actions,
+                win_logits=win_logits,
+                wins=wins,
+                action_masks=action_masks,
+                masks=masks,
+            )
+            if flat_data is None:
+                continue
 
-        # Build weights for loss
-        weights = None
-        if config.get("weights", False):
-            weights = torch.ones(valid_states.shape[0], device=states.device)
-            teampreview_mask = valid_states[:, config["teampreview_idx"]] == 1
-            force_switch_mask = torch.stack(
-                [valid_states[:, idx] == 1 for idx in config["force_switch_indices"]],
-                dim=-1,
-            ).any(dim=-1)
-            turn_mask = ~(teampreview_mask | force_switch_mask)
-            weights[teampreview_mask] = 8.55
-            weights[force_switch_mask] = 125
-            weights[turn_mask] = 1.14
+            valid_states, valid_action_logits, valid_actions, valid_win_logits, valid_wins = (
+                flat_data
+            )
 
-        # Losses
-        action_loss = topk_cross_entropy_loss(
-            valid_action_logits, valid_actions, weights=weights, k=3
-        )
-        win_loss = torch.nn.functional.mse_loss(valid_win_logits, valid_wins.float())
-        loss = config["action_weight"] * action_loss + config["win_weight"] * win_loss
+            # Build weights for loss
+            weights = None
+            if config.get("weights", False):
+                weights = torch.ones(valid_states.shape[0], device=states.device)
+                teampreview_mask = valid_states[:, config["teampreview_idx"]] == 1
+                force_switch_mask = torch.stack(
+                    [valid_states[:, idx] == 1 for idx in config["force_switch_indices"]],
+                    dim=-1,
+                ).any(dim=-1)
+                turn_mask = ~(teampreview_mask | force_switch_mask)
+                weights[teampreview_mask] = 8.55
+                weights[force_switch_mask] = 125
+                weights[turn_mask] = 1.14
 
-        # Backpropagation
+            # Losses
+            action_loss = topk_cross_entropy_loss(
+                valid_action_logits, valid_actions, weights=weights, k=3
+            )
+            win_loss = torch.nn.functional.mse_loss(valid_win_logits, valid_wins.float())
+            loss = config["action_weight"] * action_loss + config["win_weight"] * win_loss
+
         optimizer.zero_grad()
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), config["max_grad_norm"])
-        optimizer.step()
+        if scaler is not None:
+            scaler.scale(loss).backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), config["max_grad_norm"])
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), config["max_grad_norm"])
+            optimizer.step()
 
         # Metrics
         running_loss += loss.item()
@@ -249,7 +258,39 @@ def train_epoch(model, dataloader, prev_steps, optimizer, config):
     }
 
 
+def initialize(config):
+    # Wandb defaults
+    wandb.init(
+        project="elitefurretai-scovillain-gpu",
+        config=config,
+        settings=wandb.Settings(
+            x_service_wait=30,  # Increase service wait time
+            start_method="thread"  # Use thread instead of fork
+        )
+    )
+    try:
+        # Try normal symlink first (fast)
+        wandb.save(__file__)
+    except OSError as e:
+        if "WinError 1314" in str(e) or "privilege" in str(e).lower():
+            try:
+                # Fallback to copy method
+                wandb.save(__file__, policy="now")
+                print("Note: Using file copy instead of symlink for wandb")
+            except Exception as copy_error:
+                print(f"Warning: Could not save script to wandb: {copy_error}")
+        else:
+            raise  # Re-raise if it's a different error
+
+    # Set Seeds
+    torch.manual_seed(config["seed"])
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(int(config["seed"]))
+    random.seed(int(config["seed"]))
+
+
 def main(train_path, test_path, val_path):
+
     print("Starting!")
     config: Dict[str, Any] = {
         "batch_size": 512,
@@ -263,21 +304,16 @@ def main(train_path, test_path, val_path):
         "win_weight": 0.0,
         "max_grad_norm": 1.0,
         "device": (
-            "mps"
+            "cuda"
+            if torch.cuda.is_available()
+            else "mps"
             if torch.backends.mps.is_available()
-            else ("cuda" if torch.cuda.is_available() else "cpu")
+            else "cpu"
         ),
         "save_path": "data/models/",
         "seed": 21,
     }
-    wandb.init(project="elitefurretai-scovillain", config=config)
-    wandb.save(__file__)
-
-    # Set Seeds
-    torch.manual_seed(config["seed"])
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(int(config["seed"]))
-    random.seed(int(config["seed"]))
+    initialize(config)
 
     embedder = Embedder(
         format="gen9vgc2023regulationc", feature_set=Embedder.FULL, omniscient=False
@@ -287,24 +323,40 @@ def main(train_path, test_path, val_path):
     config["force_switch_indices"] = [
         feature_names[f"MON:{j}:force_switch"] for j in range(6)
     ]
-    print("Embedder initialized. Embedding size:", embedder.embedding_size)
+    print(f"Embedder initialized. Embedding[{embedder.embedding_size}] on {config['device']}")
 
     print("Loading datasets...")
     start = time.time()
 
-    train_dataset = PreprocessedTrajectoryDataset(train_path, embedder=embedder)
-    test_dataset = PreprocessedTrajectoryDataset(test_path, embedder=embedder)
-    val_dataset = PreprocessedTrajectoryDataset(val_path, embedder=embedder)
+    num_workers = 2  # min(4, os.cpu_count() or 0)
+    train_dataset = OptimizedPreprocessedTrajectoryDataset(train_path, embedder=embedder, num_workers=num_workers)
+    test_dataset = OptimizedPreprocessedTrajectoryDataset(test_path, embedder=embedder, num_workers=num_workers)
+    val_dataset = OptimizedPreprocessedTrajectoryDataset(val_path, embedder=embedder, num_workers=num_workers)
 
     # Create dataloaders
     train_loader = torch.utils.data.DataLoader(
-        train_dataset, batch_size=int(config["batch_size"]), shuffle=False, num_workers=4
+        train_dataset, batch_size=int(config["batch_size"]),
+        shuffle=False,
+        num_workers=num_workers,
+        persistent_workers=False,
+        pin_memory=True,
+        sampler=OptimizedPreprocessedTrajectorySampler(train_dataset),
     )
     test_loader = torch.utils.data.DataLoader(
-        test_dataset, batch_size=int(config["batch_size"]), shuffle=False, num_workers=4
+        test_dataset, batch_size=int(config["batch_size"]),
+        shuffle=False,
+        num_workers=num_workers,
+        persistent_workers=False,
+        pin_memory=True,
+        sampler=OptimizedPreprocessedTrajectorySampler(test_dataset),
     )
     val_loader = torch.utils.data.DataLoader(
-        val_dataset, batch_size=int(config["batch_size"]), shuffle=False, num_workers=4
+        val_dataset, batch_size=int(config["batch_size"]),
+        shuffle=False,
+        num_workers=num_workers,
+        persistent_workers=False,
+        pin_memory=True,
+        sampler=OptimizedPreprocessedTrajectorySampler(val_dataset),
     )
 
     # Initialize model
@@ -315,7 +367,7 @@ def main(train_path, test_path, val_path):
         num_lstm_layers=config["num_lstm_layers"],
         num_actions=MDBO.action_space(),
     ).to(config["device"])
-    # wandb.watch(model, log="all", log_freq=1000)
+    wandb.watch(model, log="all", log_freq=1000)
     print(
         f"Finished loading data and model! for a total of {sum(p.numel() for p in model.parameters() if p.requires_grad)} trainable parameters"
     )
@@ -349,16 +401,14 @@ def main(train_path, test_path, val_path):
             has_switch_head=False,
         )
         steps += train_metrics["steps"]
+        test_loss = metrics["win_mse"] * config["win_weight"] + metrics["top3_loss"] * config["action_weight"]
 
         log = {
             "Total Steps": steps,
             "Train Loss": train_metrics["loss"],
             "Train Win Loss": train_metrics["win_loss"],
             "Train Action Loss": train_metrics["action_loss"],
-            "Test Loss": (
-                metrics["win_mse"] * config["win_weight"]
-                + metrics["top3_loss"] * config["action_weight"]
-            ),
+            "Test Loss": test_loss,
             "Test Win Corr": metrics["win_corr"],
             "Test Win MSE": metrics["win_mse"],
             "Test Top3 Loss": metrics["top3_loss"],
@@ -366,13 +416,6 @@ def main(train_path, test_path, val_path):
             "Test Action Top3": metrics["top3_acc"],
             "Test Action Top5": metrics["top5_acc"],
         }
-
-        if "move_order_acc" in metrics:
-            log["Test Move Order Acc"] = metrics["move_order_acc"]
-        if "ko_acc" in metrics:
-            log["Test KO Acc"] = metrics["ko_acc"]
-        if "switch_acc" in metrics:
-            log["Test Switch Acc"] = metrics["switch_acc"]
 
         print(f"Epoch #{epoch + 1}:")
         for metric, value in log.items():
@@ -388,12 +431,7 @@ def main(train_path, test_path, val_path):
         print(f"=> Time thus far: {time_taken} // ETA: {time_left}")
         print()
 
-        scheduler.step(
-            float(
-                metrics["win_mse"] * config["win_weight"]
-                + metrics["top3_loss"] * config["action_weight"]
-            )
-        )
+        scheduler.step(test_loss)
 
     torch.save(
         model.state_dict(),
@@ -423,13 +461,6 @@ def main(train_path, test_path, val_path):
         "Validation Action Top3": metrics["top3_acc"],
         "Validation Action Top5": metrics["top5_acc"],
     }
-
-    if "move_order_acc" in metrics:
-        val_log["Validation Move Order Acc"] = metrics["move_order_acc"]
-    if "ko_acc" in metrics:
-        val_log["Validation KO Acc"] = metrics["ko_acc"]
-    if "switch_acc" in metrics:
-        val_log["Validation Switch Acc"] = metrics["switch_acc"]
 
     for metric, value in val_log.items():
         print(f"==> {metric:<25}: {value:>10.3f}")

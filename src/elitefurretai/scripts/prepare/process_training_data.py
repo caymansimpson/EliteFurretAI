@@ -15,7 +15,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from elitefurretai.model_utils import BattleDataset, Embedder
-from elitefurretai.scripts.train.train_utils import format_time
+from elitefurretai.model_utils.train_utils import format_time
 
 
 # This function takes in a list of filepaths for BattleData files and saves preprocessed trajectories in chunks
@@ -46,15 +46,16 @@ def trajectories(
     # Create a BattleDataset that yields full trajectories (one per __getitem__)
     dataset = BattleDataset(files, embedder=emb, steps_per_battle=40)
     # Use a DataLoader to iterate through the dataset one trajectory at a time
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=4)
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=(os.cpu_count() or 0))
 
-    print("Starting training loop")
+    print("Starting data loading loop")
     os.makedirs(save_dir, exist_ok=True)
     # Process batches and save trajectories
     trajectories = []
     batch_count = 0
     file_count = 0
     start = time.time()
+    num_trajectories_processed = 0
 
     for data in dataloader:
         # data is a dictionary of tensors
@@ -79,13 +80,14 @@ def trajectories(
                     "masks": data["masks"][i].clone(),
                 }
             )
+            num_trajectories_processed += 1
 
             time_taken = format_time(time.time() - start)
             time_left = format_time(
-                (time.time() - start) / (file_count + 1) * (len(files) - file_count)
+                (time.time() - start) / num_trajectories_processed * (len(files) - num_trajectories_processed)
             )
             print(
-                f"\033[2K\rProcessed trajectory #{file_count} in {time_taken}. Estimated time left: {time_left}",
+                f"\033[2K\rProcessed trajectory #{num_trajectories_processed} in {time_taken}. Estimated time left: {time_left}",
                 end="",
             )
 

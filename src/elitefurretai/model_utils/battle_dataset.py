@@ -1,5 +1,7 @@
 import os
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Union
+import math
+import random
 
 import orjson
 import torch
@@ -11,6 +13,17 @@ from elitefurretai.model_utils.embedder import Embedder
 from elitefurretai.model_utils.encoder import MDBO, MoveOrderEncoder
 from elitefurretai.utils.battle_order_validator import is_valid_order
 from elitefurretai.utils.evaluate_state import evaluate_position_advantage
+
+import platform
+import warnings
+
+# On Windows, PyTorch's default shared memory strategy can hit limits with large datasets
+# on specifially Windows, that happens with multiprocessing DataLoader
+# See https://pytorch.org/docs/stable/multiprocessing.html#sharing-strategies
+if platform.system() == 'Windows':
+    # Use file_system sharing to avoid Windows shared memory limits
+    torch.multiprocessing.set_sharing_strategy('file_system')
+    warnings.filterwarnings('ignore', message='.*socket.send.*')
 
 
 # An implementation of Dataset for a series of showdown battles stored in a directory as BattleData
@@ -430,3 +443,198 @@ class PreprocessedTrajectoryDataset(Dataset):
     def embedding_size(self) -> int:
         # Returns the embedding size used by the embedder
         return self.embedder.embedding_size
+
+
+class OptimizedPreprocessedTrajectoryDataset(Dataset):
+    """
+    On Windows, PyTorch's DataLoader with num_workers > 0 uses spawn multiprocessing (not fork like on Linux), which means:
+    - Each worker starts a fresh Python process
+    - Your dataset object gets pickled and copied to each worker
+    - Each worker has its own isolated cache
+    - No sharing possible between workers
+
+    This is why you'll see 0% cache hit rates with BattleDataset and PreprocessedBattleDataset in scripts/analyze/dataset_profiler.py on Windows!
+    The cache exists, but only within each worker's isolated memory. A normally implemented cache will not work with multiprocessing on Windows.
+
+    Instead, we need to implement smarter file-level batching with worker-aware caching. The key insight to this dataset: Have each worker
+    "own" specific files; each worker loads and caches only its assigned files.
+    """
+    def __init__(
+        self,
+        folder_path: str,
+        embedder: Embedder = Embedder(
+            format="gen9vgc2023regulationc", feature_set="full", omniscient=True
+        ),
+        files_per_worker: Union[int, str] = "default",
+        num_workers: int = 4,
+    ):
+        """
+        Args:
+            folder_path: Path to folder containing .pt files
+            embedder: Your embedder instance
+            files_per_worker: How many files each worker should cache at once
+            verbose: Print debug info
+        """
+        self.folder_path = folder_path
+        self.embedder = embedder
+
+        self._worker_id: Optional[int] = None
+        self.num_workers: int = num_workers
+        self._worker_files: Optional[set] = None
+
+        # Get all trajectory files
+        self.trajectory_files = sorted([
+            os.path.join(folder_path, f)
+            for f in os.listdir(folder_path)
+            if f.endswith('.pt')
+        ])
+
+        if not self.trajectory_files:
+            raise ValueError(f"No .pt files found in {folder_path}")
+
+        if isinstance(files_per_worker, int) :
+            self.files_per_worker: int = files_per_worker
+        elif files_per_worker == "default":
+            self.files_per_worker = max(2, len(self.trajectory_files) // (self.num_workers * 2))
+
+        # Build index: global_idx -> (file_idx, local_idx)
+        self._idx_map = []
+        self.file_trajectory_counts = []
+
+        for file_idx, file_path in enumerate(self.trajectory_files):
+            trajectories = torch.load(file_path, map_location='cpu', weights_only=False)
+            num_trajectories = len(trajectories)
+            self.file_trajectory_counts.append(num_trajectories)
+
+            for local_idx in range(num_trajectories):
+                self._idx_map.append((file_idx, local_idx))
+
+            del trajectories
+
+        self._length = len(self._idx_map)
+
+        # Worker-specific state (initialized in worker_init_fn)
+        self._worker_id = None
+        self._worker_files = None  # Files this worker is responsible for
+        self._worker_cache: dict = {}  # This worker's file cache
+
+    def _init_worker(self):
+        """Initialize worker-specific state. Called automatically by DataLoader."""
+        worker_info = torch.utils.data.get_worker_info()
+
+        if worker_info is None:
+            # Single-process loading
+            self._worker_id = 0
+            self.num_workers = 1
+            self._worker_files = set(range(len(self.trajectory_files)))
+        else:
+            # Multi-process loading
+            self._worker_id = worker_info.id
+            self.num_workers = worker_info.num_workers
+
+            # Divide files among workers
+            files_per_worker_calc = math.ceil(len(self.trajectory_files) / self.num_workers)
+            start_file = self._worker_id * files_per_worker_calc
+            end_file = min(start_file + files_per_worker_calc, len(self.trajectory_files))
+
+            self._worker_files = set(range(start_file, end_file))
+
+    def _load_file(self, file_idx: int):
+        """Load file with worker-local caching"""
+
+        # Lazy worker initialization
+        if self._worker_id is None:
+            self._init_worker()
+
+        # Check worker-local cache
+        if file_idx in self._worker_cache:
+            return self._worker_cache[file_idx]
+
+        # Load file
+        file_path = self.trajectory_files[file_idx]
+        trajectories = torch.load(file_path, map_location='cpu', weights_only=False)
+
+        # Cache management: keep only files_per_worker most recent
+        if len(self._worker_cache) >= self.files_per_worker:
+            # Evict oldest (first key)
+            oldest_file_idx = next(iter(self._worker_cache))
+            del self._worker_cache[oldest_file_idx]
+
+        self._worker_cache[file_idx] = trajectories
+
+        return trajectories
+
+    def __len__(self):
+        return self._length
+
+    def __getitem__(self, idx):
+        file_idx, local_idx = self._idx_map[idx]
+
+        # Lazy worker initialization
+        if self._worker_id is None:
+            self._init_worker()
+
+        # Skip if this file isn't assigned to this worker
+        # (DataLoader will handle distributing indices appropriately)
+        if self._worker_files and file_idx not in self._worker_files:
+            # This shouldn't happen with proper sampler, but handle gracefully
+            # Return from any cached file as fallback
+            if self._worker_cache:
+                fallback_file_idx = next(iter(self._worker_cache))
+                trajectories = self._worker_cache[fallback_file_idx]
+                return trajectories[0]  # Return first trajectory
+            # If no cache, load any file we're responsible for
+            fallback_file_idx = next(iter(self._worker_files))
+            trajectories = self._load_file(fallback_file_idx)
+            return trajectories[0]
+
+        trajectories = self._load_file(file_idx)
+        return trajectories[local_idx]
+
+
+class OptimizedPreprocessedTrajectorySampler(torch.utils.data.Sampler):
+    """
+    Sampler that ensures each worker only gets indices for its assigned files.
+    This maximizes cache hit rates.
+    """
+
+    def __init__(
+        self,
+        dataset: OptimizedPreprocessedTrajectoryDataset,
+        shuffle: bool = True,
+        shuffle_files: bool = True
+    ):
+        """
+        Args:
+            dataset: WorkerAwareTrajectoryDataset instance
+            shuffle: Whether to shuffle trajectories within each file
+            shuffle_files: Whether to shuffle file order (maintains locality)
+        """
+        self.dataset = dataset
+        self.shuffle = shuffle
+        self.shuffle_files = shuffle_files
+
+        # Group indices by file for locality
+        self.file_groups: Dict[int, List[int]] = {}
+        for global_idx, (file_idx, local_idx) in enumerate(dataset._idx_map):
+            if file_idx not in self.file_groups:
+                self.file_groups[file_idx] = []
+            self.file_groups[file_idx].append(global_idx)
+
+    def __iter__(self):
+        # Get file order
+        file_indices = list(self.file_groups.keys())
+        if self.shuffle_files:
+            random.shuffle(file_indices)
+
+        # Yield indices file by file (maintains locality)
+        for file_idx in file_indices:
+            trajectory_indices = self.file_groups[file_idx].copy()
+            if self.shuffle:
+                random.shuffle(trajectory_indices)
+
+            for idx in trajectory_indices:
+                yield idx
+
+    def __len__(self):
+        return len(self.dataset)

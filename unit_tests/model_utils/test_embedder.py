@@ -339,7 +339,7 @@ def test_embed_turn(vgc_json_anon):
 
     iterator.next_turn()
     iterator.simulate_request()
-    iterator.battle._force_switch = [False, True]
+    iterator.battle._force_switch = [False, True]  # type: ignore
 
     emb = embedder.embed(iterator.battle)  # type: ignore
 

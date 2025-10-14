@@ -13,3 +13,5 @@ matplotlib
 pandas
 codecov
 mypy
+scikit-learn
+psutil

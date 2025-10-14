@@ -12,6 +12,8 @@ from elitefurretai.model_utils.battle_dataset import (
     BattleIteratorDataset,
     PreprocessedBattleDataset,
     PreprocessedTrajectoryDataset,
+    OptimizedPreprocessedTrajectoryDataset,
+    OptimizedPreprocessedTrajectorySampler,
 )
 from elitefurretai.model_utils.battle_iterator import BattleIterator
 from elitefurretai.model_utils.embedder import Embedder
@@ -33,6 +35,8 @@ __all__ = [
     "PreprocessedBattleDataset",
     "PreprocessedTrajectoryDataset",
     "BattleIteratorDataset",
+    "OptimizedPreprocessedTrajectoryDataset",
+    "OptimizedPreprocessedTrajectorySampler",
     "Embedder",
     "embedder",
     "MDBO",
