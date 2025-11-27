@@ -13,3 +13,5 @@ src/elitefurretai/agents/abstract_vgc_model_player.py
 .mypy_cache/
 .pytest_cache/
 .env
+.github/copilot-instructions.md
+nohup.out

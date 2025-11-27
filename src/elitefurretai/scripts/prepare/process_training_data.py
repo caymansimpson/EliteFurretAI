@@ -8,51 +8,76 @@ It supports:
 
 import argparse
 import os
+import random
 import time
+import platform
+import warnings
 
 import orjson
 import torch
-from torch.utils.data import DataLoader
 
-from elitefurretai.model_utils import BattleDataset, Embedder
-from elitefurretai.model_utils.train_utils import format_time
+from elitefurretai.model_utils import BattleDataset, Embedder, MDBO
+from elitefurretai.model_utils.train_utils import format_time, save_compressed
+
+
+def save_metadata(save_dir, file_trajectory_counts):
+    """
+    Save metadata file containing trajectory counts for each .pt file.
+    This allows OptimizedPreprocessedTrajectoryDataset to skip loading files during initialization.
+
+    Args:
+        save_dir: Directory where metadata will be saved
+        file_trajectory_counts: List of trajectory counts per file
+    """
+    metadata_path = os.path.join(save_dir, '_metadata.json')
+    metadata = {'file_trajectory_counts': file_trajectory_counts}
+
+    with open(metadata_path, 'wb') as f:
+        f.write(orjson.dumps(metadata))
+
+    print(f"\nMetadata saved to {metadata_path}")
 
 
 # This function takes in a list of filepaths for BattleData files and saves preprocessed trajectories in chunks
 def trajectories(
-    battle_filepath, save_dir, beginning_pct, end_pct, chunk_size=2048, batch_size=512
+    files,
+    save_dir,
+    chunk_size=256,
+    batch_size=32,
+    auxiliary_objectives=False,
+    num_workers=4,
+    compressed=True,
 ):
     """
     Loads battles, processes them into trajectories, and saves them in manageable chunks.
     Each output file will contain up to `chunk_size` trajectories to avoid huge files.
 
     Args:
-        battle_filepath: Path to JSON file containing list of battle files
+        files: List of battle file paths to process
         save_dir: Directory where processed trajectories will be saved
-        beginning_pct: Starting percentage of battles to process (0.0-1.0)
-        end_pct: Ending percentage of battles to process (0.0-1.0)
         chunk_size: Number of trajectories per output file
         batch_size: Batch size for data loader
+        auxiliary_objectives: Whether to include auxiliary objectives like move order, KO order, and switch order
+        num_workers: Number of worker processes for data loading
     """
 
-    # Load the list of battle file paths from a JSON file
-    files = []
-    with open(battle_filepath, "rb") as f:
-        files = orjson.loads(f.read())
-    files = files[int(len(files) * beginning_pct) : int(len(files) * end_pct)]
-    print(f"Loaded {len(files)} files!")
-    emb = Embedder(format="gen9vgc2025regh", feature_set="full", omniscient=False)
+    print(f"Processing {len(files)} battle files into trajectories...")
+
+    # Create an Embedder instance for feature extraction
+    emb = Embedder(format="gen9vgc2023regulationc", feature_set="full", omniscient=False)
 
     # Create a BattleDataset that yields full trajectories (one per __getitem__)
-    dataset = BattleDataset(files, embedder=emb, steps_per_battle=40)
+    dataset = BattleDataset(files, embedder=emb, steps_per_battle=17)
+
     # Use a DataLoader to iterate through the dataset one trajectory at a time
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=(os.cpu_count() or 0))
+    dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers)
 
     print("Starting data loading loop")
     os.makedirs(save_dir, exist_ok=True)
+
     # Process batches and save trajectories
     trajectories = []
-    batch_count = 0
+    file_trajectory_counts = []  # Track count per file for metadata
     file_count = 0
     start = time.time()
     num_trajectories_processed = 0
@@ -67,51 +92,68 @@ def trajectories(
             if valid_steps == 0:
                 continue
 
-            # Extract data for valid steps only
-            trajectories.append(
-                {
-                    "states": data["states"][i].clone(),
-                    "actions": data["actions"][i].clone(),
-                    "action_masks": data["action_masks"][i].clone(),
-                    "wins": data["wins"][i].clone(),
-                    "move_orders": data["move_orders"][i].clone(),
-                    "kos": data["kos"][i].clone(),
-                    "switches": data["switches"][i].clone(),
-                    "masks": data["masks"][i].clone(),
-                }
-            )
+            to_store = {
+                "states": data["states"][i].to(torch.float16),
+                "actions": data["actions"][i],
+                "action_masks": data["action_masks"][i].to(torch.bool),
+                "wins": data["wins"][i].to(torch.float16),
+                "masks": data["masks"][i].to(torch.bool),
+            }
+
+            if auxiliary_objectives:
+                to_store["move_orders"] = data["move_orders"][i]
+                to_store["kos"] = data["kos"][i]
+                to_store["switches"] = data["switches"][i]
+
+            trajectories.append(to_store)
             num_trajectories_processed += 1
 
-            time_taken = format_time(time.time() - start)
-            time_left = format_time(
-                (time.time() - start) / num_trajectories_processed * (len(files) - num_trajectories_processed)
-            )
-            print(
-                f"\033[2K\rProcessed trajectory #{num_trajectories_processed} in {time_taken}. Estimated time left: {time_left}",
-                end="",
-            )
+            # Save trajectories in chunks
+            if len(trajectories) >= chunk_size:
+                save_path = os.path.join(save_dir, f"trajectories_{file_count:06d}.pt")
+                if compressed:
+                    save_compressed(trajectories, save_path + ".zst")
+                else:
+                    torch.save(trajectories, save_path)
+                file_trajectory_counts.append(len(trajectories))  # Record count
+                trajectories = []
+                file_count += 1
 
-        batch_count += 1
-
-        # Save trajectories in chunks
-        if len(trajectories) >= chunk_size:
-            save_path = os.path.join(save_dir, f"trajectories_{file_count}.pt")
-            torch.save(trajectories, save_path)
-            trajectories = []
-            file_count += 1
+        time_taken = format_time(time.time() - start)
+        time_left = format_time(
+            (time.time() - start) / num_trajectories_processed * (len(files) * 2 - num_trajectories_processed)
+        )
+        perc = (num_trajectories_processed) / len(files) / 2 * 100  # two trajectories per battle
+        print(
+            f"\033[2K\rProcessed trajectory #{num_trajectories_processed} ({perc:.2f}%) in {time_taken}. Estimated time left: {time_left}",
+            end="",
+        )
 
     # Save any remaining trajectories
     if trajectories:
-        save_path = os.path.join(save_dir, f"trajectories_{file_count}.pt")
-        torch.save(trajectories, save_path)
+        save_path = os.path.join(save_dir, f"trajectories_{file_count:06d}.pt")
+        if compressed:
+            save_compressed(trajectories, save_path + ".zst")
+        else:
+            torch.save(trajectories, save_path)
+        file_trajectory_counts.append(len(trajectories))  # Record count
+
+    # Save metadata file
+    save_metadata(save_dir, file_trajectory_counts)
 
     print(
-        f"Processing complete in {format_time(time.time() - start)}. {file_count + 1} trajectory files saved to {save_dir}"
+        f"\nProcessing complete in {format_time(time.time() - start)}. {file_count + 1} trajectory files saved to {save_dir}"
     )
 
 
 def teampreview(
-    battle_filepath, save_dir, beginning_pct, end_pct, chunk_size=8096, batch_size=1
+    files,
+    save_dir,
+    chunk_size=8096,
+    batch_size=1,
+    auxiliary_objectives=False,
+    num_workers=4,
+    compressed=True,
 ):
     """
     Loads battles, processes them into trajectories, and saves them in manageable chunks,
@@ -120,36 +162,30 @@ def teampreview(
     Each output file will contain up to `chunk_size` trajectories to avoid huge files.
 
     Args:
-        battle_filepath: Path to JSON file containing list of battle files
+        files: List of battle file paths to process
         save_dir: Directory where processed teampreview data will be saved
-        beginning_pct: Starting percentage of battles to process (0.0-1.0)
-        end_pct: Ending percentage of battles to process (0.0-1.0)
         chunk_size: Number of trajectories per output file
         batch_size: Batch size for data loader
+        auxiliary_objectives: Whether to include auxiliary objectives like move order, KO order, and switch order
     """
 
-    # Load the list of battle file paths from a JSON file
-    files = []
-    with open(battle_filepath, "rb") as f:
-        files = orjson.loads(f.read())
-
-    files = files[int(len(files) * beginning_pct) : int(len(files) * end_pct)]
-
-    print(f"Loaded {len(files)} files!")
+    print(f"Processing {len(files)} battle files into teampreview data...")
 
     dataset = BattleDataset(files, steps_per_battle=1)
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=4)
+    dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers)
 
     print("Starting training loop")
     os.makedirs(save_dir, exist_ok=True)
 
     # Process batches and save teampreview data
     teampreview_data = []
-    batch_count = 0
+    file_trajectory_counts = []  # Track count per file for metadata
     file_count = 0
+    num_trajectories_processed = 0
     start = time.time()
 
     for data in dataloader:
+
         # data is a dictionary of tensors
         batch_size = data["states"].size(0)
 
@@ -159,65 +195,79 @@ def teampreview(
                 continue
 
             # Extract teampreview data
-            teampreview_data.append(
-                {
-                    "states": data["states"][i, 0].clone(),
-                    "actions": data["actions"][i, 0].clone(),
-                    "action_masks": data["action_masks"][i, 0].clone(),
-                    "wins": data["wins"][i, 0].clone(),
-                    "move_orders": data["move_orders"][i, 0].clone(),
-                    "kos": data["kos"][i, 0].clone(),
-                    "switches": data["switches"][i, 0].clone(),
-                    "masks": data["masks"][i, 0].clone(),
-                }
-            )
+            to_store = {
+                "states": data["states"][i, 0],
+                "actions": data["actions"][i, 0],
+                "action_masks": data["action_masks"][i, 0, :MDBO.teampreview_space()],
+                "wins": data["wins"][i, 0],
+                "masks": data["masks"][i, 0],
+            }
 
-            time_taken = format_time(time.time() - start)
-            time_left = format_time(
-                (time.time() - start) / (file_count + 1) * (len(files) - file_count)
-            )
-            print(
-                f"\033[2K\rProcessed trajectory #{file_count} in {time_taken}. Estimated time left: {time_left}",
-                end="",
-            )
+            if auxiliary_objectives:
+                to_store["move_orders"] = data["move_orders"][i, 0]
+                to_store["kos"] = data["kos"][i, 0]
+                to_store["switches"] = data["switches"][i, 0]
 
-        batch_count += 1
+            teampreview_data.append(to_store)
 
-        # Save teampreview data in chunks
-        if len(teampreview_data) >= chunk_size:
-            save_path = os.path.join(save_dir, f"teampreview_{file_count}.pt")
-            torch.save(teampreview_data, save_path)
-            teampreview_data = []
-            file_count += 1
+            num_trajectories_processed += 1
+
+            # Save teampreview data in chunks
+            if len(teampreview_data) >= chunk_size:
+                save_path = os.path.join(save_dir, f"teampreview_{file_count:06d}.pt")
+                if compressed:
+                    save_compressed(teampreview_data, save_path + ".zst")
+                else:
+                    torch.save(teampreview_data, save_path)
+                file_trajectory_counts.append(len(teampreview_data))  # Record count
+                teampreview_data = []
+                file_count += 1
+
+        time_taken = format_time(time.time() - start)
+        time_left = format_time(
+            (time.time() - start) / (num_trajectories_processed) * (len(files) * 2 - num_trajectories_processed)
+        )
+        perc = (num_trajectories_processed) / len(files) / 2 * 100  # two trajectories per battle
+        print(
+            f"\033[2K\rProcessed trajectory #{num_trajectories_processed} ({perc:.2f}%) in {time_taken}. Estimated time left: {time_left}",
+            end="",
+        )
 
     # Save any remaining teampreview data
     if teampreview_data:
-        save_path = os.path.join(save_dir, f"teampreview_{file_count}.pt")
-        torch.save(teampreview_data, save_path)
+        save_path = os.path.join(save_dir, f"teampreview_{file_count:06d}.pt")
+        if compressed:
+            save_compressed(teampreview_data, save_path + ".zst")
+        else:
+            torch.save(teampreview_data, save_path)
+        file_trajectory_counts.append(len(teampreview_data))  # Record count
+
+    # Save metadata file
+    save_metadata(save_dir, file_trajectory_counts)
 
     print(
-        f"Processing complete in {format_time(time.time() - start)}. {file_count + 1} trajectory files saved to {save_dir}"
+        f"\nProcessing complete in {format_time(time.time() - start)}. {file_count + 1} trajectory files saved to {save_dir}"
     )
 
 
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
-        description="Process Pokémon battle data into training datasets",
+        description="Process Pokémon battle data into train/test/val datasets",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Process full trajectories (all turns)
-  python process_training_data.py battles.json data/processed_data 0.0 1.0 --mode trajectories --chunk-size 2048 --batch-size 512
+  # Process full trajectories with default 90/5/5 split
+  python process_training_data.py battles.json output_folder --mode trajectories
 
-  # Process only teampreview data
-  python process_training_data.py battles.json data/teampreview_data 0.0 1.0 --mode teampreview --chunk-size 8096
+  # Process teampreview data with custom 80/10/10 split
+  python process_training_data.py battles.json output_folder --mode teampreview --train-pct 0.8 --test-pct 0.1 --val-pct 0.1
 
-  # Process only the first 10% of battles for trajectories
-  python process_training_data.py battles.json data/processed_data 0.0 0.1 --mode trajectories
+  # Process with custom seed and chunk size
+  python process_training_data.py battles.json output_folder --mode trajectories --seed 42 --chunk-size 512
 
-  # Process the second half of battles for teampreview
-  python process_training_data.py battles.json data/processed_data 0.5 1.0 --mode teampreview
+  # Process with auxiliary objectives and no compression
+  python process_training_data.py battles.json output_folder --mode trajectories --auxiliary-objectives --no-compressed
         """,
     )
 
@@ -228,15 +278,9 @@ Examples:
         help="Path to JSON file containing list of battle files",
     )
     parser.add_argument(
-        "save_dir", type=str, help="Directory where processed data will be saved"
-    )
-    parser.add_argument(
-        "beginning_pct",
-        type=float,
-        help="Starting percentage of battles to process (0.0-1.0)",
-    )
-    parser.add_argument(
-        "end_pct", type=float, help="Ending percentage of battles to process (0.0-1.0)"
+        "output_folder",
+        type=str,
+        help="Output folder where train/test/val subdirectories will be created",
     )
 
     # Optional arguments
@@ -248,16 +292,56 @@ Examples:
         help="Processing mode: full trajectories or teampreview only (default: trajectories)",
     )
     parser.add_argument(
+        "--train-pct",
+        type=float,
+        default=0.9,
+        help="Percentage of battles for training set (default: 0.9)",
+    )
+    parser.add_argument(
+        "--test-pct",
+        type=float,
+        default=0.05,
+        help="Percentage of battles for test set (default: 0.05)",
+    )
+    parser.add_argument(
+        "--val-pct",
+        type=float,
+        default=0.05,
+        help="Percentage of battles for validation set (default: 0.05)",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=21,
+        help="Random seed for reproducible train/test/val split (default: 21)",
+    )
+    parser.add_argument(
         "--chunk-size",
         type=int,
-        default=None,
-        help="Number of trajectories per output file (default: 2048 for trajectories, 8096 for teampreview)",
+        default=8192,
+        help="Number of trajectories per output file (default: 8192)",
     )
     parser.add_argument(
         "--batch-size",
         type=int,
-        default=None,
-        help="Batch size for data loading (default: 512 for trajectories, 1 for teampreview)",
+        default=32,
+        help="Batch size for data loading (default: 32)",
+    )
+    parser.add_argument(
+        "--auxiliary-objectives",
+        action="store_true",
+        help="Include auxiliary objectives like move order, KO order, and switch order",
+    )
+    parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=min(4, (os.cpu_count() or 0)),
+        help="Number of worker processes for data loading (default: min(4, number of CPUs))",
+    )
+    parser.add_argument(
+        "--no-compressed",
+        action="store_true",
+        help="Disable compression of output files (default: files are compressed with zst)",
     )
 
     return parser.parse_args()
@@ -266,35 +350,104 @@ Examples:
 if __name__ == "__main__":
     args = parse_args()
 
-    # Set default chunk sizes and batch sizes based on mode if not specified
-    if args.chunk_size is None:
-        args.chunk_size = 2048 if args.mode == "trajectories" else 8096
+    # Validate split percentages
+    total_pct = args.train_pct + args.test_pct + args.val_pct
+    if abs(total_pct - 1.0) > 0.001:
+        raise ValueError(f"Train/test/val percentages must sum to 1.0, got {total_pct}")
 
-    if args.batch_size is None:
-        args.batch_size = 512 if args.mode == "trajectories" else 1
+    # On Windows, PyTorch's default shared memory strategy can hit limits with large datasets
+    # on specifially Windows, that happens with multiprocessing DataLoader
+    # See https://pytorch.org/docs/stable/multiprocessing.html#sharing-strategies
+    if platform.system().lower() == 'windows' or "microsoft" in platform.uname()[2].lower():
+        # Use file_system sharing to avoid Windows shared memory limits
+        torch.multiprocessing.set_sharing_strategy('file_system')
+        warnings.filterwarnings('ignore', message='.*socket.send.*')
+        print("Heads Up! Using 'file_system' sharing strategy for PyTorch multiprocessing on Windows")
 
-    # Call the appropriate function based on the selected mode
-    if args.mode == "trajectories":
-        print(
-            f"Processing full trajectories with chunk size {args.chunk_size} and batch size {args.batch_size}"
-        )
-        trajectories(
-            args.battle_filepath,
-            args.save_dir,
-            args.beginning_pct,
-            args.end_pct,
-            chunk_size=args.chunk_size,
-            batch_size=args.batch_size,
-        )
-    else:  # teampreview mode
-        print(
-            f"Processing teampreview data with chunk size {args.chunk_size} and batch size {args.batch_size}"
-        )
-        teampreview(
-            args.battle_filepath,
-            args.save_dir,
-            args.beginning_pct,
-            args.end_pct,
-            chunk_size=args.chunk_size,
-            batch_size=args.batch_size,
-        )
+    # Load all battle files
+    print(f"Loading battle files from {args.battle_filepath}...")
+    with open(args.battle_filepath, "rb") as f:
+        all_files = orjson.loads(f.read())
+    print(f"Loaded {len(all_files)} battle files")
+
+    # Set random seed for reproducibility
+    random.seed(args.seed)
+    random.shuffle(all_files)
+    print(f"Shuffled battles with seed={args.seed}")
+
+    # Split into train/test/val
+    n_train = int(len(all_files) * args.train_pct)
+    n_test = int(len(all_files) * args.test_pct)
+    n_val = int(len(all_files) * args.val_pct)
+
+    train_files = all_files[:n_train]
+    test_files = all_files[n_train:n_train + n_test]
+    val_files = all_files[n_train + n_test:n_train + n_test + n_val]
+
+    print(f"\nSplit summary (seed={args.seed}):")
+    print(f"  Train: {len(train_files)} battles ({len(train_files) / len(all_files) * 100:.1f}%)")
+    print(f"  Test:  {len(test_files)} battles ({len(test_files) / len(all_files) * 100:.1f}%)")
+    print(f"  Val:   {len(val_files)} battles ({len(val_files) / len(all_files) * 100:.1f}%)")
+
+    # Create output directories
+    train_dir = os.path.join(args.output_folder, "train")
+    test_dir = os.path.join(args.output_folder, "test")
+    val_dir = os.path.join(args.output_folder, "val")
+
+    # Determine processing function
+    process_fn = trajectories if args.mode == "trajectories" else teampreview
+    compressed = not args.no_compressed
+
+    print(f"\nProcessing mode: {args.mode}")
+    print(f"Chunk size: {args.chunk_size}")
+    print(f"Batch size: {args.batch_size}")
+    print(f"Auxiliary objectives: {args.auxiliary_objectives}")
+    print(f"Compressed: {compressed}")
+
+    # Process each split
+    print("\n" + "=" * 60)
+    print("PROCESSING TRAINING SET")
+    print("=" * 60)
+    process_fn(
+        train_files,
+        train_dir,
+        chunk_size=args.chunk_size,
+        batch_size=args.batch_size,
+        auxiliary_objectives=args.auxiliary_objectives,
+        num_workers=args.num_workers,
+        compressed=compressed,
+    )
+
+    print("\n" + "=" * 60)
+    print("PROCESSING TEST SET")
+    print("=" * 60)
+    process_fn(
+        test_files,
+        test_dir,
+        chunk_size=args.chunk_size,
+        batch_size=args.batch_size,
+        auxiliary_objectives=args.auxiliary_objectives,
+        num_workers=args.num_workers,
+        compressed=compressed,
+    )
+
+    print("\n" + "=" * 60)
+    print("PROCESSING VALIDATION SET")
+    print("=" * 60)
+    process_fn(
+        val_files,
+        val_dir,
+        chunk_size=args.chunk_size,
+        batch_size=args.batch_size,
+        auxiliary_objectives=args.auxiliary_objectives,
+        num_workers=args.num_workers,
+        compressed=compressed,
+    )
+
+    print("\n" + "=" * 60)
+    print("ALL PROCESSING COMPLETE!")
+    print("=" * 60)
+    print("Output saved to:")
+    print(f"  Train: {train_dir}")
+    print(f"  Test:  {test_dir}")
+    print(f"  Val:   {val_dir}")

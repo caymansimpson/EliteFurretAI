@@ -1,7 +1,6 @@
 import os
 from typing import Any, Dict, List, Optional, Union
 import math
-import random
 
 import orjson
 import torch
@@ -13,17 +12,10 @@ from elitefurretai.model_utils.embedder import Embedder
 from elitefurretai.model_utils.encoder import MDBO, MoveOrderEncoder
 from elitefurretai.utils.battle_order_validator import is_valid_order
 from elitefurretai.utils.evaluate_state import evaluate_position_advantage
+from elitefurretai.model_utils.train_utils import load_compressed
 
 import platform
 import warnings
-
-# On Windows, PyTorch's default shared memory strategy can hit limits with large datasets
-# on specifially Windows, that happens with multiprocessing DataLoader
-# See https://pytorch.org/docs/stable/multiprocessing.html#sharing-strategies
-if platform.system() == 'Windows':
-    # Use file_system sharing to avoid Windows shared memory limits
-    torch.multiprocessing.set_sharing_strategy('file_system')
-    warnings.filterwarnings('ignore', message='.*socket.send.*')
 
 
 # An implementation of Dataset for a series of showdown battles stored in a directory as BattleData
@@ -328,6 +320,7 @@ class PreprocessedBattleDataset(Dataset):
     def __init__(
         self,
         folder_path,
+        metadata_filename: str = "_metadata.json",
         embedder: Embedder = Embedder(
             format="gen9vgc2023regulationc", feature_set="full", omniscient=True
         ),
@@ -342,19 +335,42 @@ class PreprocessedBattleDataset(Dataset):
             [
                 os.path.join(folder_path, f)
                 for f in os.listdir(folder_path)
-                if f.endswith(".pt")
+                if f.endswith(".pt.zst")
             ]
         )
 
         # Build a mapping from global step index to (file_idx, traj_idx, step_idx)
         self._idx_map = []
-        for file_idx, file_path in enumerate(self.trajectory_files):
-            trajectories = torch.load(file_path, map_location="cpu")
-            for traj_idx, traj_data in enumerate(trajectories):
-                states = traj_data["states"]
-                num_steps = states.shape[0]
-                for step_idx in range(num_steps):
-                    self._idx_map.append((file_idx, traj_idx, step_idx))
+
+        # If metadata file exists, use it to avoid reading all files
+        metadata_path = os.path.join(folder_path, metadata_filename)
+        if os.path.exists(metadata_path):
+            # Load trajectory counts from metadata file
+            with open(metadata_path, 'r') as f:
+                metadata = orjson.loads(f.read())
+
+            file_trajectory_counts = metadata.get('file_trajectory_counts', [])
+            if len(file_trajectory_counts) != len(self.trajectory_files):
+                raise ValueError("Metadata file trajectory counts do not match number of trajectory files.")
+
+            # Build index map using metadata
+            for file_idx, num_trajectories in enumerate(file_trajectory_counts):
+                # Need to load one file to get steps per trajectory
+                # Assume all trajectories in a file have same length (based on steps_per_battle)
+                for traj_idx in range(num_trajectories):
+                    for step_idx in range(steps_per_battle):
+                        self._idx_map.append((file_idx, traj_idx, step_idx))
+        else:
+            # No metadata file; load each file to count trajectories and steps
+            for file_idx, file_path in enumerate(self.trajectory_files):
+                trajectories = torch.load(file_path, map_location="cpu")
+                for traj_idx, traj_data in enumerate(trajectories):
+                    states = traj_data["states"]
+                    num_steps = states.shape[0]
+                    for step_idx in range(num_steps):
+                        self._idx_map.append((file_idx, traj_idx, step_idx))
+                del trajectories  # Free memory
+
         self._length = len(self._idx_map)
 
         # Cache for last loaded file
@@ -366,79 +382,31 @@ class PreprocessedBattleDataset(Dataset):
     def __getitem__(self, idx):
         file_idx, traj_idx, step_idx = self._idx_map[idx]
         if self._cache["file_idx"] != file_idx:
-            self._cache["trajectories"] = torch.load(
+            self._cache["trajectories"] = load_compressed(
                 self.trajectory_files[file_idx], map_location="cpu"
             )
             self._cache["file_idx"] = file_idx
         data = self._cache["trajectories"][traj_idx]
-        return {
-            "states": data["states"][step_idx],
-            "actions": data["actions"][step_idx],
-            "action_masks": data["action_masks"][step_idx],
-            "wins": data["wins"][step_idx],
-            "move_orders": data["move_orders"][step_idx],
-            "kos": data["kos"][step_idx],
-            "switches": data["switches"][step_idx],
-            "masks": data["masks"][step_idx],
-        }
 
-    def embedding_size(self) -> int:
-        # Returns the embedding size used by the embedder
-        return self.embedder.embedding_size
+        # Build return dictionary dynamically based on what's in the data
+        result = {}
+        for key in data.keys():
+            value = data[key]
+            if isinstance(value, torch.Tensor):
+                # For teampreview data (steps_per_battle=1), tensors are already single-step (no step dimension)
+                # For trajectory data, tensors have a step dimension that needs indexing
+                if self.steps_per_battle == 1 or value.dim() <= 1:
+                    # Teampreview: return as-is (already single step)
+                    # or 0-d/1-d tensors that shouldn't be indexed
+                    result[key] = value
+                else:
+                    # Trajectory: index into the step dimension
+                    result[key] = value[step_idx]
+            else:
+                # For non-tensor data, return as-is
+                result[key] = value
 
-
-class PreprocessedTrajectoryDataset(Dataset):
-    """
-    Loads full trajectories from multiple .pt files, only one file in memory at a time.
-    Each __getitem__ returns (states, actions, action_masks, wins, masks) for one trajectory.
-    """
-
-    def __init__(
-        self,
-        folder_path,
-        embedder: Embedder = Embedder(
-            format="gen9vgc2023regulationc", feature_set="full", omniscient=True
-        ),
-    ):
-        self.embedder = embedder
-
-        self.trajectory_files = sorted(
-            [
-                os.path.join(folder_path, f)
-                for f in os.listdir(folder_path)
-                if f.endswith(".pt")
-            ]
-        )
-
-        # Build index mapping: for each file, how many trajectories does it contain?
-        self.file_lengths = []
-        self._length = 0
-        for file in self.trajectory_files:
-            n = len(torch.load(file, map_location="cpu"))
-            self.file_lengths.append(n)
-            self._length += n
-
-        # Build global idx -> (file_idx, local_idx)
-        self._idx_map = []
-        for file_idx, file_len in enumerate(self.file_lengths):
-            for local_idx in range(file_len):
-                self._idx_map.append((file_idx, local_idx))
-
-        # Cache for last loaded file
-        self._cache = {"file_idx": None, "trajectories": None}
-
-    def __len__(self):
-        return self._length
-
-    def __getitem__(self, idx):
-        file_idx, local_idx = self._idx_map[idx]
-        if self._cache["file_idx"] != file_idx:
-            self._cache["trajectories"] = torch.load(
-                self.trajectory_files[file_idx], map_location="cpu"
-            )
-            self._cache["file_idx"] = file_idx
-        assert self._cache["trajectories"]
-        return self._cache["trajectories"][local_idx]
+        return result
 
     def embedding_size(self) -> int:
         # Returns the embedding size used by the embedder
@@ -457,59 +425,88 @@ class OptimizedPreprocessedTrajectoryDataset(Dataset):
     The cache exists, but only within each worker's isolated memory. A normally implemented cache will not work with multiprocessing on Windows.
 
     Instead, we need to implement smarter file-level batching with worker-aware caching. The key insight to this dataset: Have each worker
-    "own" specific files; each worker loads and caches only its assigned files.
+    "own" specific files; each worker loads and caches only its assigned files. Note that this also requires a custom Sampler, and also
+    for us to set some system level parameters to avoid Windows shared memory limits.
     """
     def __init__(
         self,
         folder_path: str,
+        metadata_filename: str = "_metadata.json",
         embedder: Embedder = Embedder(
-            format="gen9vgc2023regulationc", feature_set="full", omniscient=True
+            format="gen9vgc2023regulationc", feature_set="full", omniscient=False
         ),
         files_per_worker: Union[int, str] = "default",
-        num_workers: int = 4,
     ):
         """
         Args:
             folder_path: Path to folder containing .pt files
+            metadata_filename: filename to metadata file containing trajectory counts; prevents read through dataset on init if exists
             embedder: Your embedder instance
             files_per_worker: How many files each worker should cache at once
             verbose: Print debug info
         """
+
+        # On Windows, PyTorch's default shared memory strategy can hit limits with large datasets
+        # on specifially Windows, that happens with multiprocessing DataLoader
+        # See https://pytorch.org/docs/stable/multiprocessing.html#sharing-strategies
+        if platform.system() == 'Windows' or "microsoft" in platform.uname()[2].lower():
+            # Use file_system sharing to avoid Windows shared memory limits
+            torch.multiprocessing.set_sharing_strategy('file_system')
+            warnings.filterwarnings('ignore', message='.*socket.send.*')
+
         self.folder_path = folder_path
         self.embedder = embedder
 
         self._worker_id: Optional[int] = None
-        self.num_workers: int = num_workers
         self._worker_files: Optional[set] = None
 
         # Get all trajectory files
         self.trajectory_files = sorted([
             os.path.join(folder_path, f)
             for f in os.listdir(folder_path)
-            if f.endswith('.pt')
+            if f.endswith('.pt.zst')
         ])
 
+        # If no files found, raise error
         if not self.trajectory_files:
-            raise ValueError(f"No .pt files found in {folder_path}")
+            raise ValueError(f"No .pt.zst files found in {folder_path}")
 
-        if isinstance(files_per_worker, int) :
+        # Set how many files each worker should cache
+        if isinstance(files_per_worker, int):
             self.files_per_worker: int = files_per_worker
         elif files_per_worker == "default":
-            self.files_per_worker = max(2, len(self.trajectory_files) // (self.num_workers * 2))
+            self.files_per_worker = max(2, len(self.trajectory_files) // ((os.cpu_count() or 2) * 2))
 
         # Build index: global_idx -> (file_idx, local_idx)
         self._idx_map = []
         self.file_trajectory_counts = []
 
-        for file_idx, file_path in enumerate(self.trajectory_files):
-            trajectories = torch.load(file_path, map_location='cpu', weights_only=False)
-            num_trajectories = len(trajectories)
-            self.file_trajectory_counts.append(num_trajectories)
+        # If metadata file provided, use it to avoid reading all files now
+        if os.path.exists(os.path.join(self.folder_path, metadata_filename)):
+            # Load trajectory counts from metadata file; it is just a JSON with a list of counts
+            # of number of trajectories per file
+            with open(os.path.join(self.folder_path, metadata_filename), 'r') as f:
+                metadata = orjson.loads(f.read())
 
-            for local_idx in range(num_trajectories):
-                self._idx_map.append((file_idx, local_idx))
+            self.file_trajectory_counts = metadata.get('file_trajectory_counts', [])
+            if len(self.file_trajectory_counts) != len(self.trajectory_files):
+                raise ValueError("Metadata file trajectory counts do not match number of trajectory files.")
 
-            del trajectories
+            for file_idx, num_trajectories in enumerate(self.file_trajectory_counts):
+                for local_idx in range(num_trajectories):
+                    self._idx_map.append((file_idx, local_idx))
+
+        else:
+            # No metadata file; load each file to count trajectories
+            for file_idx, file_path in enumerate(self.trajectory_files):
+                trajectories = torch.load(file_path, map_location='cpu', weights_only=False)
+                num_trajectories = len(trajectories)
+                self.file_trajectory_counts.append(num_trajectories)
+
+                for local_idx in range(num_trajectories):
+                    self._idx_map.append((file_idx, local_idx))
+
+                del trajectories  # Free memory
 
         self._length = len(self._idx_map)
 
@@ -518,6 +515,7 @@ class OptimizedPreprocessedTrajectoryDataset(Dataset):
         self._worker_files = None  # Files this worker is responsible for
         self._worker_cache: dict = {}  # This worker's file cache
 
+    # Defines how we initialize and run each worker
     def _init_worker(self):
         """Initialize worker-specific state. Called automatically by DataLoader."""
         worker_info = torch.utils.data.get_worker_info()
@@ -552,7 +550,7 @@ class OptimizedPreprocessedTrajectoryDataset(Dataset):
 
         # Load file
         file_path = self.trajectory_files[file_idx]
-        trajectories = torch.load(file_path, map_location='cpu', weights_only=False)
+        trajectories = load_compressed(file_path, map_location='cpu')
 
         # Cache management: keep only files_per_worker most recent
         if len(self._worker_cache) >= self.files_per_worker:
@@ -565,7 +563,7 @@ class OptimizedPreprocessedTrajectoryDataset(Dataset):
         return trajectories
 
     def __len__(self):
-        return self._length
+        return len(self._idx_map)
 
     def __getitem__(self, idx):
         file_idx, local_idx = self._idx_map[idx]
@@ -583,6 +581,7 @@ class OptimizedPreprocessedTrajectoryDataset(Dataset):
                 fallback_file_idx = next(iter(self._worker_cache))
                 trajectories = self._worker_cache[fallback_file_idx]
                 return trajectories[0]  # Return first trajectory
+
             # If no cache, load any file we're responsible for
             fallback_file_idx = next(iter(self._worker_files))
             trajectories = self._load_file(fallback_file_idx)
@@ -590,51 +589,3 @@ class OptimizedPreprocessedTrajectoryDataset(Dataset):
 
         trajectories = self._load_file(file_idx)
         return trajectories[local_idx]
-
-
-class OptimizedPreprocessedTrajectorySampler(torch.utils.data.Sampler):
-    """
-    Sampler that ensures each worker only gets indices for its assigned files.
-    This maximizes cache hit rates.
-    """
-
-    def __init__(
-        self,
-        dataset: OptimizedPreprocessedTrajectoryDataset,
-        shuffle: bool = True,
-        shuffle_files: bool = True
-    ):
-        """
-        Args:
-            dataset: WorkerAwareTrajectoryDataset instance
-            shuffle: Whether to shuffle trajectories within each file
-            shuffle_files: Whether to shuffle file order (maintains locality)
-        """
-        self.dataset = dataset
-        self.shuffle = shuffle
-        self.shuffle_files = shuffle_files
-
-        # Group indices by file for locality
-        self.file_groups: Dict[int, List[int]] = {}
-        for global_idx, (file_idx, local_idx) in enumerate(dataset._idx_map):
-            if file_idx not in self.file_groups:
-                self.file_groups[file_idx] = []
-            self.file_groups[file_idx].append(global_idx)
-
-    def __iter__(self):
-        # Get file order
-        file_indices = list(self.file_groups.keys())
-        if self.shuffle_files:
-            random.shuffle(file_indices)
-
-        # Yield indices file by file (maintains locality)
-        for file_idx in file_indices:
-            trajectory_indices = self.file_groups[file_idx].copy()
-            if self.shuffle:
-                random.shuffle(trajectory_indices)
-
-            for idx in trajectory_indices:
-                yield idx
-
-    def __len__(self):
-        return len(self.dataset)

@@ -5,15 +5,18 @@ from elitefurretai.model_utils import (
     embedder,
     encoder,
     train_utils,
+    battle_dataloader,
 )
 from elitefurretai.model_utils.battle_data import BattleData
 from elitefurretai.model_utils.battle_dataset import (
     BattleDataset,
     BattleIteratorDataset,
     PreprocessedBattleDataset,
-    PreprocessedTrajectoryDataset,
     OptimizedPreprocessedTrajectoryDataset,
-    OptimizedPreprocessedTrajectorySampler,
+)
+from elitefurretai.model_utils.battle_dataloader import (
+    OptimizedBattleDataLoader,
+    OptimizedPreprocessedSampler,
 )
 from elitefurretai.model_utils.battle_iterator import BattleIterator
 from elitefurretai.model_utils.embedder import Embedder
@@ -24,6 +27,8 @@ from elitefurretai.model_utils.train_utils import (
     flatten_and_filter,
     format_time,
     topk_cross_entropy_loss,
+    save_compressed,
+    load_compressed,
 )
 
 __all__ = [
@@ -33,10 +38,11 @@ __all__ = [
     "battle_iterator",
     "BattleDataset",
     "PreprocessedBattleDataset",
-    "PreprocessedTrajectoryDataset",
     "BattleIteratorDataset",
+    "battle_dataloader",
     "OptimizedPreprocessedTrajectoryDataset",
-    "OptimizedPreprocessedTrajectorySampler",
+    "OptimizedPreprocessedSampler",
+    "OptimizedBattleDataLoader",
     "Embedder",
     "embedder",
     "MDBO",
@@ -48,4 +54,6 @@ __all__ = [
     "flatten_and_filter",
     "topk_cross_entropy_loss",
     "format_time",
+    "save_compressed",
+    "load_compressed",
 ]

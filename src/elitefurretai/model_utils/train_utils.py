@@ -1,5 +1,6 @@
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
-
+from typing import Any, Callable, Dict, List, Optional, Tuple
+import zstd
+import io
 import torch
 
 from elitefurretai.model_utils.encoder import MDBO
@@ -243,6 +244,8 @@ def evaluate(
     has_move_order_head: bool = True,
     has_ko_head: bool = True,
     has_switch_head: bool = True,
+    has_teampreview_head: bool = False,
+    teampreview_idx: Optional[int] = None,
     action_mask_fn: Optional[Callable] = None,
 ) -> Dict[str, float]:
     """
@@ -263,13 +266,13 @@ def evaluate(
     steps = 0
 
     for batch in dataloader:
-        states = batch["states"].to(device)
+        states = batch["states"].to(device).to(torch.float32)
         actions = batch["actions"].to(device)
         action_masks = (
             batch["action_masks"].to(device) if "action_masks" in batch else None
         )
         masks = batch["masks"].to(device) if "masks" in batch else None
-        wins = batch["wins"].to(device) if has_win_head and "wins" in batch else None
+        wins = batch["wins"].to(device).to(torch.float32) if has_win_head and "wins" in batch else None
         move_orders = batch["move_orders"].to(device) if "move_orders" in batch else None
         kos = batch["kos"].to(device) if "kos" in batch else None
         switches = batch["switches"].to(device) if "switches" in batch else None
@@ -279,8 +282,14 @@ def evaluate(
             action_masks = action_mask_fn(states)
 
         # Full forward pass with all heads
-        action_logits = win_logits = move_order_logits = ko_logits = switch_logits = None
-        if (
+        action_logits = win_logits = move_order_logits = ko_logits = switch_logits = teampreview_logits = None
+        if has_teampreview_head:
+            # Three-headed model: (turn_action_logits, teampreview_logits, win_logits)
+            if has_action_head and has_win_head:
+                action_logits, teampreview_logits, win_logits = model(states, masks)
+            else:
+                raise ValueError("Three-headed model requires has_action_head and has_win_head")
+        elif (
             has_win_head
             and has_action_head
             and has_move_order_head
@@ -303,16 +312,45 @@ def evaluate(
             action_logits, win_logits = model(states, masks)
             move_order_logits = ko_logits = switch_logits = None
 
-        # Apply action masks
-        if action_masks is not None and action_logits is not None:
-            masked_action_logits = action_logits.masked_fill(
-                ~action_masks.bool(), float("-inf")
+        # For three-headed models, merge teampreview and turn action logits
+        # Similar to ThreeHeadedModelWrapper logic
+        if has_teampreview_head and teampreview_logits is not None and action_logits is not None:
+            # Identify teampreview samples
+            teampreview_mask = states[:, :, teampreview_idx] == 1  # (batch, seq)
+
+            # Start with turn logits
+            merged_action_logits = action_logits.clone()
+
+            # For teampreview samples, replace with teampreview logits
+            # Zero out all positions for teampreview samples
+            tp_mask_expanded = teampreview_mask.unsqueeze(-1).expand_as(merged_action_logits)
+            merged_action_logits = torch.where(tp_mask_expanded, torch.tensor(float("-inf"), device=merged_action_logits.device), merged_action_logits)
+
+            # Fill in teampreview actions [0:90] for teampreview samples
+            tp_space = MDBO.teampreview_space()
+            merged_action_logits[:, :, :tp_space] = torch.where(
+                teampreview_mask.unsqueeze(-1).expand(-1, -1, tp_space),
+                teampreview_logits,
+                merged_action_logits[:, :, :tp_space]
             )
+
+            # Apply action masks to merged logits
+            if action_masks is not None:
+                masked_action_logits = merged_action_logits.masked_fill(
+                    ~action_masks.bool(), float("-inf")
+                )
+            else:
+                masked_action_logits = merged_action_logits
         else:
-            masked_action_logits = action_logits
+            # Single action head - apply masks normally
+            if action_masks is not None and action_logits is not None:
+                masked_action_logits = action_logits.masked_fill(
+                    ~action_masks.bool(), float("-inf")
+                )
+            else:
+                masked_action_logits = action_logits
 
         # Use helper for flattening and filtering
-
         flat_data = flatten_and_filter(
             states=states,
             action_logits=masked_action_logits,
@@ -366,28 +404,79 @@ def evaluate(
             and valid_action_logits is not None
             and valid_actions is not None
         ):
-            # Update action accuracy metrics
-            action_preds = torch.argmax(valid_action_logits, dim=1)
-            top1_correct = (action_preds == valid_actions).float().sum().item()
-            metrics["action_acc"] += top1_correct
+            # Separate teampreview and turn samples if we have teampreview head
+            if has_teampreview_head and teampreview_idx is not None and valid_states is not None:
+                # Identify teampreview vs turn samples
+                teampreview_mask = valid_states[:, teampreview_idx] == 1
+                turn_mask = ~teampreview_mask
 
-            # Calculate topk_cross_entropy_loss with k=3
-            topk_loss = topk_cross_entropy_loss(valid_action_logits, valid_actions, k=3)
-            metrics["top3_loss"] += topk_loss.item() * valid_actions.size(0)
+                # Process turn samples
+                if turn_mask.any():
+                    turn_logits = valid_action_logits[turn_mask]
+                    turn_actions = valid_actions[turn_mask]
 
-            # Calculate top-k accuracy
-            for k in [1, 3, 5]:
-                if valid_action_logits.size(1) < k:
-                    continue
-                topk_preds = torch.topk(valid_action_logits, k=k, dim=1)[1]
-                topk_correct = (
-                    (topk_preds == valid_actions.unsqueeze(1))
-                    .any(dim=1)
-                    .float()
-                    .sum()
-                    .item()
-                )
-                metrics[f"top{k}_acc"] += topk_correct
+                    # Update turn accuracy metrics
+                    turn_preds = torch.argmax(turn_logits, dim=1)
+                    turn_correct = (turn_preds == turn_actions).float().sum().item()
+                    metrics["turn_acc"] += turn_correct
+                    metrics["turn_steps"] += turn_actions.size(0)
+
+                    # Turn topk loss
+                    turn_topk_loss = topk_cross_entropy_loss(turn_logits, turn_actions, k=3)
+                    metrics["turn_top3_loss"] += turn_topk_loss.item() * turn_actions.size(0)
+
+                    # Turn top-k accuracy
+                    for k in [1, 3, 5]:
+                        if turn_logits.size(-1) >= k:
+                            topk_preds = torch.topk(turn_logits, k=k, dim=-1)[1]
+                            turn_topk_correct = (topk_preds == turn_actions.unsqueeze(-1)).any(dim=-1).float().sum().item()
+                            metrics[f"turn_top{k}_acc"] += turn_topk_correct
+
+                # Process teampreview samples
+                if teampreview_mask.any():
+                    tp_logits = valid_action_logits[teampreview_mask]
+                    tp_actions = valid_actions[teampreview_mask]
+
+                    # Update teampreview accuracy metrics
+                    tp_preds = torch.argmax(tp_logits, dim=1)
+                    tp_correct = (tp_preds == tp_actions).float().sum().item()
+                    metrics["teampreview_acc"] += tp_correct
+                    metrics["teampreview_steps"] += tp_actions.size(0)
+
+                    # Teampreview loss (using regular CE, not topk)
+                    tp_loss = torch.nn.functional.cross_entropy(tp_logits, tp_actions)
+                    metrics["teampreview_top3_loss"] += tp_loss.item() * tp_actions.size(0)
+
+                    # Teampreview top-k accuracy
+                    for k in [1, 3, 5]:
+                        if tp_logits.size(-1) >= k:
+                            topk_preds = torch.topk(tp_logits, k=k, dim=-1)[1]
+                            tp_topk_correct = (topk_preds == tp_actions.unsqueeze(-1)).any(dim=-1).float().sum().item()
+                            metrics[f"teampreview_top{k}_acc"] += tp_topk_correct
+            else:
+                # Original combined metrics (no separation)
+                # Update action accuracy metrics
+                action_preds = torch.argmax(valid_action_logits, dim=1)
+                top1_correct = (action_preds == valid_actions).float().sum().item()
+                metrics["action_acc"] += top1_correct
+
+                # Calculate topk_cross_entropy_loss with k=3
+                topk_loss = topk_cross_entropy_loss(valid_action_logits, valid_actions, k=3)
+                metrics["top3_loss"] += topk_loss.item() * valid_actions.size(0)
+
+                # Calculate top-k accuracy
+                for k in [1, 3, 5]:
+                    if valid_action_logits.size(1) < k:
+                        continue
+                    topk_preds = torch.topk(valid_action_logits, k=k, dim=1)[1]
+                    topk_correct = (
+                        (topk_preds == valid_actions.unsqueeze(1))
+                        .any(dim=1)
+                        .float()
+                        .sum()
+                        .item()
+                    )
+                    metrics[f"top{k}_acc"] += topk_correct
 
         # Update win metrics if available
         if valid_win_logits is not None and valid_wins is not None:
@@ -442,6 +531,26 @@ def evaluate(
         if metrics["top3_loss"] > 0:
             metrics["top3_loss"] /= steps
 
+    # Normalize teampreview metrics separately
+    if metrics.get("teampreview_steps", 0) > 0:
+        metrics["teampreview_acc"] /= metrics["teampreview_steps"]
+        for k in [1, 3, 5]:
+            if metrics.get(f"teampreview_top{k}_acc", 0) > 0:
+                metrics[f"teampreview_top{k}_acc"] /= metrics["teampreview_steps"]
+        if metrics.get("teampreview_top3_loss", 0) > 0:
+            metrics["teampreview_top3_loss"] /= metrics["teampreview_steps"]
+
+    # Normalize turn metrics separately
+    if metrics.get("turn_steps", 0) > 0:
+        metrics["turn_acc"] /= metrics["turn_steps"]
+        for k in [1, 3, 5]:
+            if metrics.get(f"turn_top{k}_acc", 0) > 0:
+                metrics[f"turn_top{k}_acc"] /= metrics["turn_steps"]
+        if metrics.get("turn_top3_loss", 0) > 0:
+            metrics["turn_top3_loss"] /= metrics["turn_steps"]
+
+    # Normalize other metrics
+    if steps > 0:
         if metrics["win_count"] > 0:
             metrics["win_mse"] /= metrics["win_count"]
 
@@ -470,6 +579,7 @@ def analyze(
     has_move_order_head: bool = False,
     has_ko_head: bool = False,
     has_switch_head: bool = False,
+    has_teampreview_head: bool = False,
     action_mask_fn: Optional[Callable] = None,
     teampreview_idx: Optional[int] = None,
     force_switch_indices: Optional[List[int]] = None,
@@ -482,9 +592,11 @@ def analyze(
         model: The model to evaluate
         dataloader: DataLoader for the dataset
         device: Device to run evaluation on
+        has_action_head: Whether model has an action head
         has_win_head: Whether model has a win prediction head
+        has_teampreview_head: Whether model has separate teampreview head
         action_mask_fn: Optional function to create action masks
-        teampreview_idx: Index of teampreview feature in state
+        teampreview_idx: Index of teampreview feature in state (required if has_teampreview_head=True)
         force_switch_indices: Indices of force switch features in state
 
     Returns:
@@ -510,13 +622,13 @@ def analyze(
     }
 
     for batch in dataloader:
-        states = batch["states"].to(device)
+        states = batch["states"].to(device).to(torch.float32)
         actions = batch["actions"].to(device)
         action_masks = (
             batch["action_masks"].to(device) if "action_masks" in batch else None
         )
         masks = batch["masks"].to(device) if "masks" in batch else None
-        wins = batch["wins"].to(device) if has_win_head and "wins" in batch else None
+        wins = batch["wins"].to(device).to(torch.float32) if has_win_head and "wins" in batch else None
         move_orders = batch["move_orders"].to(device) if "move_orders" in batch else None
         kos = batch["kos"].to(device) if "kos" in batch else None
         switches = batch["switches"].to(device) if "switches" in batch else None
@@ -526,8 +638,12 @@ def analyze(
             action_masks = action_mask_fn(states)
 
         # Get model predictions with all heads
-        action_logits = win_logits = move_order_logits = ko_logits = switch_logits = None
-        if (
+        action_logits = teampreview_logits = win_logits = move_order_logits = ko_logits = switch_logits = None
+        if has_teampreview_head:
+            # Three-headed model: turn actions, teampreview, win
+            action_logits, teampreview_logits, win_logits = model(states, masks)
+            move_order_logits = ko_logits = switch_logits = None
+        elif (
             has_win_head
             and has_action_head
             and has_move_order_head
@@ -549,6 +665,29 @@ def analyze(
         ):
             action_logits, win_logits = model(states, masks)
             move_order_logits = ko_logits = switch_logits = None
+
+        # For three-headed models, merge teampreview and turn action logits
+        if has_teampreview_head and teampreview_logits is not None and action_logits is not None:
+            # Identify teampreview samples
+            teampreview_mask = states[:, :, teampreview_idx] == 1  # (batch, seq)
+
+            # Start with turn logits
+            merged_action_logits = action_logits.clone()
+
+            # For teampreview samples, replace with teampreview logits
+            # Zero out all positions for teampreview samples
+            tp_mask_expanded = teampreview_mask.unsqueeze(-1).expand_as(merged_action_logits)
+            merged_action_logits = torch.where(tp_mask_expanded, torch.tensor(float("-inf"), device=merged_action_logits.device), merged_action_logits)
+
+            # Fill in teampreview actions [0:90] for teampreview samples
+            tp_space = MDBO.teampreview_space()
+            merged_action_logits[:, :, :tp_space] = torch.where(
+                teampreview_mask.unsqueeze(-1).expand(-1, -1, tp_space),
+                teampreview_logits,
+                merged_action_logits[:, :, :tp_space]
+            )
+
+            action_logits = merged_action_logits
 
         # Apply action masks
         if action_masks is not None and action_logits is not None:
@@ -617,14 +756,14 @@ def analyze(
                     print(
                         f"    Action accuracy: {subcategory_data.get('action_acc', 0):.4f}"
                     )
-                    print(f"    Win MSE: {subcategory_data.get('win_mse', 0):.4f}")
-                    if "move_order_acc" in subcategory_data:
+                    print(f"    Win Correlation: {subcategory_data.get('win_corr', 0):.4f}")
+                    if "move_order_acc" in subcategory_data and has_move_order_head:
                         print(
                             f"    Move order accuracy: {subcategory_data.get('move_order_acc', 0):.4f}"
                         )
-                    if "ko_acc" in subcategory_data:
+                    if "ko_acc" in subcategory_data and has_ko_head:
                         print(f"    KO accuracy: {subcategory_data.get('ko_acc', 0):.4f}")
-                    if "switch_acc" in subcategory_data:
+                    if "switch_acc" in subcategory_data and has_switch_head:
                         print(
                             f"    Switch accuracy: {subcategory_data.get('switch_acc', 0):.4f}"
                         )
@@ -633,7 +772,7 @@ def analyze(
     return analysis_categories
 
 
-def create_empty_metrics() -> Dict[str, Union[int, float]]:
+def create_empty_metrics() -> Dict[str, Any]:
     """Create empty metrics dictionary with all metrics initialized to 0."""
     return {
         "steps": 0,
@@ -642,10 +781,27 @@ def create_empty_metrics() -> Dict[str, Union[int, float]]:
         "top3_acc": 0.0,
         "top5_acc": 0.0,
         "top3_loss": 0.0,
+        # Separate teampreview metrics
+        "teampreview_steps": 0,
+        "teampreview_acc": 0.0,
+        "teampreview_top1_acc": 0.0,
+        "teampreview_top3_acc": 0.0,
+        "teampreview_top5_acc": 0.0,
+        "teampreview_top3_loss": 0.0,
+        # Separate turn metrics
+        "turn_steps": 0,
+        "turn_acc": 0.0,
+        "turn_top1_acc": 0.0,
+        "turn_top3_acc": 0.0,
+        "turn_top5_acc": 0.0,
+        "turn_top3_loss": 0.0,
+        # Win metrics
         "win_mse": 0.0,
         "win_corr": 0.0,
         "win_corr_count": 0,
         "win_count": 0,
+        "win_preds": [],
+        "win_targets": [],
         "move_order_acc": 0.0,
         "move_order_count": 0,
         "ko_acc": 0.0,
@@ -805,7 +961,7 @@ def determine_phase(state_idx: int, dataset: Any) -> str:
         return "late"
 
 
-def update_metrics(sample: Dict[str, Any], metrics: Dict[str, Union[int, float]]):
+def update_metrics(sample: Dict[str, Any], metrics: Dict[str, Any]):
     """
     Update metrics based on a single sample.
     """
@@ -815,9 +971,10 @@ def update_metrics(sample: Dict[str, Any], metrics: Dict[str, Union[int, float]]
     metrics["steps"] += 1
     metrics["action_acc"] += 1 if action_pred == action else 0
 
-    # Calculate topk_cross_entropy_loss
+    # Calculate loss (topk for turn actions, regular CE for teampreview)
     action_logits = sample["action_logits"].unsqueeze(0)  # Add batch dimension
     action_label = sample["action"].unsqueeze(0)  # Add batch dimension
+    # For analyze, we use topk since we don't distinguish action types here
     top3_loss = topk_cross_entropy_loss(action_logits, action_label, k=3)
     metrics["top3_loss"] += top3_loss.item()
 
@@ -833,6 +990,12 @@ def update_metrics(sample: Dict[str, Any], metrics: Dict[str, Union[int, float]]
         win_logit = sample["win_logits"].item()
         win = sample["win"].item()
         metrics["win_mse"] += (win_logit - win) ** 2
+        # Store predictions and targets for correlation calculation
+        if "win_preds" not in metrics:
+            metrics["win_preds"] = []
+            metrics["win_targets"] = []
+        metrics["win_preds"].append(win_logit)
+        metrics["win_targets"].append(win)
         metrics["win_count"] += 1
 
     # Move order metrics if available
@@ -857,7 +1020,7 @@ def update_metrics(sample: Dict[str, Any], metrics: Dict[str, Union[int, float]]
         metrics["switch_count"] += switch.numel()
 
 
-def normalize_metrics(metrics: Dict[str, Union[int, float]]):
+def normalize_metrics(metrics: Dict[str, Any]):
     """
     Normalize metrics by step count.
     """
@@ -869,8 +1032,38 @@ def normalize_metrics(metrics: Dict[str, Union[int, float]]):
         metrics["top5_acc"] /= steps
         metrics["top3_loss"] /= steps
 
+    # Normalize teampreview metrics separately
+    if metrics.get("teampreview_steps", 0) > 0:
+        metrics["teampreview_acc"] /= metrics["teampreview_steps"]
+        metrics["teampreview_top1_acc"] /= metrics["teampreview_steps"]
+        metrics["teampreview_top3_acc"] /= metrics["teampreview_steps"]
+        metrics["teampreview_top5_acc"] /= metrics["teampreview_steps"]
+        metrics["teampreview_top3_loss"] /= metrics["teampreview_steps"]
+
+    # Normalize turn metrics separately
+    if metrics.get("turn_steps", 0) > 0:
+        metrics["turn_acc"] /= metrics["turn_steps"]
+        metrics["turn_top1_acc"] /= metrics["turn_steps"]
+        metrics["turn_top3_acc"] /= metrics["turn_steps"]
+        metrics["turn_top5_acc"] /= metrics["turn_steps"]
+        metrics["turn_top3_loss"] /= metrics["turn_steps"]
+
+    # Normalize other metrics
+    if steps > 0:
         if metrics["win_count"] > 0:
             metrics["win_mse"] /= metrics["win_count"]
+
+            # Calculate win correlation if we have predictions
+            if len(metrics["win_preds"]) > 1:
+                win_preds_tensor = torch.tensor(metrics["win_preds"])
+                win_targets_tensor = torch.tensor(metrics["win_targets"])
+                win_corr = torch.corrcoef(torch.stack([win_preds_tensor, win_targets_tensor]))[0, 1]
+                if not torch.isnan(win_corr):
+                    metrics["win_corr"] = win_corr.item()
+                else:
+                    metrics["win_corr"] = 0.0
+            else:
+                metrics["win_corr"] = 0.0
 
         if metrics["move_order_count"] > 0:
             metrics["move_order_acc"] /= metrics["move_order_count"]
@@ -950,3 +1143,18 @@ def format_time(seconds: float) -> str:
     secs = int(seconds % 60)
 
     return f"{hours}h {minutes}m {secs}s"
+
+
+def save_compressed(obj, out_path, level=3):
+    buf = io.BytesIO()
+    torch.save(obj, buf)
+    compressed = zstd.compress(buf.getvalue(), level)
+    with open(out_path, "wb") as f:
+        f.write(compressed)
+
+
+def load_compressed(in_path, map_location="cpu"):
+    with open(in_path, "rb") as f:
+        compressed = f.read()
+    raw = zstd.decompress(compressed)
+    return torch.load(io.BytesIO(raw), map_location=map_location, weights_only=False)

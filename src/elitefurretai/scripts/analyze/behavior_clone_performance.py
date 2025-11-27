@@ -83,7 +83,13 @@ Adamant Nature
         description="Evaluate MrMimePlayer (two_headed_transformer) against poke-env baselines."
     )
     parser.add_argument(
-        "model_path", type=str, help="Path to the two_headed_transformer model file"
+        "teampreview_model_path", type=str, help="Path to the two_headed_transformer model file"
+    )
+    parser.add_argument(
+        "action_model_path", type=str, help="Path to the action model file"
+    )
+    parser.add_argument(
+        "win_model_path", type=str, help="Path to the win model file"
     )
     parser.add_argument(
         "--n_battles", type=int, default=100, help="Number of battles per baseline"
@@ -93,7 +99,12 @@ Adamant Nature
     # Load your model into BehaviorClonePlayer
     mr_mime = BehaviorClonePlayer(
         account_configuration=AccountConfiguration("elitefurretai", password=""),
-        model_filepath=args.model_path,
+        teampreview_model_filepath=args.teampreview_model_filepath,
+        action_model_filepath=args.action_model_filepath,
+        win_model_filepath=args.win_model_filepath,
+        teampreview_config={}, # TODO: implement
+        action_config={},
+        win_config={},
         battle_format="gen9vgc2025regi",
         server_configuration=LocalhostServerConfiguration,
         team=pokepaste,

@@ -21,6 +21,7 @@ import time
 import orjson
 
 from elitefurretai.model_utils.battle_data import BattleData
+from elitefurretai.model_utils.train_utils import format_time
 
 
 def load_file(file):
@@ -33,7 +34,7 @@ def load_file(file):
             bd = BattleData.from_showdown_json(orjson.loads(f.read()))
             return file, bd
     except Exception as e:
-        print(f"Error loading file {file}: {e}")
+        print(f"\nError loading file {file}: {e}\n")
         return None
 
 
@@ -111,6 +112,10 @@ def is_valid_for_supervised_learning(bd: BattleData) -> bool:
     elif any(map(lambda x: "Zoroark" in x or "Zorua" in x, bd.logs)):
         return False
 
+    # Remove battles with Commander ability (not generalized enough to model)
+    elif any(map(lambda x: "Commander" in x, bd.logs)):
+        return False
+
     return True
 
 
@@ -125,54 +130,55 @@ def main(read_dir, save_file, num_threads):
     start_time = time.time()
     valid_files = []
 
-    # Use ThreadPoolExecutor for parallel file loading and filtering
-    with concurrent.futures.ThreadPoolExecutor(max_workers=num_threads) as executor:
-        futures = {executor.submit(load_file, file): file for file in files}
-        count, last = 0, 0
-        for future in concurrent.futures.as_completed(futures):
-            result = future.result()
-            if result is not None:
-                file, bd = result
-                if is_valid_for_supervised_learning(bd):
-                    valid_files.append(file)
+    # Process in batches to avoid memory explosion
+    batch_size = 10000  # Process 10k files at a time
+    total_count = 0
 
-                count += 1
-                # Print progress every second
-                if time.time() - last > 1:
-                    hours = int(time.time() - start_time) // 3600
-                    minutes = int(time.time() - start_time) // 60
-                    seconds = int(time.time() - start_time) % 60
+    for batch_start in range(0, len(files), batch_size):
+        batch_files = files[batch_start:batch_start + batch_size]
 
-                    time_per_battle = (time.time() - start_time) * 1.0 / count
-                    est_time_left = (len(files) - count) * time_per_battle
-                    hours_left = int(est_time_left // 3600)
-                    minutes_left = int((est_time_left % 3600) // 60)
-                    seconds_left = int(est_time_left % 60)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=num_threads) as executor:
+            futures = {executor.submit(load_file, file): file for file in batch_files}
 
-                    processed = f"Processed {count} battles ({round(count * 100.0 / len(files), 2)}%) in {hours}h {minutes}m {seconds}s"
-                    left = f" with an estimated {hours_left}h {minutes_left}m {seconds_left}s left "
-                    print("\r" + processed + left, end="")
-                    last = int(time.time())
+            try:
+                # Timeout of 5m per future, which is running 10k files at one time
+                for future in concurrent.futures.as_completed(futures, timeout=300):
+                    try:
+                        result = future.result(timeout=10)
+                        if result is not None:
+                            file, bd = result
+                            if is_valid_for_supervised_learning(bd):
+                                valid_files.append(file)
+                    except concurrent.futures.TimeoutError:
+                        print("\nTimeout processing file", file=sys.stderr)
+                    except Exception as e:
+                        print(f"\nError processing future: {e}", file=sys.stderr)
+
+                    total_count += 1
+
+                    # Print progress
+                    time_taken = format_time(time.time() - start_time)
+                    time_per_battle = (time.time() - start_time) / total_count
+                    time_left = format_time((len(files) - total_count) * time_per_battle)
+
+                    print(f"\rProcessed {total_count}/{len(files)} battles ({round(total_count * 100.0 / len(files), 2)}%) in {time_taken} with an estimated {time_left} left", end="")
+
+            except concurrent.futures.TimeoutError:
+                print("\n\nBatch timeout reached!", file=sys.stderr)
 
     print(
-        f"Done reading {len(files)} battles in {round(time.time() - start_time, 2)} seconds. Ended with {len(valid_files)} valid battles!"
+        f"\nDone reading {len(files)} battles in {format_time(time.time() - start_time)}. Ended with {len(valid_files)} valid battles!"
     )
 
     # Save the list of valid files as JSON
-    prepare_dir = os.path.dirname(__file__)
-    scripts_dir = os.path.dirname(prepare_dir)
-    src_dir = os.path.dirname(os.path.dirname(scripts_dir))
-    elitefurretai_dir = os.path.dirname(src_dir)
-    filename = os.path.join(elitefurretai_dir, save_file)
-
-    with open(filename, "wb") as f:
+    with open(save_file, "wb") as f:
         f.write(orjson.dumps(valid_files))
 
 
 if __name__ == "__main__":
     # Parse command-line arguments and run main
     if len(sys.argv) != 3 and len(sys.argv) != 4:
-        print("Usage: python script.py <read_dir> <save_file> [num_threads]")
+        print("Usage: python src/elitefurretai/scripts/prepare/filter_battle_data.py <read_dir> <save_file> [num_threads]")
         sys.exit(1)
 
     read_dir = sys.argv[1]
