@@ -1,7 +1,7 @@
 from elitefurretai.agents import behavior_clone_player
-from elitefurretai.agents.behavior_clone_player import BehaviorClonePlayer
+from elitefurretai.agents.behavior_clone_player import BCPlayer
 
 __all__ = [
-    "BehaviorClonePlayer",
+    "BCPlayer",
     "behavior_clone_player",
 ]

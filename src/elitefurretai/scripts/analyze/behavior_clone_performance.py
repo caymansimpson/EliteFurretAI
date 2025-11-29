@@ -5,7 +5,7 @@ from poke_env.player import MaxBasePowerPlayer, RandomPlayer
 from poke_env.ps_client.account_configuration import AccountConfiguration
 from poke_env.ps_client.server_configuration import LocalhostServerConfiguration
 
-from elitefurretai.agents.behavior_clone_player import BehaviorClonePlayer
+from elitefurretai.agents.behavior_clone_player import BCPlayer
 
 
 def main():
@@ -97,7 +97,7 @@ Adamant Nature
     args = parser.parse_args()
 
     # Load your model into BehaviorClonePlayer
-    mr_mime = BehaviorClonePlayer(
+    mr_mime = BCPlayer(
         account_configuration=AccountConfiguration("elitefurretai", password=""),
         teampreview_model_filepath=args.teampreview_model_filepath,
         action_model_filepath=args.action_model_filepath,

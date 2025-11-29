@@ -242,30 +242,33 @@ class BattleDataset(Dataset):
 
         for i in range(n):
             # How close are we to the end?
-            progress = i * 1.0 / max(n - 1, 1)  # 0.05 at start, 1 at end
+            progress = i * 1.0 / max(n - 1, 1)
 
             # Final outcome weight ramps up near the end (e.g., quadratic ramp)
-            outcome_weight = max(progress**2, 0.05)
+            outcome_weight = min(max(progress**2, 0.05), 0.95)
             position_weight = 1.0 - outcome_weight
 
             # Current advantage
             current_adv = advantages[i]
 
             # Average advantage over next 3 turns (including current)
-            next_window = advantages[i : min(i + 3, n)]
-            avg_next_adv = sum(next_window) / len(next_window)
+            next_window = advantages[i + 1: min(i + 4, n)]
+            if len(next_window) == 0:
+                avg_next_adv = current_adv
+            else:
+                avg_next_adv = sum(next_window) / len(next_window)
 
-            # Blend: give current adv 50%, next adv 30%, outcome 20% at start,
-            # ramp outcome to 100% at end
+            # Blend: two stages
+            # 1. position advantage: 50% of it goes to current turn, 50% goes to average
+            #    over next 3 turns
+            # 2. outcome advantage: final outcome of battle. Starts at 5%, ramps to 95%
             if n > 1:
-                # At start: outcome_weight ~0, position_weight ~1
-                # At end: outcome_weight ~1, position_weight ~0
                 blended_adv = (
-                    position_weight * (0.5 * current_adv + 0.3 * avg_next_adv)
+                    position_weight * (0.5 * current_adv + 0.5 * avg_next_adv)
                     + outcome_weight * final_outcome
                 )
             else:
-                blended_adv = final_outcome  # degenerate case
+                blended_adv = final_outcome
 
             win_labels[i] = blended_adv
 
