@@ -152,6 +152,7 @@ class FlexibleThreeHeadedModel(torch.nn.Module):
         teampreview_head_layers: Optional[list] = None,
         teampreview_head_dropout: float = 0.1,
         teampreview_attention_heads: int = 4,
+        turn_head_layers: Optional[list] = None,
     ):
         super().__init__()
         self.max_seq_len = max_seq_len
@@ -289,8 +290,22 @@ class FlexibleThreeHeadedModel(torch.nn.Module):
 
         output_size = late_layers[-1] if late_layers else lstm_output_size
 
+        # Turn head with optional deeper layers
+        self.turn_head_layers = turn_head_layers or []
+
+        turn_ff_layers = []
+        prev_size = output_size
+        for h in self.turn_head_layers:
+            turn_ff_layers.append(ResBlock(prev_size, h, dropout=dropout))
+            prev_size = h
+        self.turn_ff_stack = (
+            torch.nn.Sequential(*turn_ff_layers) if turn_ff_layers else torch.nn.Identity()
+        )
+
+        turn_output_size = self.turn_head_layers[-1] if self.turn_head_layers else output_size
+
         # Turn action head
-        self.turn_action_head = torch.nn.Linear(output_size, num_actions)
+        self.turn_action_head = torch.nn.Linear(turn_output_size, num_actions)
         torch.nn.init.xavier_normal_(self.turn_action_head.weight, gain=0.01)
         torch.nn.init.constant_(self.turn_action_head.bias, 0)
 
@@ -401,11 +416,100 @@ class FlexibleThreeHeadedModel(torch.nn.Module):
         # Late feedforward stack
         out = self.late_ff_stack(out)
 
-        # Output heads
-        turn_action_logits = self.turn_action_head(out)
+        # Turn head with optional deeper layers
+        turn_features = self.turn_ff_stack(out)
+        turn_action_logits = self.turn_action_head(turn_features)
+
+        # Win prediction head
         win_logits = self.win_head(out).squeeze(-1)
 
         return turn_action_logits, teampreview_logits, win_logits
+
+    def forward_with_hidden(
+        self, x: torch.Tensor, hidden: Optional[Tuple[torch.Tensor, torch.Tensor]] = None, mask: Optional[torch.Tensor] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+        """
+        Forward pass that supports passing and returning hidden states for RL.
+        """
+        batch_size, seq_len, _ = x.shape
+
+        # Feature encoding
+        if self.feature_encoder is not None:
+            ff_out_early = self.feature_encoder(x)
+        else:
+            ff_out_early = self.input_proj(x)
+
+        # Early feedforward stack
+        ff_out_early = self.early_ff_stack(ff_out_early)
+
+        # Process teampreview head (branches before LSTM)
+        teampreview_features = self.teampreview_ff_stack(ff_out_early)
+
+        # Optional attention for teampreview
+        if self.teampreview_attn is not None:
+            if mask is None:
+                attn_mask = None
+            else:
+                attn_mask = ~mask.bool()
+            tp_attn_out, _ = self.teampreview_attn(
+                teampreview_features, teampreview_features, teampreview_features,
+                key_padding_mask=attn_mask
+            )
+            teampreview_features = self.teampreview_ln(teampreview_features + tp_attn_out)  # type: ignore
+
+        teampreview_logits = self.teampreview_head(teampreview_features)
+
+        # Early attention if enabled
+        if self.early_attn is not None:
+            if mask is None:
+                attn_mask = None
+            else:
+                attn_mask = ~mask.bool()
+            attn_out, _ = self.early_attn(ff_out_early, ff_out_early, ff_out_early, key_padding_mask=attn_mask)
+            ff_out_early = self.early_ln(ff_out_early + attn_out)  # type: ignore
+
+        # Add positional encoding
+        positions = torch.arange(seq_len, device=x.device).unsqueeze(0)
+        if positions.max() >= self.max_seq_len:
+             positions = torch.clamp(positions, max=self.max_seq_len - 1)
+
+        x_pos = ff_out_early + self.pos_embedding(positions)
+
+        if mask is None:
+            mask = torch.ones(batch_size, seq_len, device=x.device)
+
+        # LSTM
+        if hidden is not None:
+            lstm_out, next_hidden = self.lstm(x_pos, hidden)
+        else:
+            lengths = mask.sum(dim=1).long().cpu()
+            lstm_out, next_hidden = self.lstm(x_pos)
+
+        # Skip connection from early features
+        if self.skip_proj is not None:
+            skip_out = self.skip_proj(ff_out_early)
+            lstm_out = lstm_out + skip_out
+
+        # Late attention if enabled
+        if self.late_attn is not None:
+            if mask is None:
+                attn_mask = None
+            else:
+                attn_mask = ~mask.bool()
+            attn_out, _ = self.late_attn(lstm_out, lstm_out, lstm_out, key_padding_mask=attn_mask)
+            lstm_out = self.late_ln(lstm_out + attn_out)  # type: ignore
+
+        # Late feedforward stack
+        ff_out_late = self.late_ff_stack(lstm_out)
+
+        # Turn head
+        turn_features = self.turn_ff_stack(ff_out_late)
+        turn_action_logits = self.turn_action_head(turn_features)
+
+        # Win prediction head
+        win_logits = self.win_head(ff_out_late).squeeze(-1)
+
+        return turn_action_logits, teampreview_logits, win_logits, next_hidden
 
     def predict(
         self, x: torch.Tensor, mask=None
@@ -420,22 +524,46 @@ class FlexibleThreeHeadedModel(torch.nn.Module):
 class BCPlayer(Player):
     def __init__(
         self,
-        model_filepath: str,
-        model_config: Dict[str, Any],
+        teampreview_model_filepath: str,
+        action_model_filepath: str,
+        win_model_filepath: str,
         battle_format: str = "gen9vgc2023regulationc",
         probabilistic=True,
+        device: str = "cpu",
+        verbose: bool = False,
         **kwargs,
     ):
         # pull in all player information manually
+        if verbose:
+            print("[BCPlayer] Initializing player...")
         super().__init__(**kwargs, battle_format=battle_format)
+
+        if verbose:
+            print(f"[BCPlayer] Creating embedder for format: {battle_format}")
         self._embedder = Embedder(
             format=battle_format, feature_set=Embedder.FULL, omniscient=False
         )
         self._probabilistic = probabilistic
         self._trajectories: Dict[str, list] = {}
+        self._device = device
+        self._verbose = verbose
 
-        # Single three-headed model for all predictions
-        self.model = self._load_model(model_filepath, model_config)
+        # Load three separate models for teampreview, action, and win prediction
+        # Each model has its config embedded in the .pt file
+        if verbose:
+            print(f"[BCPlayer] Loading teampreview model from: {teampreview_model_filepath}")
+        self.teampreview_model, self.teampreview_config = self._load_model(teampreview_model_filepath, device)
+
+        if verbose:
+            print(f"[BCPlayer] Loading action model from: {action_model_filepath}")
+        self.action_model, self.action_config = self._load_model(action_model_filepath, device)
+
+        if verbose:
+            print(f"[BCPlayer] Loading win prediction model from: {win_model_filepath}")
+        self.win_model, self.win_config = self._load_model(win_model_filepath, device)
+
+        if verbose:
+            print("[BCPlayer] Initialization complete!")
 
         self._last_message_error: Dict[str, bool] = {}
         self._last_message: Dict[str, str] = {}
@@ -482,7 +610,35 @@ class BCPlayer(Player):
         self._trajectories = {}
         self._last_win_advantage = {}
 
-    def _load_model(self, filepath: str, config: Dict[str, Any]) -> FlexibleThreeHeadedModel:
+    def _load_model(self, filepath: str, device: str = "cpu") -> Tuple[FlexibleThreeHeadedModel, Dict[str, Any]]:
+        """
+        Load model from new format with embedded config.
+
+        Args:
+            filepath: Path to model checkpoint
+            device: Device to load model on (overrides config device)
+
+        Returns:
+            model: Loaded FlexibleThreeHeadedModel
+            config: Full config dict from checkpoint
+        """
+        # Load checkpoint (expects {'model_state_dict': ..., 'config': ...})
+        if self._verbose:
+            print("  Loading checkpoint from disk...")
+        checkpoint = torch.load(filepath, map_location=device)
+
+        if not isinstance(checkpoint, dict) or 'model_state_dict' not in checkpoint or 'config' not in checkpoint:
+            raise ValueError(
+                f"Model file {filepath} is in old format (state_dict only). "
+                f"Please migrate using scripts/prepare/migrate_model_configs.py"
+            )
+
+        config = checkpoint['config']
+        state_dict = checkpoint['model_state_dict']
+
+        # Build model from config
+        if self._verbose:
+            print("  Building model architecture...")
         model = FlexibleThreeHeadedModel(
             input_size=self._embedder.embedding_size,
             early_layers=config["early_layers"],
@@ -501,13 +657,21 @@ class BCPlayer(Player):
             teampreview_head_layers=config.get("teampreview_head_layers", []),
             teampreview_head_dropout=config.get("teampreview_head_dropout", 0.1),
             teampreview_attention_heads=config.get("teampreview_attention_heads", 4),
+            turn_head_layers=config.get("turn_head_layers", []),
             num_actions=MDBO.action_space(),
             num_teampreview_actions=MDBO.teampreview_space(),
             max_seq_len=17,
-        ).to(config["device"])
-        model.load_state_dict(torch.load(filepath))
+        ).to(device)
+
+        if self._verbose:
+            print("  Loading model weights...")
+        model.load_state_dict(state_dict)
         model.eval()
-        return model
+
+        if self._verbose:
+            print(f"  Model loaded successfully on device: {device}")
+
+        return model, config
 
     def embed_battle_state(self, battle: AbstractBattle) -> List[float]:
         assert isinstance(battle, DoubleBattle)
@@ -539,18 +703,40 @@ class BCPlayer(Player):
         # Update tracked advantage
         self._last_win_advantage[battle_tag] = current_advantage
 
-    def predict(self, traj: torch.Tensor, battle: DoubleBattle) -> Dict[MDBO, float]:
+    def predict(self, traj: torch.Tensor, battle: DoubleBattle, action_type: Optional[str] = None) -> Dict[BattleOrder, float]:
         """
         Given a trajectory tensor and battle, returns a dict of valid actions and their probabilities
         for the last state in the trajectory.
+
+        Args:
+            traj: Trajectory tensor of shape (batch, seq_len, embed_dim)
+            battle: Current battle state
+            action_type: Optional action type (TEAMPREVIEW/TURN/FORCE_SWITCH). If None, inferred from battle state.
         """
+        # Use appropriate model based on battle phase
+        if action_type is None:
+            # Infer action type from battle state
+            if battle.teampreview:
+                action_type = MDBO.TEAMPREVIEW
+            elif any(battle.force_switch):
+                action_type = MDBO.FORCE_SWITCH
+            else:
+                action_type = MDBO.TURN
+
+        if action_type == MDBO.TEAMPREVIEW:
+            model = self.teampreview_model
+            max_actions = MDBO.teampreview_space()
+        else:
+            model = self.action_model
+            max_actions = MDBO.action_space()
+
         # Truncate trajectory to model's max sequence length
-        traj = traj[:, -self.model.max_seq_len :, :]  # type: ignore
-        self.model.eval()
+        traj = traj[:, -model.max_seq_len :, :]  # type: ignore
+        model.eval()
         with torch.no_grad():
             # Forward pass: get logits for all steps in the trajectory
-            turn_action_logits, teampreview_logits, win_logits = self.model(traj)
-            
+            turn_action_logits, teampreview_logits, win_logits = model(traj)
+
             if turn_action_logits.dim() == 3:
                 # Remove batch dimension if present
                 turn_action_logits = turn_action_logits.squeeze(0)
@@ -560,12 +746,8 @@ class BCPlayer(Player):
             # Use appropriate head based on battle phase
             if battle.teampreview:
                 last_logits = teampreview_logits[-1]  # shape: (90,)
-                action_type = MDBO.TEAMPREVIEW
-                max_actions = MDBO.teampreview_space()
             else:
                 last_logits = turn_action_logits[-1]  # shape: (2025,)
-                action_type = MDBO.TURN
-                max_actions = MDBO.action_space()
 
             # Build mask for valid actions
             if battle.teampreview:
@@ -577,11 +759,13 @@ class BCPlayer(Player):
                 mask = torch.zeros(
                     last_logits.size(0), dtype=torch.bool, device=last_logits.device
                 )
+                valid_count = 0
                 for i in range(last_logits.size(0)):
                     try:
-                        dbo = MDBO.from_int(i, MDBO.TURN).to_double_battle_order(battle)
+                        dbo = MDBO.from_int(i, action_type).to_double_battle_order(battle)
                         if is_valid_order(dbo, battle):  # type: ignore
                             mask[i] = 1
+                            valid_count += 1
                     except Exception:
                         continue
 
@@ -591,12 +775,37 @@ class BCPlayer(Player):
             # Softmax over valid actions
             probs = torch.softmax(masked_logits, dim=-1)
 
-            # Build output dict
-            return {
-                MDBO.from_int(i, type=action_type): float(prob)
-                for i, prob in enumerate(probs.cpu().numpy())
-                if float(prob) > 0 and i < max_actions
-            }
+            # Build output dict - convert MDBO to BattleOrder for hashability
+            # CRITICAL: Only process actions that passed validation (are in the mask)
+            result = {}
+            mask_cpu = mask.cpu().numpy()
+            probs_cpu = probs.cpu().numpy()
+            for i in range(len(probs_cpu)):
+                # Skip actions that weren't validated or have zero probability
+                if not mask_cpu[i] or probs_cpu[i] <= 0 or i >= max_actions:
+                    continue
+
+                mdbo = MDBO.from_int(i, type=action_type)
+                if battle.teampreview:
+                    # For teampreview, use the MDBO message directly as key (it's a string)
+                    result[mdbo.message] = float(probs_cpu[i])  # type: ignore
+                else:
+                    # For turn actions, convert to DoubleBattleOrder and use its message as key
+                    # DoubleBattleOrder objects aren't hashable, so we use the message string
+                    try:
+                        order = mdbo.to_double_battle_order(battle)
+                        # Use the order object itself as the key (BattleOrder types should be hashable)
+                        # If that fails, use the message string
+                        try:
+                            result[order] = float(probs_cpu[i])
+                        except TypeError:
+                            # If order is not hashable, use its message instead
+                            result[order.message] = float(probs_cpu[i])  # type: ignore
+                    except Exception as e:
+                        # This shouldn't happen since we already validated, but handle it anyway
+                        print(f"[BCPlayer.predict] WARNING: Failed to convert validated action {i}: {e}")
+                        continue
+            return result  # type: ignore
 
     """
     PLAYER-BASED METHODS
@@ -620,7 +829,7 @@ class BCPlayer(Player):
         self._trajectories[battle.battle_tag].append(state_vec)
 
         # Get model prediction based on the battle state
-        predictions: Dict[MDBO, float] = self.predict(
+        predictions: Dict[BattleOrder, float] = self.predict(
             torch.Tensor(self._trajectories[battle.battle_tag]).unsqueeze(0), battle
         )
         keys = list(predictions.keys())
@@ -639,11 +848,17 @@ class BCPlayer(Player):
             choice_idx = int(np.argmax(probabilities))
 
         chosen_move = keys[choice_idx]
-        return chosen_move
+
+        # For teampreview, chosen_move is already a string message; return it directly
+        # For turn actions, chosen_move is a DoubleBattleOrder object
+        return chosen_move  # type: ignore
 
     def teampreview(self, battle: AbstractBattle) -> str:
         assert battle.player_role
-        message = self.choose_move(battle).message
+        choice = self.choose_move(battle)
+
+        # If it's already a string, use it; otherwise get .message
+        message = choice if isinstance(choice, str) else choice.message
 
         # Need to populate team with teampreview mon's stats
         battle.team = {

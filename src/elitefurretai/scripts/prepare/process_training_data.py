@@ -4,6 +4,16 @@ This script generates training data from a list of BattleData files by processin
 It supports:
 - Teampreview only data
 - Full trajectories
+
+IMPORTANT: As of the teampreview leakage fix (Nov 2024), BattleDataset now applies
+team order randomization augmentation automatically. This means:
+  - Each battle is randomly augmented during preprocessing
+  - Preprocessed data will NOT be identical across runs (randomness from shuffling)
+  - To reproduce exact datasets, set random seed before running this script
+
+If you need to regenerate preprocessed data with the augmentation fix, you MUST
+re-run this script. Simply loading old preprocessed data will contain the memorization
+issue where 88.6% of team patterns deterministically map to one action.
 """
 
 import argparse
@@ -47,6 +57,7 @@ def trajectories(
     auxiliary_objectives=False,
     num_workers=4,
     compressed=True,
+    augment_teampreview=True,
 ):
     """
     Loads battles, processes them into trajectories, and saves them in manageable chunks.
@@ -59,6 +70,7 @@ def trajectories(
         batch_size: Batch size for data loader
         auxiliary_objectives: Whether to include auxiliary objectives like move order, KO order, and switch order
         num_workers: Number of worker processes for data loading
+        augment_teampreview: If True, randomly shuffle team order to prevent memorization (default True)
     """
 
     print(f"Processing {len(files)} battle files into trajectories...")
@@ -67,7 +79,7 @@ def trajectories(
     emb = Embedder(format="gen9vgc2023regulationc", feature_set="full", omniscient=False)
 
     # Create a BattleDataset that yields full trajectories (one per __getitem__)
-    dataset = BattleDataset(files, embedder=emb, steps_per_battle=17)
+    dataset = BattleDataset(files, embedder=emb, steps_per_battle=17, augment_teampreview=augment_teampreview)
 
     # Use a DataLoader to iterate through the dataset one trajectory at a time
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers)
@@ -154,6 +166,7 @@ def teampreview(
     auxiliary_objectives=False,
     num_workers=4,
     compressed=True,
+    augment_teampreview=True,
 ):
     """
     Loads battles, processes them into trajectories, and saves them in manageable chunks,
@@ -167,11 +180,12 @@ def teampreview(
         chunk_size: Number of trajectories per output file
         batch_size: Batch size for data loader
         auxiliary_objectives: Whether to include auxiliary objectives like move order, KO order, and switch order
+        augment_teampreview: If True, randomly shuffle team order to prevent memorization (default True)
     """
 
     print(f"Processing {len(files)} battle files into teampreview data...")
 
-    dataset = BattleDataset(files, steps_per_battle=1)
+    dataset = BattleDataset(files, steps_per_battle=1, augment_teampreview=augment_teampreview)
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers)
 
     print("Starting training loop")

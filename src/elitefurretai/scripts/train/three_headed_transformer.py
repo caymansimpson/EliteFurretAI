@@ -138,14 +138,16 @@ from typing import Any, Dict, Optional, Tuple, Literal
 import gc
 
 import torch
-
+import orjson
 import wandb
+
 from elitefurretai.model_utils import MDBO, Embedder, OptimizedBattleDataLoader
 from elitefurretai.model_utils.train_utils import (
     analyze,
     evaluate,
     format_time,
     topk_cross_entropy_loss,
+    focal_topk_cross_entropy_loss,
 )
 
 
@@ -658,6 +660,7 @@ def train_epoch(
     running_turn_loss = 0.0
     running_teampreview_loss = 0.0
     running_win_loss = 0.0
+    running_entropy = 0.0
     steps = 0
     num_batches = 0
     start = time.time()
@@ -704,19 +707,52 @@ def train_epoch(
             # Flatten and filter valid samples
             valid_mask = masks.bool()  # (batch, seq)
 
-            # Process turn samples
-            turn_valid_mask = valid_mask & turn_mask
+            # Detect force switch states - any mon has force_switch=1
+            # and mask them to force learning actions
+            force_switch_mask = torch.zeros_like(turn_mask)
+            for fs_idx in config["force_switch_indices"]:
+                force_switch_mask = force_switch_mask | (states[:, :, fs_idx] > 0.5)
+
+            # Conditionally exclude force switches from turn training based on config
+            if not config.get("keep_force_switch", True):
+                turn_valid_mask = valid_mask & turn_mask & ~force_switch_mask
+            else:
+                turn_valid_mask = valid_mask & turn_mask
+
             if turn_valid_mask.any():
                 flat_turn_logits = masked_turn_logits[turn_valid_mask]
                 flat_turn_actions = actions[turn_valid_mask]
                 flat_turn_wins = wins[turn_valid_mask]
                 flat_turn_win_logits = win_logits[turn_valid_mask]
 
-                turn_loss = topk_cross_entropy_loss(flat_turn_logits, flat_turn_actions, k=3)
+                # Choose loss function based on config
+                loss_type = config.get("loss_type", "top3")
+                if loss_type == "focal":
+                    turn_loss = focal_topk_cross_entropy_loss(
+                        flat_turn_logits,
+                        flat_turn_actions,
+                        weights=None,
+                        k=config.get("train_topk_k", 2025),
+                        gamma=config.get("focal_gamma", 2.0),
+                        alpha=config.get("focal_alpha", 0.25),
+                    )
+                else:  # "top3" or default
+                    turn_loss = topk_cross_entropy_loss(
+                        flat_turn_logits,
+                        flat_turn_actions,
+                        weights=None,
+                        k=config.get("train_topk_k", 3),
+                    )
+
                 turn_win_loss = torch.nn.functional.mse_loss(flat_turn_win_logits, flat_turn_wins.float())
+
+                # Compute entropy for regularization (encourages exploration)
+                turn_probs = torch.nn.functional.softmax(flat_turn_logits, dim=-1)
+                turn_entropy = -(turn_probs * torch.log(turn_probs + 1e-10)).sum(dim=-1).mean()
             else:
                 turn_loss = torch.tensor(0.0, device=states.device)
                 turn_win_loss = torch.tensor(0.0, device=states.device)
+                turn_entropy = torch.tensor(0.0, device=states.device)
 
             # Process teampreview samples
             teampreview_valid_mask = valid_mask & teampreview_mask
@@ -734,10 +770,14 @@ def train_epoch(
                 teampreview_win_loss = torch.tensor(0.0, device=states.device)
 
             # Combined loss with configurable weights
+            # Entropy regularization: negative entropy encourages diversity (higher entropy = more uniform distribution)
+            entropy_loss = -turn_entropy if config.get("entropy_weight", 0.0) > 0 else torch.tensor(0.0, device=states.device)
+
             loss = (
                 config["turn_loss_weight"] * turn_loss
                 + config["teampreview_loss_weight"] * teampreview_loss
                 + config["win_loss_weight"] * (turn_win_loss + teampreview_win_loss)
+                + config.get("entropy_weight", 0.0) * entropy_loss
             )
 
             # Track number of samples
@@ -774,6 +814,7 @@ def train_epoch(
         running_turn_loss += turn_loss.item()
         running_teampreview_loss += teampreview_loss.item()
         running_win_loss += (turn_win_loss.item() + teampreview_win_loss.item())
+        running_entropy += turn_entropy.item() if turn_valid_mask.any() else 0.0
         steps += (num_turn_samples + num_tp_samples)
         num_batches += 1
 
@@ -792,6 +833,7 @@ def train_epoch(
                     "train_turn_loss": running_turn_loss / num_batches,
                     "train_teampreview_loss": running_teampreview_loss / num_batches,
                     "train_win_loss": running_win_loss / num_batches,
+                    "train_entropy": running_entropy / num_batches,
                     "learning_rate": optimizer.param_groups[0]["lr"],
                 }
             )
@@ -815,6 +857,7 @@ def train_epoch(
         "turn_loss": running_turn_loss / num_batches,
         "teampreview_loss": running_teampreview_loss / num_batches,
         "win_loss": running_win_loss / num_batches,
+        "entropy": running_entropy / num_batches,
     }
 
 
@@ -849,10 +892,10 @@ def initialize(config):
     random.seed(int(config["seed"]))
 
 
-def main(train_path, test_path, val_path):
+def main(train_path, test_path, val_path, config={}):
 
     print("Starting!")
-    config: Dict[str, Any] = {
+    default_config: Dict[str, Any] = {
         # Training config to optimize speed
         "worker_batch_size": 64,
         "num_workers": 7,
@@ -863,11 +906,11 @@ def main(train_path, test_path, val_path):
         # Basic Training Params
         "learning_rate": 5e-5,
         "optimizer": "AdamW",
-        "num_epochs": 20,
+        "num_epochs": 30,
 
         # Regularization
         "batch_size": 512,
-        "dropout": 0,
+        "dropout": 0.1,
         "weight_decay": 1e-5,
         "max_grad_norm": 2.0,
         "teampreview_head_dropout": 0.1,
@@ -876,6 +919,14 @@ def main(train_path, test_path, val_path):
         "teampreview_loss_weight": 1,
         "turn_loss_weight": 1,
         "win_loss_weight": 1,
+        "keep_force_switch": True,  # If True, include force switch examples from training
+        "entropy_weight": 0.0,  # Entropy regularization to encourage prediction diversity (0.0 = off, try 0.01-0.1)
+
+        # Loss Function Type
+        "loss_type": "top3",  # "top3" (standard topk CE) or "focal" (focal loss for hard examples)
+        "train_topk_k": 3,  # Number of top predictions to consider (2025 = all actions, 3 = top-3 only)
+        "focal_gamma": 2.0,  # Focal loss focusing parameter (higher = more focus on hard examples)
+        "focal_alpha": 0.25,  # Focal loss weighting parameter
 
         # Architecture - Backbone
         "gated_residuals": False,
@@ -910,6 +961,12 @@ def main(train_path, test_path, val_path):
         "save_path": "data/models/",
         "seed": 21,
     }
+
+    # Update config with any overrides provided in cfg
+    for k, v in default_config.items():
+        if k not in config:
+            config[k] = v
+
     config["accumulation_steps"] = int(config["batch_size"] // config["worker_batch_size"])
     print(f"Starting training with config: {config}")
     initialize(config)
@@ -988,7 +1045,7 @@ def main(train_path, test_path, val_path):
     )
 
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode="min", factor=0.5, patience=1
+        optimizer, mode="min", factor=0.5, patience=2
     )
 
     # Mixed precision scaler (CUDA only)
@@ -1008,6 +1065,7 @@ def main(train_path, test_path, val_path):
             config["device"],
             has_teampreview_head=True,
             teampreview_idx=config["teampreview_idx"],
+            config=config,
         )
         steps += train_metrics["steps"]
         test_loss = (
@@ -1033,6 +1091,16 @@ def main(train_path, test_path, val_path):
             "Test Turn Top1": metrics.get("turn_top1_acc", 0),
             "Test Turn Top3": metrics.get("turn_top3_acc", 0),
             "Test Turn Top5": metrics.get("turn_top5_acc", 0),
+            # Action-type specific metrics
+            "Test MOVE Top1": metrics.get("move_top1_acc", 0),
+            "Test MOVE Top3": metrics.get("move_top3_acc", 0),
+            "Test MOVE Top5": metrics.get("move_top5_acc", 0),
+            "Test SWITCH Top1": metrics.get("switch_top1_acc", 0),
+            "Test SWITCH Top3": metrics.get("switch_top3_acc", 0),
+            "Test SWITCH Top5": metrics.get("switch_top5_acc", 0),
+            "Test BOTH Top1": metrics.get("both_top1_acc", 0),
+            "Test BOTH Top3": metrics.get("both_top3_acc", 0),
+            "Test BOTH Top5": metrics.get("both_top5_acc", 0),
         }
 
         print(f"Epoch #{epoch + 1}:")
@@ -1057,10 +1125,15 @@ def main(train_path, test_path, val_path):
             )
         )
 
-    torch.save(
-        model.state_dict(),
-        os.path.join(config["save_path"], f"{wandb.run.name}.pth"),  # type: ignore
-    )
+    # Save model with config embedded
+    save_dict = {
+        'model_state_dict': model.state_dict(),
+        'config': config
+    }
+    save_path = os.path.join(config["save_path"], f"{wandb.run.name}.pt")  # type: ignore
+    torch.save(save_dict, save_path)
+    print(f"\nModel and config saved to {save_path}")
+
     print("\nEvaluating on Validation Dataset:")
     metrics = evaluate(
         model,
@@ -1068,6 +1141,7 @@ def main(train_path, test_path, val_path):
         config["device"],
         has_teampreview_head=True,
         teampreview_idx=config["teampreview_idx"],
+        config=config,
     )
     val_log = {
         "Total Steps": steps,
@@ -1105,8 +1179,21 @@ def main(train_path, test_path, val_path):
 
 
 if __name__ == "__main__":
-    main(
-        os.path.join(sys.argv[1], "train"),
-        os.path.join(sys.argv[1], "test"),
-        os.path.join(sys.argv[1], "val"),
-    )
+    if len(sys.argv) < 2:
+        print("Usage: python three_headed_transformer.py <data_directory>")
+        sys.exit(1)
+    elif len(sys.argv) == 2:
+        main(
+            os.path.join(sys.argv[1], "train"),
+            os.path.join(sys.argv[1], "test"),
+            os.path.join(sys.argv[1], "val"),
+        )
+    elif len(sys.argv) == 3:
+        with open(sys.argv[2], 'rb') as f:
+            cfg = orjson.loads(f.read())
+        main(
+            os.path.join(sys.argv[1], "train"),
+            os.path.join(sys.argv[1], "test"),
+            os.path.join(sys.argv[1], "val"),
+            cfg
+        )

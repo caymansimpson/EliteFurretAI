@@ -10,86 +10,87 @@ from elitefurretai.agents.behavior_clone_player import BCPlayer
 
 def main():
     pokepaste = """
-Chien-Pao @ Focus Sash
-Ability: Sword of Ruin
-Level: 60
-Tera Type: Fire
-EVs: 6 HP / 252 Atk / 252 Spe
-Jolly Nature
-- Ice Spinner
-- Sacred Sword
-- Sucker Punch
-- Protect
+Flutter Mane @ Choice Specs  
+Ability: Protosynthesis  
+Level: 50  
+Tera Type: Fairy  
+EVs: 100 HP / 36 Def / 196 SpA / 4 SpD / 172 Spe  
+Timid Nature  
+IVs: 0 Atk  
+- Moonblast  
+- Shadow Ball  
+- Thunderbolt  
+- Dazzling Gleam  
 
-Azumarill (F) @ Assault Vest
-Ability: Huge Power
-Level: 55
-Tera Type: Water
-EVs: 236 HP / 236 Atk / 4 Def / 12 SpD / 20 Spe
-Adamant Nature
-- Aqua Jet
-- Liquidation
-- Ice Spinner
-- Play Rough
+Dragonite @ Lum Berry  
+Ability: Multiscale  
+Level: 50  
+Tera Type: Flying  
+EVs: 20 HP / 252 Atk / 4 Def / 4 SpD / 228 Spe  
+Jolly Nature  
+- Tera Blast  
+- Low Kick  
+- Extreme Speed  
+- Dragon Dance  
 
-Amoonguss (M) @ Wiki Berry
-Ability: Regenerator
-Level: 55
-Tera Type: Water
-EVs: 236 HP / 158 Def / 116 SpD
-Relaxed Nature
-IVs: 0 Atk / 0 Spe
-- Spore
-- Rage Powder
-- Pollen Puff
-- Clear Smog
+Iron Bundle @ Booster Energy  
+Ability: Quark Drive  
+Level: 50  
+Tera Type: Ice  
+EVs: 252 SpA / 4 SpD / 252 Spe  
+Timid Nature  
+IVs: 0 Atk  
+- Freeze-Dry  
+- Hydro Pump  
+- Icy Wind  
+- Protect  
 
-Flutter Mane @ Booster Energy
-Ability: Protosynthesis
-Level: 60
-Tera Type: Fairy
-EVs: 236 HP / 252 Def / 4 SpA / 12 SpD / 4 Spe
-Modest Nature
-IVs: 0 Atk
-- Shadow Ball
-- Dazzling Gleam
-- Calm Mind
-- Protect
+Chi-Yu @ Focus Sash  
+Ability: Beads of Ruin  
+Level: 50  
+Tera Type: Ghost  
+EVs: 4 Def / 252 SpA / 252 Spe  
+Timid Nature  
+IVs: 0 Atk  
+- Heat Wave  
+- Dark Pulse  
+- Nasty Plot  
+- Protect  
 
-Arcanine (M) @ Sitrus Berry
-Ability: Intimidate
-Level: 55
-Tera Type: Grass
-EVs: 244 HP / 52 Atk / 100 Def / 76 SpD / 36 Spe
-Careful Nature
-- Flare Blitz
-- Snarl
-- Will-O-Wisp
-- Protect
+Ting-Lu @ Assault Vest  
+Ability: Vessel of Ruin  
+Level: 50  
+Tera Type: Poison  
+EVs: 4 HP / 236 Atk / 4 Def / 84 SpD / 180 Spe  
+Adamant Nature  
+- Earthquake  
+- Heavy Slam  
+- Ruination  
+- Stomping Tantrum  
 
-Dragonite (F) @ Choice Band
-Ability: Multiscale
-Level: 75
-Tera Type: Flying
-EVs: 236 HP / 252 Atk / 20 Spe
-Adamant Nature
-- Extreme Speed
-- Tera Blast
-- Stomping Tantrum
-- Dragon Claw
+Gyarados @ Sitrus Berry  
+Ability: Intimidate  
+Level: 50  
+Tera Type: Steel  
+EVs: 244 HP / 36 Atk / 4 Def / 92 SpD / 132 Spe  
+Adamant Nature  
+- Waterfall  
+- Thunder Wave  
+- Taunt  
+- Protect  
     """
 
     parser = argparse.ArgumentParser(
-        description="Evaluate MrMimePlayer (two_headed_transformer) against poke-env baselines."
+        description="Evaluate BCPlayer (three separate models) against poke-env baselines."
     )
     parser.add_argument(
-        "teampreview_model_path", type=str, help="Path to the two_headed_transformer model file"
+        "teampreview_model_path", type=str, help="Path to the teampreview model file (.pt with embedded config)"
     )
     parser.add_argument(
-        "action_model_path", type=str, help="Path to the action model file"
+        "action_model_path", type=str, help="Path to the action model file (.pt with embedded config)"
     )
     parser.add_argument(
-        "win_model_path", type=str, help="Path to the win model file"
+        "win_model_path", type=str, help="Path to the win model file (.pt with embedded config)"
     )
     parser.add_argument(
         "--n_battles", type=int, default=100, help="Number of battles per baseline"
@@ -97,14 +98,12 @@ Adamant Nature
     args = parser.parse_args()
 
     # Load your model into BehaviorClonePlayer
+    # Configs are now embedded in the .pt files
     mr_mime = BCPlayer(
         account_configuration=AccountConfiguration("elitefurretai", password=""),
-        teampreview_model_filepath=args.teampreview_model_filepath,
-        action_model_filepath=args.action_model_filepath,
-        win_model_filepath=args.win_model_filepath,
-        teampreview_config={}, # TODO: implement
-        action_config={},
-        win_config={},
+        teampreview_model_filepath=args.teampreview_model_path,
+        action_model_filepath=args.action_model_path,
+        win_model_filepath=args.win_model_path,
         battle_format="gen9vgc2025regi",
         server_configuration=LocalhostServerConfiguration,
         team=pokepaste,

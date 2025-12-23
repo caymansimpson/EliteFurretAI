@@ -17,6 +17,7 @@ import concurrent.futures
 import os
 import sys
 import time
+import argparse
 
 import orjson
 
@@ -96,7 +97,7 @@ def is_valid_for_supervised_learning(bd: BattleData) -> bool:
         return False
 
     # Remove battles with Revival Blessing (too niche/complex)
-    elif any(map(lambda x: "Revival Blessing" in x, bd.logs)):
+    elif any(map(lambda x: "Pawmot" in x, bd.logs)):
         return False
 
     # Remove battles with fainted from hazards edge-case (too niche)
@@ -113,8 +114,8 @@ def is_valid_for_supervised_learning(bd: BattleData) -> bool:
         return False
 
     # Remove battles with Commander ability (not generalized enough to model)
-    elif any(map(lambda x: "Commander" in x, bd.logs)):
-        return False
+    # elif any(map(lambda x: "Commander" in x, bd.logs)):
+    #     return False
 
     return True
 
@@ -161,7 +162,7 @@ def main(read_dir, save_file, num_threads):
                     time_per_battle = (time.time() - start_time) / total_count
                     time_left = format_time((len(files) - total_count) * time_per_battle)
 
-                    print(f"\rProcessed {total_count}/{len(files)} battles ({round(total_count * 100.0 / len(files), 2)}%) in {time_taken} with an estimated {time_left} left", end="")
+                    print(f"\rProcessed {total_count}/{len(files)} battles ({round(total_count * 100.0 / len(files), 2)}%) in {time_taken} with an estimated {time_left} left    ", end="")
 
             except concurrent.futures.TimeoutError:
                 print("\n\nBatch timeout reached!", file=sys.stderr)
@@ -176,13 +177,17 @@ def main(read_dir, save_file, num_threads):
 
 
 if __name__ == "__main__":
-    # Parse command-line arguments and run main
-    if len(sys.argv) != 3 and len(sys.argv) != 4:
-        print("Usage: python src/elitefurretai/scripts/prepare/filter_battle_data.py <read_dir> <save_file> [num_threads]")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(
+        description="Filter Pokémon Showdown battle logs for supervised learning.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+        Example usage:
+            python filter_battle_data.py <read_dir> <save_file> [--num-threads N]
+        """
+    )
+    parser.add_argument("read_dir", type=str, help="Directory containing raw battle files")
+    parser.add_argument("save_file", type=str, help="Output JSON file for valid battle file paths")
+    parser.add_argument("--num-threads", type=int, default=os.cpu_count(), help="Number of threads for parallel filtering (default: number of CPUs)")
+    args = parser.parse_args()
 
-    read_dir = sys.argv[1]
-    save_file = sys.argv[2]
-    num_threads = int(sys.argv[3]) if len(sys.argv) == 4 else os.cpu_count()
-
-    main(read_dir, save_file, num_threads)
+    main(args.read_dir, args.save_file, args.num_threads)

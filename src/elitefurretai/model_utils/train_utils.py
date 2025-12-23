@@ -39,8 +39,12 @@ def topk_cross_entropy_loss(
     valid_logits = logits[valid_indices]
     valid_labels = labels[valid_indices]
 
-    # Compute cross entropy loss
-    loss = torch.nn.functional.cross_entropy(valid_logits, valid_labels, reduction="none")
+    # Compute cross entropy loss with optional label smoothing
+    loss = torch.nn.functional.cross_entropy(
+        valid_logits,
+        valid_labels,
+        reduction="none",
+    )
 
     # Apply weights if provided
     if weights is not None:
@@ -51,6 +55,87 @@ def topk_cross_entropy_loss(
         loss = loss.mean()
 
     return loss
+
+
+def focal_topk_cross_entropy_loss(
+    logits: torch.Tensor,
+    labels: torch.Tensor,
+    weights: Optional[torch.Tensor] = None,
+    k: int = 3,
+    gamma: float = 2.0,
+    alpha: float = 0.25,
+) -> torch.Tensor:
+    """
+    Compute focal loss with top-k filtering, downweighting easy examples.
+
+    Focal loss: FL(p_t) = -alpha * (1 - p_t)^gamma * log(p_t)
+
+    This loss focuses training on hard examples by reducing the contribution of
+    easy examples (where model is already confident). Combined with top-k filtering,
+    it only considers examples where the true label is in the model's top-k predictions.
+
+    Args:
+        logits: [batch, num_classes] Unnormalized logits
+        labels: [batch] Target class indices
+        weights: [batch] Optional weights per example
+        k: Number of top predictions to consider
+        gamma: Focusing parameter. Higher gamma = more focus on hard examples.
+               gamma=0 reduces to standard cross entropy. Typical values: 2.0-5.0
+        alpha: Weighting factor for the loss. Typical value: 0.25
+
+    Returns:
+        Weighted focal loss with top-k filtering
+
+    Example:
+        # Standard usage
+        loss = focal_topk_cross_entropy_loss(logits, labels, k=3, gamma=2.0)
+
+        # More aggressive focusing on hard examples
+        loss = focal_topk_cross_entropy_loss(logits, labels, k=3, gamma=5.0)
+
+        # With per-example weights (e.g., for action type balancing)
+        action_weights = torch.ones_like(labels, dtype=torch.float32)
+        action_weights[is_move] = 5.0  # Weight move actions 5x
+        loss = focal_topk_cross_entropy_loss(logits, labels, weights=action_weights, k=3)
+    """
+    # Get top-k indices
+    _, topk_indices = torch.topk(logits, k=min(k, logits.size(-1)), dim=-1)
+    label_indices = labels.unsqueeze(-1)
+
+    # Check if labels are in top-k
+    is_label_in_topk = (topk_indices == label_indices).any(dim=-1)
+
+    # Compute loss only for examples where label is in top-k
+    valid_indices = is_label_in_topk.nonzero(as_tuple=True)[0]
+    if valid_indices.numel() == 0:
+        return torch.tensor(0.0, device=logits.device, requires_grad=True)
+
+    valid_logits = logits[valid_indices]
+    valid_labels = labels[valid_indices]
+
+    # Compute cross entropy loss (reduction='none' to get per-example losses)
+    ce_loss = torch.nn.functional.cross_entropy(valid_logits, valid_labels, reduction="none")
+
+    # Compute probability of true class
+    p_t = torch.exp(-ce_loss)  # p_t = probability of correct class
+
+    # Compute focal term: (1 - p_t)^gamma
+    # When p_t is high (easy example), (1-p_t) is small → focal_term is small → loss is downweighted
+    # When p_t is low (hard example), (1-p_t) is large → focal_term is large → loss is emphasized
+    focal_term = (1 - p_t) ** gamma
+
+    # Apply focal modulation and alpha weighting
+    focal_loss = alpha * focal_term * ce_loss
+
+    # Apply additional per-example weights if provided
+    if weights is not None:
+        valid_weights = weights[valid_indices]
+        focal_loss = focal_loss * valid_weights
+        focal_loss = focal_loss.sum() / (valid_weights.sum() + 1e-8)
+    else:
+        focal_loss = focal_loss.mean()
+
+    return focal_loss
 
 
 def flatten_and_filter(
@@ -247,6 +332,7 @@ def evaluate(
     has_teampreview_head: bool = False,
     teampreview_idx: Optional[int] = None,
     action_mask_fn: Optional[Callable] = None,
+    config: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, float]:
     """
     Evaluate model performance on a dataset.
@@ -421,8 +507,23 @@ def evaluate(
                     metrics["turn_acc"] += turn_correct
                     metrics["turn_steps"] += turn_actions.size(0)
 
-                    # Turn topk loss
-                    turn_topk_loss = topk_cross_entropy_loss(turn_logits, turn_actions, k=3)
+                    # Turn topk loss - use config-specified loss function
+                    if config is not None and config.get("loss_type") == "focal":
+                        turn_topk_loss = focal_topk_cross_entropy_loss(
+                            turn_logits,
+                            turn_actions,
+                            weights=None,
+                            k=config.get("train_topk_k", 2025),
+                            gamma=config.get("focal_gamma", 2.0),
+                            alpha=config.get("focal_alpha", 0.25),
+                        )
+                    else:
+                        # Default to top3 loss
+                        turn_topk_loss = topk_cross_entropy_loss(
+                            turn_logits,
+                            turn_actions,
+                            k=config.get("train_topk_k", 3) if config is not None else 3
+                        )
                     metrics["turn_top3_loss"] += turn_topk_loss.item() * turn_actions.size(0)
 
                     # Turn top-k accuracy
@@ -431,6 +532,49 @@ def evaluate(
                             topk_preds = torch.topk(turn_logits, k=k, dim=-1)[1]
                             turn_topk_correct = (topk_preds == turn_actions.unsqueeze(-1)).any(dim=-1).float().sum().item()
                             metrics[f"turn_top{k}_acc"] += turn_topk_correct
+
+                    # Track metrics by action type (MOVE, SWITCH, BOTH)
+                    for action_idx, action in enumerate(turn_actions):
+                        try:
+                            mdbo_order = MDBO.from_int(int(action.item()), MDBO.TURN)
+                            if mdbo_order is not None:
+                                message = mdbo_order.message.lower()
+                                if message.startswith("/choose "):
+                                    orders = message[8:].split(", ")
+                                    has_move = any("move" in order for order in orders)
+                                    has_switch = any("switch" in order for order in orders)
+
+                                    if has_move and has_switch:
+                                        action_type = "both"
+                                    elif has_switch:
+                                        action_type = "switch"
+                                    else:
+                                        action_type = "move"
+                                else:
+                                    action_type = "move"  # Default fallback
+                            else:
+                                action_type = "move"  # Default fallback
+                        except Exception:
+                            action_type = "move"  # Default fallback
+
+                        # Initialize type metrics if needed
+                        for prefix in ["move", "switch", "both"]:
+                            if f"{prefix}_steps" not in metrics:
+                                metrics[f"{prefix}_steps"] = 0
+                            for k in [1, 3, 5]:
+                                if f"{prefix}_top{k}_acc" not in metrics:
+                                    metrics[f"{prefix}_top{k}_acc"] = 0.0
+
+                        # Update type-specific metrics
+                        metrics[f"{action_type}_steps"] += 1
+
+                        # Top-k accuracy for this action type
+                        action_logits = turn_logits[action_idx]
+                        for k in [1, 3, 5]:
+                            if turn_logits.size(-1) >= k:
+                                topk_pred = torch.topk(action_logits, k=k, dim=-1)[1]
+                                if (topk_pred == action).any():
+                                    metrics[f"{action_type}_top{k}_acc"] += 1.0
 
                 # Process teampreview samples
                 if teampreview_mask.any():
@@ -548,6 +692,13 @@ def evaluate(
                 metrics[f"turn_top{k}_acc"] /= metrics["turn_steps"]
         if metrics.get("turn_top3_loss", 0) > 0:
             metrics["turn_top3_loss"] /= metrics["turn_steps"]
+
+    # Normalize action-type specific metrics
+    for action_type in ["move", "switch", "both"]:
+        if metrics.get(f"{action_type}_steps", 0) > 0:
+            for k in [1, 3, 5]:
+                if metrics.get(f"{action_type}_top{k}_acc", 0) > 0:
+                    metrics[f"{action_type}_top{k}_acc"] /= metrics[f"{action_type}_steps"]
 
     # Normalize other metrics
     if steps > 0:
