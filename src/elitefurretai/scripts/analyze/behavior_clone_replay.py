@@ -41,7 +41,7 @@ from poke_env.player import BattleOrder, DoubleBattleOrder
 
 def format_action_human_readable(action: Union[str, BattleOrder, MDBO], battle: DoubleBattle) -> str:
     """Format action with human-readable move names, Pokemon names, and targets."""
-    
+
     # Handle string messages (teampreview or battle order messages)
     if isinstance(action, str):
         # Teampreview format: "/team 1234"
@@ -63,7 +63,7 @@ def format_action_human_readable(action: Union[str, BattleOrder, MDBO], battle: 
         else:
             # Just return the message as-is for now - it's already somewhat readable
             return action
-    
+
     # Handle MDBO - convert to DoubleBattleOrder first
     if isinstance(action, MDBO):
         if battle.teampreview:
@@ -84,28 +84,28 @@ def format_action_human_readable(action: Union[str, BattleOrder, MDBO], battle: 
             action = action.to_double_battle_order(battle)
         except Exception as e:
             return f"[Error converting MDBO: {e}]"
-    
+
     # Handle DoubleBattleOrder
     if isinstance(action, DoubleBattleOrder):
         parts = []
-        
+
         for i, order in enumerate([action.first_order, action.second_order]):
             if order is None:
                 parts.append("Pass")
                 continue
-                
+
             # Get the Pokemon making the action (from active_pokemon list)
             active_mon = battle.active_pokemon[i] if i < len(battle.active_pokemon) else None
             mon_name = active_mon.species if active_mon else f"Mon{i + 1}"
-            
+
             # Handle switch
             if isinstance(order.order, Pokemon):
                 parts.append(f"{mon_name} → Switch to {order.order.species}")
-            
+
             # Handle move
             elif isinstance(order.order, Move):
                 move_str = f"{mon_name}: {order.order.id.title()}"
-                
+
                 # Add target information
                 target_str = ""
                 if order.move_target == DoubleBattle.OPPONENT_1_POSITION:
@@ -124,9 +124,9 @@ def format_action_human_readable(action: Union[str, BattleOrder, MDBO], battle: 
                     target_str = " (Self)"
                 elif order.move_target == -2:
                     target_str = " (Ally)"
-                
+
                 move_str += target_str
-                
+
                 # Add battle mechanics
                 if order.terastallize:
                     move_str += " [TERA]"
@@ -136,13 +136,13 @@ def format_action_human_readable(action: Union[str, BattleOrder, MDBO], battle: 
                     move_str += " [MEGA]"
                 if order.z_move:
                     move_str += " [Z-MOVE]"
-                
+
                 parts.append(move_str)
             else:
                 parts.append(f"{mon_name}: {order.order}")
-        
+
         return " | ".join(parts)
-    
+
     # Fallback
     return str(action)
 
@@ -167,20 +167,20 @@ def format_action(action, battle: DoubleBattle) -> str:
 def format_current_battle_state(battle: DoubleBattle) -> str:
     """Format current battle state without history."""
     message = ""
-    
+
     # For teampreview, just show the team rosters
     if battle.teampreview:
         message += f"  My Team: [{', '.join(mon.species for mon in battle.teampreview_team)}]"
         message += f"\n  Opp Team: [{', '.join(mon.species for mon in battle.teampreview_opponent_team)}]"
         return message
-    
+
     # Active Pokemon
     active = [mon for mon in battle.active_pokemon if mon is not None]
     opp_active = [mon for mon in battle.opponent_active_pokemon if mon is not None]
-    
+
     message += f"  My Active:  [{', '.join(f'{mon.species} ({mon.current_hp}/{mon.max_hp} HP)' for mon in active)}]"
     message += f"\n  Opp Active: [{', '.join(f'{mon.species} ({mon.current_hp}/{mon.max_hp} HP)' for mon in opp_active)}]"
-    
+
     # Battle Conditions
     if len(battle.weather) > 0:
         message += f"\n  Weather: [{', '.join(w.name for w in battle.weather)}]"
@@ -190,7 +190,7 @@ def format_current_battle_state(battle: DoubleBattle) -> str:
         message += f"\n  My Side Conditions: [{', '.join(sc.name for sc in battle.side_conditions)}]"
     if len(battle.opponent_side_conditions) > 0:
         message += f"\n  Opp Side Conditions: [{', '.join(sc.name for sc in battle.opponent_side_conditions)}]"
-    
+
     # Team status with boosts and effects
     message += "\n  My Team:"
     for ident, mon in battle.team.items():
@@ -205,7 +205,7 @@ def format_current_battle_state(battle: DoubleBattle) -> str:
         # Add effects
         if mon.effects:
             message += f", Effects: [{', '.join(e.name for e in mon.effects)}]"
-    
+
     message += "\n  Opp Team:"
     for ident, mon in battle.opponent_team.items():
         status_str = f"{mon.status.name}" if mon.status else "OK"
@@ -219,7 +219,7 @@ def format_current_battle_state(battle: DoubleBattle) -> str:
         # Add effects
         if mon.effects:
             message += f", Effects: [{', '.join(e.name for e in mon.effects)}]"
-    
+
     return message
 
 
@@ -227,7 +227,7 @@ def replace_nicknames_in_log(log_line: str, battle: DoubleBattle) -> str:
     """Replace Pokemon nicknames with species names in battle log lines."""
     # Pattern: "p1a: Name" or "p2b: Name" etc.
     import re
-    
+
     def replace_identifier(match):
         identifier = match.group(0)  # e.g., "p1a: Incineroar"
         try:
@@ -241,7 +241,7 @@ def replace_nicknames_in_log(log_line: str, battle: DoubleBattle) -> str:
             # If Pokemon not found or error, return original
             pass
         return identifier
-    
+
     # Match pattern like "p1a: Name" or "p2b: Name"
     pattern = r'p[12][ab]:\s*[^|,\]]*'
     result = re.sub(pattern, replace_identifier, log_line)
@@ -323,11 +323,12 @@ def analyze_battle(
             else:
                 try:
                     actual_order = actual_action.to_double_battle_order(battle)
-                    actual_key = actual_order  # Try using the object first
+                    # Try using the object first
+                    actual_key = actual_order  # type: ignore
                     actual_msg = actual_order.message  # Fallback to message
                 except Exception:
                     actual_key = None
-            
+
             for rank, (action, prob) in enumerate(sorted_actions, 1):
                 # Compare actions
                 if battle.teampreview:
@@ -358,7 +359,7 @@ def analyze_battle(
                 # Check if this is a force switch (requesting input within the same turn)
                 is_force_switch = any(battle.force_switch)
                 turn_type = f"TURN {battle.turn}" + (" [FORCE SWITCH]" if is_force_switch else "")
-            
+
             pred_quality = "✓ GOOD" if is_good_pred else "✗ BAD"
 
             print(f"\n{'─' * 80}")
@@ -382,7 +383,7 @@ def analyze_battle(
                 marker = "★" if is_actual else " "
                 if rank <= 5:
                     print(f"  {rank:3d}. {marker} {prob:6.2%} | {action_str}")
-            
+
             print(f"\n  Actual action: {format_action_human_readable(actual_action, battle)}  (Rank #{actual_rank})")
 
     except StopIteration:

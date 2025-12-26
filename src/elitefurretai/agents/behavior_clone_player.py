@@ -471,7 +471,7 @@ class FlexibleThreeHeadedModel(torch.nn.Module):
         # Add positional encoding
         positions = torch.arange(seq_len, device=x.device).unsqueeze(0)
         if positions.max() >= self.max_seq_len:
-             positions = torch.clamp(positions, max=self.max_seq_len - 1)
+            positions = torch.clamp(positions, max=self.max_seq_len - 1)
 
         x_pos = ff_out_early + self.pos_embedding(positions)
 
@@ -482,7 +482,6 @@ class FlexibleThreeHeadedModel(torch.nn.Module):
         if hidden is not None:
             lstm_out, next_hidden = self.lstm(x_pos, hidden)
         else:
-            lengths = mask.sum(dim=1).long().cpu()
             lstm_out, next_hidden = self.lstm(x_pos)
 
         # Skip connection from early features
@@ -703,15 +702,18 @@ class BCPlayer(Player):
         # Update tracked advantage
         self._last_win_advantage[battle_tag] = current_advantage
 
-    def predict(self, traj: torch.Tensor, battle: DoubleBattle, action_type: Optional[str] = None) -> Dict[BattleOrder, float]:
+    def predict(self, traj: torch.Tensor, battle: DoubleBattle, action_type: Optional[str] = None) -> Tuple[List[BattleOrder], List[float]]:
         """
-        Given a trajectory tensor and battle, returns a dict of valid actions and their probabilities
+        Given a trajectory tensor and battle, returns lists of valid actions and their probabilities
         for the last state in the trajectory.
 
         Args:
             traj: Trajectory tensor of shape (batch, seq_len, embed_dim)
             battle: Current battle state
             action_type: Optional action type (TEAMPREVIEW/TURN/FORCE_SWITCH). If None, inferred from battle state.
+
+        Returns:
+            Tuple of (actions, probabilities) where actions are BattleOrder objects (or strings for teampreview)
         """
         # Use appropriate model based on battle phase
         if action_type is None:
@@ -775,11 +777,13 @@ class BCPlayer(Player):
             # Softmax over valid actions
             probs = torch.softmax(masked_logits, dim=-1)
 
-            # Build output dict - convert MDBO to BattleOrder for hashability
+            # Build output lists
             # CRITICAL: Only process actions that passed validation (are in the mask)
-            result = {}
+            actions = []
+            probabilities = []
             mask_cpu = mask.cpu().numpy()
             probs_cpu = probs.cpu().numpy()
+
             for i in range(len(probs_cpu)):
                 # Skip actions that weren't validated or have zero probability
                 if not mask_cpu[i] or probs_cpu[i] <= 0 or i >= max_actions:
@@ -787,25 +791,21 @@ class BCPlayer(Player):
 
                 mdbo = MDBO.from_int(i, type=action_type)
                 if battle.teampreview:
-                    # For teampreview, use the MDBO message directly as key (it's a string)
-                    result[mdbo.message] = float(probs_cpu[i])  # type: ignore
+                    # For teampreview, store the message string
+                    actions.append(mdbo.message)  # type: ignore
+                    probabilities.append(float(probs_cpu[i]))
                 else:
-                    # For turn actions, convert to DoubleBattleOrder and use its message as key
-                    # DoubleBattleOrder objects aren't hashable, so we use the message string
+                    # For turn actions, convert to DoubleBattleOrder
                     try:
                         order = mdbo.to_double_battle_order(battle)
-                        # Use the order object itself as the key (BattleOrder types should be hashable)
-                        # If that fails, use the message string
-                        try:
-                            result[order] = float(probs_cpu[i])
-                        except TypeError:
-                            # If order is not hashable, use its message instead
-                            result[order.message] = float(probs_cpu[i])  # type: ignore
+                        actions.append(order)
+                        probabilities.append(float(probs_cpu[i]))
                     except Exception as e:
-                        # This shouldn't happen since we already validated, but handle it anyway
+                        # This shouldn't happen since we already validated
                         print(f"[BCPlayer.predict] WARNING: Failed to convert validated action {i}: {e}")
                         continue
-            return result  # type: ignore
+
+            return actions, probabilities  # type: ignore
 
     """
     PLAYER-BASED METHODS
@@ -822,6 +822,10 @@ class BCPlayer(Player):
     def choose_move(self, battle: AbstractBattle) -> BattleOrder:
         assert isinstance(battle, DoubleBattle)
 
+        # Don't make choices if battle is over
+        if battle.finished:
+            return DefaultBattleOrder()
+
         # Embed and store the battle state
         state_vec = self.embed_battle_state(battle)
         if battle.battle_tag not in self._trajectories:
@@ -829,25 +833,24 @@ class BCPlayer(Player):
         self._trajectories[battle.battle_tag].append(state_vec)
 
         # Get model prediction based on the battle state
-        predictions: Dict[BattleOrder, float] = self.predict(
+        actions, probabilities = self.predict(
             torch.Tensor(self._trajectories[battle.battle_tag]).unsqueeze(0), battle
         )
-        keys = list(predictions.keys())
 
-        if len(keys) == 0:
-            # print("No valid actions available, returning random move.")
+        if len(actions) == 0:
+            print("WARNING in BCPlayer.choose_move: No valid actions available, returning random move.")
             return DefaultBattleOrder()
 
-        probabilities = np.array(list(predictions.values()))
+        probabilities = np.array(probabilities)
         probabilities = probabilities / probabilities.sum()  # Ensure sum to 1
 
         # If probabilistic, sample a move proportional to the softmax; otherwise, choose the best move
         if self._probabilistic:
-            choice_idx = np.random.choice(len(keys), p=probabilities)
+            choice_idx = np.random.choice(len(actions), p=probabilities)
         else:
             choice_idx = int(np.argmax(probabilities))
 
-        chosen_move = keys[choice_idx]
+        chosen_move = actions[choice_idx]
 
         # For teampreview, chosen_move is already a string message; return it directly
         # For turn actions, chosen_move is a DoubleBattleOrder object

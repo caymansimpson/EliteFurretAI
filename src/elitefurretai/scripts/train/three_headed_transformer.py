@@ -726,7 +726,7 @@ def train_epoch(
                 flat_turn_win_logits = win_logits[turn_valid_mask]
 
                 # Choose loss function based on config
-                loss_type = config.get("loss_type", "top3")
+                loss_type = config.get("turn_loss_type", "top3")
                 if loss_type == "focal":
                     turn_loss = focal_topk_cross_entropy_loss(
                         flat_turn_logits,
@@ -735,6 +735,7 @@ def train_epoch(
                         k=config.get("train_topk_k", 2025),
                         gamma=config.get("focal_gamma", 2.0),
                         alpha=config.get("focal_alpha", 0.25),
+                        label_smoothing=config.get("label_smoothing", 0.0),
                     )
                 else:  # "top3" or default
                     turn_loss = topk_cross_entropy_loss(
@@ -923,7 +924,7 @@ def main(train_path, test_path, val_path, config={}):
         "entropy_weight": 0.0,  # Entropy regularization to encourage prediction diversity (0.0 = off, try 0.01-0.1)
 
         # Loss Function Type
-        "loss_type": "top3",  # "top3" (standard topk CE) or "focal" (focal loss for hard examples)
+        "turn_loss_type": "top3",  # "top3" (standard topk CE) or "focal" (focal loss for hard examples)
         "train_topk_k": 3,  # Number of top predictions to consider (2025 = all actions, 3 = top-3 only)
         "focal_gamma": 2.0,  # Focal loss focusing parameter (higher = more focus on hard examples)
         "focal_alpha": 0.25,  # Focal loss weighting parameter
@@ -958,7 +959,7 @@ def main(train_path, test_path, val_path, config={}):
             if torch.backends.mps.is_available()
             else "cpu"
         ),
-        "save_path": "data/models/",
+        "save_path": "data/models/supervised/",
         "seed": 21,
     }
 

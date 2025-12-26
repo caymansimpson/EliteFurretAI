@@ -94,7 +94,9 @@ class BattleDataset(Dataset):
         # rather than memorize "Pokemon at positions [0,1,2,3] → action N".
         #
         # This creates up to 720 different views per battle (6! permutations) and
-        # breaks the deterministic team→action mapping that causes overfitting.
+        # breaks the deterministic team→action mapping that causes overfitting. Well,
+        # it doesn't because the model can still memorize the teams, but it at least
+        # makes the memorization harder.
         # =============================================================================
 
         if self.augment_teampreview:
@@ -226,7 +228,7 @@ class BattleDataset(Dataset):
         # I compute from advantages in future turns
         wins = self._compute_ensemble_advantage(iter, advantages)
 
-        # Compute move order and KO status
+        # Compute move order and KO status -- these can be auxiliary tasks to help with learning
         move_orders = self._compute_move_order(iter, input_indices)
         kos = self._compute_ko_status(iter, input_indices)
         switches = self._compute_switch(iter, input_indices)

@@ -1,21 +1,22 @@
 import asyncio
 import torch
 import numpy as np
-from typing import List, Dict, Any, Optional, Tuple
-from poke_env.player import Player, RandomPlayer
+from typing import List, Dict, Any, Tuple, Optional
+from poke_env.player import Player
 from poke_env.battle import DoubleBattle, AbstractBattle
 from poke_env.player.battle_order import BattleOrder, DefaultBattleOrder
 from elitefurretai.model_utils.embedder import Embedder
 from elitefurretai.model_utils.encoder import MDBO
 from elitefurretai.rl2.agent import RNaDAgent
 
+
 class BatchInferencePlayer(Player):
     def __init__(
-        self, 
-        model: RNaDAgent, 
-        device='cpu', 
-        batch_size=16, 
-        batch_timeout=0.01, 
+        self,
+        model: RNaDAgent,
+        device='cpu',
+        batch_size=16,
+        batch_timeout=0.01,
         probabilistic=True,
         trajectory_queue=None,
         **kwargs
@@ -28,32 +29,31 @@ class BatchInferencePlayer(Player):
         self.probabilistic = probabilistic
         self.trajectory_queue = trajectory_queue
         self.embedder = Embedder(format=self.format, feature_set=Embedder.FULL, omniscient=False)
-        self.queue = asyncio.Queue()
-        self.hidden_states = {} # battle_tag -> (h, c)
-        self._inference_task = None
-        
+        self.queue: asyncio.Queue = asyncio.Queue()
+        self.hidden_states: Dict[str, Tuple[torch.Tensor, torch.Tensor]] = {}  # battle_tag -> (h, c)
+        self._inference_task: Optional[asyncio.Task] = None
+
         # Trajectory storage
         # battle_tag -> list of dicts
-        self.current_trajectories = {} 
-        self.completed_trajectories = [] 
-        
+        self.current_trajectories: Dict[str, List[Dict[str, Any]]] = {}
+        self.completed_trajectories: List[Dict[str, Any]] = []
+
     async def start_inference_loop(self):
         self._inference_task = asyncio.create_task(self._inference_loop())
-        
+
     async def _inference_loop(self):
         while True:
-            batch = []
-            futures = []
-            battle_tags = []
-            is_tps = []
-            masks = []
-            
+            batch: List[Any] = []
+            futures: List[Any] = []
+            battle_tags: List[str] = []
+            is_tps: List[bool] = []
+            masks: List[Any] = []
             # Collect batch
             try:
                 # Wait for first item
                 item = await self.queue.get()
                 self._add_to_batch(batch, futures, battle_tags, is_tps, masks, item)
-                
+
                 # Collect more
                 start_time = asyncio.get_event_loop().time()
                 while len(batch) < self.batch_size:
@@ -67,11 +67,11 @@ class BatchInferencePlayer(Player):
                         break
             except asyncio.CancelledError:
                 break
-                
+
             # Run inference
             if batch:
                 await self._run_batch(batch, futures, battle_tags, is_tps, masks)
-                
+
     def _add_to_batch(self, batch, futures, battle_tags, is_tps, masks, item):
         batch.append(item[0])
         futures.append(item[1])
@@ -81,8 +81,8 @@ class BatchInferencePlayer(Player):
 
     async def _run_batch(self, states, futures, battle_tags, is_tps, masks):
         # Prepare inputs
-        states_tensor = torch.tensor(np.array(states), dtype=torch.float32).to(self.device).unsqueeze(1) # (batch, 1, dim)
-        
+        states_tensor = torch.tensor(np.array(states), dtype=torch.float32).to(self.device).unsqueeze(1)  # (batch, 1, dim)
+
         # Get hidden states
         h_list = []
         c_list = []
@@ -92,29 +92,29 @@ class BatchInferencePlayer(Player):
                 self.hidden_states[tag] = (h, c)
             h_list.append(self.hidden_states[tag][0])
             c_list.append(self.hidden_states[tag][1])
-            
+
         h_batch = torch.cat(h_list, dim=1)
         c_batch = torch.cat(c_list, dim=1)
         hidden = (h_batch, c_batch)
-        
+
         # Run model
         with torch.no_grad():
             turn_logits, tp_logits, values, next_hidden = self.model(states_tensor, hidden)
-            
+
         # Update hidden states
         h_next, c_next = next_hidden
         for i, tag in enumerate(battle_tags):
-            self.hidden_states[tag] = (h_next[:, i:i+1, :], c_next[:, i:i+1, :])
-            
+            self.hidden_states[tag] = (h_next[:, i:i + 1, :], c_next[:, i:i + 1, :])
+
         # Process outputs
         turn_probs = torch.softmax(turn_logits, dim=-1).cpu().numpy()
         tp_probs = torch.softmax(tp_logits, dim=-1).cpu().numpy()
         values = values.cpu().numpy()
-        
+
         for i, future in enumerate(futures):
             is_tp = is_tps[i]
             mask = masks[i]
-            
+
             if is_tp:
                 probs = tp_probs[i, 0]
                 # TP mask? Usually not needed or handled by MDBO
@@ -125,7 +125,7 @@ class BatchInferencePlayer(Player):
                 if mask is not None:
                     probs = probs * mask
                     if probs.sum() == 0:
-                        probs = mask / mask.sum() # Fallback to uniform over valid
+                        probs = mask / mask.sum()  # Fallback to uniform over valid
                     else:
                         probs = probs / probs.sum()
                 valid_actions = list(range(len(probs)))
@@ -135,9 +135,9 @@ class BatchInferencePlayer(Player):
                 action = np.random.choice(valid_actions, p=probs)
             else:
                 action = np.argmax(probs)
-                
+
             log_prob = np.log(probs[action] + 1e-10)
-            
+
             result = {
                 'action': action,
                 'log_prob': log_prob,
@@ -153,13 +153,13 @@ class BatchInferencePlayer(Player):
     async def _choose_move_async(self, battle: AbstractBattle) -> BattleOrder:
         if not isinstance(battle, DoubleBattle):
             return DefaultBattleOrder()
-            
+
         # Embed state
         state = self.embedder.feature_dict_to_vector(self.embedder.embed(battle))
-        
+
         # Get mask
         if battle.teampreview:
-            mask = None # TP mask logic if needed
+            mask = None  # TP mask logic if needed
         else:
             # MDBO mask
             # We need to get valid actions from MDBO
@@ -175,36 +175,36 @@ class BatchInferencePlayer(Player):
         # Create future
         loop = asyncio.get_running_loop()
         future = loop.create_future()
-        
+
         # Push to queue
         await self.queue.put((state, future, battle.battle_tag, battle.teampreview, mask))
-        
+
         # Wait for result
         result = await future
-        
+
         action_idx = result['action']
-        
+
         # Store step
         step = {
             'state': state,
             'action': action_idx,
             'log_prob': result['log_prob'],
             'value': result['value'],
-            'reward': 0, # Will be filled later
+            'reward': 0,  # Will be filled later
             'is_teampreview': battle.teampreview,
             'mask': mask
         }
-        
+
         if battle.battle_tag not in self.current_trajectories:
             self.current_trajectories[battle.battle_tag] = []
         self.current_trajectories[battle.battle_tag].append(step)
-        
+
         # Convert to BattleOrder
         if battle.teampreview:
             try:
                 mdbo = MDBO.from_int(action_idx, type=MDBO.TEAMPREVIEW)
                 order = mdbo.message
-            except:
+            except ValueError:
                 # Fallback to random team order
                 # "123456" is a valid order string part, but we need "/team 123456"
                 order = "/team 123456"
@@ -212,10 +212,10 @@ class BatchInferencePlayer(Player):
             try:
                 mdbo = MDBO.from_int(action_idx, type=MDBO.TURN)
                 order = mdbo.to_double_battle_order(battle)
-            except:
+            except ValueError:
                 order = DefaultBattleOrder()
-                
-        return order
+
+        return order  # type: ignore
 
     def _get_action_mask(self, battle):
         # Implement masking logic based on MDBO and battle.valid_orders
@@ -229,16 +229,15 @@ class BatchInferencePlayer(Player):
             # Assign rewards
             reward = 1.0 if battle.won else -1.0
             for step in traj:
-                step['reward'] = reward # Sparse reward at end? Or shaped?
+                step['reward'] = reward  # Sparse reward at end? Or shaped?
                 # RNaD usually uses win/loss.
-            
-            self.completed_trajectories.append(traj)
-            
+
+            self.completed_trajectories.extend(traj)
+
             if self.trajectory_queue is not None:
                 self.trajectory_queue.put(traj)
-                self.completed_trajectories = [] # Clear local storage if pushed
-            
+                self.completed_trajectories = []  # Clear local storage if pushed
+
             # Clean up hidden state
             if battle.battle_tag in self.hidden_states:
                 del self.hidden_states[battle.battle_tag]
-

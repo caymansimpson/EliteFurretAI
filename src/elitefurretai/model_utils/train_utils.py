@@ -64,6 +64,7 @@ def focal_topk_cross_entropy_loss(
     k: int = 3,
     gamma: float = 2.0,
     alpha: float = 0.25,
+    label_smoothing: float = 0.0,
 ) -> torch.Tensor:
     """
     Compute focal loss with top-k filtering, downweighting easy examples.
@@ -82,21 +83,10 @@ def focal_topk_cross_entropy_loss(
         gamma: Focusing parameter. Higher gamma = more focus on hard examples.
                gamma=0 reduces to standard cross entropy. Typical values: 2.0-5.0
         alpha: Weighting factor for the loss. Typical value: 0.25
+        label_smoothing: Float in [0, 1]. If > 0, smooths targets over valid (non-masked) classes.
 
     Returns:
         Weighted focal loss with top-k filtering
-
-    Example:
-        # Standard usage
-        loss = focal_topk_cross_entropy_loss(logits, labels, k=3, gamma=2.0)
-
-        # More aggressive focusing on hard examples
-        loss = focal_topk_cross_entropy_loss(logits, labels, k=3, gamma=5.0)
-
-        # With per-example weights (e.g., for action type balancing)
-        action_weights = torch.ones_like(labels, dtype=torch.float32)
-        action_weights[is_move] = 5.0  # Weight move actions 5x
-        loss = focal_topk_cross_entropy_loss(logits, labels, weights=action_weights, k=3)
     """
     # Get top-k indices
     _, topk_indices = torch.topk(logits, k=min(k, logits.size(-1)), dim=-1)
@@ -113,19 +103,38 @@ def focal_topk_cross_entropy_loss(
     valid_logits = logits[valid_indices]
     valid_labels = labels[valid_indices]
 
-    # Compute cross entropy loss (reduction='none' to get per-example losses)
-    ce_loss = torch.nn.functional.cross_entropy(valid_logits, valid_labels, reduction="none")
+    # Compute cross entropy loss with mask-aware label smoothing
+    if label_smoothing is not None and label_smoothing > 0.0:
+        # Detect valid actions (those not masked with -inf)
+        is_valid = (valid_logits > -1e4).float()  # [batch, num_classes]
+        num_valid = is_valid.sum(dim=-1, keepdim=True).clamp(min=1.0)  # Clamp to avoid division by zero
 
-    # Compute probability of true class
-    p_t = torch.exp(-ce_loss)  # p_t = probability of correct class
+        # Get log probabilities (log_softmax handles -inf properly)
+        log_probs = torch.nn.functional.log_softmax(valid_logits, dim=-1)
+
+        # Get log prob of true class
+        log_pt = log_probs.gather(1, valid_labels.unsqueeze(1)).squeeze(1)
+
+        # Compute smoothed cross entropy only over valid actions
+        # Avoid multiplying -inf * 0 by zeroing out invalid entries first
+        log_probs_safe = torch.where(is_valid.bool(), log_probs, torch.zeros_like(log_probs))
+
+        # Smoothed CE: (1 - eps) * (-log p_t) + (eps / num_valid) * (-sum log p_valid)
+        base_loss = -(1.0 - label_smoothing) * log_pt - (label_smoothing / num_valid.squeeze(1)) * log_probs_safe.sum(dim=-1)
+
+        # Get probability of true class for focal modulation
+        p_t = log_pt.exp().clamp(min=1e-7, max=1.0)  # Clamp to avoid numerical issues
+    else:
+        # Standard cross entropy without smoothing
+        ce_loss = torch.nn.functional.cross_entropy(valid_logits, valid_labels, reduction="none")
+        p_t = torch.exp(-ce_loss).clamp(min=1e-7, max=1.0)
+        base_loss = ce_loss
 
     # Compute focal term: (1 - p_t)^gamma
-    # When p_t is high (easy example), (1-p_t) is small → focal_term is small → loss is downweighted
-    # When p_t is low (hard example), (1-p_t) is large → focal_term is large → loss is emphasized
-    focal_term = (1 - p_t) ** gamma
+    focal_term = (1.0 - p_t) ** gamma
 
     # Apply focal modulation and alpha weighting
-    focal_loss = alpha * focal_term * ce_loss
+    focal_loss = alpha * focal_term * base_loss
 
     # Apply additional per-example weights if provided
     if weights is not None:
