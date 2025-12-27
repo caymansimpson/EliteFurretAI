@@ -9,7 +9,7 @@ import tempfile
 import os
 
 from elitefurretai.rl.agent import ActorCritic
-from elitefurretai.model_utils.encoder import MDBO
+from elitefurretai.etl.encoder import MDBO
 
 
 @pytest.fixture

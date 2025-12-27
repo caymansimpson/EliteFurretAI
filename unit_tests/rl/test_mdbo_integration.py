@@ -6,7 +6,7 @@ Unit tests for MDBO encoding/decoding integration with RL.
 import pytest
 from unittest.mock import Mock
 
-from elitefurretai.model_utils.encoder import MDBO
+from elitefurretai.etl.encoder import MDBO
 from poke_env.battle import DoubleBattle
 
 

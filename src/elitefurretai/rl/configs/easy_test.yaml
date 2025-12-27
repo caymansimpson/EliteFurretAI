@@ -1,0 +1,79 @@
+
+battle_format: gen9vgc2023regulationc
+
+
+# Model paths
+bc_action_path: data/models/bc_action_model.pt
+bc_teampreview_path: data/models/bc_teampreview_model.pt
+bc_win_path: data/models/bc_win_model.pt
+resume_from: null
+
+# Team configurations
+team_pool_path: data/teams/gen9vgc2023regulationc/easy
+use_random_teams: true
+
+# Training hyperparameters
+num_workers: 1
+players_per_worker: 4
+batch_size: 128
+lr: 0.0001
+train_batch_size: 32
+max_updates: 100000
+rnad_alpha: 0.01
+gamma: 0.99
+gae_lambda: 0.95
+clip_range: 0.2
+ent_coef: 0.01
+vf_coef: 0.5
+device: cuda
+
+# Portfolio regularization
+use_portfolio_regularization: false
+max_portfolio_size: 5
+portfolio_update_strategy: diverse
+portfolio_add_interval: 5000
+
+# Mixed Precision Training
+use_mixed_precision: true
+gradient_clip: 0.5
+
+# Checkpointing
+checkpoint_path: data/models/bc_action_model.pt
+checkpoint_interval: 1000
+max_past_models: 10
+ref_update_interval: 1000
+past_models_dir: data/models/past_versions
+save_dir: data/models/rl
+
+# Opponent Pool Configuration
+curriculum:
+  bc_player: 0.2
+  exploiters: 0.2
+  past_versions: 0.2
+  self_play: 0.4
+curriculum_update_interval: 500
+exploiter_registry_path: data/models/exploiter_registry.json
+
+# Exploiter Training
+train_exploiters: false
+exploiter_ent_coef: 0.02
+exploiter_eval_games: 100
+exploiter_interval: 10000
+exploiter_lr: 0.0001
+exploiter_min_win_rate: 0.55
+exploiter_output_dir: data/models/exploiters
+exploiter_team_pool_path: null
+exploiter_updates: 50000
+
+# Logging
+use_wandb: true
+log_interval: 10
+wandb_project: elitefurretai-rnad
+wandb_run_name: null
+wandb_tags: 
+  - test
+wandb_entity: null
+
+# Server parameters
+num_showdown_servers: 1
+showdown_start_port: 8000

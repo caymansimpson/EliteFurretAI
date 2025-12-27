@@ -15,3 +15,4 @@ src/elitefurretai/agents/abstract_vgc_model_player.py
 .env
 .github/copilot-instructions.md
 nohup.out
+EliteFurretAI.code-workspace

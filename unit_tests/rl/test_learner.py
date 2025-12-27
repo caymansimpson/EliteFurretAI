@@ -8,7 +8,7 @@ import torch
 import torch.multiprocessing as mp
 
 from elitefurretai.rl.learner import PPOLearner, MMDLearner
-from elitefurretai.model_utils.encoder import MDBO
+from elitefurretai.etl.encoder import MDBO
 
 
 @pytest.fixture

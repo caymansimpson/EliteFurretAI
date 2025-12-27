@@ -8,8 +8,8 @@ import numpy as np
 from unittest.mock import Mock
 
 from elitefurretai.rl.environment import VGCDoublesEnv
-from elitefurretai.model_utils.encoder import MDBO
-from elitefurretai.model_utils.embedder import Embedder
+from elitefurretai.etl.encoder import MDBO
+from elitefurretai.etl.embedder import Embedder
 from poke_env.battle import DoubleBattle
 
 
