@@ -1,7 +1,9 @@
-import os
-from typing import Any, Dict, List, Optional, Union
 import math
+import os
+import platform
 import random
+import warnings
+from typing import Any, Dict, List, Optional, Union
 
 import orjson
 import torch
@@ -9,14 +11,11 @@ from torch.utils.data import Dataset
 
 from elitefurretai.etl.battle_data import BattleData
 from elitefurretai.etl.battle_iterator import BattleIterator
+from elitefurretai.etl.battle_order_validator import is_valid_order
+from elitefurretai.etl.compress_utils import load_compressed
 from elitefurretai.etl.embedder import Embedder
 from elitefurretai.etl.encoder import MDBO, MoveOrderEncoder
-from elitefurretai.etl.battle_order_validator import is_valid_order
 from elitefurretai.etl.evaluate_state import evaluate_position_advantage
-from elitefurretai.etl.compress_utils import load_compressed
-
-import platform
-import warnings
 
 
 # An implementation of Dataset for a series of showdown battles stored in a directory as BattleData
@@ -52,7 +51,9 @@ class BattleDataset(Dataset):
         self.steps_per_battle = (
             steps_per_battle  # Max number of steps to process per battle
         )
-        self.augment_teampreview = augment_teampreview  # Whether to apply team order randomization
+        self.augment_teampreview = (
+            augment_teampreview  # Whether to apply team order randomization
+        )
 
     # Because we can go through each file with a different perspective
     def __len__(self) -> int:
@@ -63,7 +64,7 @@ class BattleDataset(Dataset):
         # For each index, determine which file and which player perspective
         file_idx = idx // 2
         perspective = "p" + str((idx % 2) + 1)
-        file_path = self.files[file_idx].replace('\\', '/')
+        file_path = self.files[file_idx].replace("\\", "/")
 
         # Read the file into BattleData
         bd = None
@@ -126,14 +127,18 @@ class BattleDataset(Dataset):
                     parts = input_log.split(" team ")
                     if len(parts) == 2:
                         player_prefix = parts[0]  # e.g., ">p1"
-                        team_choice = parts[1]    # e.g., "1234"
+                        team_choice = parts[1]  # e.g., "1234"
 
                         # Determine which permutation to use
-                        permutation = p1_permutation if player_prefix == ">p1" else p2_permutation
+                        permutation = (
+                            p1_permutation if player_prefix == ">p1" else p2_permutation
+                        )
 
                         # Convert team choice from string to 0-indexed positions
                         # e.g., "4, 5, 1, 3" → [3, 4, 0, 2]
-                        original_positions = [int(x.strip()) - 1 for x in team_choice.split(",")]
+                        original_positions = [
+                            int(x.strip()) - 1 for x in team_choice.split(",")
+                        ]
 
                         # Map original positions through the inverse permutation
                         # If permutation is [2,0,5,1,3,4] (new[i] = old[perm[i]]),
@@ -150,7 +155,9 @@ class BattleDataset(Dataset):
                         new_team_choice = ", ".join(str(pos + 1) for pos in new_positions)
 
                         # Reconstruct the input log
-                        updated_input_logs.append(f"{player_prefix} team {new_team_choice}")
+                        updated_input_logs.append(
+                            f"{player_prefix} team {new_team_choice}"
+                        )
                     else:
                         # Shouldn't happen, but keep original if parsing fails
                         updated_input_logs.append(input_log)
@@ -182,7 +189,6 @@ class BattleDataset(Dataset):
         # Iterate through the battle and get the player's input commands until ended or we exceed the steps per battle parameter
         i = 0
         while not iter.battle.finished and iter.next_input() and i < self.steps_per_battle:
-
             # Get the last input command found by the iterator by the player, and stop if there's no more
             input = iter.last_input
             if input is None:
@@ -197,7 +203,9 @@ class BattleDataset(Dataset):
                 assert iter.last_input_type is not None
                 for possible_action_int in range(MDBO.action_space()):
                     try:
-                        dbo = MDBO.from_int(possible_action_int, iter.last_input_type).to_double_battle_order(iter.battle)  # type: ignore
+                        dbo = MDBO.from_int(
+                            possible_action_int, iter.last_input_type
+                        ).to_double_battle_order(iter.battle)  # type: ignore
                         if is_valid_order(dbo, iter.battle):  # type: ignore
                             action_masks[i, possible_action_int] = 1
                     except Exception:
@@ -207,7 +215,11 @@ class BattleDataset(Dataset):
             action_idx = iter.last_order().to_int()
 
             # Convert training data into embedding and state into a label
-            states[i] = torch.tensor(self.embedder.feature_dict_to_vector(self.embedder.embed(iter.battle)))  # type: ignore
+            states[i] = torch.tensor(
+                self.embedder.feature_dict_to_vector(  # type: ignore
+                    self.embedder.embed(iter.battle)  # type: ignore[arg-type]
+                )
+            )
             actions[i] = action_idx
             masks[i] = 1
 
@@ -250,7 +262,6 @@ class BattleDataset(Dataset):
         speed_orders = torch.zeros(self.steps_per_battle, dtype=torch.long)
         prev_idx = 0
         for i, end_idx in enumerate(input_indices):
-
             # Look for move order in the log range
             move_order = []
             for log_idx in range(prev_idx, min(end_idx, len(iter.bd.logs))):
@@ -274,7 +285,6 @@ class BattleDataset(Dataset):
         prev_idx = 0
         ko_targets = torch.zeros((self.steps_per_battle, 4), dtype=torch.float32)
         for i, end_idx in enumerate(input_indices):
-
             # Track which pokemon faint: [p1a, p1b, p2a, p2b]
             positions = {"p1a": 0, "p1b": 1, "p2a": 2, "p2b": 3}
             fainted = [0, 0, 0, 0]
@@ -299,7 +309,6 @@ class BattleDataset(Dataset):
         switch_targets = torch.zeros((self.steps_per_battle, 4), dtype=torch.float32)
         prev_idx = 0
         for i, end_idx in enumerate(input_indices):
-
             # Track which pokemon switch: [p1a, p1b, p2a, p2b]
             positions = {"p1a": 0, "p1b": 1, "p2a": 2, "p2b": 3}
             switches = [0, 0, 0, 0]
@@ -346,7 +355,7 @@ class BattleDataset(Dataset):
             current_adv = advantages[i]
 
             # Average advantage over next 3 turns (including current)
-            next_window = advantages[i + 1: min(i + 4, n)]
+            next_window = advantages[i + 1 : min(i + 4, n)]
             if len(next_window) == 0:
                 avg_next_adv = current_adv
             else:
@@ -394,7 +403,7 @@ class BattleIteratorDataset(Dataset):
         # For each index, determine which file and which player perspective
         file_idx = idx // 2
         perspective = "p" + str((idx % 2) + 1)
-        file_path = self.files[file_idx].replace('\\', '/')
+        file_path = self.files[file_idx].replace("\\", "/")
 
         # Read the file into BattleData
         bd = None
@@ -423,14 +432,20 @@ class BattleIteratorDataset(Dataset):
                     if len(parts) == 2:
                         player_prefix = parts[0]
                         team_choice = parts[1]
-                        permutation = p1_permutation if player_prefix == ">p1" else p2_permutation
-                        original_positions = [int(x.strip()) - 1 for x in team_choice.split(",")]
+                        permutation = (
+                            p1_permutation if player_prefix == ">p1" else p2_permutation
+                        )
+                        original_positions = [
+                            int(x.strip()) - 1 for x in team_choice.split(",")
+                        ]
                         inverse_perm = [0] * len(permutation)
                         for new_idx, old_idx in enumerate(permutation):
                             inverse_perm[old_idx] = new_idx
                         new_positions = [inverse_perm[pos] for pos in original_positions]
                         new_team_choice = ", ".join(str(pos + 1) for pos in new_positions)
-                        updated_input_logs.append(f"{player_prefix} team {new_team_choice}")
+                        updated_input_logs.append(
+                            f"{player_prefix} team {new_team_choice}"
+                        )
                     else:
                         updated_input_logs.append(input_log)
                 else:
@@ -482,12 +497,14 @@ class PreprocessedBattleDataset(Dataset):
         metadata_path = os.path.join(folder_path, metadata_filename)
         if os.path.exists(metadata_path):
             # Load trajectory counts from metadata file
-            with open(metadata_path, 'r') as f:
+            with open(metadata_path, "r") as f:
                 metadata = orjson.loads(f.read())
 
-            file_trajectory_counts = metadata.get('file_trajectory_counts', [])
+            file_trajectory_counts = metadata.get("file_trajectory_counts", [])
             if len(file_trajectory_counts) != len(self.trajectory_files):
-                raise ValueError("Metadata file trajectory counts do not match number of trajectory files.")
+                raise ValueError(
+                    "Metadata file trajectory counts do not match number of trajectory files."
+                )
 
             # Build index map using metadata
             for file_idx, num_trajectories in enumerate(file_trajectory_counts):
@@ -564,6 +581,7 @@ class OptimizedPreprocessedTrajectoryDataset(Dataset):
     "own" specific files; each worker loads and caches only its assigned files. Note that this also requires a custom Sampler, and also
     for us to set some system level parameters to avoid Windows shared memory limits.
     """
+
     def __init__(
         self,
         folder_path: str,
@@ -585,10 +603,10 @@ class OptimizedPreprocessedTrajectoryDataset(Dataset):
         # On Windows, PyTorch's default shared memory strategy can hit limits with large datasets
         # on specifially Windows, that happens with multiprocessing DataLoader
         # See https://pytorch.org/docs/stable/multiprocessing.html#sharing-strategies
-        if platform.system() == 'Windows' or "microsoft" in platform.uname()[2].lower():
+        if platform.system() == "Windows" or "microsoft" in platform.uname()[2].lower():
             # Use file_system sharing to avoid Windows shared memory limits
-            torch.multiprocessing.set_sharing_strategy('file_system')
-            warnings.filterwarnings('ignore', message='.*socket.send.*')
+            torch.multiprocessing.set_sharing_strategy("file_system")
+            warnings.filterwarnings("ignore", message=".*socket.send.*")
 
         self.folder_path = folder_path
         self.embedder = embedder
@@ -597,11 +615,13 @@ class OptimizedPreprocessedTrajectoryDataset(Dataset):
         self._worker_files: Optional[set] = None
 
         # Get all trajectory files
-        self.trajectory_files = sorted([
-            os.path.join(folder_path, f)
-            for f in os.listdir(folder_path)
-            if f.endswith('.pt.zst')
-        ])
+        self.trajectory_files = sorted(
+            [
+                os.path.join(folder_path, f)
+                for f in os.listdir(folder_path)
+                if f.endswith(".pt.zst")
+            ]
+        )
 
         # If no files found, raise error
         if not self.trajectory_files:
@@ -611,7 +631,9 @@ class OptimizedPreprocessedTrajectoryDataset(Dataset):
         if isinstance(files_per_worker, int):
             self.files_per_worker: int = files_per_worker
         elif files_per_worker == "default":
-            self.files_per_worker = max(2, len(self.trajectory_files) // ((os.cpu_count() or 2) * 2))
+            self.files_per_worker = max(
+                2, len(self.trajectory_files) // ((os.cpu_count() or 2) * 2)
+            )
 
         # Build index: global_idx -> (file_idx, local_idx)
         self._idx_map = []
@@ -621,12 +643,14 @@ class OptimizedPreprocessedTrajectoryDataset(Dataset):
         if os.path.exists(os.path.join(self.folder_path, metadata_filename)):
             # Load trajectory counts from metadata file; it is just a JSON with a list of counts
             # of number of trajectories per file
-            with open(os.path.join(self.folder_path, metadata_filename), 'r') as f:
+            with open(os.path.join(self.folder_path, metadata_filename), "r") as f:
                 metadata = orjson.loads(f.read())
 
-            self.file_trajectory_counts = metadata.get('file_trajectory_counts', [])
+            self.file_trajectory_counts = metadata.get("file_trajectory_counts", [])
             if len(self.file_trajectory_counts) != len(self.trajectory_files):
-                raise ValueError("Metadata file trajectory counts do not match number of trajectory files.")
+                raise ValueError(
+                    "Metadata file trajectory counts do not match number of trajectory files."
+                )
 
             for file_idx, num_trajectories in enumerate(self.file_trajectory_counts):
                 for local_idx in range(num_trajectories):
@@ -635,7 +659,9 @@ class OptimizedPreprocessedTrajectoryDataset(Dataset):
         else:
             # No metadata file; load each file to count trajectories
             for file_idx, file_path in enumerate(self.trajectory_files):
-                trajectories = torch.load(file_path, map_location='cpu', weights_only=False)
+                trajectories = torch.load(
+                    file_path, map_location="cpu", weights_only=False
+                )
                 num_trajectories = len(trajectories)
                 self.file_trajectory_counts.append(num_trajectories)
 
@@ -667,7 +693,9 @@ class OptimizedPreprocessedTrajectoryDataset(Dataset):
             self.num_workers = worker_info.num_workers
 
             # Divide files among workers
-            files_per_worker_calc = math.ceil(len(self.trajectory_files) / self.num_workers)
+            files_per_worker_calc = math.ceil(
+                len(self.trajectory_files) / self.num_workers
+            )
             start_file = self._worker_id * files_per_worker_calc
             end_file = min(start_file + files_per_worker_calc, len(self.trajectory_files))
 
@@ -686,7 +714,7 @@ class OptimizedPreprocessedTrajectoryDataset(Dataset):
 
         # Load file
         file_path = self.trajectory_files[file_idx]
-        trajectories = load_compressed(file_path, map_location='cpu')
+        trajectories = load_compressed(file_path, map_location="cpu")
 
         # Cache management: keep only files_per_worker most recent
         if len(self._worker_cache) >= self.files_per_worker:

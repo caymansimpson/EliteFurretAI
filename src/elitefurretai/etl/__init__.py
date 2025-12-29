@@ -27,22 +27,22 @@ Scripts:
 
 # Core data structures
 from elitefurretai.etl.battle_data import BattleData
-from elitefurretai.etl.battle_iterator import BattleIterator
+from elitefurretai.etl.battle_dataloader import OptimizedBattleDataLoader
 from elitefurretai.etl.battle_dataset import (
     BattleDataset,
     PreprocessedBattleDataset,
 )
-from elitefurretai.etl.battle_dataloader import OptimizedBattleDataLoader
+from elitefurretai.etl.battle_iterator import BattleIterator
+
+# Validation & utilities
+from elitefurretai.etl.battle_order_validator import is_valid_order
+from elitefurretai.etl.compress_utils import load_compressed, save_compressed
 
 # Feature engineering
 from elitefurretai.etl.embedder import Embedder
 from elitefurretai.etl.encoder import MDBO, MoveOrderEncoder
-
-# Validation & utilities
-from elitefurretai.etl.battle_order_validator import is_valid_order
 from elitefurretai.etl.evaluate_state import evaluate_position_advantage
 from elitefurretai.etl.team_repo import TeamRepo
-from elitefurretai.etl.compress_utils import save_compressed, load_compressed
 
 __all__ = [
     # Data structures

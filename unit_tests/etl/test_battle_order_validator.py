@@ -89,7 +89,6 @@ def test_is_valid_singles_order(example_singles_request):
 # It tests 2v2, force_switch, trapped and 1v1 scenarios. This method really demonstrates how
 # much more complicated VGC is as a game
 def test_is_valid_doubles_order(example_doubles_request):
-
     # Initiate battle and create an opponent team
     logger = MagicMock()
     battle = DoubleBattle("battle-gen8doublesou-1", "username", logger, gen=8)
@@ -147,7 +146,6 @@ def test_is_valid_doubles_order(example_doubles_request):
 
     # i is the pokemon index
     for i in range(2):
-
         # Get switches
         switches[i] = [
             SingleBattleOrder(order=mon) for mon in battle.available_switches[i]

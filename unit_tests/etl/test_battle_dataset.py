@@ -84,7 +84,12 @@ def test_battle_dataset_actions_and_wins(request, fixture_name):
                 ), f"Step {i}: Action {action_idx} not valid in action_masks for {fixture_name}, perspective {perspective}"
 
                 input_type = iter.last_input_type
-                order = MDBO.from_int(action_idx, input_type).to_double_battle_order(iter.battle)  # type: ignore
+                order = MDBO.from_int(
+                    action_idx,
+                    input_type,  # type: ignore[arg-type]
+                ).to_double_battle_order(
+                    iter.battle  # type: ignore[arg-type]
+                )
                 assert is_valid_order(order, iter.battle), (  # type: ignore
                     f"Step {i}: Action {action_idx} not valid according to is_valid_order for {fixture_name}, perspective {perspective}"
                 )

@@ -69,7 +69,6 @@ class SpeedInference:
 
     # Update our internal tracking of the battle, and apply inferences
     def update(self, battle: Union[Battle, DoubleBattle]):
-
         if len(battle.observations) == 0:
             return
 
@@ -91,7 +90,6 @@ class SpeedInference:
             and self._last_tracked_event > 0
             and turn_of_events == self._last_tracked_turn
         ) or turn_of_events > self._last_tracked_turn:
-
             # Go through speeds
             self.track_speeds(obs.events, start=self._last_tracked_event)
 
@@ -173,11 +171,9 @@ class SpeedInference:
                 update_battle(self._battle, event)
 
         # Clean the orders by removing None speeds
-        none_filter = (
-            lambda order: len(order) == 2
-            and order[0][1] is not None
-            and order[1][1] is not None
-        )
+        def none_filter(order: list) -> bool:
+            return len(order) == 2 and order[0][1] is not None and order[1][1] is not None
+
         self._solve_speeds(list(filter(none_filter, speed_orders)))  # type: ignore
 
     # Uses pulp to solve for speeds. We create the set of equations and try to solve them. If we get an infeasible
@@ -214,7 +210,6 @@ class SpeedInference:
         # We record the constraints of our mons as their actual speeds, because we know their true value
         constraints: Dict[str, float] = {}
         for key, mon in self._battle.team.items():
-
             # This happens in teampreview, since battle mon are initiated with a request
             # and we solve for speeds before the request
             if mon.stats["spe"] is None:
@@ -226,7 +221,6 @@ class SpeedInference:
 
         # For each problem (a minimization and maximization one)
         for problem in problems:
-
             # This is our objective function; either maximize or minimize total speed stats
             # for opponent mons (this includes our mons; which is an int and invariant of solving)
             problem += pulp.lpSum([variables[key] for key in variables])
@@ -262,12 +256,10 @@ class SpeedInference:
             # If we get infeasible conditions, we check for Choice Scarf (we don't check for iron ball given its rarity)
             # This assumes that our speed tracking is correct; we could get infeasible if I miss a speed interaction
             if pulp.LpStatus[problem.status] == "Infeasible":
-
                 # Loop through every mon that could have choice scarf and test if the problem can be solved by assuming one
                 # We can have a situation where multiple mons could have a choice scarf and the set of equations works
                 # so we only claim success
                 for mon_ident in self._battle.opponent_team:
-
                     if (
                         self._inferences.get_flag(mon_ident, "can_be_choice")
                         and variables[mon_ident].upBound
@@ -278,7 +270,6 @@ class SpeedInference:
 
                         # If solvable, we found our choice scarf mon! We should record success and update the mon
                         if pulp.LpStatus[problem.status] == "Optimal":
-
                             # Need to go back and update the previous orders to note that there was a choice scarf there,
                             # since previous orders were wrong
                             self._update_orders(mon_ident, 1.5)
@@ -301,7 +292,6 @@ class SpeedInference:
             if success:
                 for key in variables:
                     if key in self._battle.opponent_team and variables[key].varValue:
-
                         # Get speed and adjust if choicescarf, since it's 1.5 what we think; the solved
                         # speed is the choicescarf speed
                         spe = variables[key].varValue
@@ -325,7 +315,6 @@ class SpeedInference:
     def _parse_preturn_switch(
         self, events: List[List[str]]
     ) -> List[List[Tuple[str, Optional[float]]]]:
-
         orders: List[List[Tuple[str, Optional[float]]]] = []
         last_moved = None
         last_multipliers = None
@@ -339,7 +328,6 @@ class SpeedInference:
         # ['', 'switch', 'p1a: Raichu', 'Raichu, L50, F', '60/135'],
         # ['', '-damage', 'p1a: Raichu', '27/135', '[from] Spikes']
         while i < len(events):
-
             # If we hit the edge-case above, we should go until we start again
             while i < len(events) and events[i][1] not in ["switch"]:
                 update_battle(self._battle, events[i])
@@ -499,12 +487,10 @@ class SpeedInference:
         temp_orders: List[List[Tuple[str, Optional[float]]]] = []
 
         for i, event in enumerate(events):
-
             # We only pay attention to moves; we don't consider if a pokemon can't move because
             # we don't know what move they chose. Eventually, we should include if WE moved, since
             # we should know what move we chose, and what the priority would have been
             if event[1] == "move":
-
                 # Now we need to get the priority
                 mon_ident, priority = get_priority_and_identifier(event, self._battle)
 
@@ -559,7 +545,6 @@ class SpeedInference:
             elif (
                 event[1] == "cant" or event[-1] == "[from] confusion"
             ) and not is_ability_event(event):
-
                 # If there was a move before this
                 if last_priority is not None and last_multipliers and last_moved:
                     mon_ident = standardize_pokemon_ident(event[2])
@@ -596,7 +581,6 @@ class SpeedInference:
 
         # Go through each event
         for i, event in enumerate(events):
-
             residual, mon_ident = get_residual_and_identifier(event)
             if residual is None or mon_ident is None:
                 update_battle(self._battle, event)
@@ -678,12 +662,10 @@ class SpeedInference:
                     }
 
         while i < len(events):
-
             update_battle(self._battle, events[i])
 
             # First we look at switches
             if events[i][1] == "switch":
-
                 # Get mons on the right side before the switch
                 old_actives = (
                     actives
@@ -779,7 +761,6 @@ class SpeedInference:
     def _get_activations_from_weather_or_terrain(
         self, events: List[List[str]], i: int
     ) -> Tuple[List[List[Tuple[str, Optional[float]]]], int]:
-
         # Ensure we were called correctly
         ability, mon_ident = get_ability_and_identifier(events[i])
         if ability not in ABILITIES_THAT_CAN_PUBLICLY_ACTIVATE_ABILITIES_OR_ITEMS:
@@ -805,7 +786,6 @@ class SpeedInference:
             "-start",
             "-boost",
         ]:
-
             # Check to see if we're done with activations. If we see a Booster Energy activation, it means we're at the item
             # activation phase at the beginning of a turn and we should be done. Example activations:
             # ['', '-activate', 'p1b: Iron Hands', 'ability: Quark Drive']
@@ -854,7 +834,6 @@ class SpeedInference:
         override_effects: Optional[Dict[Effect, int]] = None,
         override_speed_boost: Optional[int] = None,
     ) -> Optional[float]:
-
         mon = self._battle.get_pokemon(mon_ident)
         sc = (
             self._battle.side_conditions
@@ -893,7 +872,6 @@ class SpeedInference:
 
         multipliers: Dict[str, Optional[float]] = {}
         if isinstance(self._battle, DoubleBattle):
-
             # Use internal variable because it already stores idents and also doesn't
             # make the mons null if they fainted. If my mon uses an attack, life orb dies
             # and then another mon moves, we can still use my mon's info to ascertain something
@@ -949,7 +927,7 @@ class SpeedInference:
 
     @staticmethod
     def clean_orders(
-        orders: List[List[Tuple[str, Optional[float]]]]
+        orders: List[List[Tuple[str, Optional[float]]]],
     ) -> List[List[Tuple[str, float]]]:
         return list(
             filter(
@@ -972,7 +950,6 @@ class SpeedInference:
         status: Optional[Status] = None,
         effects: Optional[Dict[Effect, int]] = None,
     ) -> Optional[float]:
-
         # We should ignore speed calculations for mons whose place in the speed bracket has been affected
         if effects and (
             Effect.AFTER_YOU in effects

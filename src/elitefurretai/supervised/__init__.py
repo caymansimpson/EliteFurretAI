@@ -23,21 +23,21 @@ from elitefurretai.supervised.behavior_clone_player import BCPlayer
 
 # Model architectures
 from elitefurretai.supervised.model_archs import (
-    init_linear_layer,
-    ResidualBlock,
-    GatedResidualBlock,
-    GroupedFeatureEncoder,
     DNN,
     FlexibleThreeHeadedModel,
+    GatedResidualBlock,
+    GroupedFeatureEncoder,
+    ResidualBlock,
+    init_linear_layer,
 )
 
 # Training utilities
 from elitefurretai.supervised.train_utils import (
-    evaluate,
     analyze,
-    topk_cross_entropy_loss,
+    evaluate,
     focal_topk_cross_entropy_loss,
     format_time,
+    topk_cross_entropy_loss,
 )
 
 __all__ = [

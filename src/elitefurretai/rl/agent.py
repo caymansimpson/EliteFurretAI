@@ -1,4 +1,5 @@
 import torch
+
 from elitefurretai.supervised.model_archs import FlexibleThreeHeadedModel
 
 
@@ -7,6 +8,7 @@ class RNaDAgent(torch.nn.Module):
     RL Agent wrapper around FlexibleThreeHeadedModel.
     Handles hidden states and value function transformation.
     """
+
     def __init__(self, model: FlexibleThreeHeadedModel):
         super().__init__()
         self.model = model
@@ -15,8 +17,18 @@ class RNaDAgent(torch.nn.Module):
         # LSTM state is (h_0, c_0)
         # shape: (num_layers * num_directions, batch, hidden_size)
         num_directions = 2  # bidirectional
-        h = torch.zeros(self.model.lstm.num_layers * num_directions, batch_size, self.model.lstm_hidden_size, device=device)
-        c = torch.zeros(self.model.lstm.num_layers * num_directions, batch_size, self.model.lstm_hidden_size, device=device)
+        h = torch.zeros(
+            self.model.lstm.num_layers * num_directions,
+            batch_size,
+            self.model.lstm_hidden_size,
+            device=device,
+        )
+        c = torch.zeros(
+            self.model.lstm.num_layers * num_directions,
+            batch_size,
+            self.model.lstm_hidden_size,
+            device=device,
+        )
         return (h, c)
 
     def forward(self, x, hidden_state=None, mask=None):
@@ -27,5 +39,7 @@ class RNaDAgent(torch.nn.Module):
             value: (batch, seq) - Value in [-1, 1]
             next_hidden: (h, c)
         """
-        turn_logits, tp_logits, value, next_hidden = self.model.forward_with_hidden(x, hidden_state, mask)
+        turn_logits, tp_logits, value, next_hidden = self.model.forward_with_hidden(
+            x, hidden_state, mask
+        )
         return turn_logits, tp_logits, value, next_hidden

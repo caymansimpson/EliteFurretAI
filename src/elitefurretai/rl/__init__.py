@@ -1,5 +1,5 @@
 """
-EliteFurretAI RL2: Reinforcement Learning Training System
+EliteFurretAI rl: Reinforcement Learning Training System
 
 This module implements RNaD (Regularized Nash Dynamics) for training Pokemon VGC agents.
 See COMPREHENSIVE_GUIDE.md for detailed documentation.
@@ -13,31 +13,29 @@ Core Components:
     - RNaDConfig: Configuration system for all hyperparameters
 
 Usage:
-    from elitefurretai.rl2 import RNaDConfig, RNaDAgent, RNaDLearner
+    from elitefurretai.rl import RNaDConfig, RNaDAgent, RNaDLearner
 
     config = RNaDConfig.load("config.yaml")
     agent = RNaDAgent(model)
     learner = RNaDLearner(agent, ref_agent, lr=config.lr, device="cuda")
 """
 
-from elitefurretai.rl2.agent import RNaDAgent
-from elitefurretai.rl2.learner import RNaDLearner
-from elitefurretai.rl2.portfolio_learner import PortfolioRNaDLearner
-from elitefurretai.rl2.worker import BatchInferencePlayer
-from elitefurretai.rl2.opponent_pool import OpponentPool, ExploiterRegistry
-from elitefurretai.rl2.config import RNaDConfig
+from elitefurretai.rl.agent import RNaDAgent
+from elitefurretai.rl.config import RNaDConfig
+from elitefurretai.rl.learner import RNaDLearner
+from elitefurretai.rl.opponent_pool import ExploiterRegistry, OpponentPool
+from elitefurretai.rl.portfolio_learner import PortfolioRNaDLearner
+from elitefurretai.rl.worker import BatchInferencePlayer
 
 __all__ = [
     # Core training components
     "RNaDAgent",
     "RNaDLearner",
     "PortfolioRNaDLearner",
-
     # Workers and infrastructure
     "BatchInferencePlayer",
     "OpponentPool",
     "ExploiterRegistry",
-
     # Configuration
     "RNaDConfig",
 ]

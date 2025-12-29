@@ -130,15 +130,32 @@ Key Features:
 • No double ReLU: ResidualBlocks allow negative values for win head
 """
 
-from typing import Optional, Tuple, Literal
+from typing import Literal, Optional, Tuple
+
 import torch
 
 from elitefurretai.etl import MDBO
 
 
-def init_linear_layer(layer: torch.nn.Linear, nonlinearity: Literal['linear', 'conv1d', 'conv2d', 'conv3d', 'conv_transpose1d', 'conv_transpose2d', 'conv_transpose3d', 'sigmoid', 'tanh', 'relu', 'leaky_relu', 'selu'] = 'relu') -> None:
+def init_linear_layer(
+    layer: torch.nn.Linear,
+    nonlinearity: Literal[
+        "linear",
+        "conv1d",
+        "conv2d",
+        "conv3d",
+        "conv_transpose1d",
+        "conv_transpose2d",
+        "conv_transpose3d",
+        "sigmoid",
+        "tanh",
+        "relu",
+        "leaky_relu",
+        "selu",
+    ] = "relu",
+) -> None:
     """Initialize a linear layer with Kaiming normal initialization."""
-    torch.nn.init.kaiming_normal_(layer.weight, mode='fan_out', nonlinearity=nonlinearity)
+    torch.nn.init.kaiming_normal_(layer.weight, mode="fan_out", nonlinearity=nonlinearity)
     torch.nn.init.constant_(layer.bias, 0)
 
 
@@ -147,6 +164,7 @@ class ResidualBlock(torch.nn.Module):
     Residual block without second ReLU to allow negative values.
     Architecture: Linear → LayerNorm → ReLU → Dropout → Add residual
     """
+
     def __init__(self, in_features: int, out_features: int, dropout: float = 0.3):
         super().__init__()
         self.linear = torch.nn.Linear(in_features, out_features)
@@ -180,6 +198,7 @@ class GatedResidualBlock(torch.nn.Module):
     Gated residual block without second ReLU.
     Architecture: Linear → LN → ReLU → Dropout → Linear → LN → Gate → Add residual
     """
+
     def __init__(self, in_features: int, out_features: int, dropout: float = 0.3):
         super().__init__()
         # Main path
@@ -190,9 +209,7 @@ class GatedResidualBlock(torch.nn.Module):
 
         # Gate generation
         gate_linear = torch.nn.Linear(in_features, out_features)
-        self.gate = torch.nn.Sequential(
-            gate_linear, torch.nn.Sigmoid()
-        )
+        self.gate = torch.nn.Sequential(gate_linear, torch.nn.Sigmoid())
 
         # Regularization
         self.relu = torch.nn.ReLU()
@@ -244,21 +261,31 @@ class GroupedFeatureEncoder(torch.nn.Module):
         - Battle state: [battle_emb_size]
         - Engineered features: [feature_eng_emb_size]
     """
-    def __init__(self, group_sizes, hidden_dim=128, aggregated_dim=1024, dropout=0.1, pokemon_attention_heads=2):
+
+    def __init__(
+        self,
+        group_sizes,
+        hidden_dim=128,
+        aggregated_dim=1024,
+        dropout=0.1,
+        pokemon_attention_heads=2,
+    ):
         super().__init__()
         self.group_sizes = group_sizes
         self.hidden_dim = hidden_dim
 
         # Per-group encoders
-        self.encoders = torch.nn.ModuleList([
-            torch.nn.Sequential(
-                torch.nn.Linear(size, hidden_dim),
-                torch.nn.LayerNorm(hidden_dim),
-                torch.nn.ReLU(),
-                torch.nn.Dropout(dropout),
-            )
-            for size in group_sizes
-        ])
+        self.encoders = torch.nn.ModuleList(
+            [
+                torch.nn.Sequential(
+                    torch.nn.Linear(size, hidden_dim),
+                    torch.nn.LayerNorm(hidden_dim),
+                    torch.nn.ReLU(),
+                    torch.nn.Dropout(dropout),
+                )
+                for size in group_sizes
+            ]
+        )
 
         # Initialize per-group encoders
         for encoder in self.encoders:
@@ -268,7 +295,10 @@ class GroupedFeatureEncoder(torch.nn.Module):
         # Cross-attention for player Pokemon (first 6 groups)
         # Allows Pokemon to attend to each other (e.g., Incineroar + Rillaboom synergy)
         self.pokemon_cross_attn = torch.nn.MultiheadAttention(
-            hidden_dim, num_heads=pokemon_attention_heads, batch_first=True, dropout=dropout
+            hidden_dim,
+            num_heads=pokemon_attention_heads,
+            batch_first=True,
+            dropout=dropout,
         )
         self.pokemon_norm = torch.nn.LayerNorm(hidden_dim)
 
@@ -285,19 +315,19 @@ class GroupedFeatureEncoder(torch.nn.Module):
         group_features = []
         start_idx = 0
         for encoder, size in zip(self.encoders, self.group_sizes):
-            group = x[:, :, start_idx:start_idx + size]
+            group = x[:, :, start_idx : start_idx + size]
             group_features.append(encoder(group))
             start_idx += size
 
         # Cross-attention among player Pokemon (first 6 groups)
         # This helps the model learn team compositions and synergies
         player_pokemon = torch.stack(group_features[:6], dim=2)  # (batch, seq, 6, hidden)
-        player_pokemon_flat = player_pokemon.reshape(batch * seq, 6, -1)  # (batch*seq, 6, hidden)
+        player_pokemon_flat = player_pokemon.reshape(
+            batch * seq, 6, -1
+        )  # (batch*seq, 6, hidden)
 
         attn_out, _ = self.pokemon_cross_attn(
-            player_pokemon_flat,
-            player_pokemon_flat,
-            player_pokemon_flat
+            player_pokemon_flat, player_pokemon_flat, player_pokemon_flat
         )  # (batch*seq, 6, hidden)
 
         attn_out = attn_out.reshape(batch, seq, 6, -1)  # (batch, seq, 6, hidden)
@@ -307,7 +337,9 @@ class GroupedFeatureEncoder(torch.nn.Module):
             group_features[i] = self.pokemon_norm(group_features[i] + attn_out[:, :, i, :])
 
         # Concatenate all groups and aggregate
-        concatenated = torch.cat(group_features, dim=-1)  # (batch, seq, hidden * num_groups)
+        concatenated = torch.cat(
+            group_features, dim=-1
+        )  # (batch, seq, hidden * num_groups)
         return self.aggregator(concatenated)  # (batch, seq, aggregated_dim)
 
 
@@ -386,7 +418,7 @@ class FlexibleThreeHeadedModel(torch.nn.Module):
                 hidden_dim=grouped_encoder_hidden_dim,
                 aggregated_dim=grouped_encoder_aggregated_dim,
                 dropout=dropout,
-                pokemon_attention_heads=pokemon_attention_heads
+                pokemon_attention_heads=pokemon_attention_heads,
             )
             # early_ff_stack input is aggregated_dim, NOT early_layers[0]
             early_ff_layers = []
@@ -423,17 +455,30 @@ class FlexibleThreeHeadedModel(torch.nn.Module):
         teampreview_ff_layers = []
         prev_size = self.hidden_size
         for h in self.teampreview_head_layers:
-            teampreview_ff_layers.append(ResBlock(prev_size, h, dropout=teampreview_head_dropout))
+            teampreview_ff_layers.append(
+                ResBlock(prev_size, h, dropout=teampreview_head_dropout)
+            )
             prev_size = h
 
-        teampreview_output_size = self.teampreview_head_layers[-1] if self.teampreview_head_layers else self.hidden_size
+        teampreview_output_size = (
+            self.teampreview_head_layers[-1]
+            if self.teampreview_head_layers
+            else self.hidden_size
+        )
 
         # Optional attention for teampreview head
         if teampreview_attention_heads > 0:
-            self.teampreview_attn: Optional[torch.nn.MultiheadAttention] = torch.nn.MultiheadAttention(
-                teampreview_output_size, teampreview_attention_heads, batch_first=True, dropout=teampreview_head_dropout
+            self.teampreview_attn: Optional[torch.nn.MultiheadAttention] = (
+                torch.nn.MultiheadAttention(
+                    teampreview_output_size,
+                    teampreview_attention_heads,
+                    batch_first=True,
+                    dropout=teampreview_head_dropout,
+                )
             )
-            self.teampreview_ln: Optional[torch.nn.LayerNorm] = torch.nn.LayerNorm(teampreview_output_size)
+            self.teampreview_ln: Optional[torch.nn.LayerNorm] = torch.nn.LayerNorm(
+                teampreview_output_size
+            )
         else:
             self.teampreview_attn = None
             self.teampreview_ln = None
@@ -445,16 +490,25 @@ class FlexibleThreeHeadedModel(torch.nn.Module):
         )
 
         # Teampreview action head
-        self.teampreview_head = torch.nn.Linear(teampreview_output_size, num_teampreview_actions)
+        self.teampreview_head = torch.nn.Linear(
+            teampreview_output_size, num_teampreview_actions
+        )
         torch.nn.init.xavier_normal_(self.teampreview_head.weight, gain=0.01)
         torch.nn.init.constant_(self.teampreview_head.bias, 0)
 
         # Early attention if enabled (heads > 0)
         if early_attention_heads > 0:
-            self.early_attn: Optional[torch.nn.MultiheadAttention] = torch.nn.MultiheadAttention(
-                self.hidden_size, early_attention_heads, batch_first=True, dropout=dropout
+            self.early_attn: Optional[torch.nn.MultiheadAttention] = (
+                torch.nn.MultiheadAttention(
+                    self.hidden_size,
+                    early_attention_heads,
+                    batch_first=True,
+                    dropout=dropout,
+                )
             )
-            self.early_ln: Optional[torch.nn.LayerNorm] = torch.nn.LayerNorm(self.hidden_size)
+            self.early_ln: Optional[torch.nn.LayerNorm] = torch.nn.LayerNorm(
+                self.hidden_size
+            )
         else:
             self.early_attn = None
             self.early_ln = None
@@ -477,7 +531,9 @@ class FlexibleThreeHeadedModel(torch.nn.Module):
         # Skip connection projection (if dimensions don't match)
         lstm_output_size = lstm_hidden_size * 2
         if self.hidden_size != lstm_output_size:
-            self.skip_proj: Optional[torch.nn.Linear] = torch.nn.Linear(self.hidden_size, lstm_output_size)
+            self.skip_proj: Optional[torch.nn.Linear] = torch.nn.Linear(
+                self.hidden_size, lstm_output_size
+            )
             torch.nn.init.xavier_normal_(self.skip_proj.weight, gain=0.01)
             torch.nn.init.constant_(self.skip_proj.bias, 0)
         else:
@@ -485,10 +541,17 @@ class FlexibleThreeHeadedModel(torch.nn.Module):
 
         # Late attention if enabled (operates on LSTM output size)
         if late_attention_heads > 0:
-            self.late_attn: Optional[torch.nn.MultiheadAttention] = torch.nn.MultiheadAttention(
-                lstm_output_size, late_attention_heads, batch_first=True, dropout=dropout
+            self.late_attn: Optional[torch.nn.MultiheadAttention] = (
+                torch.nn.MultiheadAttention(
+                    lstm_output_size,
+                    late_attention_heads,
+                    batch_first=True,
+                    dropout=dropout,
+                )
             )
-            self.late_ln: Optional[torch.nn.LayerNorm] = torch.nn.LayerNorm(lstm_output_size)
+            self.late_ln: Optional[torch.nn.LayerNorm] = torch.nn.LayerNorm(
+                lstm_output_size
+            )
         else:
             self.late_attn = None
             self.late_ln = None
@@ -514,12 +577,12 @@ class FlexibleThreeHeadedModel(torch.nn.Module):
             turn_ff_layers.append(ResBlock(prev_size, h, dropout=dropout))
             prev_size = h
 
-        turn_output_size = self.turn_head_layers[-1] if self.turn_head_layers else output_size
+        turn_output_size = (
+            self.turn_head_layers[-1] if self.turn_head_layers else output_size
+        )
 
         self.turn_ff_stack = (
-            torch.nn.Sequential(*turn_ff_layers)
-            if turn_ff_layers
-            else torch.nn.Identity()
+            torch.nn.Sequential(*turn_ff_layers) if turn_ff_layers else torch.nn.Identity()
         )
 
         # Final linear layer for turn actions
@@ -579,12 +642,16 @@ class FlexibleThreeHeadedModel(torch.nn.Module):
             else:
                 attn_mask = ~mask.bool()
             tp_attn_out, _ = self.teampreview_attn(
-                teampreview_features, teampreview_features, teampreview_features,
-                key_padding_mask=attn_mask
+                teampreview_features,
+                teampreview_features,
+                teampreview_features,
+                key_padding_mask=attn_mask,
             )
             teampreview_features = self.teampreview_ln(teampreview_features + tp_attn_out)  # type: ignore
 
-        teampreview_logits = self.teampreview_head(teampreview_features)  # (batch, seq, 90)
+        teampreview_logits = self.teampreview_head(
+            teampreview_features
+        )  # (batch, seq, 90)
 
         # Early attention if enabled
         if self.early_attn is not None:
@@ -592,7 +659,9 @@ class FlexibleThreeHeadedModel(torch.nn.Module):
                 attn_mask = None
             else:
                 attn_mask = ~mask.bool()
-            attn_out, _ = self.early_attn(ff_out_early, ff_out_early, ff_out_early, key_padding_mask=attn_mask)
+            attn_out, _ = self.early_attn(
+                ff_out_early, ff_out_early, ff_out_early, key_padding_mask=attn_mask
+            )
             ff_out_early = self.early_ln(ff_out_early + attn_out)  # type: ignore
 
         # Add positional encoding
@@ -654,7 +723,9 @@ class FlexibleThreeHeadedModel(torch.nn.Module):
         x: torch.Tensor,
         hidden_state: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         mask: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+    ) -> Tuple[
+        torch.Tensor, torch.Tensor, torch.Tensor, Tuple[torch.Tensor, torch.Tensor]
+    ]:
         """
         Forward pass for RL inference with explicit LSTM hidden state management.
 
@@ -713,8 +784,10 @@ class FlexibleThreeHeadedModel(torch.nn.Module):
         if self.teampreview_attn is not None:
             attn_mask = ~mask.bool() if mask is not None else None
             tp_attn_out, _ = self.teampreview_attn(
-                teampreview_features, teampreview_features, teampreview_features,
-                key_padding_mask=attn_mask
+                teampreview_features,
+                teampreview_features,
+                teampreview_features,
+                key_padding_mask=attn_mask,
             )
             teampreview_features = self.teampreview_ln(teampreview_features + tp_attn_out)  # type: ignore
 
@@ -723,7 +796,9 @@ class FlexibleThreeHeadedModel(torch.nn.Module):
         # Early attention if enabled
         if self.early_attn is not None:
             attn_mask = ~mask.bool() if mask is not None else None
-            attn_out, _ = self.early_attn(ff_out_early, ff_out_early, ff_out_early, key_padding_mask=attn_mask)
+            attn_out, _ = self.early_attn(
+                ff_out_early, ff_out_early, ff_out_early, key_padding_mask=attn_mask
+            )
             ff_out_early = self.early_ln(ff_out_early + attn_out)  # type: ignore
 
         # Add positional encoding
@@ -746,14 +821,14 @@ class FlexibleThreeHeadedModel(torch.nn.Module):
                 batch_size,
                 self.lstm.hidden_size,
                 device=x.device,
-                dtype=x.dtype
+                dtype=x.dtype,
             )
             c_0 = torch.zeros(
                 num_layers * num_directions,
                 batch_size,
                 self.lstm.hidden_size,
                 device=x.device,
-                dtype=x.dtype
+                dtype=x.dtype,
             )
             hidden_state = (h_0, c_0)
 
@@ -791,9 +866,7 @@ class FlexibleThreeHeadedModel(torch.nn.Module):
 
         return turn_action_logits, teampreview_logits, win_logits, next_hidden
 
-    def predict(
-        self, x: torch.Tensor, mask=None
-    ):
+    def predict(self, x: torch.Tensor, mask=None):
         with torch.no_grad():
             turn_action_logits, teampreview_logits, win_logits = self.forward(x, mask)
             turn_action_probs = torch.softmax(turn_action_logits, dim=-1)

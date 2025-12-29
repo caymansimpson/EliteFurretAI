@@ -1,23 +1,24 @@
 import copy
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
 from poke_env.battle import AbstractBattle, DoubleBattle
 from poke_env.player import BattleOrder, DefaultBattleOrder, Player
 
+from elitefurretai.etl.battle_order_validator import is_valid_order
 from elitefurretai.etl.embedder import Embedder
 from elitefurretai.etl.encoder import MDBO
-from elitefurretai.etl.battle_order_validator import is_valid_order
 from elitefurretai.supervised.model_archs import FlexibleThreeHeadedModel
 
 
 class BCPlayer(Player):
     def __init__(
         self,
-        teampreview_model_filepath: str,
-        action_model_filepath: str,
-        win_model_filepath: str,
+        teampreview_model_filepath: Optional[str] = None,
+        action_model_filepath: Optional[str] = None,
+        win_model_filepath: Optional[str] = None,
+        unified_model_filepath: Optional[str] = None,
         battle_format: str = "gen9vgc2023regulationc",
         probabilistic=True,
         device: str = "cpu",
@@ -39,19 +40,68 @@ class BCPlayer(Player):
         self._device = device
         self._verbose = verbose
 
-        # Load three separate models for teampreview, action, and win prediction
-        # Each model has its config embedded in the .pt file
-        if verbose:
-            print(f"[BCPlayer] Loading teampreview model from: {teampreview_model_filepath}")
-        self.teampreview_model, self.teampreview_config = self._load_model(teampreview_model_filepath, device)
+        # Validate model configuration
+        has_unified = unified_model_filepath is not None
+        has_separate = all(
+            [
+                teampreview_model_filepath is not None,
+                action_model_filepath is not None,
+                win_model_filepath is not None,
+            ]
+        )
 
-        if verbose:
-            print(f"[BCPlayer] Loading action model from: {action_model_filepath}")
-        self.action_model, self.action_config = self._load_model(action_model_filepath, device)
+        if not has_unified and not has_separate:
+            raise ValueError(
+                "Must provide either unified_model_filepath OR all three separate model filepaths "
+                "(teampreview_model_filepath, action_model_filepath, win_model_filepath)"
+            )
 
-        if verbose:
-            print(f"[BCPlayer] Loading win prediction model from: {win_model_filepath}")
-        self.win_model, self.win_config = self._load_model(win_model_filepath, device)
+        if has_unified and has_separate:
+            raise ValueError(
+                "Cannot provide both unified_model_filepath and separate model filepaths. "
+                "Choose one approach."
+            )
+
+        # Load models based on configuration
+        if has_unified and isinstance(unified_model_filepath, str):
+            # Load single unified model and point all three attributes to it
+            if verbose:
+                print(f"[BCPlayer] Loading unified model from: {unified_model_filepath}")
+            unified_model, unified_config = self._load_model(
+                unified_model_filepath, device
+            )
+            self.teampreview_model = unified_model
+            self.action_model = unified_model
+            self.win_model = unified_model
+            self.teampreview_config = unified_config
+            self.action_config = unified_config
+            self.win_config = unified_config
+            if verbose:
+                print("[BCPlayer] Unified model loaded for all predictions")
+        else:
+            # Load three separate models for teampreview, action, and win prediction
+            if verbose:
+                print(
+                    f"[BCPlayer] Loading teampreview model from: {teampreview_model_filepath}"
+                )
+            assert isinstance(teampreview_model_filepath, str)
+            self.teampreview_model, self.teampreview_config = self._load_model(
+                teampreview_model_filepath, device
+            )
+
+            if verbose:
+                print(f"[BCPlayer] Loading action model from: {action_model_filepath}")
+            assert isinstance(action_model_filepath, str)
+            self.action_model, self.action_config = self._load_model(
+                action_model_filepath, device
+            )
+
+            if verbose:
+                print(
+                    f"[BCPlayer] Loading win prediction model from: {win_model_filepath}"
+                )
+            assert isinstance(win_model_filepath, str)
+            self.win_model, self.win_config = self._load_model(win_model_filepath, device)
 
         if verbose:
             print("[BCPlayer] Initialization complete!")
@@ -101,7 +151,9 @@ class BCPlayer(Player):
         self._trajectories = {}
         self._last_win_advantage = {}
 
-    def _load_model(self, filepath: str, device: str = "cpu") -> Tuple[FlexibleThreeHeadedModel, Dict[str, Any]]:
+    def _load_model(
+        self, filepath: str, device: str = "cpu"
+    ) -> Tuple[FlexibleThreeHeadedModel, Dict[str, Any]]:
         """
         Load model from new format with embedded config.
 
@@ -118,14 +170,18 @@ class BCPlayer(Player):
             print("  Loading checkpoint from disk...")
         checkpoint = torch.load(filepath, map_location=device)
 
-        if not isinstance(checkpoint, dict) or 'model_state_dict' not in checkpoint or 'config' not in checkpoint:
+        if (
+            not isinstance(checkpoint, dict)
+            or "model_state_dict" not in checkpoint
+            or "config" not in checkpoint
+        ):
             raise ValueError(
                 f"Model file {filepath} is in old format (state_dict only). "
                 f"Please migrate using scripts/prepare/migrate_model_configs.py"
             )
 
-        config = checkpoint['config']
-        state_dict = checkpoint['model_state_dict']
+        config = checkpoint["config"]
+        state_dict = checkpoint["model_state_dict"]
 
         # Build model from config
         if self._verbose:
@@ -141,9 +197,15 @@ class BCPlayer(Player):
             early_attention_heads=config.get("early_attention_heads", 8),
             late_attention_heads=config.get("late_attention_heads", 8),
             use_grouped_encoder=config.get("use_grouped_encoder", False),
-            group_sizes=self._embedder.group_embedding_sizes if config.get("use_grouped_encoder", False) else None,
+            group_sizes=(
+                self._embedder.group_embedding_sizes
+                if config.get("use_grouped_encoder", False)
+                else None
+            ),
             grouped_encoder_hidden_dim=config.get("grouped_encoder_hidden_dim", 128),
-            grouped_encoder_aggregated_dim=config.get("grouped_encoder_aggregated_dim", 1024),
+            grouped_encoder_aggregated_dim=config.get(
+                "grouped_encoder_aggregated_dim", 1024
+            ),
             pokemon_attention_heads=config.get("pokemon_attention_heads", 2),
             teampreview_head_layers=config.get("teampreview_head_layers", []),
             teampreview_head_dropout=config.get("teampreview_head_dropout", 0.1),
@@ -169,7 +231,52 @@ class BCPlayer(Player):
         assert self._embedder.embedding_size == len(self._embedder.embed(battle))
         return self._embedder.feature_dict_to_vector(self._embedder.embed(battle))
 
-    async def _check_win_advantage_swing(self, battle: DoubleBattle, current_advantage: float) -> None:
+    def predict_advantage(self, battle: DoubleBattle) -> float:
+        """
+        Predict win advantage for current battle state using stored trajectory.
+
+        Args:
+            battle: Current battle state
+
+        Returns:
+            Win advantage as scalar value in range [-1, 1] where:
+            - 1.0 means 100% confidence you're winning
+            - 0.0 means 50/50
+            - -1.0 means 100% confidence you're losing
+        """
+        if (
+            battle.battle_tag not in self._trajectories
+            or len(self._trajectories[battle.battle_tag]) == 0
+        ):
+            # No trajectory yet, return neutral
+            return 0.0
+
+        # Build trajectory tensor
+        traj = torch.Tensor(self._trajectories[battle.battle_tag]).unsqueeze(
+            0
+        )  # (1, seq_len, embed_dim)
+
+        # Truncate to model's max sequence length
+        traj = traj[:, -self.win_model.max_seq_len :, :]  # type: ignore
+
+        self.win_model.eval()
+        with torch.no_grad():
+            # Forward pass through win model
+            _, _, win_logits = self.win_model(traj)
+
+            if win_logits.dim() == 2:
+                # Remove batch dimension if present
+                win_logits = win_logits.squeeze(0)
+
+            # Get win advantage for last timestep
+            # win_logits are already in [-1, 1] due to tanh activation in model
+            win_advantage = float(win_logits[-1].item())
+
+        return win_advantage
+
+    async def _check_win_advantage_swing(
+        self, battle: DoubleBattle, current_advantage: float
+    ) -> None:
         """
         Check if win advantage has dramatically swung and send a message if so.
 
@@ -184,17 +291,25 @@ class BCPlayer(Player):
             prev_advantage = self._last_win_advantage[battle_tag]
 
             # Check for dramatic positive swing (was losing, now winning)
-            if prev_advantage < -self._win_advantage_threshold and current_advantage > self._win_advantage_threshold:
+            if (
+                prev_advantage < -self._win_advantage_threshold
+                and current_advantage > self._win_advantage_threshold
+            ):
                 await self.send_message("skill issue", battle_tag)
 
             # Check for dramatic negative swing (was winning, now losing)
-            elif prev_advantage > self._win_advantage_threshold and current_advantage < -self._win_advantage_threshold:
+            elif (
+                prev_advantage > self._win_advantage_threshold
+                and current_advantage < -self._win_advantage_threshold
+            ):
                 await self.send_message("misclick", battle_tag)
 
         # Update tracked advantage
         self._last_win_advantage[battle_tag] = current_advantage
 
-    def predict(self, traj: torch.Tensor, battle: DoubleBattle, action_type: Optional[str] = None) -> Tuple[List[BattleOrder], List[float]]:
+    def predict(
+        self, traj: torch.Tensor, battle: DoubleBattle, action_type: Optional[str] = None
+    ) -> Tuple[List[BattleOrder], List[float]]:
         """
         Given a trajectory tensor and battle, returns lists of valid actions and their probabilities
         for the last state in the trajectory.
@@ -294,7 +409,9 @@ class BCPlayer(Player):
                         probabilities.append(float(probs_cpu[i]))
                     except Exception as e:
                         # This shouldn't happen since we already validated
-                        print(f"[BCPlayer.predict] WARNING: Failed to convert validated action {i}: {e}")
+                        print(
+                            f"[BCPlayer.predict] WARNING: Failed to convert validated action {i}: {e}"
+                        )
                         continue
 
             return actions, probabilities  # type: ignore
@@ -324,13 +441,19 @@ class BCPlayer(Player):
             self._trajectories[battle.battle_tag] = []
         self._trajectories[battle.battle_tag].append(state_vec)
 
+        # Calculate and save win advantage
+        win_advantage = self.predict_advantage(battle)
+        self._last_win_advantage[battle.battle_tag] = win_advantage
+
         # Get model prediction based on the battle state
         actions, probabilities = self.predict(
             torch.Tensor(self._trajectories[battle.battle_tag]).unsqueeze(0), battle
         )
 
         if len(actions) == 0:
-            print("WARNING in BCPlayer.choose_move: No valid actions available, returning random move.")
+            print(
+                "WARNING in BCPlayer.choose_move: No valid actions available, returning random move."
+            )
             return DefaultBattleOrder()
 
         probabilities = np.array(probabilities)  # type: ignore
@@ -350,6 +473,8 @@ class BCPlayer(Player):
 
     def teampreview(self, battle: AbstractBattle) -> str:
         assert battle.player_role
+        assert isinstance(battle, DoubleBattle)
+
         choice = self.choose_move(battle)
 
         # If it's already a string, use it; otherwise get .message

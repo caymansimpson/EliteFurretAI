@@ -18,15 +18,15 @@ issue where 88.6% of team patterns deterministically map to one action.
 
 import argparse
 import os
+import platform
 import random
 import time
-import platform
 import warnings
 
 import orjson
 import torch
 
-from elitefurretai.etl import BattleDataset, Embedder, MDBO
+from elitefurretai.etl import MDBO, BattleDataset, Embedder
 from elitefurretai.etl.compress_utils import save_compressed
 from elitefurretai.supervised.train_utils import format_time
 
@@ -40,10 +40,10 @@ def save_metadata(save_dir, file_trajectory_counts):
         save_dir: Directory where metadata will be saved
         file_trajectory_counts: List of trajectory counts per file
     """
-    metadata_path = os.path.join(save_dir, '_metadata.json')
-    metadata = {'file_trajectory_counts': file_trajectory_counts}
+    metadata_path = os.path.join(save_dir, "_metadata.json")
+    metadata = {"file_trajectory_counts": file_trajectory_counts}
 
-    with open(metadata_path, 'wb') as f:
+    with open(metadata_path, "wb") as f:
         f.write(orjson.dumps(metadata))
 
     print(f"\nMetadata saved to {metadata_path}")
@@ -80,10 +80,14 @@ def trajectories(
     emb = Embedder(format="gen9vgc2023regulationc", feature_set="full", omniscient=False)
 
     # Create a BattleDataset that yields full trajectories (one per __getitem__)
-    dataset = BattleDataset(files, embedder=emb, steps_per_battle=17, augment_teampreview=augment_teampreview)
+    dataset = BattleDataset(
+        files, embedder=emb, steps_per_battle=17, augment_teampreview=augment_teampreview
+    )
 
     # Use a DataLoader to iterate through the dataset one trajectory at a time
-    dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers)
+    dataloader = torch.utils.data.DataLoader(
+        dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers
+    )
 
     print("Starting data loading loop")
     os.makedirs(save_dir, exist_ok=True)
@@ -134,9 +138,13 @@ def trajectories(
 
         time_taken = format_time(time.time() - start)
         time_left = format_time(
-            (time.time() - start) / num_trajectories_processed * (len(files) * 2 - num_trajectories_processed)
+            (time.time() - start)
+            / num_trajectories_processed
+            * (len(files) * 2 - num_trajectories_processed)
         )
-        perc = (num_trajectories_processed) / len(files) / 2 * 100  # two trajectories per battle
+        perc = (
+            (num_trajectories_processed) / len(files) / 2 * 100
+        )  # two trajectories per battle
         print(
             f"\033[2K\rProcessed trajectory #{num_trajectories_processed} ({perc:.2f}%) in {time_taken}. Estimated time left: {time_left}",
             end="",
@@ -186,8 +194,12 @@ def teampreview(
 
     print(f"Processing {len(files)} battle files into teampreview data...")
 
-    dataset = BattleDataset(files, steps_per_battle=1, augment_teampreview=augment_teampreview)
-    dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers)
+    dataset = BattleDataset(
+        files, steps_per_battle=1, augment_teampreview=augment_teampreview
+    )
+    dataloader = torch.utils.data.DataLoader(
+        dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers
+    )
 
     print("Starting training loop")
     os.makedirs(save_dir, exist_ok=True)
@@ -200,7 +212,6 @@ def teampreview(
     start = time.time()
 
     for data in dataloader:
-
         # data is a dictionary of tensors
         batch_size = data["states"].size(0)
 
@@ -213,7 +224,7 @@ def teampreview(
             to_store = {
                 "states": data["states"][i, 0],
                 "actions": data["actions"][i, 0],
-                "action_masks": data["action_masks"][i, 0, :MDBO.teampreview_space()],
+                "action_masks": data["action_masks"][i, 0, : MDBO.teampreview_space()],
                 "wins": data["wins"][i, 0],
                 "masks": data["masks"][i, 0],
             }
@@ -240,9 +251,13 @@ def teampreview(
 
         time_taken = format_time(time.time() - start)
         time_left = format_time(
-            (time.time() - start) / (num_trajectories_processed) * (len(files) * 2 - num_trajectories_processed)
+            (time.time() - start)
+            / (num_trajectories_processed)
+            * (len(files) * 2 - num_trajectories_processed)
         )
-        perc = (num_trajectories_processed) / len(files) / 2 * 100  # two trajectories per battle
+        perc = (
+            (num_trajectories_processed) / len(files) / 2 * 100
+        )  # two trajectories per battle
         print(
             f"\033[2K\rProcessed trajectory #{num_trajectories_processed} ({perc:.2f}%) in {time_taken}. Estimated time left: {time_left}",
             end="",
@@ -373,11 +388,16 @@ if __name__ == "__main__":
     # On Windows, PyTorch's default shared memory strategy can hit limits with large datasets
     # on specifially Windows, that happens with multiprocessing DataLoader
     # See https://pytorch.org/docs/stable/multiprocessing.html#sharing-strategies
-    if platform.system().lower() == 'windows' or "microsoft" in platform.uname()[2].lower():
+    if (
+        platform.system().lower() == "windows"
+        or "microsoft" in platform.uname()[2].lower()
+    ):
         # Use file_system sharing to avoid Windows shared memory limits
-        torch.multiprocessing.set_sharing_strategy('file_system')
-        warnings.filterwarnings('ignore', message='.*socket.send.*')
-        print("Heads Up! Using 'file_system' sharing strategy for PyTorch multiprocessing on Windows")
+        torch.multiprocessing.set_sharing_strategy("file_system")
+        warnings.filterwarnings("ignore", message=".*socket.send.*")
+        print(
+            "Heads Up! Using 'file_system' sharing strategy for PyTorch multiprocessing on Windows"
+        )
 
     # Load all battle files
     print(f"Loading battle files from {args.battle_filepath}...")
@@ -396,13 +416,19 @@ if __name__ == "__main__":
     n_val = int(len(all_files) * args.val_pct)
 
     train_files = all_files[:n_train]
-    test_files = all_files[n_train:n_train + n_test]
-    val_files = all_files[n_train + n_test:n_train + n_test + n_val]
+    test_files = all_files[n_train : n_train + n_test]
+    val_files = all_files[n_train + n_test : n_train + n_test + n_val]
 
     print(f"\nSplit summary (seed={args.seed}):")
-    print(f"  Train: {len(train_files)} battles ({len(train_files) / len(all_files) * 100:.1f}%)")
-    print(f"  Test:  {len(test_files)} battles ({len(test_files) / len(all_files) * 100:.1f}%)")
-    print(f"  Val:   {len(val_files)} battles ({len(val_files) / len(all_files) * 100:.1f}%)")
+    print(
+        f"  Train: {len(train_files)} battles ({len(train_files) / len(all_files) * 100:.1f}%)"
+    )
+    print(
+        f"  Test:  {len(test_files)} battles ({len(test_files) / len(all_files) * 100:.1f}%)"
+    )
+    print(
+        f"  Val:   {len(val_files)} battles ({len(val_files) / len(all_files) * 100:.1f}%)"
+    )
 
     # Create output directories
     train_dir = os.path.join(args.output_folder, "train")

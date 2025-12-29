@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
-"""This module returns probabilities of infostates, from information learned in battle logs.
-"""
+"""This module returns probabilities of infostates, from information learned in battle logs."""
 
 import os.path
 import re
@@ -16,7 +15,6 @@ _DATABASE_REL_PATH: str = "data/database"
 
 
 class MetaDB:
-
     POKEMON_SCHEMA = [
         "mon_id",
         "species",
@@ -203,7 +201,6 @@ class MetaDB:
     def predict_vgc_team(
         self, observed: List[ObservedPokemon], battle_format: str, probabilities=False
     ) -> Union[List[ObservedPokemon], List[Tuple[List[ObservedPokemon], float]]]:
-
         # Get generation
         match = re.match("(gen[0-9])", battle_format)
         if match is None:

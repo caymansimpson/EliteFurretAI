@@ -1,21 +1,25 @@
-default_language_version:
-  python: python3.12.2
 repos:
-  - repo: https://github.com/ambv/black
-    rev: 24.4.2
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.4
     hooks:
-      - id: black
+      - id: ruff
+        args: [--fix]
+        exclude: '^data/'
+      - id: ruff-format
+        exclude: '^data/'
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v1.2.3
+    rev: v5.0.0
     hooks:
-      - id: flake8
       - id: check-json
+        exclude: '^data/'
       - id: check-xml
+        exclude: '^data/'
       - id: check-yaml
+        exclude: '^data/'
       - id: check-merge-conflict
       - id: detect-private-key
-      - id: fix-encoding-pragma
       - id: mixed-line-ending
+        exclude: '^data/'
       - id: requirements-txt-fixer
       - id: trailing-whitespace
-exclude: 'src/elitefurretai/scripts/*'
+        exclude: '^(data/|.*\.(yaml|yml)$)'

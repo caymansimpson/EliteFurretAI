@@ -5,20 +5,21 @@ Profiles training pipeline and recommends optimal parameters for faster training
 Analyzes CPU/GPU utilization, data loading bottlenecks, and suggests improvements.
 """
 
-import torch
+import json
 import time
-import psutil
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
 import GPUtil
 import numpy as np
-from typing import Dict, List, Tuple, Optional
-from dataclasses import dataclass, asdict
-import json
-from pathlib import Path
+import psutil
+import torch
 
-from elitefurretai.rl.agent import RNaDAgent
-from elitefurretai.rl.learner import RNaDLearner
 from elitefurretai.etl.embedder import Embedder
 from elitefurretai.etl.encoder import MDBO
+from elitefurretai.rl.agent import RNaDAgent
+from elitefurretai.rl.learner import RNaDLearner
 from elitefurretai.supervised.behavior_clone_player import FlexibleThreeHeadedModel
 
 
@@ -69,7 +70,7 @@ class ProfilingResult:
 
     def save(self, filepath: str):
         """Save results to JSON."""
-        with open(filepath, 'w') as f:
+        with open(filepath, "w") as f:
             json.dump(self.to_dict(), f, indent=2)
 
 
@@ -91,15 +92,13 @@ class TrainingProfiler:
     def _load_model(self) -> RNaDAgent:
         """Load model for profiling."""
         embedder = Embedder(
-            format="gen9vgc2023regulationc",
-            feature_set=Embedder.FULL,
-            omniscient=False
+            format="gen9vgc2023regulationc", feature_set=Embedder.FULL, omniscient=False
         )
 
         if Path(self.model_path).exists():
             checkpoint = torch.load(self.model_path, map_location=self.device)
-            config = checkpoint['config']
-            state_dict = checkpoint['model_state_dict']
+            config = checkpoint["config"]
+            state_dict = checkpoint["model_state_dict"]
         else:
             # Create dummy model
             config = {
@@ -129,10 +128,7 @@ class TrainingProfiler:
         return RNaDAgent(model)
 
     def profile_inference(
-        self,
-        agent: RNaDAgent,
-        batch_size: int,
-        num_iterations: int = 100
+        self, agent: RNaDAgent, batch_size: int, num_iterations: int = 100
     ) -> Dict[str, float]:
         """
         Profile inference speed with different batch sizes.
@@ -141,15 +137,12 @@ class TrainingProfiler:
             Dict with timing statistics
         """
         embedder = Embedder(
-            format="gen9vgc2023regulationc",
-            feature_set=Embedder.FULL,
-            omniscient=False
+            format="gen9vgc2023regulationc", feature_set=Embedder.FULL, omniscient=False
         )
 
         # Create dummy batch
         dummy_state = torch.randn(
-            batch_size, 1, embedder.embedding_size,
-            device=self.device
+            batch_size, 1, embedder.embedding_size, device=self.device
         )
         hidden = agent.get_initial_state(batch_size, self.device)
 
@@ -171,13 +164,13 @@ class TrainingProfiler:
             times.append((end - start) * 1000)  # Convert to ms
 
         return {
-            'mean_ms': float(np.mean(times)),
-            'std_ms': float(np.std(times)),
-            'min_ms': float(np.min(times)),
-            'max_ms': float(np.max(times)),
-            'p50_ms': float(np.percentile(times, 50)),
-            'p95_ms': float(np.percentile(times, 95)),
-            'throughput_samples_per_sec': batch_size / float(np.mean(times) / 1000)
+            "mean_ms": float(np.mean(times)),
+            "std_ms": float(np.std(times)),
+            "min_ms": float(np.min(times)),
+            "max_ms": float(np.max(times)),
+            "p50_ms": float(np.percentile(times, 50)),
+            "p95_ms": float(np.percentile(times, 95)),
+            "throughput_samples_per_sec": batch_size / float(np.mean(times) / 1000),
         }
 
     def profile_training(
@@ -185,7 +178,7 @@ class TrainingProfiler:
         agent: RNaDAgent,
         train_batch_size: int,
         num_iterations: int = 50,
-        use_mixed_precision: bool = False
+        use_mixed_precision: bool = False,
     ) -> Dict[str, float]:
         """
         Profile training update speed.
@@ -194,35 +187,39 @@ class TrainingProfiler:
             Dict with timing statistics
         """
         import copy
+
         ref_agent = RNaDAgent(copy.deepcopy(agent.model))
-        learner = RNaDLearner(
-            agent, ref_agent,
-            lr=1e-4,
-            device=self.device
-        )
+        learner = RNaDLearner(agent, ref_agent, lr=1e-4, device=self.device)
 
         # If mixed precision, enable it
-        if use_mixed_precision and hasattr(learner, 'use_mixed_precision'):
+        if use_mixed_precision and hasattr(learner, "use_mixed_precision"):
             learner.use_mixed_precision = use_mixed_precision
             from torch.cuda.amp import GradScaler
+
             learner.scaler = GradScaler()
 
         embedder = Embedder(
-            format="gen9vgc2023regulationc",
-            feature_set=Embedder.FULL,
-            omniscient=False
+            format="gen9vgc2023regulationc", feature_set=Embedder.FULL, omniscient=False
         )
 
         # Create dummy batch
         seq_len = 10
         batch = {
-            'states': torch.randn(train_batch_size, seq_len, embedder.embedding_size, device=self.device),
-            'actions': torch.randint(0, 2025, (train_batch_size, seq_len), device=self.device),
-            'log_probs': torch.randn(train_batch_size, seq_len, device=self.device),
-            'advantages': torch.randn(train_batch_size, seq_len, device=self.device),
-            'returns': torch.randn(train_batch_size, seq_len, device=self.device),
-            'is_teampreview': torch.zeros(train_batch_size, seq_len, dtype=torch.bool, device=self.device),
-            'padding_mask': torch.ones(train_batch_size, seq_len, dtype=torch.bool, device=self.device)
+            "states": torch.randn(
+                train_batch_size, seq_len, embedder.embedding_size, device=self.device
+            ),
+            "actions": torch.randint(
+                0, 2025, (train_batch_size, seq_len), device=self.device
+            ),
+            "log_probs": torch.randn(train_batch_size, seq_len, device=self.device),
+            "advantages": torch.randn(train_batch_size, seq_len, device=self.device),
+            "returns": torch.randn(train_batch_size, seq_len, device=self.device),
+            "is_teampreview": torch.zeros(
+                train_batch_size, seq_len, dtype=torch.bool, device=self.device
+            ),
+            "padding_mask": torch.ones(
+                train_batch_size, seq_len, dtype=torch.bool, device=self.device
+            ),
         }
 
         # Warmup
@@ -241,17 +238,14 @@ class TrainingProfiler:
             times.append((end - start) * 1000)
 
         return {
-            'mean_ms': float(np.mean(times)),
-            'std_ms': float(np.std(times)),
-            'min_ms': float(np.min(times)),
-            'max_ms': float(np.max(times)),
-            'updates_per_hour': 3600 / (float(np.mean(times)) / 1000)
+            "mean_ms": float(np.mean(times)),
+            "std_ms": float(np.std(times)),
+            "min_ms": float(np.min(times)),
+            "max_ms": float(np.max(times)),
+            "updates_per_hour": 3600 / (float(np.mean(times)) / 1000),
         }
 
-    def profile_resource_utilization(
-        self,
-        duration_seconds: int = 30
-    ) -> Dict[str, float]:
+    def profile_resource_utilization(self, duration_seconds: int = 30) -> Dict[str, float]:
         """
         Monitor CPU/GPU/RAM utilization over time.
 
@@ -285,26 +279,30 @@ class TrainingProfiler:
             time.sleep(0.5)
 
         result = {
-            'avg_cpu_percent': np.mean(cpu_samples),
-            'peak_cpu_percent': np.max(cpu_samples),
-            'avg_ram_gb': np.mean(ram_samples),
-            'peak_ram_gb': np.max(ram_samples)
+            "avg_cpu_percent": np.mean(cpu_samples),
+            "peak_cpu_percent": np.max(cpu_samples),
+            "avg_ram_gb": np.mean(ram_samples),
+            "peak_ram_gb": np.max(ram_samples),
         }
 
         if gpu_util_samples:
-            result.update({
-                'avg_gpu_utilization': np.mean(gpu_util_samples),
-                'peak_gpu_utilization': np.max(gpu_util_samples),
-                'avg_gpu_memory_mb': np.mean(gpu_mem_samples),
-                'peak_gpu_memory_mb': np.max(gpu_mem_samples)
-            })
+            result.update(
+                {
+                    "avg_gpu_utilization": np.mean(gpu_util_samples),
+                    "peak_gpu_utilization": np.max(gpu_util_samples),
+                    "avg_gpu_memory_mb": np.mean(gpu_mem_samples),
+                    "peak_gpu_memory_mb": np.max(gpu_mem_samples),
+                }
+            )
         else:
-            result.update({
-                'avg_gpu_utilization': 0.0,
-                'peak_gpu_utilization': 0.0,
-                'avg_gpu_memory_mb': 0.0,
-                'peak_gpu_memory_mb': 0.0
-            })
+            result.update(
+                {
+                    "avg_gpu_utilization": 0.0,
+                    "peak_gpu_utilization": 0.0,
+                    "avg_gpu_memory_mb": 0.0,
+                    "peak_gpu_memory_mb": 0.0,
+                }
+            )
 
         return result
 
@@ -347,7 +345,9 @@ class TrainingProfiler:
 
         # Profile training
         print("Profiling training updates...")
-        training_stats = self.profile_training(agent, train_batch_size, use_mixed_precision=use_mixed_precision)
+        training_stats = self.profile_training(
+            agent, train_batch_size, use_mixed_precision=use_mixed_precision
+        )
 
         # Profile resources (simulated - would need actual worker threads for real profile)
         print("Monitoring resource utilization...")
@@ -360,11 +360,11 @@ class TrainingProfiler:
         battles_per_hour = total_players * (3600 / avg_battle_duration_sec)
         timesteps_per_battle = 4  # Average
         timesteps_per_hour = battles_per_hour * timesteps_per_battle
-        updates_per_hour = training_stats['updates_per_hour']
+        updates_per_hour = training_stats["updates_per_hour"]
 
         # Identify bottleneck
-        gpu_util = resource_stats['avg_gpu_utilization']
-        cpu_util = resource_stats['avg_cpu_percent']
+        gpu_util = resource_stats["avg_gpu_utilization"]
+        cpu_util = resource_stats["avg_cpu_percent"]
 
         if gpu_util > 80:
             primary_bottleneck = "gpu"
@@ -381,8 +381,14 @@ class TrainingProfiler:
 
         # Generate recommendations
         recommendations = self._generate_recommendations(
-            num_workers, players_per_worker, batch_size, train_batch_size,
-            primary_bottleneck, resource_stats, inference_stats, training_stats
+            num_workers,
+            players_per_worker,
+            batch_size,
+            train_batch_size,
+            primary_bottleneck,
+            resource_stats,
+            inference_stats,
+            training_stats,
         )
 
         result = ProfilingResult(
@@ -394,20 +400,20 @@ class TrainingProfiler:
             battles_per_hour=battles_per_hour,
             updates_per_hour=updates_per_hour,
             timesteps_per_hour=timesteps_per_hour,
-            avg_cpu_percent=resource_stats['avg_cpu_percent'],
-            peak_cpu_percent=resource_stats['peak_cpu_percent'],
-            avg_gpu_utilization=resource_stats['avg_gpu_utilization'],
-            peak_gpu_utilization=resource_stats['peak_gpu_utilization'],
-            avg_gpu_memory_mb=resource_stats['avg_gpu_memory_mb'],
-            peak_gpu_memory_mb=resource_stats['peak_gpu_memory_mb'],
-            avg_ram_gb=resource_stats['avg_ram_gb'],
-            peak_ram_gb=resource_stats['peak_ram_gb'],
-            avg_inference_time_ms=inference_stats['mean_ms'],
-            avg_training_time_ms=training_stats['mean_ms'],
+            avg_cpu_percent=resource_stats["avg_cpu_percent"],
+            peak_cpu_percent=resource_stats["peak_cpu_percent"],
+            avg_gpu_utilization=resource_stats["avg_gpu_utilization"],
+            peak_gpu_utilization=resource_stats["peak_gpu_utilization"],
+            avg_gpu_memory_mb=resource_stats["avg_gpu_memory_mb"],
+            peak_gpu_memory_mb=resource_stats["peak_gpu_memory_mb"],
+            avg_ram_gb=resource_stats["avg_ram_gb"],
+            peak_ram_gb=resource_stats["peak_ram_gb"],
+            avg_inference_time_ms=inference_stats["mean_ms"],
+            avg_training_time_ms=training_stats["mean_ms"],
             avg_data_collection_time_ms=avg_battle_duration_sec * 1000 / total_players,
             primary_bottleneck=primary_bottleneck,
             bottleneck_score=bottleneck_score,
-            **recommendations
+            **recommendations,
         )
 
         self.results.append(result)
@@ -422,50 +428,58 @@ class TrainingProfiler:
         bottleneck: str,
         resource_stats: Dict,
         inference_stats: Dict,
-        training_stats: Dict
+        training_stats: Dict,
     ) -> Dict[str, int]:
         """Generate optimal hyperparameter recommendations."""
         recommendations = {}
 
-        gpu_util = resource_stats['avg_gpu_utilization']
-        gpu_mem = resource_stats['peak_gpu_memory_mb']
+        gpu_util = resource_stats["avg_gpu_utilization"]
+        gpu_mem = resource_stats["peak_gpu_memory_mb"]
 
         if bottleneck == "gpu":
             # GPU is bottleneck - reduce load or increase efficiency
             if gpu_mem > 20000:  # >20GB used
-                recommendations['recommended_batch_size'] = max(8, batch_size // 2)
-                recommendations['recommended_train_batch_size'] = max(16, train_batch_size // 2)
+                recommendations["recommended_batch_size"] = max(8, batch_size // 2)
+                recommendations["recommended_train_batch_size"] = max(
+                    16, train_batch_size // 2
+                )
             else:
                 # GPU compute-bound, not memory
-                recommendations['recommended_batch_size'] = batch_size
-                recommendations['recommended_train_batch_size'] = train_batch_size
-            recommendations['recommended_num_workers'] = num_workers
-            recommendations['recommended_players_per_worker'] = players_per_worker
+                recommendations["recommended_batch_size"] = batch_size
+                recommendations["recommended_train_batch_size"] = train_batch_size
+            recommendations["recommended_num_workers"] = num_workers
+            recommendations["recommended_players_per_worker"] = players_per_worker
 
         elif bottleneck == "cpu":
             # CPU is bottleneck - reduce workers or increase batch size
-            recommendations['recommended_num_workers'] = max(2, num_workers - 1)
-            recommendations['recommended_players_per_worker'] = max(2, players_per_worker - 1)
-            recommendations['recommended_batch_size'] = min(32, batch_size + 4)
-            recommendations['recommended_train_batch_size'] = train_batch_size
+            recommendations["recommended_num_workers"] = max(2, num_workers - 1)
+            recommendations["recommended_players_per_worker"] = max(
+                2, players_per_worker - 1
+            )
+            recommendations["recommended_batch_size"] = min(32, batch_size + 4)
+            recommendations["recommended_train_batch_size"] = train_batch_size
 
         elif bottleneck == "network":
             # Network (Showdown) is bottleneck - increase parallelism
-            recommendations['recommended_num_workers'] = min(8, num_workers + 2)
-            recommendations['recommended_players_per_worker'] = min(8, players_per_worker + 2)
-            recommendations['recommended_batch_size'] = min(32, batch_size + 8)
-            recommendations['recommended_train_batch_size'] = train_batch_size
+            recommendations["recommended_num_workers"] = min(8, num_workers + 2)
+            recommendations["recommended_players_per_worker"] = min(
+                8, players_per_worker + 2
+            )
+            recommendations["recommended_batch_size"] = min(32, batch_size + 8)
+            recommendations["recommended_train_batch_size"] = train_batch_size
 
         else:  # balanced
             # System is well-balanced, minor tweaks
             if gpu_util < 50:
-                recommendations['recommended_batch_size'] = min(32, batch_size + 4)
-                recommendations['recommended_train_batch_size'] = min(64, train_batch_size + 8)
+                recommendations["recommended_batch_size"] = min(32, batch_size + 4)
+                recommendations["recommended_train_batch_size"] = min(
+                    64, train_batch_size + 8
+                )
             else:
-                recommendations['recommended_batch_size'] = batch_size
-                recommendations['recommended_train_batch_size'] = train_batch_size
-            recommendations['recommended_num_workers'] = num_workers
-            recommendations['recommended_players_per_worker'] = players_per_worker
+                recommendations["recommended_batch_size"] = batch_size
+                recommendations["recommended_train_batch_size"] = train_batch_size
+            recommendations["recommended_num_workers"] = num_workers
+            recommendations["recommended_players_per_worker"] = players_per_worker
 
         return recommendations
 
@@ -473,7 +487,7 @@ class TrainingProfiler:
         self,
         worker_configs: Optional[List[Tuple[int, int]]] = None,
         batch_configs: Optional[List[Tuple[int, int]]] = None,
-        test_mixed_precision: bool = True
+        test_mixed_precision: bool = True,
     ):
         """
         Sweep through multiple configurations to find optimal settings.
@@ -495,7 +509,9 @@ class TrainingProfiler:
         print(f"  Worker configs: {worker_configs}")
         print(f"  Batch configs: {batch_configs}")
         print(f"  Mixed precision: {mp_configs}")
-        print(f"  Total configurations: {len(worker_configs) * len(batch_configs) * len(mp_configs)}\n")
+        print(
+            f"  Total configurations: {len(worker_configs) * len(batch_configs) * len(mp_configs)}\n"
+        )
 
         for workers, players in worker_configs:
             for batch_size, train_batch_size in batch_configs:
@@ -504,9 +520,11 @@ class TrainingProfiler:
                         result = self.profile_configuration(
                             workers, players, batch_size, train_batch_size, use_mp
                         )
-                        print(f"\nResult: {result.battles_per_hour:.0f} battles/hr, "
-                              f"{result.updates_per_hour:.0f} updates/hr, "
-                              f"GPU: {result.avg_gpu_utilization:.1f}%")
+                        print(
+                            f"\nResult: {result.battles_per_hour:.0f} battles/hr, "
+                            f"{result.updates_per_hour:.0f} updates/hr, "
+                            f"GPU: {result.avg_gpu_utilization:.1f}%"
+                        )
                     except Exception as e:
                         print(f"Failed to profile config: {e}")
                         continue
@@ -534,11 +552,15 @@ class TrainingProfiler:
     def save_results(self, filepath: str):
         """Save all profiling results to JSON."""
         data = {
-            'results': [r.to_dict() for r in self.results],
-            'best_config': max(self.results, key=lambda r: r.updates_per_hour).to_dict() if self.results else None
+            "results": [r.to_dict() for r in self.results],
+            "best_config": (
+                max(self.results, key=lambda r: r.updates_per_hour).to_dict()
+                if self.results
+                else None
+            ),
         }
 
-        with open(filepath, 'w') as f:
+        with open(filepath, "w") as f:
             json.dump(data, f, indent=2)
 
         print(f"Profiling results saved to {filepath}")
@@ -549,14 +571,28 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(description="Profile RNaD training configuration")
-    parser.add_argument("--model", type=str, default="data/models/bc_action_model.pt", help="Path to model checkpoint")
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="data/models/bc_action_model.pt",
+        help="Path to model checkpoint",
+    )
     parser.add_argument("--sweep", action="store_true", help="Run full parameter sweep")
     parser.add_argument("--workers", type=int, default=4, help="Number of workers")
     parser.add_argument("--players", type=int, default=4, help="Players per worker")
     parser.add_argument("--batch-size", type=int, default=16, help="Inference batch size")
-    parser.add_argument("--train-batch-size", type=int, default=32, help="Training batch size")
-    parser.add_argument("--mixed-precision", action="store_true", help="Use mixed precision")
-    parser.add_argument("--output", type=str, default="profiling_results.json", help="Output file for results")
+    parser.add_argument(
+        "--train-batch-size", type=int, default=32, help="Training batch size"
+    )
+    parser.add_argument(
+        "--mixed-precision", action="store_true", help="Use mixed precision"
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default="profiling_results.json",
+        help="Output file for results",
+    )
 
     args = parser.parse_args()
 
@@ -566,9 +602,13 @@ def main():
         best = profiler.profile_sweep()
         print("\nRecommended config.yaml settings:")
         print(f"num_workers: {best.recommended_num_workers or best.num_workers}")
-        print(f"players_per_worker: {best.recommended_players_per_worker or best.players_per_worker}")
+        print(
+            f"players_per_worker: {best.recommended_players_per_worker or best.players_per_worker}"
+        )
         print(f"batch_size: {best.recommended_batch_size or best.batch_size}")
-        print(f"train_batch_size: {best.recommended_train_batch_size or best.train_batch_size}")
+        print(
+            f"train_batch_size: {best.recommended_train_batch_size or best.train_batch_size}"
+        )
         print(f"use_mixed_precision: {best.use_mixed_precision}")
     else:
         result = profiler.profile_configuration(
@@ -576,18 +616,24 @@ def main():
             args.players,
             args.batch_size,
             args.train_batch_size,
-            args.mixed_precision
+            args.mixed_precision,
         )
 
         print("\nRecommendations:")
         if result.recommended_num_workers:
-            print(f"  num_workers: {result.num_workers} → {result.recommended_num_workers}")
+            print(
+                f"  num_workers: {result.num_workers} → {result.recommended_num_workers}"
+            )
         if result.recommended_players_per_worker:
-            print(f"  players_per_worker: {result.players_per_worker} → {result.recommended_players_per_worker}")
+            print(
+                f"  players_per_worker: {result.players_per_worker} → {result.recommended_players_per_worker}"
+            )
         if result.recommended_batch_size:
             print(f"  batch_size: {result.batch_size} → {result.recommended_batch_size}")
         if result.recommended_train_batch_size:
-            print(f"  train_batch_size: {result.train_batch_size} → {result.recommended_train_batch_size}")
+            print(
+                f"  train_batch_size: {result.train_batch_size} → {result.recommended_train_batch_size}"
+            )
 
     profiler.save_results(args.output)
 

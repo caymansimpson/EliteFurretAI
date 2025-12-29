@@ -13,11 +13,11 @@ Key features:
 - Outputs a JSON list of valid file paths for further processing.
 """
 
+import argparse
 import concurrent.futures
 import os
 import sys
 import time
-import argparse
 
 import orjson
 
@@ -136,7 +136,7 @@ def main(read_dir, save_file, num_threads):
     total_count = 0
 
     for batch_start in range(0, len(files), batch_size):
-        batch_files = files[batch_start:batch_start + batch_size]
+        batch_files = files[batch_start : batch_start + batch_size]
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=num_threads) as executor:
             futures = {executor.submit(load_file, file): file for file in batch_files}
@@ -162,7 +162,10 @@ def main(read_dir, save_file, num_threads):
                     time_per_battle = (time.time() - start_time) / total_count
                     time_left = format_time((len(files) - total_count) * time_per_battle)
 
-                    print(f"\rProcessed {total_count}/{len(files)} battles ({round(total_count * 100.0 / len(files), 2)}%) in {time_taken} with an estimated {time_left} left    ", end="")
+                    print(
+                        f"\rProcessed {total_count}/{len(files)} battles ({round(total_count * 100.0 / len(files), 2)}%) in {time_taken} with an estimated {time_left} left    ",
+                        end="",
+                    )
 
             except concurrent.futures.TimeoutError:
                 print("\n\nBatch timeout reached!", file=sys.stderr)
@@ -183,11 +186,18 @@ if __name__ == "__main__":
         epilog="""
         Example usage:
             python filter_battle_data.py <read_dir> <save_file> [--num-threads N]
-        """
+        """,
     )
     parser.add_argument("read_dir", type=str, help="Directory containing raw battle files")
-    parser.add_argument("save_file", type=str, help="Output JSON file for valid battle file paths")
-    parser.add_argument("--num-threads", type=int, default=os.cpu_count(), help="Number of threads for parallel filtering (default: number of CPUs)")
+    parser.add_argument(
+        "save_file", type=str, help="Output JSON file for valid battle file paths"
+    )
+    parser.add_argument(
+        "--num-threads",
+        type=int,
+        default=os.cpu_count(),
+        help="Number of threads for parallel filtering (default: number of CPUs)",
+    )
     args = parser.parse_args()
 
     main(args.read_dir, args.save_file, args.num_threads)

@@ -1,23 +1,30 @@
-import asyncio
 import argparse
-import torch
-from typing import Dict, Any, Optional
-from poke_env.ps_client import AccountConfiguration, ServerConfiguration, LocalhostServerConfiguration, DefaultAuthenticationURL
+import asyncio
+from typing import Any, Dict, Optional
 
-from elitefurretai.rl2.agent import RNaDAgent
-from elitefurretai.rl2.worker import BatchInferencePlayer
-from elitefurretai.supervised.behavior_clone_player import FlexibleThreeHeadedModel
+import torch
+from poke_env.ps_client import (
+    AccountConfiguration,
+    LocalhostServerConfiguration,
+    ServerConfiguration,
+)
+
 from elitefurretai.etl.embedder import Embedder
 from elitefurretai.etl.encoder import MDBO
+from elitefurretai.rl.agent import RNaDAgent
+from elitefurretai.rl.worker import BatchInferencePlayer
+from elitefurretai.supervised.behavior_clone_player import FlexibleThreeHeadedModel
 
 
 def load_model(filepath: str, device: str) -> RNaDAgent:
     """Load a model checkpoint and wrap it in RNaDAgent."""
     checkpoint = torch.load(filepath, map_location=device)
-    config = checkpoint['config']
-    state_dict = checkpoint['model_state_dict']
+    config = checkpoint["config"]
+    state_dict = checkpoint["model_state_dict"]
 
-    embedder = Embedder(format="gen9vgc2023regulationc", feature_set=Embedder.FULL, omniscient=False)
+    embedder = Embedder(
+        format="gen9vgc2023regulationc", feature_set=Embedder.FULL, omniscient=False
+    )
     input_size = embedder.embedding_size
 
     base_model = FlexibleThreeHeadedModel(
@@ -31,7 +38,11 @@ def load_model(filepath: str, device: str) -> RNaDAgent:
         early_attention_heads=config.get("early_attention_heads", 8),
         late_attention_heads=config.get("late_attention_heads", 8),
         use_grouped_encoder=config.get("use_grouped_encoder", False),
-        group_sizes=embedder.group_embedding_sizes if config.get("use_grouped_encoder", False) else None,
+        group_sizes=(
+            embedder.group_embedding_sizes
+            if config.get("use_grouped_encoder", False)
+            else None
+        ),
         grouped_encoder_hidden_dim=config.get("grouped_encoder_hidden_dim", 128),
         grouped_encoder_aggregated_dim=config.get("grouped_encoder_aggregated_dim", 1024),
         pokemon_attention_heads=config.get("pokemon_attention_heads", 2),
@@ -53,7 +64,7 @@ async def run_evaluation(
     model2_path: str,
     num_battles: int,
     device: str = "cuda",
-    server_config: Optional[ServerConfiguration] = None
+    server_config: Optional[ServerConfiguration] = None,
 ) -> Dict[str, Any]:
     """
     Run battles between two models and compute win rates.
@@ -89,7 +100,7 @@ async def run_evaluation(
         account_configuration=AccountConfiguration("Model1", None),
         server_configuration=server_config,
         battle_format="gen9vgc2023regulationc",
-        probabilistic=False  # Use deterministic for evaluation
+        probabilistic=False,  # Use deterministic for evaluation
     )
 
     player2 = BatchInferencePlayer(
@@ -99,7 +110,7 @@ async def run_evaluation(
         account_configuration=AccountConfiguration("Model2", None),
         server_configuration=server_config,
         battle_format="gen9vgc2023regulationc",
-        probabilistic=False
+        probabilistic=False,
     )
 
     # Start inference loops
@@ -124,7 +135,7 @@ async def run_evaluation(
         "model1_wins": model1_wins,
         "model2_wins": model2_wins,
         "win_rate": win_rate,
-        "battles_played": battles_played
+        "battles_played": battles_played,
     }
 
     print("\n" + "=" * 50)
@@ -141,31 +152,43 @@ async def run_evaluation(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Evaluate two Pokemon VGC models by running battles")
+    parser = argparse.ArgumentParser(
+        description="Evaluate two Pokemon VGC models by running battles"
+    )
     parser.add_argument("model1", type=str, help="Path to first model checkpoint")
     parser.add_argument("model2", type=str, help="Path to second model checkpoint")
-    parser.add_argument("--num-battles", type=int, default=100, help="Number of battles to run (default: 100)")
-    parser.add_argument("--device", type=str, default="cuda", help="Device to run on (default: cuda)")
-    parser.add_argument("--server", type=str, default="localhost:8000", help="Showdown server address")
-    parser.add_argument("--output", type=str, default=None, help="Output JSON file for results")
+    parser.add_argument(
+        "--num-battles",
+        type=int,
+        default=100,
+        help="Number of battles to run (default: 100)",
+    )
+    parser.add_argument(
+        "--device", type=str, default="cuda", help="Device to run on (default: cuda)"
+    )
+    parser.add_argument(
+        "--server", type=str, default="localhost:8000", help="Showdown server address"
+    )
+    parser.add_argument(
+        "--output", type=str, default=None, help="Output JSON file for results"
+    )
 
     args = parser.parse_args()
 
-    server_config = ServerConfiguration(args.server, DefaultAuthenticationURL)
+    server_config = ServerConfiguration(args.server, None)  # type: ignore
 
     # Run evaluation
-    results = asyncio.run(run_evaluation(
-        args.model1,
-        args.model2,
-        args.num_battles,
-        args.device,
-        server_config
-    ))
+    results = asyncio.run(
+        run_evaluation(
+            args.model1, args.model2, args.num_battles, args.device, server_config
+        )
+    )
 
     # Save results if requested
     if args.output:
         import json
-        with open(args.output, 'w') as f:
+
+        with open(args.output, "w") as f:
             json.dump(results, f, indent=2)
         print(f"Results saved to {args.output}")
 

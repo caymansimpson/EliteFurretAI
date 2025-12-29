@@ -234,7 +234,8 @@ def main(train_path, test_path, val_path):
 
     print("Done training! Saving model...")
     torch.save(
-        model.state_dict(), os.path.join(config["save_path"], f"{wandb.run.name}.pth")  # type: ignore
+        model.state_dict(),
+        os.path.join(config["save_path"], f"{wandb.run.name}.pth"),  # type: ignore
     )
 
     print("\nEvaluating on Validation Dataset:")

@@ -41,7 +41,6 @@ def generate_item_inference_and_inferences():
 
 
 def test_check_items_covertcloak_boost():
-
     # Icy Wind
     ii, inferences = generate_item_inference_and_inferences()
     events = [
@@ -327,7 +326,7 @@ def test_check_items_lightclay():
     events = [
         ["", "turn", "0"],
         ["", "switch", "p2a: Furret", "Furret, L50, M", "100/100"],
-        ["", "switch", "p2b: Raichu", "Furret, L50, M", "100/100"],
+        ["", "switch", "p2b: Raichu", "Raichu, L50, M", "100/100"],
         ["", "move", "p2a: Furret", "Reflect", "p2a: Furret"],
         ["", "-sidestart", "p2: joeschmoe", "move: Reflect"],
         ["", "move", "p2b: Raichu", "Reflect", "[still]"],

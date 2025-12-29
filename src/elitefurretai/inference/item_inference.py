@@ -63,7 +63,6 @@ class ItemInference:
 
     # Update our internal tracking of the battle, and apply inferences
     def update(self, battle: Union[Battle, DoubleBattle]):
-
         if len(battle.observations) == 0:
             return
 
@@ -85,7 +84,6 @@ class ItemInference:
             and self._last_tracked_event > 0
             and turn_of_events == self._last_tracked_turn
         ) or turn_of_events > self._last_tracked_turn:
-
             # Go through logs; actual inference
             self.check_items(obs.events, start=self._last_tracked_event)
 
@@ -163,7 +161,6 @@ class ItemInference:
 
         # Check for safetygoggles;
         if "residual" in segments:
-
             # On normal turns (eg not at the start of the battle where we only have preturn_switch)
             # we should look for residuals if there is sandstorm. If there isn't any residuals, then
             # that says something too! If not, we have to apply the residual events to the battle
@@ -196,14 +193,12 @@ class ItemInference:
                 update_battle(self._battle, event)
 
     def _handle_moves(self, segments: Dict[str, List[List[str]]]):
-
         # Nothing to do if battle isnt initiated
         if self._battle.opponent_role is None or self._battle.player_role is None:
             return
 
         i = 0
         while i < len(segments["move"]):
-
             event = segments["move"][i]
 
             # An opponent is given an item
@@ -284,7 +279,6 @@ class ItemInference:
             if event[1] in ["switch", "drag"] and event[2].startswith(
                 self._battle.opponent_role
             ):
-
                 end = i + 1
                 while end < len(segments["move"]) and segments["move"][end][1] not in [
                     "switch",
@@ -494,7 +488,6 @@ class ItemInference:
             self._inferences.set_flag(ident, "can_be_covertcloak", False)
 
     def _check_rage_powder_safety_goggles(self, actor: str, target: str, move: Move):
-
         # Not implemented for singles
         if not isinstance(self._battle, DoubleBattle):
             raise NotImplementedError()
@@ -549,7 +542,6 @@ class ItemInference:
 
     # Updates move tracking; checks for choice items, and looks for screen_setting
     def _update_move_tracking(self, events: List[List[str]], i: int):
-
         # Nothing to do if battle isnt initiated
         if self._battle.opponent_role is None or self._battle.player_role is None:
             return
@@ -652,7 +644,6 @@ class ItemInference:
         # |-unboost|p1a: Koraidon|spe|1
         # |-unboost|p1b: Incineroar|spe|1
         if key == "boosts":
-
             # We go through every opponent mon and check if they got hit, and if they did, we
             # check if they got the secondary effect (or fainted). We go until we don't
             idents, affected, ineligible = [], [], []
@@ -698,7 +689,6 @@ class ItemInference:
 
             # This means that we get an ident that took damage, but didn't get a (un)boost
             if len(idents) > 0:
-
                 # We don't know if what we're seeing is a clear amulet or a covert cloak
                 if (
                     not self._opp_has_item(idents[0])
@@ -789,7 +779,6 @@ class ItemInference:
         # |-damage|p1b: Urshifu|97/100
         # |cant|p1b: Urshifu|flinch
         elif key == "flinch":
-
             # Flinch will only happen if we damage the pokemon
             damaged = any(
                 map(
@@ -811,7 +800,6 @@ class ItemInference:
                 return
 
             for j in range(end, len(events)):
-
                 # If the mon successfully moves and it can be flinched, it has a covert cloak
                 # Note that showdown doesn't handle Magic Bounce well, so we have to add a special
                 # condition: https://github.com/smogon/pokemon-showdown/issues/10660
@@ -857,7 +845,6 @@ class ItemInference:
             ]
 
             for event in events:
-
                 # Remove opponents that have been hit by Sandstorm
                 if (
                     event[2].startswith(self._battle.opponent_role)
@@ -887,7 +874,6 @@ class ItemInference:
                 self._inferences.set_flag(opp_actives[0], "item", "safetygoggles")
 
         elif isinstance(self._battle.opponent_active_pokemon, Pokemon):
-
             # Singles; requirement are different and simpler. Haven't tested!
             if (
                 self._battle.opponent_active_pokemon is not None

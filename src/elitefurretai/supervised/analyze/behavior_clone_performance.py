@@ -84,13 +84,19 @@ Adamant Nature
         description="Evaluate BCPlayer (three separate models) against poke-env baselines."
     )
     parser.add_argument(
-        "teampreview_model_path", type=str, help="Path to the teampreview model file (.pt with embedded config)"
+        "teampreview_model_path",
+        type=str,
+        help="Path to the teampreview model file (.pt with embedded config)",
     )
     parser.add_argument(
-        "action_model_path", type=str, help="Path to the action model file (.pt with embedded config)"
+        "action_model_path",
+        type=str,
+        help="Path to the action model file (.pt with embedded config)",
     )
     parser.add_argument(
-        "win_model_path", type=str, help="Path to the win model file (.pt with embedded config)"
+        "win_model_path",
+        type=str,
+        help="Path to the win model file (.pt with embedded config)",
     )
     parser.add_argument(
         "--n_battles", type=int, default=100, help="Number of battles per baseline"

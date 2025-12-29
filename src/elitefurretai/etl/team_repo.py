@@ -39,13 +39,12 @@ Usage:
     team = repo.get(format="gen9vgc2023regulationc", name="team1")
 """
 
-
 import os
 import os.path
 import random
 import subprocess
 from contextlib import contextmanager
-from typing import Dict, KeysView, Optional, List
+from typing import Dict, KeysView, List, Optional
 
 _DEFAULT_FILEPATH = "data/teams"
 
@@ -125,16 +124,15 @@ class TeamRepo:
 
                 # Recursively load all .txt files in this format's directory
                 self._load_teams_recursive(
-                    format_folder,
-                    folder_path,
-                    showdown_path if validate else None
+                    format_folder, folder_path, showdown_path if validate else None
                 )
 
     def _load_teams_recursive(
         self,
         format_name: str,
         directory: str,
-        showdown_path: Optional[str] = None
+        showdown_path: Optional[str] = None,
+        format_dir: Optional[str] = None,
     ) -> None:
         """
         Recursively load all .txt files from a directory and its subdirectories.
@@ -146,14 +144,21 @@ class TeamRepo:
             format_name: The format these teams belong to
             directory: Directory to scan recursively
             showdown_path: If provided, validate teams against this Showdown installation
+            format_dir: The root format directory (for calculating relative paths)
         """
+        # On first call, format_dir is the same as directory
+        if format_dir is None:
+            format_dir = directory
+
         for item in os.listdir(directory):
             item_path = os.path.join(directory, item)
 
             if os.path.isdir(item_path):
                 # Recursively scan subdirectories
-                self._load_teams_recursive(format_name, item_path, showdown_path)
-            elif item.endswith('.txt'):
+                self._load_teams_recursive(
+                    format_name, item_path, showdown_path, format_dir
+                )
+            elif item.endswith(".txt"):
                 # Load team file
                 if self._verbose:
                     print(f"  Loading: {item_path}")
@@ -164,7 +169,7 @@ class TeamRepo:
 
                     # Use relative path from format directory as team name for uniqueness
                     # e.g., "rental_teams/team1" instead of just "team1"
-                    team_name = os.path.relpath(item_path, os.path.dirname(directory))
+                    team_name = os.path.relpath(item_path, format_dir)
                     team_name = team_name.replace(".txt", "").replace(os.sep, "/")
 
                     self._teams[format_name][team_name] = team_string
@@ -208,7 +213,6 @@ class TeamRepo:
 
         SHOWDOWN_PATH = os.path.abspath(os.path.expanduser(showdown_path))
         with self.change_dir(SHOWDOWN_PATH):
-
             try:
                 result = subprocess.run(
                     ["./pokemon-showdown", "pack-team"],
@@ -302,7 +306,9 @@ class TeamRepo:
             >>> repo.sample_team("gen9vgc2023regulationc", "rental_teams")  # Sample from rental_teams only
         """
         if format not in self._teams:
-            raise ValueError(f"Format '{format}' not found. Available formats: {list(self._teams.keys())}")
+            raise ValueError(
+                f"Format '{format}' not found. Available formats: {list(self._teams.keys())}"
+            )
 
         format_teams = self._teams[format]
         if not format_teams:
@@ -313,7 +319,8 @@ class TeamRepo:
             # Normalize subdirectory path separators
             subdirectory = subdirectory.replace(os.sep, "/")
             filtered_teams = {
-                name: team for name, team in format_teams.items()
+                name: team
+                for name, team in format_teams.items()
                 if name.startswith(subdirectory + "/") or name == subdirectory
             }
             if not filtered_teams:
@@ -327,7 +334,13 @@ class TeamRepo:
         team_name = random.choice(list(format_teams.keys()))
         return format_teams[team_name]
 
-    def sample_n_teams(self, format: str, n: int, with_replacement: bool = False, subdirectory: Optional[str] = None) -> List[str]:
+    def sample_n_teams(
+        self,
+        format: str,
+        n: int,
+        with_replacement: bool = False,
+        subdirectory: Optional[str] = None,
+    ) -> List[str]:
         """
         Sample multiple random teams from the specified format.
 
@@ -352,7 +365,9 @@ class TeamRepo:
             >>> repo.sample_n_teams("gen9vgc2023regulationc", 3, subdirectory="rental_teams")  # 3 from rentals only
         """
         if format not in self._teams:
-            raise ValueError(f"Format '{format}' not found. Available formats: {list(self._teams.keys())}")
+            raise ValueError(
+                f"Format '{format}' not found. Available formats: {list(self._teams.keys())}"
+            )
 
         format_teams = self._teams[format]
         if not format_teams:
@@ -363,7 +378,8 @@ class TeamRepo:
             # Normalize subdirectory path separators
             subdirectory = subdirectory.replace(os.sep, "/")
             filtered_teams = {
-                name: team for name, team in format_teams.items()
+                name: team
+                for name, team in format_teams.items()
                 if name.startswith(subdirectory + "/") or name == subdirectory
             }
             if not filtered_teams:

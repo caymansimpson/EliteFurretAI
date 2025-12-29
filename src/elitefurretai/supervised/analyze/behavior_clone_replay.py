@@ -30,16 +30,18 @@ import json
 from typing import Dict, Union
 
 import torch
-
-from elitefurretai.supervised.behavior_clone_player import BCPlayer
-from elitefurretai.etl.battle_data import BattleData
-from elitefurretai.etl.battle_iterator import BattleIterator
-from elitefurretai.etl.encoder import MDBO
 from poke_env.battle import DoubleBattle, Move, Pokemon
 from poke_env.player import BattleOrder, DoubleBattleOrder
 
+from elitefurretai.etl.battle_data import BattleData
+from elitefurretai.etl.battle_iterator import BattleIterator
+from elitefurretai.etl.encoder import MDBO
+from elitefurretai.supervised.behavior_clone_player import BCPlayer
 
-def format_action_human_readable(action: Union[str, BattleOrder, MDBO], battle: DoubleBattle) -> str:
+
+def format_action_human_readable(
+    action: Union[str, BattleOrder, MDBO], battle: DoubleBattle
+) -> str:
     """Format action with human-readable move names, Pokemon names, and targets."""
 
     # Handle string messages (teampreview or battle order messages)
@@ -95,7 +97,9 @@ def format_action_human_readable(action: Union[str, BattleOrder, MDBO], battle: 
                 continue
 
             # Get the Pokemon making the action (from active_pokemon list)
-            active_mon = battle.active_pokemon[i] if i < len(battle.active_pokemon) else None
+            active_mon = (
+                battle.active_pokemon[i] if i < len(battle.active_pokemon) else None
+            )
             mon_name = active_mon.species if active_mon else f"Mon{i + 1}"
 
             # Handle switch
@@ -170,7 +174,9 @@ def format_current_battle_state(battle: DoubleBattle) -> str:
 
     # For teampreview, just show the team rosters
     if battle.teampreview:
-        message += f"  My Team: [{', '.join(mon.species for mon in battle.teampreview_team)}]"
+        message += (
+            f"  My Team: [{', '.join(mon.species for mon in battle.teampreview_team)}]"
+        )
         message += f"\n  Opp Team: [{', '.join(mon.species for mon in battle.teampreview_opponent_team)}]"
         return message
 
@@ -235,7 +241,7 @@ def replace_nicknames_in_log(log_line: str, battle: DoubleBattle) -> str:
             pokemon = battle.get_pokemon(identifier)
             if pokemon:
                 # Replace with species name
-                prefix = identifier.split(':')[0]  # "p1a" or "p2b"
+                prefix = identifier.split(":")[0]  # "p1a" or "p2b"
                 return f"{prefix}: {pokemon.species}"
         except (ValueError, KeyError, AttributeError):
             # If Pokemon not found or error, return original
@@ -243,7 +249,7 @@ def replace_nicknames_in_log(log_line: str, battle: DoubleBattle) -> str:
         return identifier
 
     # Match pattern like "p1a: Name" or "p2b: Name"
-    pattern = r'p[12][ab]:\s*[^|,\]]*'
+    pattern = r"p[12][ab]:\s*[^|,\]]*"
     result = re.sub(pattern, replace_identifier, log_line)
     return result
 
@@ -256,7 +262,7 @@ def analyze_battle(
 ):
     """Replay battle and analyze model predictions at each step."""
     # Load battle data
-    with open(battle_file, 'r') as f:
+    with open(battle_file, "r") as f:
         battle_json = json.load(f)
 
     battle_data = BattleData.from_showdown_json(battle_json)
@@ -264,7 +270,9 @@ def analyze_battle(
     print(f"\n{'=' * 80}")
     print(f"Battle: {battle_data.battle_tag}")
     print(f"Format: {battle_data.format}")
-    print(f"Winner: {battle_data.winner} ({'p1' if battle_data.winner == battle_data.p1 else 'p2'})")
+    print(
+        f"Winner: {battle_data.winner} ({'p1' if battle_data.winner == battle_data.p1 else 'p2'})"
+    )
     print(f"Perspective: {perspective}")
     print(f"{'=' * 80}\n")
 
@@ -302,10 +310,12 @@ def analyze_battle(
 
             # Get model predictions using BCPlayer, passing the correct action type from iterator
             traj = torch.Tensor(player._trajectories[battle.battle_tag]).unsqueeze(0)
-            action_probs: Dict[BattleOrder, float] = player.predict(traj, battle, action_type=iterator.last_input_type)  # type: ignore
+            action_probs: Dict[BattleOrder, float] = player.predict(
+                traj, battle, action_type=iterator.last_input_type
+            )  # type: ignore
 
             # Get win prediction from win model
-            traj_win = traj[:, -player.win_model.max_seq_len:, :]
+            traj_win = traj[:, -player.win_model.max_seq_len :, :]
             player.win_model.eval()
             with torch.no_grad():
                 _, _, win_logits = player.win_model(traj_win)
@@ -338,11 +348,17 @@ def analyze_battle(
                         break
                 else:
                     # For turn actions, try object comparison then message comparison
-                    if action == actual_key or (actual_msg and isinstance(action, str) and action == actual_msg):
+                    if action == actual_key or (
+                        actual_msg and isinstance(action, str) and action == actual_msg
+                    ):
                         actual_rank = rank
                         break
                     # Also handle case where action is DoubleBattleOrder and we need to compare messages
-                    if hasattr(action, 'message') and actual_msg and action.message == actual_msg:
+                    if (
+                        hasattr(action, "message")
+                        and actual_msg
+                        and action.message == actual_msg
+                    ):
                         actual_rank = rank
                         break
 
@@ -358,7 +374,9 @@ def analyze_battle(
             else:
                 # Check if this is a force switch (requesting input within the same turn)
                 is_force_switch = any(battle.force_switch)
-                turn_type = f"TURN {battle.turn}" + (" [FORCE SWITCH]" if is_force_switch else "")
+                turn_type = f"TURN {battle.turn}" + (
+                    " [FORCE SWITCH]" if is_force_switch else ""
+                )
 
             pred_quality = "✓ GOOD" if is_good_pred else "✗ BAD"
 
@@ -384,7 +402,9 @@ def analyze_battle(
                 if rank <= 5:
                     print(f"  {rank:3d}. {marker} {prob:6.2%} | {action_str}")
 
-            print(f"\n  Actual action: {format_action_human_readable(actual_action, battle)}  (Rank #{actual_rank})")
+            print(
+                f"\n  Actual action: {format_action_human_readable(actual_action, battle)}  (Rank #{actual_rank})"
+            )
 
     except StopIteration:
         pass
@@ -393,8 +413,12 @@ def analyze_battle(
     print(f"\n{'=' * 80}")
     print("Battle Complete")
     print(f"{'=' * 80}")
-    print(f"Good Predictions (actual in top-5): {good_predictions}/{good_predictions + bad_predictions} ({100 * good_predictions / (good_predictions + bad_predictions):.1f}%)")
-    print(f"Bad Predictions (actual not in top-5): {bad_predictions}/{good_predictions + bad_predictions} ({100 * bad_predictions / (good_predictions + bad_predictions):.1f}%)")
+    print(
+        f"Good Predictions (actual in top-5): {good_predictions}/{good_predictions + bad_predictions} ({100 * good_predictions / (good_predictions + bad_predictions):.1f}%)"
+    )
+    print(
+        f"Bad Predictions (actual not in top-5): {bad_predictions}/{good_predictions + bad_predictions} ({100 * bad_predictions / (good_predictions + bad_predictions):.1f}%)"
+    )
     print(f"{'=' * 80}\n")
 
 
@@ -402,35 +426,38 @@ def main():
     parser = argparse.ArgumentParser(
         description="Replay battles and analyze model predictions using BCPlayer",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=__doc__
+        epilog=__doc__,
     )
 
     parser.add_argument(
         "--battle-file",
         type=str,
         required=True,
-        help="Path to raw Showdown JSON battle file"
+        help="Path to raw Showdown JSON battle file",
+    )
+
+    parser.add_argument(
+        "--unified-model-path",
+        type=str,
+        help="Path to unified model checkpoint (.pt file with all three heads)",
     )
 
     parser.add_argument(
         "--teampreview-model-path",
         type=str,
-        required=True,
-        help="Path to teampreview model checkpoint (.pt file with embedded config)"
+        help="Path to teampreview model checkpoint (.pt file with embedded config)",
     )
 
     parser.add_argument(
         "--action-model-path",
         type=str,
-        required=True,
-        help="Path to action model checkpoint (.pt file with embedded config)"
+        help="Path to action model checkpoint (.pt file with embedded config)",
     )
 
     parser.add_argument(
         "--win-model-path",
         type=str,
-        required=True,
-        help="Path to win model checkpoint (.pt file with embedded config)"
+        help="Path to win model checkpoint (.pt file with embedded config)",
     )
 
     parser.add_argument(
@@ -438,13 +465,11 @@ def main():
         type=str,
         choices=["p1", "p2"],
         default="p1",
-        help="Which player's perspective to analyze"
+        help="Which player's perspective to analyze",
     )
 
     parser.add_argument(
-        "--verbose",
-        action="store_true",
-        help="Show full battle state at each turn"
+        "--verbose", action="store_true", help="Show full battle state at each turn"
     )
 
     parser.add_argument(
@@ -452,29 +477,62 @@ def main():
         type=str,
         default="cpu",
         choices=["cpu", "cuda"],
-        help="Device to run model on"
+        help="Device to run model on",
     )
 
     parser.add_argument(
         "--battle-format",
         type=str,
         default="gen9vgc2023regulationc",
-        help="Battle format (default: gen9vgc2023regulationc)"
+        help="Battle format (default: gen9vgc2023regulationc)",
     )
 
     args = parser.parse_args()
 
-    # Create BCPlayer with the three models
-    print("Loading models...")
-    player = BCPlayer(
-        teampreview_model_filepath=args.teampreview_model_path,
-        action_model_filepath=args.action_model_path,
-        win_model_filepath=args.win_model_path,
-        battle_format=args.battle_format,
-        device=args.device,
-        probabilistic=False,  # Use greedy selection for analysis
-        verbose=True  # Show initialization progress
+    # Validate model path arguments
+    has_unified = args.unified_model_path is not None
+    has_separate = all(
+        [
+            args.teampreview_model_path is not None,
+            args.action_model_path is not None,
+            args.win_model_path is not None,
+        ]
     )
+    has_any_separate = any(
+        [
+            args.teampreview_model_path is not None,
+            args.action_model_path is not None,
+            args.win_model_path is not None,
+        ]
+    )
+
+    if has_unified and has_any_separate:
+        parser.error("Cannot specify both --unified-model-path and individual model paths")
+    if not has_unified and not has_separate:
+        parser.error(
+            "Must specify either --unified-model-path or all three individual model paths (--teampreview-model-path, --action-model-path, --win-model-path)"
+        )
+
+    # Create BCPlayer with unified or separate models
+    print("Loading models...")
+    if has_unified:
+        player = BCPlayer(
+            unified_model_filepath=args.unified_model_path,
+            battle_format=args.battle_format,
+            device=args.device,
+            probabilistic=False,  # Use greedy selection for analysis
+            verbose=True,  # Show initialization progress
+        )
+    else:
+        player = BCPlayer(
+            teampreview_model_filepath=args.teampreview_model_path,
+            action_model_filepath=args.action_model_path,
+            win_model_filepath=args.win_model_path,
+            battle_format=args.battle_format,
+            device=args.device,
+            probabilistic=False,  # Use greedy selection for analysis
+            verbose=True,  # Show initialization progress
+        )
 
     # Analyze battle
     analyze_battle(

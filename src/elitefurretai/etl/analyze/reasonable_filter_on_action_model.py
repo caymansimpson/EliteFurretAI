@@ -27,7 +27,7 @@ from typing import Any, Dict, List, Tuple
 import orjson
 import torch
 
-from elitefurretai.etl import MDBO, BattleIteratorDataset, Embedder
+from elitefurretai.etl import MDBO, BattleDataset, Embedder
 from elitefurretai.etl.battle_order_validator import (
     is_reasonable_move,
     is_valid_order,
@@ -305,7 +305,7 @@ def main(battlefile_path, model_filepath, num_battles):
     embedder = Embedder(
         format="gen9vgc2023regulationc", feature_set=Embedder.FULL, omniscient=True
     )
-    dataset = BattleIteratorDataset(files)
+    dataset = BattleDataset(files)
 
     # Initialize and load the trained model
     model = TwoHeadedHybridModel(embedder.embedding_size)

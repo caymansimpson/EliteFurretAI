@@ -33,7 +33,6 @@ def is_valid_order(
     order: Union[SingleBattleOrder, DoubleBattleOrder, DefaultBattleOrder],
     battle: Union[Battle, DoubleBattle],
 ) -> bool:
-
     if isinstance(order, DefaultBattleOrder):
         return True
     elif isinstance(order, DoubleBattleOrder) and isinstance(battle, DoubleBattle):
@@ -45,7 +44,6 @@ def is_valid_order(
 
 
 def _is_valid_singles_order(order: SingleBattleOrder, battle: Battle) -> bool:
-
     if order.order is None:
         return False
     elif isinstance(order, PassBattleOrder):
@@ -85,10 +83,8 @@ def _is_valid_singles_order(order: SingleBattleOrder, battle: Battle) -> bool:
 
 
 def _is_valid_doubles_order(double_order: DoubleBattleOrder, battle: DoubleBattle) -> bool:
-
     # Check each order individually
     for i, order in enumerate([double_order.first_order, double_order.second_order]):
-
         # Check to see if we should be sending an order in the first place
         # But can send an order when one of your mon faints and you need to send in another
         if (
@@ -108,7 +104,6 @@ def _is_valid_doubles_order(double_order: DoubleBattleOrder, battle: DoubleBattl
 
         # Check whether a switch is valid
         elif isinstance(order.order, Pokemon):
-
             if battle.trapped[i] and not battle.force_switch[i]:
                 return False
 
@@ -130,7 +125,6 @@ def _is_valid_doubles_order(double_order: DoubleBattleOrder, battle: DoubleBattl
 
         # Check whether a move is valid
         elif isinstance(order.order, Move):
-
             # Check if we're supposed to switch
             if battle.force_switch[i]:
                 return False
@@ -173,7 +167,6 @@ def _is_valid_doubles_order(double_order: DoubleBattleOrder, battle: DoubleBattl
 
             # For moves that can target any pokemon on the field:
             elif order.order.target in (Target.ANY, Target.NORMAL):
-
                 num_opp_mons = int(battle.opponent_active_pokemon[0] is not None) + int(
                     battle.opponent_active_pokemon[1] is not None
                 )
@@ -201,7 +194,6 @@ def _is_valid_doubles_order(double_order: DoubleBattleOrder, battle: DoubleBattl
                     DoubleBattle.POKEMON_1_POSITION,
                     DoubleBattle.POKEMON_2_POSITION,
                 ):
-
                     # Can't target yourself
                     if order.move_target == battle.to_showdown_target(
                         order.order, battle.active_pokemon[i]
@@ -233,7 +225,6 @@ def _is_valid_doubles_order(double_order: DoubleBattleOrder, battle: DoubleBattl
         double_order.second_order
         and not isinstance(double_order.second_order, PassBattleOrder)
     ):
-
         # Check to make sure we're not dynamaxing two pokemon
         if double_order.first_order.dynamax and double_order.second_order.dynamax:
             return False
@@ -356,7 +347,6 @@ def _useless_self_boost(order: Optional[SingleBattleOrder], mon: Optional[Pokemo
         return False
 
     if order and isinstance(order.order, Move):
-
         # Only consider self- or ally-boosting moves if you have boosts left, or if you dont, if the other pokemon has sucker punch
         if order.order.boosts and order.order.target == Target.SELF:
             for stat in order.order.boosts:
@@ -413,7 +403,6 @@ def _useless_self_hit(battle, order: Optional[SingleBattleOrder], index: int, ge
     if (
         order.order.target in (Target.ANY, Target.NORMAL) and order.move_target < 0
     ) or order.order.target in (Target.ALL_ADJACENT, Target.ALL):
-
         # Get the mon who is going to be hit
         target_mon = battle.active_pokemon[1 - index]
 

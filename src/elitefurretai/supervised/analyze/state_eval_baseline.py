@@ -83,8 +83,8 @@ import numpy as np
 import orjson
 from tqdm import tqdm
 
-from elitefurretai.etl.battle_iterator import BattleIterator
 from elitefurretai.etl.battle_data import BattleData
+from elitefurretai.etl.battle_iterator import BattleIterator
 from elitefurretai.etl.evaluate_state import evaluate_position_advantage
 
 
@@ -94,9 +94,13 @@ class StateEvaluationBaseline:
     def __init__(self):
         # Storage for analysis
         self.by_turn: Dict[int, List[Tuple[float, float, bool]]] = defaultdict(list)
-        self.by_turns_to_end: Dict[int, List[Tuple[float, float, bool]]] = defaultdict(list)
+        self.by_turns_to_end: Dict[int, List[Tuple[float, float, bool]]] = defaultdict(
+            list
+        )
         self.by_outcome: Dict[str, List[Tuple[float, float]]] = defaultdict(list)
-        self.all_data: List[Tuple[float, float, bool]] = []  # (heuristic, win_adv, actual_win)
+        self.all_data: List[
+            Tuple[float, float, bool]
+        ] = []  # (heuristic, win_adv, actual_win)
 
     def analyze_battle(
         self,
@@ -112,7 +116,9 @@ class StateEvaluationBaseline:
         """
         try:
             # Create battle iterator
-            iterator = BattleIterator(battle_data, perspective=perspective, omniscient=False)
+            iterator = BattleIterator(
+                battle_data, perspective=perspective, omniscient=False
+            )
 
             # Get the final outcome (who actually won)
             actual_win = battle_data.winner == perspective
@@ -148,7 +154,9 @@ class StateEvaluationBaseline:
 
             final_outcome = 1.0 if actual_win else -1.0
 
-            for i, (heuristic_eval, turn_num) in enumerate(zip(battle_evaluations, turn_numbers)):
+            for i, (heuristic_eval, turn_num) in enumerate(
+                zip(battle_evaluations, turn_numbers)
+            ):
                 turns_to_end = num_steps - i - 1
 
                 # Compute synthetic win advantage using ensemble weighting
@@ -164,8 +172,12 @@ class StateEvaluationBaseline:
                 synthetic_win_adv = (1 - weight) * heuristic_eval + weight * final_outcome
 
                 # Store data points for analysis
-                self.by_turn[turn_num].append((heuristic_eval, synthetic_win_adv, actual_win))
-                self.by_turns_to_end[turns_to_end].append((heuristic_eval, synthetic_win_adv, actual_win))
+                self.by_turn[turn_num].append(
+                    (heuristic_eval, synthetic_win_adv, actual_win)
+                )
+                self.by_turns_to_end[turns_to_end].append(
+                    (heuristic_eval, synthetic_win_adv, actual_win)
+                )
 
                 outcome_key = "winning" if actual_win else "losing"
                 self.by_outcome[outcome_key].append((heuristic_eval, synthetic_win_adv))
@@ -176,7 +188,9 @@ class StateEvaluationBaseline:
             # Skip battles that can't be processed
             pass
 
-    def compute_correlation(self, data: List[Tuple[float, float, bool]]) -> Dict[str, float]:
+    def compute_correlation(
+        self, data: List[Tuple[float, float, bool]]
+    ) -> Dict[str, float]:
         """Compute correlation metrics between heuristic and win advantage."""
         if not data:
             return {"correlation": 0.0, "mse": 0.0, "mae": 0.0, "samples": 0}
@@ -195,7 +209,9 @@ class StateEvaluationBaseline:
             "samples": len(data),
         }
 
-    def compute_prediction_accuracy(self, data: List[Tuple[float, float, bool]]) -> Dict[str, float]:
+    def compute_prediction_accuracy(
+        self, data: List[Tuple[float, float, bool]]
+    ) -> Dict[str, float]:
         """
         Compute how well heuristic predicts actual outcome.
 
@@ -240,7 +256,9 @@ class StateEvaluationBaseline:
         # Overall statistics
         if self.all_data:
             report["overall"]["correlation"] = self.compute_correlation(self.all_data)
-            report["overall"]["prediction"] = self.compute_prediction_accuracy(self.all_data)
+            report["overall"]["prediction"] = self.compute_prediction_accuracy(
+                self.all_data
+            )
 
         # By turn number
         for turn in sorted(self.by_turn.keys()):
@@ -305,7 +323,9 @@ class StateEvaluationBaseline:
         # By turns to end
         if "by_turns_to_end" in report and report["by_turns_to_end"]:
             print("\n--- Correlation by Turns Until End ---")
-            print(f"{'Turns Left':<12} {'Correlation':<14} {'Accuracy':<12} {'Samples':<10}")
+            print(
+                f"{'Turns Left':<12} {'Correlation':<14} {'Accuracy':<12} {'Samples':<10}"
+            )
             print("-" * 52)
 
             for turns_to_end in sorted(report["by_turns_to_end"].keys())[:10]:
@@ -368,7 +388,7 @@ def main():
     print(f"Loaded {len(battle_files)} battles from filter file")
 
     # Limit to requested number
-    battle_files = battle_files[:args.num_battles]
+    battle_files = battle_files[: args.num_battles]
 
     print(f"Will process {len(battle_files)} battles")
 

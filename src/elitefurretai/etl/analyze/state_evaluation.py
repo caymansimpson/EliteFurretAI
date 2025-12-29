@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# pyright: reportArgumentType=false, reportAttributeAccessIssue=false, reportOperatorIssue=false
 """
 Analyze the correlation between evaluate_state and actual battle outcomes.
 
@@ -151,7 +152,7 @@ def calculate_correlations(battle_results: List[Dict]) -> Dict:
 
     # Overall correlation
     if len(df) > 1:
-        correlations["overall"] = df["advantage"].corr(df["final_outcome"])
+        correlations["overall"] = df["advantage"].corr(df["final_outcome"])  # type: ignore[arg-type]
 
     # Correlation by game phase
     early_game = df[df["progress"] <= 0.33]
@@ -160,7 +161,7 @@ def calculate_correlations(battle_results: List[Dict]) -> Dict:
 
     for phase, phase_df in [("early", early_game), ("mid", mid_game), ("late", late_game)]:
         if len(phase_df) > 1:
-            correlations[f"{phase}_game"] = phase_df["advantage"].corr(
+            correlations[f"{phase}_game"] = phase_df["advantage"].corr(  # type: ignore[union-attr]
                 phase_df["final_outcome"]
             )
 
@@ -168,7 +169,7 @@ def calculate_correlations(battle_results: List[Dict]) -> Dict:
     for turn_range in [(1, 5), (6, 10), (11, 20), (21, 50)]:
         turn_df = df[(df["turn"] >= turn_range[0]) & (df["turn"] <= turn_range[1])]
         if len(turn_df) > 1:
-            correlations[f"turns_{turn_range[0]}-{turn_range[1]}"] = turn_df[
+            correlations[f"turns_{turn_range[0]}-{turn_range[1]}"] = turn_df[  # type: ignore[union-attr]
                 "advantage"
             ].corr(turn_df["final_outcome"])
 
@@ -317,7 +318,7 @@ def create_visualizations(battle_results: List[Dict], output_dir: str):
             subset["progress"],
             subset["advantage"],
             alpha=0.5,
-            label=f'Final Outcome: {"Win" if outcome else "Loss"}',
+            label=f"Final Outcome: {'Win' if outcome else 'Loss'}",
         )
     plt.xlabel("Game Progress (0=Start, 1=End)")
     plt.ylabel("Evaluation Advantage")
@@ -437,7 +438,7 @@ def plot_elo_vs_correlation(battle_results: List[Dict], output_dir: str):
             subset["progress"],
             subset["advantage"],
             alpha=0.5,
-            label=f'Final Outcome: {"Win" if outcome else "Loss"}',
+            label=f"Final Outcome: {'Win' if outcome else 'Loss'}",
         )
     plt.xlabel("Game Progress (0=Start, 1=End)")
     plt.ylabel("Evaluation Advantage")

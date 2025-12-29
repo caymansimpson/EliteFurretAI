@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """This module contains general utils that contain categorizations of moves/abilities/items, as well as
-    some other utils that are not specific to a particular inference method (eg showdown log parsing)
+some other utils that are not specific to a particular inference method (eg showdown log parsing)
 """
 
 import logging
@@ -441,7 +441,6 @@ def get_ability_and_identifier(event: List[str]) -> Tuple[Optional[str], Optiona
 def get_priority_and_identifier(
     event: List[str], battle: Union[Battle, DoubleBattle, AbstractBattle]
 ) -> Tuple[str, Optional[int]]:
-
     mon_ident = standardize_pokemon_ident(event[2])
 
     mon = battle.get_pokemon(mon_ident)
@@ -561,7 +560,6 @@ def get_segments(events: List[List[str]], start=0) -> Dict[str, List[List[str]]]
 
     # If at the start of the battle, we move directly to the post-turn phase
     if not start_of_battle:
-
         # We know there has to be a switch or a move; we go until we get there, but if we get a battle_mechanic,
         # we stop
         while (
@@ -610,8 +608,7 @@ def get_segments(events: List[List[str]], start=0) -> Dict[str, List[List[str]]]
             or (
                 # for protosynthesis/quarkdrives/neutralizinggas; note that this is a bug in showdown:
                 # https://github.com/smogon/pokemon-showdown/blob/c82d1b8433440256f7b75fe1c68deac31a29c09d/data/abilities.ts#L2877
-                events[i][1] == "-end"
-                and len(events) > 3
+                events[i][1] == "-end" and len(events) > 3
             )
         ):
             if last_segment != "" and i >= start:
@@ -777,7 +774,6 @@ def observation_to_str(obs):
 
 
 def battle_to_str(battle, opp: Optional[Player] = None) -> str:
-
     message = f"============= Battle [{battle.battle_tag}] =============\n"
     message += f"The battle is between {battle.player_username} and {battle.opponent_username} from {battle.player_username}'s perspective.\n"
 
@@ -845,7 +841,7 @@ DISCERNABLE_ITEMS = set(
         "hardstone",
         "magnet",
         "metalcoat",
-        "mysticwater" "charcoal",
+        "mysticwatercharcoal",
         "miracleseed",
         "nevermeltice",
         "blackglasses",
@@ -853,7 +849,7 @@ DISCERNABLE_ITEMS = set(
         "pixieplate",
         "sharpbeak",
         "spelltag",
-        "oddinsence" "silkscarf",
+        "oddinsencesilkscarf",
         "silverpowder",
         "softsand",
         "spelltag",

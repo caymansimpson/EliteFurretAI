@@ -1,7 +1,8 @@
+from typing import Dict
+
 import torch
 import torch.optim as optim
 from torch.distributions import Categorical
-from typing import Dict
 
 from elitefurretai.rl.agent import RNaDAgent
 
@@ -19,7 +20,7 @@ class RNaDLearner:
         rnad_alpha: float = 0.1,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
         use_mixed_precision: bool = True,
-        gradient_clip: float = 0.5
+        gradient_clip: float = 0.5,
     ):
         self.model = model.to(device)
         self.ref_model = ref_model.to(device)
@@ -61,28 +62,33 @@ class RNaDLearner:
                 - returns: (batch, seq)
                 - initial_hidden: (h, c) tuple (optional)
         """
-        states = batch['states'].to(self.device)
-        actions = batch['actions'].to(self.device)
-        old_log_probs = batch['log_probs'].to(self.device)
-        advantages = batch['advantages'].to(self.device)
-        returns = batch['returns'].to(self.device)
-        is_teampreview = batch['is_teampreview'].to(self.device)
-        padding_mask = batch.get('padding_mask', None)
+        states = batch["states"].to(self.device)
+        actions = batch["actions"].to(self.device)
+        old_log_probs = batch["log_probs"].to(self.device)
+        advantages = batch["advantages"].to(self.device)
+        returns = batch["returns"].to(self.device)
+        is_teampreview = batch["is_teampreview"].to(self.device)
+        padding_mask = batch.get("padding_mask", None)
         if padding_mask is not None:
             padding_mask = padding_mask.to(self.device)
 
-        action_masks = batch.get('masks', None)
+        action_masks = batch.get("masks", None)
         if action_masks is not None:
             action_masks = action_masks.to(self.device)
 
         # Handle hidden states
         # If not provided, init to zero
-        initial_hidden = batch.get('initial_hidden', None)
+        initial_hidden = batch.get("initial_hidden", None)
         if initial_hidden is None:
-            initial_hidden_state = self.model.get_initial_state(states.shape[0], self.device)
+            initial_hidden_state = self.model.get_initial_state(
+                states.shape[0], self.device
+            )
         else:
             # Move to device
-            initial_hidden_state = (initial_hidden[0].to(self.device), initial_hidden[1].to(self.device))
+            initial_hidden_state = (
+                initial_hidden[0].to(self.device),
+                initial_hidden[1].to(self.device),
+            )
 
         # Mixed precision forward pass
         with torch.amp.autocast(device_type=self.device, enabled=self.use_mixed_precision):  # type: ignore
@@ -91,7 +97,9 @@ class RNaDLearner:
 
         # Forward pass ref model (no grad, always FP32 for stability)
         with torch.no_grad():
-            ref_turn_logits, ref_tp_logits, _, _ = self.ref_model(states, initial_hidden_state)
+            ref_turn_logits, ref_tp_logits, _, _ = self.ref_model(
+                states, initial_hidden_state
+            )
 
         # Flatten batch and seq dimensions for processing
         batch_size, seq_len = actions.shape
@@ -125,7 +133,9 @@ class RNaDLearner:
 
             # Get logits for TP steps
             curr_tp_logits = tp_logits.reshape(-1, tp_logits.shape[-1])[tp_indices]
-            ref_tp_logits_sel = ref_tp_logits.reshape(-1, ref_tp_logits.shape[-1])[tp_indices]
+            ref_tp_logits_sel = ref_tp_logits.reshape(-1, ref_tp_logits.shape[-1])[
+                tp_indices
+            ]
 
             # Apply masks if available (assuming mask shape matches logits or is handled)
             # TP masks might be different from Turn masks.
@@ -145,7 +155,10 @@ class RNaDLearner:
             # PPO Loss
             ratio = torch.exp(curr_log_probs - flat_old_log_probs[tp_indices])
             surr1 = ratio * flat_advantages[tp_indices]
-            surr2 = torch.clamp(ratio, 1.0 - self.clip_range, 1.0 + self.clip_range) * flat_advantages[tp_indices]
+            surr2 = (
+                torch.clamp(ratio, 1.0 - self.clip_range, 1.0 + self.clip_range)
+                * flat_advantages[tp_indices]
+            )
             total_policy_loss += -torch.min(surr1, surr2).mean().item()
 
             # Entropy
@@ -158,7 +171,9 @@ class RNaDLearner:
             turn_indices = torch.nonzero(valid_turn_mask).squeeze()
 
             curr_turn_logits = turn_logits.reshape(-1, turn_logits.shape[-1])[turn_indices]
-            ref_turn_logits_sel = ref_turn_logits.reshape(-1, ref_turn_logits.shape[-1])[turn_indices]
+            ref_turn_logits_sel = ref_turn_logits.reshape(-1, ref_turn_logits.shape[-1])[
+                turn_indices
+            ]
 
             # Apply masks
             if action_masks is not None:
@@ -166,8 +181,12 @@ class RNaDLearner:
                 flat_masks = action_masks.reshape(-1, action_masks.shape[-1])
                 curr_masks = flat_masks[turn_indices]
 
-                curr_turn_logits = curr_turn_logits.masked_fill(~curr_masks.bool(), float('-inf'))
-                ref_turn_logits_sel = ref_turn_logits_sel.masked_fill(~curr_masks.bool(), float('-inf'))
+                curr_turn_logits = curr_turn_logits.masked_fill(
+                    ~curr_masks.bool(), float("-inf")
+                )
+                ref_turn_logits_sel = ref_turn_logits_sel.masked_fill(
+                    ~curr_masks.bool(), float("-inf")
+                )
 
             curr_dist = Categorical(logits=curr_turn_logits)
             ref_dist = Categorical(logits=ref_turn_logits_sel)
@@ -181,7 +200,10 @@ class RNaDLearner:
             # PPO
             ratio = torch.exp(curr_log_probs - flat_old_log_probs[turn_indices])
             surr1 = ratio * flat_advantages[turn_indices]
-            surr2 = torch.clamp(ratio, 1.0 - self.clip_range, 1.0 + self.clip_range) * flat_advantages[turn_indices]
+            surr2 = (
+                torch.clamp(ratio, 1.0 - self.clip_range, 1.0 + self.clip_range)
+                * flat_advantages[turn_indices]
+            )
             total_policy_loss += -torch.min(surr1, surr2).mean().item()
 
             # Entropy
@@ -190,7 +212,11 @@ class RNaDLearner:
         # Value Loss (with padding mask)
         value_error = (flat_values - flat_returns) ** 2
         if padding_mask is not None:
-            value_loss = 0.5 * (value_error * flat_padding_mask.float()).sum() / flat_padding_mask.sum().clamp(min=1.0)
+            value_loss = (
+                0.5
+                * (value_error * flat_padding_mask.float()).sum()
+                / flat_padding_mask.sum().clamp(min=1.0)
+            )
         else:
             value_loss = 0.5 * value_error.mean()
 
@@ -217,8 +243,20 @@ class RNaDLearner:
 
         return {
             "loss": loss.item(),
-            "policy_loss": total_policy_loss.item() if isinstance(total_policy_loss, torch.Tensor) else total_policy_loss,
+            "policy_loss": (
+                total_policy_loss.item()
+                if isinstance(total_policy_loss, torch.Tensor)
+                else total_policy_loss
+            ),
             "value_loss": value_loss.item(),
-            "entropy": total_entropy_loss.item() if isinstance(total_entropy_loss, torch.Tensor) else total_entropy_loss,
-            "rnad_loss": total_rnad_loss.item() if isinstance(total_rnad_loss, torch.Tensor) else total_rnad_loss
+            "entropy": (
+                total_entropy_loss.item()
+                if isinstance(total_entropy_loss, torch.Tensor)
+                else total_entropy_loss
+            ),
+            "rnad_loss": (
+                total_rnad_loss.item()
+                if isinstance(total_rnad_loss, torch.Tensor)
+                else total_rnad_loss
+            ),
         }

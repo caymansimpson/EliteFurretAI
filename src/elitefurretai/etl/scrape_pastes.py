@@ -47,17 +47,12 @@ def standardize_vgc_levels(team_string: str) -> str:
 
 # Threaded Scraper
 def scrape_html_page():
-
-    # Declare global variables
+    # Declare global variables (only needed when assigning to global)
     global tried
-    global queue
-    global lock
-    global results
 
     while not queue.empty():
         url, frmt = queue.get()
         try:
-
             # Print out progress
             with lock:
                 tried += 1
@@ -87,7 +82,6 @@ def scrape_html_page():
             # Extract text from <pre> elements. There is some variation here.
             mons = []
             for text in [pre.get_text(strip=True) for pre in soup.find_all("pre")]:
-
                 # Add newlines where they don't exist from scraped text, and spaces after colons
                 mon = text.replace("Ability:", "\nAbility: ")
                 mon = mon.replace("Shiny:", "\nShiny: ")
@@ -169,12 +163,6 @@ def scrape_html_page():
 
 
 def main():
-    # Declare global variables
-    global tried
-    global queue
-    global lock
-    global results
-
     # Local filename that has regulation -> pokepaste link
     file_to_pokepastes = sys.argv[1]
 

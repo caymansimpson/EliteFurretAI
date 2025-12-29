@@ -1,21 +1,23 @@
+
+battle_format: gen9vgc2023regc
+
+
 # Model paths
-bc_action_path: data/models/supervised/criso-htunder-48.pt
-bc_teampreview_path: data/models/supervised/youthful-totem-68.pt
-bc_win_path: data/models/supervised/ethereal-flower-59-extended.pt
+bc_action_path: data/models/bc_action_model.pt
+bc_teampreview_path: data/models/bc_teampreview_model.pt
+bc_win_path: data/models/bc_win_model.pt
 resume_from: null
 
 # Team configurations
-base_team_path: data/teams
-battle_format: gen9vgc2023regc
-team_pool_path: easy
+team_pool_path: data/teams/gen9vgc2023regc/easy
 use_random_teams: true
 
 # Training hyperparameters
-num_workers: 2
-players_per_worker: 1
+num_workers: 1
+players_per_worker: 4
 batch_size: 128
 lr: 0.0001
-train_batch_size: 32 # batch size used for policy updates
+train_batch_size: 32
 max_updates: 100000
 rnad_alpha: 0.01
 gamma: 0.99
@@ -36,11 +38,11 @@ use_mixed_precision: true
 gradient_clip: 0.5
 
 # Checkpointing
-initialize_path: data/models/supervised/olive-snowball-71.pt 
+checkpoint_path: data/models/bc_action_model.pt
 checkpoint_interval: 1000
 max_past_models: 10
 ref_update_interval: 1000
-past_models_dir: data/models/rl/past_versions
+past_models_dir: data/models/past_versions
 save_dir: data/models/rl
 
 # Opponent Pool Configuration
@@ -65,11 +67,12 @@ exploiter_updates: 50000
 
 # Logging
 use_wandb: true
-log_interval: 1
+log_interval: 10
 wandb_project: elitefurretai-rnad
 wandb_run_name: null
 wandb_tags: 
   - test
+wandb_entity: null
 
 # Server parameters
 num_showdown_servers: 1

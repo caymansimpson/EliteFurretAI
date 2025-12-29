@@ -131,7 +131,7 @@ This is the state-of-the-art architecture for the project.
 Based on our experiments and analysis (detailed in the [project documentation](https://docs.google.com/document/d/14menCHw8z06KJWZ5F_K-MjgWVo_b7PESR7RlG-em4ic/edit)), here are the key findings that drive our supervised learning strategy:
 
 ### 1. Current Benchmarks
-As of the latest "Scovillain" run, the `FlexibleThreeHeadedModel` achieves the following accuracy on human ladder data:
+The `FlexibleThreeHeadedModel` achieves the following accuracy on human ladder data (w/ ~130M parameters):
 
 *   **Teampreview**:
     *   **Top-1**: 99.9%
@@ -150,6 +150,12 @@ As of the latest "Scovillain" run, the `FlexibleThreeHeadedModel` achieves the f
     *   **Accuracy w/ Win Prediction**: 68.7%
     *   **Brier Score**:  0.2026
     *   *Takeaway*: The win model is doing a decent job at predicting state advantage, better than the average state evaluation used by Foul Play.
+
+*   **Unified Model**:
+    *   **Win Correlation**: 0.726
+    *   **Top 1/3/5/10 Move Accuracy**: 26%/40%/48%
+    *   **Top 1/3/5 Teampreview Accuracy**:  79%/95%/99%
+    *   *Takeaway*: This model is a single well-rounded model that balances all tasks. It doesn't overfit on teampreview and slightly underperforms against models that are trained on a single objective.
 
 ### 2. Strategic Conclusions
 *   **Model-Free RL Limits**: Pure model-free RL is unlikely to produce superhuman performance in VGC due to the massive action space (2025 actions) and high stochasticity.

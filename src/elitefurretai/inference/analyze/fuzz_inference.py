@@ -22,15 +22,14 @@ from poke_env.ps_client.server_configuration import (
 )
 from poke_env.teambuilder.teambuilder import Teambuilder
 
+from elitefurretai.etl.team_repo import TeamRepo
 from elitefurretai.inference.battle_inference import BattleInference
 from elitefurretai.inference.inference_utils import battle_to_str
 from elitefurretai.inference.item_inference import ItemInference
 from elitefurretai.inference.speed_inference import SpeedInference
-from elitefurretai.etl.team_repo import TeamRepo
 
 
 class FuzzTestPlayer(RandomPlayer):
-
     def __init__(
         self,
         account_configuration: Optional[AccountConfiguration] = None,
@@ -68,7 +67,6 @@ class FuzzTestPlayer(RandomPlayer):
         self._item_inferences: Dict[str, Any] = {}
 
     def teampreview(self, battle):
-
         # Initialize Inferences
         inferences = BattleInference(battle)
         self._inferences[battle.battle_tag] = inferences
@@ -100,7 +98,6 @@ def check_ground_truth(p1, p2, battle_tag):
 
     # Check P2's BattleInference
     for mon in p1.battles[battle_tag].teampreview_team:
-
         ident = mon.identifier(p2.battles[battle_tag].opponent_role)
         if not p2._inferences[battle_tag].is_tracking(ident):
             continue
@@ -172,7 +169,6 @@ def check_ground_truth(p1, p2, battle_tag):
 def get_players(team_repo: TeamRepo, format: str) -> List[FuzzTestPlayer]:
     players: List[FuzzTestPlayer] = []
     for team_name, team in team_repo.teams[format].items():
-
         name = team_name[:17]
 
         # ef this noise
@@ -340,7 +336,9 @@ async def battle_worker(
 # ========================= MAIN EXECUTION =========================
 
 
-async def run_sequential(total_battles: int, format: str, should_print: bool, filepath: str):
+async def run_sequential(
+    total_battles: int, format: str, should_print: bool, filepath: str
+):
     """Run battles sequentially (original implementation)"""
     print("\n\n\n\n\n\n\n\n\033[92mStarting Sequential Fuzz Test!\033[0m\n")
     print("Loading and validating teams, then creating players...")
@@ -374,7 +372,7 @@ async def run_sequential(total_battles: int, format: str, should_print: bool, fi
 
         print(
             f"Finished {num_matchups} battles between {p1.username} and {p2.username} in {round((time.time() - t0), 2)}"
-            + f"s ({round((time.time() - t0) * 1. / num_matchups, 2)}s each)"
+            + f"s ({round((time.time() - t0) * 1.0 / num_matchups, 2)}s each)"
         )
 
         # Stop when we've done enough
@@ -384,7 +382,7 @@ async def run_sequential(total_battles: int, format: str, should_print: bool, fi
     print("\n\n======== Finished all battles!! ========")
     print(
         f"\tin {round(time.time() - original_time, 2)} sec for "
-        + f"{round((time.time() - original_time) * 1. / total, 2)} sec per battle"
+        + f"{round((time.time() - original_time) * 1.0 / total, 2)} sec per battle"
     )
     print(
         "Now going through Inference to check the right ground truth! This method won't catch cases when"
@@ -488,7 +486,7 @@ async def run_multithreaded(
         f"Finished {result_aggregator.total_battles} battles in {round(time.time() - original_time, 2)} sec"
     )
     print(
-        f"\tfor {round((time.time() - original_time) * 1. / result_aggregator.total_battles, 2)} sec per battle"
+        f"\tfor {round((time.time() - original_time) * 1.0 / result_aggregator.total_battles, 2)} sec per battle"
     )
 
     success_rate = round(

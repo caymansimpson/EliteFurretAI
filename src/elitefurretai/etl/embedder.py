@@ -985,7 +985,7 @@ BASIC_FEATURES = {
     "current_pp",
     "TYPE:",
     "current_hp_fraction",
-    "STATUS:FAINTED" "STAT:spe",
+    "STATUS:FAINTEDSTAT:spe",
     "active",
     "sent",
     "STAT_MAX:spe",

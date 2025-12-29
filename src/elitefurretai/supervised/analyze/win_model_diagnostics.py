@@ -26,9 +26,7 @@ import torch
 from tqdm import tqdm
 
 from elitefurretai.etl import Embedder, OptimizedBattleDataLoader
-from elitefurretai.supervised.model_archs import (
-    FlexibleThreeHeadedModel
-)
+from elitefurretai.supervised.model_archs import FlexibleThreeHeadedModel
 
 
 class WinPredictionAnalyzer:
@@ -40,20 +38,22 @@ class WinPredictionAnalyzer:
         self.model.eval()
 
         # Storage for analysis
-        self.predictions_by_turn: Dict[int, List[Tuple[float, bool]]] = defaultdict(
-            list
+        self.predictions_by_turn: Dict[int, List[Tuple[float, bool]]] = defaultdict(list)
+        self.predictions_by_turns_to_end: Dict[int, List[Tuple[float, bool]]] = (
+            defaultdict(list)
         )
-        self.predictions_by_turns_to_end: Dict[
-            int, List[Tuple[float, bool]]
-        ] = defaultdict(list)
         self.predictions_by_outcome: Dict[str, List[Tuple[float, bool]]] = defaultdict(
             list
         )
         self.all_predictions: List[Tuple[float, bool]] = []
 
         # Synthetic win advantage analysis (comparing against training target)
-        self.synthetic_predictions_by_turn: Dict[int, List[Tuple[float, float]]] = defaultdict(list)
-        self.synthetic_predictions_by_turns_to_end: Dict[int, List[Tuple[float, float]]] = defaultdict(list)
+        self.synthetic_predictions_by_turn: Dict[int, List[Tuple[float, float]]] = (
+            defaultdict(list)
+        )
+        self.synthetic_predictions_by_turns_to_end: Dict[
+            int, List[Tuple[float, float]]
+        ] = defaultdict(list)
         self.all_synthetic_predictions: List[Tuple[float, float]] = []
 
         self.prediction_trajectories: List[List[float]] = []
@@ -124,13 +124,13 @@ class WinPredictionAnalyzer:
                     # By turn number (0 = teampreview, 1-16 = turns)
                     turn_number = step
                     self.predictions_by_turn[turn_number].append((pred, outcome))
-                    self.synthetic_predictions_by_turn[turn_number].append((pred, synthetic_prob))
+                    self.synthetic_predictions_by_turn[turn_number].append(
+                        (pred, synthetic_prob)
+                    )
 
                     # By turns to end (0 = final turn, 1 = one turn before end, etc.)
                     turns_to_end = num_steps - step - 1
-                    self.predictions_by_turns_to_end[turns_to_end].append(
-                        (pred, outcome)
-                    )
+                    self.predictions_by_turns_to_end[turns_to_end].append((pred, outcome))
                     self.synthetic_predictions_by_turns_to_end[turns_to_end].append(
                         (pred, synthetic_prob)
                     )
@@ -139,9 +139,7 @@ class WinPredictionAnalyzer:
                     outcome_key = "winning_positions" if outcome else "losing_positions"
                     self.predictions_by_outcome[outcome_key].append((pred, outcome))
 
-    def compute_metrics(
-        self, predictions: List[Tuple[float, bool]]
-    ) -> Dict[str, float]:
+    def compute_metrics(self, predictions: List[Tuple[float, bool]]) -> Dict[str, float]:
         """
         Compute various metrics for a set of predictions.
 
@@ -384,7 +382,9 @@ class WinPredictionAnalyzer:
         report["overall"] = self.compute_metrics(self.all_predictions)
 
         # Synthetic metrics (training target)
-        report["synthetic_overall"] = self.compute_synthetic_metrics(self.all_synthetic_predictions)
+        report["synthetic_overall"] = self.compute_synthetic_metrics(
+            self.all_synthetic_predictions
+        )
 
         # By turn number
         report["by_turn_number"] = {}
@@ -406,8 +406,10 @@ class WinPredictionAnalyzer:
                 self.predictions_by_turns_to_end[turns_to_end]
             )
             if turns_to_end in self.synthetic_predictions_by_turns_to_end:
-                report["synthetic_by_turns_to_end"][turns_to_end] = self.compute_synthetic_metrics(
-                    self.synthetic_predictions_by_turns_to_end[turns_to_end]
+                report["synthetic_by_turns_to_end"][turns_to_end] = (
+                    self.compute_synthetic_metrics(
+                        self.synthetic_predictions_by_turns_to_end[turns_to_end]
+                    )
                 )
 
         # By outcome
@@ -474,9 +476,7 @@ class WinPredictionAnalyzer:
 
         # By turns to end
         print("\n### PERFORMANCE BY TURNS FROM GAME END ###")
-        print(
-            f"{'T-End':<6} {'Count':<10} {'Corr':<8} {'Acc':<8} {'MSE':<8} {'ECE':<8}"
-        )
+        print(f"{'T-End':<6} {'Count':<10} {'Corr':<8} {'Acc':<8} {'MSE':<8} {'ECE':<8}")
         print("-" * 60)
         for turns_to_end in sorted(report["by_turns_to_end"].keys())[:10]:
             metrics = report["by_turns_to_end"][turns_to_end]
@@ -518,9 +518,7 @@ class WinPredictionAnalyzer:
         print("\n### ERROR ANALYSIS ###")
         error_cases = report["error_cases"]
         print(f"  Overconfident Wrong Cases: {len(error_cases['overconfident_wrong'])}")
-        print(
-            f"  Underconfident Right Cases: {len(error_cases['underconfident_right'])}"
-        )
+        print(f"  Underconfident Right Cases: {len(error_cases['underconfident_right'])}")
 
         print("\n" + "=" * 80)
 
@@ -551,7 +549,11 @@ def load_model_from_checkpoint(
         format="gen9vgc2023regulationc", feature_set="full", omniscient=False
     )
     input_size = embedder.embedding_size
-    group_sizes = embedder.group_embedding_sizes if config.get("use_grouped_encoder", False) else None
+    group_sizes = (
+        embedder.group_embedding_sizes
+        if config.get("use_grouped_encoder", False)
+        else None
+    )
 
     # Reconstruct model
     model = FlexibleThreeHeadedModel(
@@ -598,15 +600,11 @@ def main():
         default=None,
         help="Output JSON file for detailed results",
     )
-    parser.add_argument(
-        "--device", default="cuda", help="Device to use (cuda/cpu)"
-    )
+    parser.add_argument("--device", default="cuda", help="Device to use (cuda/cpu)")
     parser.add_argument(
         "--batch-size", type=int, default=128, help="Batch size for evaluation"
     )
-    parser.add_argument(
-        "--num-workers", type=int, default=7, help="DataLoader workers"
-    )
+    parser.add_argument("--num-workers", type=int, default=7, help="DataLoader workers")
     parser.add_argument(
         "--max-batches",
         type=int,

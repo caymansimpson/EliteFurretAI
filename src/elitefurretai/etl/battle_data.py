@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
-"""This class stores the data of a battle, from a json file
-"""
+"""This class stores the data of a battle, from a json file"""
 
 import logging
 from collections import OrderedDict
@@ -65,8 +64,12 @@ class BattleData:
             end_type=json["endType"],
             turns=int(json["turns"]),
             score=json["score"],
-            p1_rating=int(json["p1rating"]["rpr"]) if isinstance(json["p2rating"], dict) else None,  # type: ignore
-            p2_rating=int(json["p2rating"]["rpr"]) if isinstance(json["p2rating"], dict) else None,  # type: ignore
+            p1_rating=int(json["p1rating"]["rpr"])
+            if isinstance(json["p2rating"], dict)
+            else None,  # type: ignore
+            p2_rating=int(json["p2rating"]["rpr"])
+            if isinstance(json["p2rating"], dict)
+            else None,  # type: ignore
             p1_team=team_from_json(json["p1team"]),
             p2_team=team_from_json(json["p2team"]),
             p1=json["p1"],

@@ -52,8 +52,8 @@ import orjson
 from poke_env.battle import ObservedPokemon
 from poke_env.data.normalize import to_id_str
 
-from elitefurretai.inference import MetaDB
 from elitefurretai.etl import BattleData, BattleIterator
+from elitefurretai.inference import MetaDB
 
 
 def load_files(files):
@@ -83,7 +83,6 @@ def main(files):
 
     # For each battle
     for bd in load_files(files):
-
         # For each player perspective (p1 and p2)
         for perspective in ["p1", "p2"]:
             battle_num += 1

@@ -1,4 +1,5 @@
 from typing import Any, Callable, Dict, List, Optional, Tuple
+
 import torch
 
 from elitefurretai.etl.encoder import MDBO
@@ -105,7 +106,9 @@ def focal_topk_cross_entropy_loss(
     if label_smoothing is not None and label_smoothing > 0.0:
         # Detect valid actions (those not masked with -inf)
         is_valid = (valid_logits > -1e4).float()  # [batch, num_classes]
-        num_valid = is_valid.sum(dim=-1, keepdim=True).clamp(min=1.0)  # Clamp to avoid division by zero
+        num_valid = is_valid.sum(dim=-1, keepdim=True).clamp(
+            min=1.0
+        )  # Clamp to avoid division by zero
 
         # Get log probabilities (log_softmax handles -inf properly)
         log_probs = torch.nn.functional.log_softmax(valid_logits, dim=-1)
@@ -115,16 +118,22 @@ def focal_topk_cross_entropy_loss(
 
         # Compute smoothed cross entropy only over valid actions
         # Avoid multiplying -inf * 0 by zeroing out invalid entries first
-        log_probs_safe = torch.where(is_valid.bool(), log_probs, torch.zeros_like(log_probs))
+        log_probs_safe = torch.where(
+            is_valid.bool(), log_probs, torch.zeros_like(log_probs)
+        )
 
         # Smoothed CE: (1 - eps) * (-log p_t) + (eps / num_valid) * (-sum log p_valid)
-        base_loss = -(1.0 - label_smoothing) * log_pt - (label_smoothing / num_valid.squeeze(1)) * log_probs_safe.sum(dim=-1)
+        base_loss = -(1.0 - label_smoothing) * log_pt - (
+            label_smoothing / num_valid.squeeze(1)
+        ) * log_probs_safe.sum(dim=-1)
 
         # Get probability of true class for focal modulation
         p_t = log_pt.exp().clamp(min=1e-7, max=1.0)  # Clamp to avoid numerical issues
     else:
         # Standard cross entropy without smoothing
-        ce_loss = torch.nn.functional.cross_entropy(valid_logits, valid_labels, reduction="none")
+        ce_loss = torch.nn.functional.cross_entropy(
+            valid_logits, valid_labels, reduction="none"
+        )
         p_t = torch.exp(-ce_loss).clamp(min=1e-7, max=1.0)
         base_loss = ce_loss
 
@@ -365,7 +374,11 @@ def evaluate(
             batch["action_masks"].to(device) if "action_masks" in batch else None
         )
         masks = batch["masks"].to(device) if "masks" in batch else None
-        wins = batch["wins"].to(device).to(torch.float32) if has_win_head and "wins" in batch else None
+        wins = (
+            batch["wins"].to(device).to(torch.float32)
+            if has_win_head and "wins" in batch
+            else None
+        )
         move_orders = batch["move_orders"].to(device) if "move_orders" in batch else None
         kos = batch["kos"].to(device) if "kos" in batch else None
         switches = batch["switches"].to(device) if "switches" in batch else None
@@ -375,13 +388,17 @@ def evaluate(
             action_masks = action_mask_fn(states)
 
         # Full forward pass with all heads
-        action_logits = win_logits = move_order_logits = ko_logits = switch_logits = teampreview_logits = None
+        action_logits = win_logits = move_order_logits = ko_logits = switch_logits = (
+            teampreview_logits
+        ) = None
         if has_teampreview_head:
             # Three-headed model: (turn_action_logits, teampreview_logits, win_logits)
             if has_action_head and has_win_head:
                 action_logits, teampreview_logits, win_logits = model(states, masks)
             else:
-                raise ValueError("Three-headed model requires has_action_head and has_win_head")
+                raise ValueError(
+                    "Three-headed model requires has_action_head and has_win_head"
+                )
         elif (
             has_win_head
             and has_action_head
@@ -407,7 +424,11 @@ def evaluate(
 
         # For three-headed models, merge teampreview and turn action logits
         # Similar to ThreeHeadedModelWrapper logic
-        if has_teampreview_head and teampreview_logits is not None and action_logits is not None:
+        if (
+            has_teampreview_head
+            and teampreview_logits is not None
+            and action_logits is not None
+        ):
             # Identify teampreview samples
             teampreview_mask = states[:, :, teampreview_idx] == 1  # (batch, seq)
 
@@ -416,15 +437,21 @@ def evaluate(
 
             # For teampreview samples, replace with teampreview logits
             # Zero out all positions for teampreview samples
-            tp_mask_expanded = teampreview_mask.unsqueeze(-1).expand_as(merged_action_logits)
-            merged_action_logits = torch.where(tp_mask_expanded, torch.tensor(float("-inf"), device=merged_action_logits.device), merged_action_logits)
+            tp_mask_expanded = teampreview_mask.unsqueeze(-1).expand_as(
+                merged_action_logits
+            )
+            merged_action_logits = torch.where(
+                tp_mask_expanded,
+                torch.tensor(float("-inf"), device=merged_action_logits.device),
+                merged_action_logits,
+            )
 
             # Fill in teampreview actions [0:90] for teampreview samples
             tp_space = MDBO.teampreview_space()
             merged_action_logits[:, :, :tp_space] = torch.where(
                 teampreview_mask.unsqueeze(-1).expand(-1, -1, tp_space),
                 teampreview_logits,
-                merged_action_logits[:, :, :tp_space]
+                merged_action_logits[:, :, :tp_space],
             )
 
             # Apply action masks to merged logits
@@ -441,7 +468,7 @@ def evaluate(
                     ~action_masks.bool(), float("-inf")
                 )
             else:
-                masked_action_logits = action_logits
+                masked_action_logits = action_logits  # type: ignore[assignment]
 
         # Use helper for flattening and filtering
         flat_data = flatten_and_filter(
@@ -498,7 +525,11 @@ def evaluate(
             and valid_actions is not None
         ):
             # Separate teampreview and turn samples if we have teampreview head
-            if has_teampreview_head and teampreview_idx is not None and valid_states is not None:
+            if (
+                has_teampreview_head
+                and teampreview_idx is not None
+                and valid_states is not None
+            ):
                 # Identify teampreview vs turn samples
                 teampreview_mask = valid_states[:, teampreview_idx] == 1
                 turn_mask = ~teampreview_mask
@@ -529,15 +560,23 @@ def evaluate(
                         turn_topk_loss = topk_cross_entropy_loss(
                             turn_logits,
                             turn_actions,
-                            k=config.get("train_topk_k", 3) if config is not None else 3
+                            k=config.get("train_topk_k", 3) if config is not None else 3,
                         )
-                    metrics["turn_top3_loss"] += turn_topk_loss.item() * turn_actions.size(0)
+                    metrics["turn_top3_loss"] += turn_topk_loss.item() * turn_actions.size(
+                        0
+                    )
 
                     # Turn top-k accuracy
                     for k in [1, 3, 5]:
                         if turn_logits.size(-1) >= k:
                             topk_preds = torch.topk(turn_logits, k=k, dim=-1)[1]
-                            turn_topk_correct = (topk_preds == turn_actions.unsqueeze(-1)).any(dim=-1).float().sum().item()
+                            turn_topk_correct = (
+                                (topk_preds == turn_actions.unsqueeze(-1))
+                                .any(dim=-1)
+                                .float()
+                                .sum()
+                                .item()
+                            )
                             metrics[f"turn_top{k}_acc"] += turn_topk_correct
 
                     # Track metrics by action type (MOVE, SWITCH, BOTH)
@@ -602,7 +641,13 @@ def evaluate(
                     for k in [1, 3, 5]:
                         if tp_logits.size(-1) >= k:
                             topk_preds = torch.topk(tp_logits, k=k, dim=-1)[1]
-                            tp_topk_correct = (topk_preds == tp_actions.unsqueeze(-1)).any(dim=-1).float().sum().item()
+                            tp_topk_correct = (
+                                (topk_preds == tp_actions.unsqueeze(-1))
+                                .any(dim=-1)
+                                .float()
+                                .sum()
+                                .item()
+                            )
                             metrics[f"teampreview_top{k}_acc"] += tp_topk_correct
             else:
                 # Original combined metrics (no separation)
@@ -612,7 +657,9 @@ def evaluate(
                 metrics["action_acc"] += top1_correct
 
                 # Calculate topk_cross_entropy_loss with k=3
-                topk_loss = topk_cross_entropy_loss(valid_action_logits, valid_actions, k=3)
+                topk_loss = topk_cross_entropy_loss(
+                    valid_action_logits, valid_actions, k=3
+                )
                 metrics["top3_loss"] += topk_loss.item() * valid_actions.size(0)
 
                 # Calculate top-k accuracy
@@ -786,7 +833,11 @@ def analyze(
             batch["action_masks"].to(device) if "action_masks" in batch else None
         )
         masks = batch["masks"].to(device) if "masks" in batch else None
-        wins = batch["wins"].to(device).to(torch.float32) if has_win_head and "wins" in batch else None
+        wins = (
+            batch["wins"].to(device).to(torch.float32)
+            if has_win_head and "wins" in batch
+            else None
+        )
         move_orders = batch["move_orders"].to(device) if "move_orders" in batch else None
         kos = batch["kos"].to(device) if "kos" in batch else None
         switches = batch["switches"].to(device) if "switches" in batch else None
@@ -796,7 +847,9 @@ def analyze(
             action_masks = action_mask_fn(states)
 
         # Get model predictions with all heads
-        action_logits = teampreview_logits = win_logits = move_order_logits = ko_logits = switch_logits = None
+        action_logits = teampreview_logits = win_logits = move_order_logits = ko_logits = (
+            switch_logits
+        ) = None
         if has_teampreview_head:
             # Three-headed model: turn actions, teampreview, win
             action_logits, teampreview_logits, win_logits = model(states, masks)
@@ -825,7 +878,11 @@ def analyze(
             move_order_logits = ko_logits = switch_logits = None
 
         # For three-headed models, merge teampreview and turn action logits
-        if has_teampreview_head and teampreview_logits is not None and action_logits is not None:
+        if (
+            has_teampreview_head
+            and teampreview_logits is not None
+            and action_logits is not None
+        ):
             # Identify teampreview samples
             teampreview_mask = states[:, :, teampreview_idx] == 1  # (batch, seq)
 
@@ -834,15 +891,21 @@ def analyze(
 
             # For teampreview samples, replace with teampreview logits
             # Zero out all positions for teampreview samples
-            tp_mask_expanded = teampreview_mask.unsqueeze(-1).expand_as(merged_action_logits)
-            merged_action_logits = torch.where(tp_mask_expanded, torch.tensor(float("-inf"), device=merged_action_logits.device), merged_action_logits)
+            tp_mask_expanded = teampreview_mask.unsqueeze(-1).expand_as(
+                merged_action_logits
+            )
+            merged_action_logits = torch.where(
+                tp_mask_expanded,
+                torch.tensor(float("-inf"), device=merged_action_logits.device),
+                merged_action_logits,
+            )
 
             # Fill in teampreview actions [0:90] for teampreview samples
             tp_space = MDBO.teampreview_space()
             merged_action_logits[:, :, :tp_space] = torch.where(
                 teampreview_mask.unsqueeze(-1).expand(-1, -1, tp_space),
                 teampreview_logits,
-                merged_action_logits[:, :, :tp_space]
+                merged_action_logits[:, :, :tp_space],
             )
 
             action_logits = merged_action_logits
@@ -914,7 +977,9 @@ def analyze(
                     print(
                         f"    Action accuracy: {subcategory_data.get('action_acc', 0):.4f}"
                     )
-                    print(f"    Win Correlation: {subcategory_data.get('win_corr', 0):.4f}")
+                    print(
+                        f"    Win Correlation: {subcategory_data.get('win_corr', 0):.4f}"
+                    )
                     if "move_order_acc" in subcategory_data and has_move_order_head:
                         print(
                             f"    Move order accuracy: {subcategory_data.get('move_order_acc', 0):.4f}"
@@ -1215,7 +1280,9 @@ def normalize_metrics(metrics: Dict[str, Any]):
             if len(metrics["win_preds"]) > 1:
                 win_preds_tensor = torch.tensor(metrics["win_preds"])
                 win_targets_tensor = torch.tensor(metrics["win_targets"])
-                win_corr = torch.corrcoef(torch.stack([win_preds_tensor, win_targets_tensor]))[0, 1]
+                win_corr = torch.corrcoef(
+                    torch.stack([win_preds_tensor, win_targets_tensor])
+                )[0, 1]
                 if not torch.isnan(win_corr):
                     metrics["win_corr"] = win_corr.item()
                 else:

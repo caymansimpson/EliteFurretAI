@@ -3,11 +3,12 @@
 Unit tests for MDBO encoding/decoding integration with RL.
 """
 
-import pytest
 from unittest.mock import Mock
 
-from elitefurretai.etl.encoder import MDBO
+import pytest
 from poke_env.battle import DoubleBattle
+
+from elitefurretai.etl.encoder import MDBO
 
 
 def test_mdbo_action_space_size():
@@ -41,7 +42,7 @@ def test_mdbo_to_double_battle_order():
     # Create a mock battle
     battle = Mock(spec=DoubleBattle)
     battle.teampreview = False
-    
+
     # This will likely fail without a fully configured battle,
     # but tests the interface
     mdbo = MDBO.from_int(0, type=MDBO.TURN)
@@ -65,7 +66,7 @@ def test_mdbo_round_trip():
 def test_mdbo_teampreview_actions():
     """Test that all teampreview actions are valid."""
     teampreview_space = MDBO.teampreview_space()
-    
+
     for i in range(min(10, teampreview_space)):  # Test first 10
         mdbo = MDBO.from_int(i, type=MDBO.TEAMPREVIEW)
         assert mdbo is not None
@@ -75,11 +76,11 @@ def test_mdbo_turn_actions_sample():
     """Test a sample of turn actions."""
     # Test a sample of turn actions
     sample_actions = [0, 50, 100, 500, 1000, 1500, 2000, 2024]
-    
+
     for action in sample_actions:
         mdbo = MDBO.from_int(action, type=MDBO.TURN)
         assert mdbo is not None
 
 
-if __name__ == '__main__':
-    pytest.main([__file__, '-v'])
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])

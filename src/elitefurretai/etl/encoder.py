@@ -265,7 +265,6 @@ _MOVE_ORDER_MAPPINGS = {order: i for i, order in enumerate(_MOVE_ORDERS)}
 
 
 class MoveOrderEncoder:
-
     @staticmethod
     def action_space() -> int:
         """

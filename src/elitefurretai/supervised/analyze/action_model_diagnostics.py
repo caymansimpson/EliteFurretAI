@@ -11,21 +11,22 @@ Analyzes:
 6. Invalid action predictions
 """
 
-import sys
-import torch
-import numpy as np
-from collections import defaultdict, Counter
-from typing import Dict, Any, Optional
 import json
+import sys
+from collections import Counter, defaultdict
+from typing import Any, Dict, Optional
+
+import numpy as np
+import torch
 
 from elitefurretai.etl import MDBO, Embedder, OptimizedBattleDataLoader
-from elitefurretai.supervised.three_headed_transformer import FlexibleThreeHeadedModel
+from elitefurretai.supervised.model_archs import FlexibleThreeHeadedModel
 
 
 class ActionDiagnostics:
     """Diagnostic analyzer for action prediction models."""
 
-    def __init__(self, model, device='cuda'):
+    def __init__(self, model, device="cuda"):
         self.model = model
         self.device = device
 
@@ -82,11 +83,7 @@ class ActionDiagnostics:
         except Exception:
             return "INVALID"
 
-    def analyze_batch(
-        self,
-        batch: Dict[str, torch.Tensor],
-        feature_idx: Dict[str, int]
-    ):
+    def analyze_batch(self, batch: Dict[str, torch.Tensor], feature_idx: Dict[str, int]):
         """
         Analyze a single batch of predictions.
 
@@ -108,7 +105,7 @@ class ActionDiagnostics:
 
             # Apply action masking
             turn_logits_masked = turn_logits.clone()
-            turn_logits_masked[~masks.bool()] = float('-inf')
+            turn_logits_masked[~masks.bool()] = float("-inf")
 
             # Get top-k predictions
             probs = torch.softmax(turn_logits_masked, dim=-1)
@@ -187,18 +184,25 @@ class ActionDiagnostics:
             "move_analysis": {},
             "invalid_predictions": {
                 "count": self.invalid_predictions,
-                "rate": self.invalid_predictions / max(self.total_predictions, 1)
-            }
+                "rate": self.invalid_predictions / max(self.total_predictions, 1),
+            },
         }
 
         # Action type distribution
-        for action_type in set(list(self.action_type_actual.keys()) + list(self.action_type_pred.keys())):
+        for action_type in set(
+            list(self.action_type_actual.keys()) + list(self.action_type_pred.keys())
+        ):
             report["action_type_distribution"][action_type] = {
                 "actual_count": self.action_type_actual[action_type],
-                "actual_pct": self.action_type_actual[action_type] / max(sum(self.action_type_actual.values()), 1),
+                "actual_pct": self.action_type_actual[action_type]
+                / max(sum(self.action_type_actual.values()), 1),
                 "predicted_count": self.action_type_pred[action_type],
-                "predicted_pct": self.action_type_pred[action_type] / max(sum(self.action_type_pred.values()), 1),
-                "prediction_bias": self.action_type_pred[action_type] / max(sum(self.action_type_pred.values()), 1) - self.action_type_actual[action_type] / max(sum(self.action_type_actual.values()), 1)
+                "predicted_pct": self.action_type_pred[action_type]
+                / max(sum(self.action_type_pred.values()), 1),
+                "prediction_bias": self.action_type_pred[action_type]
+                / max(sum(self.action_type_pred.values()), 1)
+                - self.action_type_actual[action_type]
+                / max(sum(self.action_type_actual.values()), 1),
             }
 
         # Top-k accuracy by type
@@ -206,7 +210,7 @@ class ActionDiagnostics:
             total = self.action_type_actual[action_type]
             report["topk_accuracy_by_type"][action_type] = {
                 "total": total,
-                **{k: v / max(total, 1) for k, v in hits.items()}
+                **{k: v / max(total, 1) for k, v in hits.items()},
             }
 
         # Overall top-k accuracy (aggregated across all action types)
@@ -215,10 +219,7 @@ class ActionDiagnostics:
         for k in [1, 3, 5, 10]:
             total_hits = sum(hits.get(f"top{k}", 0) for hits in self.topk_hits.values())
             overall_topk[f"top{k}"] = total_hits / max(total_actions, 1)
-        report["overall_accuracy"] = {
-            "total": total_actions,
-            **overall_topk
-        }
+        report["overall_accuracy"] = {"total": total_actions, **overall_topk}
 
         # Confidence stats
         for action_type, confidences in self.action_confidences.items():
@@ -228,7 +229,7 @@ class ActionDiagnostics:
                     "std": float(np.std(confidences)),
                     "median": float(np.median(confidences)),
                     "min": float(np.min(confidences)),
-                    "max": float(np.max(confidences))
+                    "max": float(np.max(confidences)),
                 }
 
         # Loss contribution
@@ -239,7 +240,7 @@ class ActionDiagnostics:
                     "total_loss": float(np.sum(losses)),
                     "mean_loss": float(np.mean(losses)),
                     "pct_of_total": float(np.sum(losses) / max(total_loss, 1)),
-                    "count": len(losses)
+                    "count": len(losses),
                 }
 
         # Move analysis
@@ -258,7 +259,9 @@ class ActionDiagnostics:
                     {"action": action, "count": count}
                     for action, count in most_common_pred
                 ],
-                "overlap": len(set(self.move_actuals.keys()) & set(self.move_predictions.keys()))
+                "overlap": len(
+                    set(self.move_actuals.keys()) & set(self.move_predictions.keys())
+                ),
             }
 
         return report
@@ -283,25 +286,43 @@ class ActionDiagnostics:
         print(f"{'Type':<15} {'Actual %':<12} {'Pred %':<12} {'Bias':<12}")
         print("-" * 60)
         for action_type, stats in sorted(report["action_type_distribution"].items()):
-            print(f"{action_type:<15} {stats['actual_pct'] * 100:>10.2f}% {stats['predicted_pct'] * 100:>10.2f}% {stats['prediction_bias'] * 100:>+10.2f}%")
+            print(
+                f"{action_type:<15} {stats['actual_pct'] * 100:>10.2f}% {stats['predicted_pct'] * 100:>10.2f}% {stats['prediction_bias'] * 100:>+10.2f}%"
+            )
 
         print("\n### TOP-K ACCURACY BY ACTION TYPE ###")
-        print(f"{'Type':<15} {'Count':<10} {'Top-1':<10} {'Top-3':<10} {'Top-5':<10} {'Top-10':<10}")
+        print(
+            f"{'Type':<15} {'Count':<10} {'Top-1':<10} {'Top-3':<10} {'Top-5':<10} {'Top-10':<10}"
+        )
         print("-" * 75)
         for action_type, stats in sorted(report["topk_accuracy_by_type"].items()):
-            print(f"{action_type:<15} {stats['total']:<10} {stats.get('top1', 0) * 100:>8.2f}% {stats.get('top3', 0) * 100:>8.2f}% {stats.get('top5', 0) * 100:>8.2f}% {stats.get('top10', 0) * 100:>8.2f}%")
+            print(
+                f"{action_type:<15} {stats['total']:<10} {stats.get('top1', 0) * 100:>8.2f}% {stats.get('top3', 0) * 100:>8.2f}% {stats.get('top5', 0) * 100:>8.2f}% {stats.get('top10', 0) * 100:>8.2f}%"
+            )
 
         print("\n### PREDICTION CONFIDENCE BY TYPE ###")
-        print(f"{'Type':<15} {'Mean':<10} {'Std':<10} {'Median':<10} {'Min':<10} {'Max':<10}")
+        print(
+            f"{'Type':<15} {'Mean':<10} {'Std':<10} {'Median':<10} {'Min':<10} {'Max':<10}"
+        )
         print("-" * 75)
         for action_type, stats in sorted(report["confidence_stats"].items()):
-            print(f"{action_type:<15} {stats['mean']:>8.4f}  {stats['std']:>8.4f}  {stats['median']:>8.4f}  {stats['min']:>8.4f}  {stats['max']:>8.4f}")
+            print(
+                f"{action_type:<15} {stats['mean']:>8.4f}  {stats['std']:>8.4f}  {stats['median']:>8.4f}  {stats['min']:>8.4f}  {stats['max']:>8.4f}"
+            )
 
         print("\n### LOSS CONTRIBUTION BY TYPE ###")
-        print(f"{'Type':<15} {'Total Loss':<15} {'Mean Loss':<15} {'% of Total':<15} {'Count':<10}")
+        print(
+            f"{'Type':<15} {'Total Loss':<15} {'Mean Loss':<15} {'% of Total':<15} {'Count':<10}"
+        )
         print("-" * 75)
-        for action_type, stats in sorted(report["loss_contribution"].items(), key=lambda x: x[1]['total_loss'], reverse=True):
-            print(f"{action_type:<15} {stats['total_loss']:>13.2f}  {stats['mean_loss']:>13.4f}  {stats['pct_of_total'] * 100:>13.2f}% {stats['count']:>10}")
+        for action_type, stats in sorted(
+            report["loss_contribution"].items(),
+            key=lambda x: x[1]["total_loss"],
+            reverse=True,
+        ):
+            print(
+                f"{action_type:<15} {stats['total_loss']:>13.2f}  {stats['mean_loss']:>13.4f}  {stats['pct_of_total'] * 100:>13.2f}% {stats['count']:>10}"
+            )
 
         if "move_analysis" in report and report["move_analysis"]:
             print("\n### MOVE PREDICTION ANALYSIS ###")
@@ -312,11 +333,15 @@ class ActionDiagnostics:
 
             print("\nMost common actual moves:")
             for i, move in enumerate(ma["most_common_actual"][:10], 1):
-                print(f"  {i}. Action {move['action']}: {move['count']} times ({MDBO.from_int(move['action'], MDBO.TURN).message if MDBO.from_int(move['action'], MDBO.TURN) else 'N/A'})")
+                print(
+                    f"  {i}. Action {move['action']}: {move['count']} times ({MDBO.from_int(move['action'], MDBO.TURN).message if MDBO.from_int(move['action'], MDBO.TURN) else 'N/A'})"
+                )
 
             print("\nMost common predicted moves:")
             for i, move in enumerate(ma["most_common_predicted"][:10], 1):
-                print(f"  {i}. Action {move['action']}: {move['count']} times ({MDBO.from_int(move['action'], MDBO.TURN).message if MDBO.from_int(move['action'], MDBO.TURN) else 'N/A'})")
+                print(
+                    f"  {i}. Action {move['action']}: {move['count']} times ({MDBO.from_int(move['action'], MDBO.TURN).message if MDBO.from_int(move['action'], MDBO.TURN) else 'N/A'})"
+                )
 
         print("\n### INVALID PREDICTIONS ###")
         inv = report["invalid_predictions"]
@@ -338,26 +363,22 @@ def main(model_path: str, data_path: str, max_batches: Optional[int] = 100):
     print(f"Loading model from {model_path}")
 
     # Load model
-    checkpoint = torch.load(model_path, map_location='cpu')
-    config = checkpoint['config']
+    checkpoint = torch.load(model_path, map_location="cpu")
+    config = checkpoint["config"]
 
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
 
     # Initialize embedder
     embedder = Embedder(
-        format="gen9vgc2023regulationc",
-        feature_set=Embedder.FULL,
-        omniscient=False
+        format="gen9vgc2023regulationc", feature_set=Embedder.FULL, omniscient=False
     )
 
     # Get feature indices
     feature_names = {name: i for i, name in enumerate(embedder.feature_names)}
     feature_idx: Dict[str, Any] = {
         "teampreview": feature_names["teampreview"],
-        "force_switch_indices": [
-            feature_names[f"MON:{j}:force_switch"] for j in range(6)
-        ]
+        "force_switch_indices": [feature_names[f"MON:{j}:force_switch"] for j in range(6)],
     }
 
     # Initialize model
@@ -372,7 +393,9 @@ def main(model_path: str, data_path: str, max_batches: Optional[int] = 100):
         early_attention_heads=config["early_attention_heads"],
         late_attention_heads=config["late_attention_heads"],
         use_grouped_encoder=config["use_grouped_encoder"],
-        group_sizes=embedder.group_embedding_sizes if config["use_grouped_encoder"] else None,
+        group_sizes=(
+            embedder.group_embedding_sizes if config["use_grouped_encoder"] else None
+        ),
         grouped_encoder_hidden_dim=config["grouped_encoder_hidden_dim"],
         grouped_encoder_aggregated_dim=config["grouped_encoder_aggregated_dim"],
         pokemon_attention_heads=config["pokemon_attention_heads"],
@@ -385,7 +408,7 @@ def main(model_path: str, data_path: str, max_batches: Optional[int] = 100):
         max_seq_len=17,
     ).to(device)
 
-    model.load_state_dict(checkpoint['model_state_dict'])
+    model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
 
     print("Model loaded successfully")
@@ -398,7 +421,7 @@ def main(model_path: str, data_path: str, max_batches: Optional[int] = 100):
         batch_size=64,
         num_workers=7,
         prefetch_factor=8,
-        files_per_worker=3
+        files_per_worker=3,
     )
 
     # Run diagnostics
@@ -412,22 +435,27 @@ def main(model_path: str, data_path: str, max_batches: Optional[int] = 100):
         diagnostics.analyze_batch(batch, feature_idx)
         processed_batches += 1
         if (processed_batches) % 10 == 0:
-            print(f"\033[2K\rProcessed {processed_batches}/{total_batches} ({(processed_batches / total_batches) * 100:.1f}%) batches...", end="")
+            print(
+                f"\033[2K\rProcessed {processed_batches}/{total_batches} ({(processed_batches / total_batches) * 100:.1f}%) batches...",
+                end="",
+            )
 
     # Generate and print report
     report = diagnostics.generate_report()
     diagnostics.print_report(report)
 
     # Save report to JSON
-    output_path = model_path.replace('.pt', '_diagnostics.json')
-    with open(output_path, 'w') as f:
+    output_path = model_path.replace(".pt", "_diagnostics.json")
+    with open(output_path, "w") as f:
         json.dump(report, f, indent=2)
     print(f"\nReport saved to {output_path}")
 
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:
-        print("Usage: python action_model_diagnostics.py <model_path> <data_path> [max_batches]")
+        print(
+            "Usage: python action_model_diagnostics.py <model_path> <data_path> [max_batches]"
+        )
         sys.exit(1)
 
     model_path = sys.argv[1]

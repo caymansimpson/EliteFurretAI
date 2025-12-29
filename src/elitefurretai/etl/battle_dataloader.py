@@ -1,5 +1,6 @@
-from typing import Dict, List, Union, Optional, Any
 import random
+from typing import Any, Dict, List, Optional, Union
+
 import torch
 
 from elitefurretai.etl.battle_dataset import OptimizedPreprocessedTrajectoryDataset
@@ -68,13 +69,11 @@ class OptimizedBattleDataLoader(torch.utils.data.DataLoader):
 
     def __init__(
         self,
-
         # OptimizedPreprocessedTrajectoryDataset parameters
         folder_path: str,
         metadata_filename: Optional[str] = None,
         embedder: Optional[Embedder] = None,
         files_per_worker: Union[int, str, None] = "default",
-
         # Optimal DataLoader parameters, from scripts/analyze/training_profiler.py
         batch_size: int = 512,
         shuffle: bool = False,
@@ -83,7 +82,6 @@ class OptimizedBattleDataLoader(torch.utils.data.DataLoader):
         pin_memory: bool = False,
         prefetch_factor: Optional[int] = 1,
     ):
-
         # Build dataset kwargs conditionally, and build dataset with them
         dataset_kwargs: Dict[str, Any] = {"folder_path": folder_path}
         if metadata_filename is not None:

@@ -6,9 +6,11 @@ state encoding correlate with the teampreview action label.
 
 If positions in state → action mapping is deterministic, we have leakage.
 """
+
 import argparse
-import torch
 from collections import defaultdict
+
+import torch
 
 from elitefurretai.etl import Embedder
 from elitefurretai.etl.battle_dataloader import OptimizedBattleDataLoader
@@ -27,9 +29,7 @@ def diagnose_leakage(val_data_path: str, max_samples: int = 10000):
 
     # Initialize embedder
     embedder = Embedder(
-        format="gen9vgc2023regulationc",
-        feature_set=Embedder.FULL,
-        omniscient=False
+        format="gen9vgc2023regulationc", feature_set=Embedder.FULL, omniscient=False
     )
 
     print(f"Embedder size: {embedder.embedding_size}")
@@ -120,7 +120,9 @@ def diagnose_leakage(val_data_path: str, max_samples: int = 10000):
     total_states = len(state_to_actions)
     det_pct = (deterministic_states / total_states * 100) if total_states > 0 else 0
 
-    print(f"\nDeterministic states (1 action per state): {deterministic_states} ({det_pct:.1f}%)")
+    print(
+        f"\nDeterministic states (1 action per state): {deterministic_states} ({det_pct:.1f}%)"
+    )
     print(f"Non-deterministic states (multiple actions): {non_deterministic_states}")
 
     if det_pct > 95:
@@ -155,7 +157,9 @@ def diagnose_leakage(val_data_path: str, max_samples: int = 10000):
 
     print(f"\nTotal actions: {len(action_counts)}")
     print("Most common actions (top 10):")
-    for action, count in sorted(action_counts.items(), key=lambda x: x[1], reverse=True)[:10]:
+    for action, count in sorted(action_counts.items(), key=lambda x: x[1], reverse=True)[
+        :10
+    ]:
         pct = count / total_samples * 100
         print(f"  Action {action:2}: {count:5} times ({pct:5.2f}%)")
 
@@ -163,7 +167,9 @@ def diagnose_leakage(val_data_path: str, max_samples: int = 10000):
     most_common_action, most_common_count = max(action_counts.items(), key=lambda x: x[1])
     baseline_acc = most_common_count / total_samples * 100
 
-    print(f"\nBaseline accuracy (always predict most common action {most_common_action}): {baseline_acc:.2f}%")
+    print(
+        f"\nBaseline accuracy (always predict most common action {most_common_action}): {baseline_acc:.2f}%"
+    )
 
     if baseline_acc > 50:
         print("⚠️  WARNING: Baseline accuracy >50% suggests data imbalance")
@@ -184,7 +190,9 @@ def diagnose_leakage(val_data_path: str, max_samples: int = 10000):
     if total_samples / unique_states < 1.1:
         print("\n⚠️  WARNING: Almost every state is unique!")
         print("This suggests states might include battle-specific information")
-        print("that makes each sample unique (like exact HP values, specific Pokemon IDs, etc.)")
+        print(
+            "that makes each sample unique (like exact HP values, specific Pokemon IDs, etc.)"
+        )
 
 
 if __name__ == "__main__":
@@ -193,19 +201,16 @@ if __name__ == "__main__":
         "--val-data",
         type=str,
         default="data/battles/regc_traj/val",
-        help="Path to validation data directory"
+        help="Path to validation data directory",
     )
     parser.add_argument(
-        "--max-samples",
-        type=int,
-        default=10000,
-        help="Maximum samples to process"
+        "--max-samples", type=int, default=10000, help="Maximum samples to process"
     )
 
     args = parser.parse_args()
 
     # Set multiprocessing strategy for WSL
-    torch.multiprocessing.set_sharing_strategy('file_system')
+    torch.multiprocessing.set_sharing_strategy("file_system")
 
     diagnose_leakage(
         val_data_path=args.val_data,

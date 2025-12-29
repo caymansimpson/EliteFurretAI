@@ -10,7 +10,6 @@ from elitefurretai.etl.encoder import MDBO
 
 # Iterates through BattleData; cannot switch perspectives
 class BattleIterator:
-
     def __init__(
         self,
         bd: BattleData,
@@ -60,7 +59,6 @@ class BattleIterator:
 
         # If we were just passed teampreview, fill in information from player's choices
         if len(split_message) > 1 and split_message[1] == "start":
-
             # Assumes an order in inputLog
             index = 0 if self._perspective == "p1" else 1
             choices = map(
@@ -111,7 +109,6 @@ class BattleIterator:
                     omon.to_pokemon() for omon in opp_team
                 ]
         elif self._is_turn():
-
             # If we're starting a turn, the first input_num of the new turn should always start
             # with p1 since a player needs to have an input at the beginning of each turn
             # if this goes off, it likely means a problem with the last input
@@ -188,7 +185,6 @@ class BattleIterator:
         if self.last_input is not None and not self.last_input.startswith(
             ">" + self._perspective
         ):
-
             if self._input_nums[0] >= len(self.bd.input_logs) or self._battle.finished:
                 return None
             else:
@@ -737,7 +733,6 @@ class BattleIterator:
 
         # If move order
         else:
-
             # Remove the all the +[num] and convert to [num]
             label = re.sub(r"\+([012])", r"\1", label)
             orders = []
@@ -748,7 +743,6 @@ class BattleIterator:
 
                 # If the single order is a move
                 if order.startswith("move "):
-
                     # Get the mon_entry of the ith active pokemon from json
                     actor = None
                     team = (

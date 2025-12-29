@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
-"""Unit Tests to ensure Speed Inference can detect Choice Scarfs
-"""
+"""Unit Tests to ensure Speed Inference can detect Choice Scarfs"""
+
 from unittest.mock import MagicMock
 
 import pytest

@@ -1,4 +1,5 @@
-""" This file goes through a bunch of battle files and looks at how effective action pruning would be.
+# pyright: reportArgumentType=false
+"""This file goes through a bunch of battle files and looks at how effective action pruning would be.
 Analysis reveals:
 1. 2% of chosen actions by players are not valid by is_valid_order
 2. 4% of chosen actions by players are not valid or are not reasonable
@@ -47,10 +48,8 @@ def main(battle_filepath, write_filepath, num_battles):
     }
     num_steps, num_valid, num_reasonable, num_both, num = 0, 0, 0, 0, 0
     for iter in get_iterators(battle_filepath, num_battles):
-
         # Iterate through the battle and get the player's input commands until ended or we exceed the steps per battle parameter
         while not iter.battle.finished and iter.next_input():
-
             # Get the last input command found by the iterator by the player, and stop if there's no more
             input = iter.last_input
             if (
@@ -61,9 +60,9 @@ def main(battle_filepath, write_filepath, num_battles):
                 continue
 
             # Collect Labels Dataset
-            dbo = iter.last_order().to_double_battle_order(iter.battle)
-            is_valid = is_valid_order(dbo, iter.battle)
-            is_reasonable = is_reasonable_move(iter.battle, dbo)
+            dbo = iter.last_order().to_double_battle_order(iter.battle)  # type: ignore[arg-type]
+            is_valid = is_valid_order(dbo, iter.battle)  # type: ignore[arg-type]
+            is_reasonable = is_reasonable_move(iter.battle, dbo)  # type: ignore[arg-type]
             labels_data[(iter.last_order().to_int(), is_valid, is_reasonable)] += 1
 
             # Collect overall action space pruning stats
@@ -71,7 +70,7 @@ def main(battle_filepath, write_filepath, num_battles):
                 try:
                     dbo = MDBO.from_int(
                         possible_action_int, iter.last_input_type
-                    ).to_double_battle_order(iter.battle)
+                    ).to_double_battle_order(iter.battle)  # type: ignore[arg-type]
                     v = is_valid_order(dbo, iter.battle)  # type: ignore
                     r = is_reasonable_move(iter.battle, dbo)  # type: ignore
                     if v and r:

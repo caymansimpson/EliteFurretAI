@@ -1,16 +1,16 @@
-# RL2: The Complete Guide
+# rl
 
-This document provides a comprehensive, in-depth explanation of the EliteFurretAI RL2 training system. It covers everything from the high-level architecture and core components to advanced features, optimization techniques, and the rationale behind the design choices.
+This document provides a comprehensive, in-depth explanation of the EliteFurretAI rl training system. It covers everything from the high-level architecture and core components to advanced features, optimization techniques, and the rationale behind the design choices.
 
 ## Table of Contents
 1.  [**Architecture Overview**](#1-architecture-overview)
     -   The Actor-Learner Model
     -   Architectural Principles
-2.  [**The RNaD Algorithm Explained**](#2-the-rnad-algorithm-explained)
+2.  [**RNaD Algorithm Overview**](#2-rnad-algorithm-overview)
     -   Why Regularized Nash Dynamics?
     -   The RNaD Loss Function
     -   Inspiration from Ataraxos (State-of-the-Art Stratego AI)
-3.  [**Core Components**](#3-core-components)
+3.  [**Core Components and Files**](#3-core-components)
     -   `agent.py`: The RL-Compatible Agent Wrapper
     -   `learner.py`: The Standard RNaD Learner
     -   `worker.py`: The High-Performance Battle Worker
@@ -21,20 +21,19 @@ This document provides a comprehensive, in-depth explanation of the EliteFurretA
     -   Configuration-Driven Training
     -   Resume Training from Checkpoints
     -   Automatic Exploiter Training
-    -   Comprehensive Monitoring with Wandb
-5.  [**Exploiter Training: The Adversarial Heartbeat**](#5-exploiter-training-the-adversarial-heartbeat)
+    -   Comprehensive Monitoring with WandB
+5.  [**Exploiter Training Details**](#5-exploiter-training-details)
     -   What is an Exploiter?
     -   Design Decision: Single-Team Exploiters
     -   The Exploiter Training Workflow
     -   Implementation Details
     -   Automating the Exploiter Pipeline
     -   The Opponent Pool & Adaptive Curriculum
-6.  [**Advanced Features & Optimization**](#6-advanced-features--optimization)
+6.  [**Advanced Features & Hardware Optimization**](#6-advanced-features--hardware-optimization)
     -   Portfolio Regularization: Preventing Strategy Collapse
     -   Mixed Precision Training: 2x Speed on Modern GPUs
     -   The Training Profiler: Maximizing Hardware Utilization
-7.  [**Performance & Hardware Optimization**](#7-performance--hardware-optimization)
-    -   Why `BatchInferencePlayer` is Fast: Async + Batching
+    -   `BatchInferencePlayer`: Async + Batching
     -   Expected Performance Benchmarks
     -   Troubleshooting Common Issues
 8.  [**Quick Start Guide**](#8-quick-start-guide)
@@ -60,21 +59,21 @@ The system follows a **single-machine, multi-threaded Actor-Learner architecture
 ┌─────────────────────────────────────────────────────────────┐
 │                    TRAINING COORDINATOR                     │
 │                    (train_v2.py)                            │
-└────────────┬────────────────────────────────────┬───────────┘
-             │                                    │
-             │                                    ▼
-             │                       ┌────────────────────────┐
-             │                       │    TRAJECTORY QUEUE    │
-             │                       │    (asyncio.Queue)     │
-             │                       └────────────────────────┘
-             │                                    ▲
-             ▼                                    │
-┌─────────────────────────┐          ┌────────────────────────────┐
-│     WORKER THREADS      │          │      LEARNER THREAD        │
-│      (worker.py)        │          │ (learner.py/portfolio.py)  │
-│                         │          │                            │
-│ ┌─────────────────────┐ │          │ ┌────────────────────────┐ │
-│ │ BatchInferencePlayer├─┼───────────>│       MAIN MODEL       │ │
+└────────────┬───────────────────-───────────────-──┬─────────┘
+             │                                      │
+             │                                      ▼
+             │                         ┌────────────────────────┐
+             │                         │    TRAJECTORY QUEUE    │
+             │                  ┌----->│    (asyncio.Queue)     │
+             │                  │      └────────────┬───────────┘
+             │                  │                   │
+             ▼                  │                   ▼
+┌─────────────────────────┐     │    ┌────────────────────────────┐
+│     WORKER THREADS      │     │    │      LEARNER THREAD        │
+│      (worker.py)        │     │    │ (learner.py/portfolio.py)  │
+│                         │     │    │                            │
+│ ┌─────────────────────┐ │     │    │ ┌────────────────────────┐ │
+│ │ BatchInferencePlayer├─┼─────┘    | │       MAIN MODEL       │ │
 │ └─────────────────────┘ │          │ │ (On GPU, Being Trained)│ │
 │          │ ▲            │          │ └────────────┬───────────┘ │
 │          ▼ |            │          │              │             │
@@ -82,7 +81,7 @@ The system follows a **single-machine, multi-threaded Actor-Learner architecture
 │ │  Showdown Servers   │ │          │ ┌────────────────────────┐ │
 │ │ (Local Subprocesses)│ │          │ |   REFERENCE MODEL(s)   │ │
 │ └─────────────────────┘ │          │ |    (On GPU, Frozen)    │ │
-└─────────────────────────┘          | └──────────────────---───┘ | 
+└─────────────────────────┘          │ └──────────────────---───┘ │
                                      └────────────────────────────┘
 ```
 
@@ -97,17 +96,17 @@ This design is built on a few core principles:
 
 ---
 
-## 2. The RNaD Algorithm Explained
+## 2. RNaD Algorithm Overview
 
 ### Why Regularized Nash Dynamics?
 
-Standard Reinforcement Learning can be unstable in complex games like Pokémon. An agent might discover a simple, exploitative strategy (e.g., "always use Protect on turn 1"), over-optimize for it, and completely forget the more general, robust strategies it learned from previous phases (e.g. Behavior Cloning (BC) phase). This is known as **catastrophic forgetting**.
+Standard Reinforcement Learning can be unstable in complex games like Pokémon. An agent might discover a simple, exploitative strategy (e.g., "always use Protect on turn 1"), over-optimize for it, and completely forget the more general, robust strategies it learned from previous phases (e.g. Behavior Cloning (BC) phase). This is key, as a strong pokemon player must be able to play and hedge against many types of gameplay.
 
-**Regularized Nash Dynamics (RNaD)** is an algorithm designed to combat this. It forces the learning agent (the "Main Model") to stay "close" to a stable, trusted policy (the "Reference Model").
+**Regularized Nash Dynamics (RNaD)** is an algorithm designed to combat this. It forces the learning agent (the "Main Model") to stay "close" to a stable, trusted policy (the "Reference Model") -- this has been shown to be [superhuman in games like Stratego when combined with Search](../../../docs/research/ataraxos.pdf).
 
 The Reference Model is a frozen snapshot of the Main Model from a few thousand steps ago. It acts as an anchor, preventing the Main Model from drifting too far, too fast. This ensures:
 -   **Stability**: Training is smoother and less prone to sudden collapses in performance.
--   **Retention of Priors**: The valuable, human-like strategies learned during the initial BC phase are not easily discarded.
+-   **Retention of Priors**: In our case, the valuable, human-like strategies learned during the initial BC phase are not easily discarded.
 -   **Robustness**: The agent is encouraged to find improvements that are good in a general sense, not just against its current self.
 
 ### The RNaD Loss Function
@@ -170,7 +169,7 @@ def forward(self, x: Dict[str, torch.Tensor], hidden: Tuple[torch.Tensor, torch.
     """
     # The BC model expects a sequence, so we unsqueeze the time dimension
     turn_features = x["turn_features"].unsqueeze(1)
-    
+
     # Forward pass through the underlying model
     turn_logits, tp_logits, value, next_hidden = self.model.forward_for_rl(
         turn_features,
@@ -179,7 +178,7 @@ def forward(self, x: Dict[str, torch.Tensor], hidden: Tuple[torch.Tensor, torch.
         hidden,
         x["action_mask"],
     )
-    
+
     return turn_logits, tp_logits, value, next_hidden
 ```
 This shows how the agent takes a single step's features and the previous hidden state, formats it for the sequence-based BC model, and returns the action logits, value, and the *next* hidden state, ready for the next turn.
@@ -208,10 +207,10 @@ This shows how the agent takes a single step's features and the previous hidden 
     -   `sample_team(format)`: Returns a random team string for the specified format (e.g., "gen9vgc2023regulationc")
     -   `sample_n_teams(format, path)`: Returns n random team strings for the specified format or path (e.g., `sample_n_teams("gen9vgc2023regulationc", "trickroom")`)
     -   `save_team(team, format, path, name, validate=True)`: Saves a team string to the repository
--   **How it fits in**: 
+-   **How it fits in**:
     -   **Main training**: If a `team_pool_path` is specified in the config, workers sample random teams for diverse training
     -   **Exploiter training**: Each exploiter trains with a **single, fixed team** sampled at the start of training (details in Section 5).
--   **Why it's implemented this way**: 
+-   **Why it's implemented this way**:
     -   Main agent trains on diverse teams to learn general strategies and avoid overfitting to specific compositions
     -   Exploiters use single teams to rapidly specialize in one playstyle and learn specific exploitation strategies against the victim model
 
@@ -230,12 +229,12 @@ The entire system is managed through YAML config files.
 
 ```bash
 # 1. Create a default config file
-python -c "from elitefurretai.rl2.config import RNaDConfig; RNaDConfig().save('my_config.yaml')"
+python src/elitefurretai/rl/config.py my_config.yaml
 
 # 2. Edit my_config.yaml to set parameters
 
 # 3. Launch training
-python src/elitefurretai/rl2/train_v2.py --config my_config.yaml
+python src/elitefurretai/rl/train.py --config my_config.yaml
 ```
 
 ### Resume Training from Checkpoints
@@ -244,10 +243,10 @@ The training script saves comprehensive checkpoints that include the model weigh
 
 ```bash
 # Resume from the most recent checkpoint in the save directory
-python src/elitefurretai/rl2/train_v2.py --resume
+python src/elitefurretai/rl/train_v2.py --resume
 
 # Resume from a specific checkpoint
-python src/elitefurretai/rl2/train_v2.py --checkpoint path/to/checkpoint.pt
+python src/elitefurretai/rl/train_v2.py --checkpoint path/to/checkpoint.pt
 ```
 
 ### Automatic Exploiter Training
@@ -272,7 +271,7 @@ When enabled (`use_wandb: true`), the system logs a rich set of metrics to Weigh
 
 ---
 
-## 5. Exploiter Training: The Adversarial Heartbeat
+## 5. Exploiter Training Details
 
 Self-play alone is not enough. An agent that only ever plays against itself can develop blind spots and brittle strategies. Exploiters are the solution.
 
@@ -342,7 +341,7 @@ return {"model_path": exploiter_path, "team": exploiter_team}
 ```python
 # After exploiter subprocess completes
 exploiter_path = os.path.join(
-    config.exploiter_output_dir, 
+    config.exploiter_output_dir,
     f"exploiter_vs_{os.path.basename(victim_checkpoint)}"
 )
 team_path = exploiter_path.replace(".pt", "_team.txt")
@@ -483,7 +482,7 @@ The system tracks win rates against each category and can adapt the sampling pro
 
 ---
 
-## 6. Advanced Features & Optimization
+## 6. Advanced Features & Hardware Optimization
 
 To push performance further, several advanced features have been implemented, inspired by state-of-the-art research.
 
@@ -553,15 +552,12 @@ To push performance further, several advanced features have been implemented, in
 -   **Usage**:
     ```bash
     # Run a full sweep to find the best possible configuration
-    python src/elitefurretai/rl2/profiler.py --sweep --output results.json
+    python src/elitefurretai/rl/profiler.py --sweep --output results.json
     ```
     The output provides recommended settings for your `config.yaml`.
 
----
 
-## 7. Performance & Hardware Optimization
-
-### Why `BatchInferencePlayer` is Fast: Async + Batching
+### `BatchInferencePlayer`: Async + Batching
 
 A common bottleneck in RL is the time spent waiting for the GPU. A naive implementation would process one action at a time, leaving the GPU idle for most of the duration.
 
@@ -681,12 +677,12 @@ Worker 4 (4-8 battles) → Showdown Server 4 (Port 8003)
 **Implementation**:
 ```bash
 # Launch multiple servers
-python src/elitefurretai/rl2/launch_servers.py --num-servers 6
+python src/elitefurretai/rl/launch_servers.py --num-servers 6
 ```
 
 Each worker connects to different server port, distributing CPU load across multiple Node.js processes.
 
-**Why this works**: 
+**Why this works**:
 - Each Showdown server uses 1 CPU core efficiently
 - Multi-core CPUs (8+ cores) can run 4-6 servers in parallel
 - GPU handles inference for all workers simultaneously
@@ -703,16 +699,16 @@ Each worker connects to different server port, distributing CPU load across mult
 2.  **Launch Showdown Servers**:
     ```bash
     # Launches 4 Showdown servers on ports 8000-8003
-    python src/elitefurretai/rl2/launch_servers.py --num-servers 6
+    python src/elitefurretai/rl/launch_servers.py --num-servers 6
     ```
 3.  **Create a Config**:
     ```bash
-    python -c "from elitefurretai.rl2.config import RNaDConfig; RNaDConfig().save('my_config.yaml')"
+    python -c "from elitefurretai.rl.config import RNaDConfig; RNaDConfig().save('my_config.yaml')"
     ```
 4.  **Edit `my_config.yaml`**: Set `checkpoint_path` to your BC model and configure other settings.
 5.  **Train**:
     ```bash
-    python src/elitefurretai/rl2/train_v2.py --config my_config.yaml
+    python src/elitefurretai/rl/train_v2.py --config my_config.yaml
     ```
 
 ### Example Configurations

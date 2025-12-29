@@ -2,21 +2,22 @@
 """
 This script profiles training and data loading performance
 """
+
 import os
-import psutil
 import sys
-import torch
-from torch.profiler import profile, record_function, ProfilerActivity
 import time
 
-from elitefurretai.etl import OptimizedBattleDataLoader, MDBO, Embedder
+import psutil
+import torch
+from torch.profiler import ProfilerActivity, profile, record_function
+from torch.utils.data import DataLoader, Dataset
+
+from elitefurretai.etl import MDBO, Embedder, OptimizedBattleDataLoader, load_compressed
+from elitefurretai.supervised.model_archs import FlexibleThreeHeadedModel
 from elitefurretai.supervised.train_utils import (
     flatten_and_filter,
     topk_cross_entropy_loss,
-    load_compressed,
 )
-from elitefurretai.supervised.model_archs import FlexibleThreeHeadedModel
-from torch.utils.data import Dataset, DataLoader
 
 
 def profile_training_step(model, dataloader, optimizer, num_batches=150):
@@ -41,7 +42,7 @@ def profile_training_step(model, dataloader, optimizer, num_batches=150):
         record_shapes=True,
         profile_memory=True,
         with_stack=True,
-        with_flops=True
+        with_flops=True,
     ) as prof:
         model.train()
         scaler = torch.amp.GradScaler("cuda")  # type: ignore
@@ -60,10 +61,11 @@ def profile_training_step(model, dataloader, optimizer, num_batches=150):
 
             # Mixed precision context
             with torch.amp.autocast("cuda"):  # type: ignore
-
                 # Forward pass
                 with record_function("forward pass"):
-                    turn_action_logits, teampreview_logits, win_logits = model(states, masks)
+                    turn_action_logits, teampreview_logits, win_logits = model(
+                        states, masks
+                    )
                     # Use turn action logits for profiling
                     action_logits = turn_action_logits
 
@@ -86,16 +88,22 @@ def profile_training_step(model, dataloader, optimizer, num_batches=150):
                     if flat_data is None:
                         continue
 
-                    valid_states, valid_action_logits, valid_actions, valid_win_logits, valid_wins = (
-                        flat_data
-                    )
+                    (
+                        valid_states,
+                        valid_action_logits,
+                        valid_actions,
+                        valid_win_logits,
+                        valid_wins,
+                    ) = flat_data
 
                 # Calculate Losses
                 with record_function("loss calculation"):
                     action_loss = topk_cross_entropy_loss(
                         valid_action_logits, valid_actions, weights=None, k=3
                     )
-                    win_loss = torch.nn.functional.mse_loss(valid_win_logits, valid_wins.float())
+                    win_loss = torch.nn.functional.mse_loss(
+                        valid_win_logits, valid_wins.float()
+                    )
                     loss = action_loss + win_loss
 
             # Backward pass and optimization step
@@ -135,9 +143,13 @@ def profile_training_step(model, dataloader, optimizer, num_batches=150):
                     pass
 
             print(f"\nTotal worker memory: {total_worker_mem:.2f} GB")
-            print(f"Total process tree memory: {(parent_process.memory_info().rss / 1024**3 + total_worker_mem):.2f} GB")
+            print(
+                f"Total process tree memory: {(parent_process.memory_info().rss / 1024**3 + total_worker_mem):.2f} GB"
+            )
         else:
-            print("No worker processes found (num_workers=0 or workers already terminated)")
+            print(
+                "No worker processes found (num_workers=0 or workers already terminated)"
+            )
     except Exception as e:
         print(f"Could not analyze worker memory: {e}")
 
@@ -145,29 +157,33 @@ def profile_training_step(model, dataloader, optimizer, num_batches=150):
     print("\n" + "=" * 80)
     print("CUDA MEMORY BREAKDOWN (Self Memory)")
     print("=" * 80)
-    print(prof.key_averages().table(
-        sort_by="self_cuda_memory_usage",  # Memory allocated by this operation itself
-        row_limit=20,
-        max_name_column_width=60
-    ))
+    print(
+        prof.key_averages().table(
+            sort_by="self_cuda_memory_usage",  # Memory allocated by this operation itself
+            row_limit=20,
+            max_name_column_width=60,
+        )
+    )
 
     print("\n" + "=" * 80)
     print("CUDA MEMORY BREAKDOWN (Total Memory)")
     print("=" * 80)
-    print(prof.key_averages().table(
-        sort_by="cuda_memory_usage",  # Total memory including children
-        row_limit=20,
-        max_name_column_width=60
-    ))
+    print(
+        prof.key_averages().table(
+            sort_by="cuda_memory_usage",  # Total memory including children
+            row_limit=20,
+            max_name_column_width=60,
+        )
+    )
 
     print("\n" + "=" * 80)
     print("CPU MEMORY BREAKDOWN")
     print("=" * 80)
-    print(prof.key_averages().table(
-        sort_by="self_cpu_memory_usage",
-        row_limit=20,
-        max_name_column_width=60
-    ))
+    print(
+        prof.key_averages().table(
+            sort_by="self_cpu_memory_usage", row_limit=20, max_name_column_width=60
+        )
+    )
 
     # ==================== DETAILED MEMORY SUMMARY ====================
     print("\n" + "=" * 80)
@@ -176,14 +192,19 @@ def profile_training_step(model, dataloader, optimizer, num_batches=150):
 
     # Get all events sorted by memory
     events = prof.key_averages()
-    memory_events = [(e.key, e.self_cuda_memory_usage, e.cuda_memory_usage, e.count)
-                     for e in events if e.self_cuda_memory_usage > 0]
+    memory_events = [
+        (e.key, e.self_cuda_memory_usage, e.cuda_memory_usage, e.count)
+        for e in events
+        if e.self_cuda_memory_usage > 0
+    ]
     memory_events.sort(key=lambda x: x[1], reverse=True)
 
     print(f"{'Operation':<50} {'Self Memory':>15} {'Total Memory':>15} {'Count':>10}")
     print("-" * 90)
     for name, self_mem, total_mem, count in memory_events[:20]:
-        print(f"{name[:50]:<50} {self_mem / 1024**2:>13.2f} MB {total_mem / 1024**2:>13.2f} MB {count:>10}")
+        print(
+            f"{name[:50]:<50} {self_mem / 1024**2:>13.2f} MB {total_mem / 1024**2:>13.2f} MB {count:>10}"
+        )
 
     # ==================== PEAK MEMORY USAGE ====================
     print("\n" + "=" * 80)
@@ -211,7 +232,9 @@ def profile_dataloader(dataloader, num_batches=150):
     print(f"Prefetch factor: {dataloader.prefetch_factor}")
 
     if torch.cuda.is_available():
-        print(f"\nGPU memory before creating iterator: {torch.cuda.memory_allocated(0) / (1024**3):.2f} GB")
+        print(
+            f"\nGPU memory before creating iterator: {torch.cuda.memory_allocated(0) / (1024**3):.2f} GB"
+        )
 
     # Warmup; let prefetch buffers fill
     print("\nWarmup (filling prefetch buffers)...")
@@ -220,7 +243,9 @@ def profile_dataloader(dataloader, num_batches=150):
         batch = next(iterator)
         if i == 0 and torch.cuda.is_available():
             # Move first batch to GPU to initialize CUDA context
-            _ = {k: v.cuda() if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+            _ = {
+                k: v.cuda() if isinstance(v, torch.Tensor) else v for k, v in batch.items()
+            }
     print("Warmup complete!\n")
 
     # Now measure actual performance (after prefetch is warmed up)
@@ -259,8 +284,14 @@ def profile_dataloader(dataloader, num_batches=150):
 
             # Record Memory usage and times
             if i % 10 == 0:
-                gpu_mem = torch.cuda.memory_allocated(0) / (1024**3) if torch.cuda.is_available() else 0
-                print(f"Batch {i}: Total={total_time:.3f}s, Load={load_time:.3f}s, Transfer={transfer_time:.3f}s, GPU={gpu_mem:.2f}GB")
+                gpu_mem = (
+                    torch.cuda.memory_allocated(0) / (1024**3)
+                    if torch.cuda.is_available()
+                    else 0
+                )
+                print(
+                    f"Batch {i}: Total={total_time:.3f}s, Load={load_time:.3f}s, Transfer={transfer_time:.3f}s, GPU={gpu_mem:.2f}GB"
+                )
 
         except StopIteration:
             print(f"DataLoader exhausted at batch {i}")
@@ -281,10 +312,10 @@ def profile_dataloader(dataloader, num_batches=150):
     print(f"                      {dataloader.batch_size / avg_total:.1f} samples/sec")
 
     return {
-        'avg_total_time': avg_total,
-        'avg_load_time': avg_load,
-        'avg_transfer_time': avg_transfer,
-        'throughput': 1 / avg_total
+        "avg_total_time": avg_total,
+        "avg_load_time": avg_load,
+        "avg_transfer_time": avg_transfer,
+        "throughput": 1 / avg_total,
     }
 
 
@@ -329,7 +360,9 @@ def check_gpu_memory():
     wins_size = batch_size * 4
     masks_size = batch_size * seq_len * 4
 
-    total_per_batch = (states_size + actions_size + action_masks_size + wins_size + masks_size) / (1024**3)
+    total_per_batch = (
+        states_size + actions_size + action_masks_size + wins_size + masks_size
+    ) / (1024**3)
     estimated_pinned = total_per_batch * total_batches
 
     print("\nDetailed memory calculation:")
@@ -346,7 +379,9 @@ def check_gpu_memory():
         return True
     else:
         print("❌ pin_memory=True will likely cause OOM")
-        print(f"   Recommended max batch_size: {int(batch_size * free_memory * 0.5 / estimated_pinned)}")
+        print(
+            f"   Recommended max batch_size: {int(batch_size * free_memory * 0.5 / estimated_pinned)}"
+        )
         return False
 
 
@@ -379,7 +414,7 @@ def test_raw_gpu_allocation():
             num_elements = int(size_gb * (1024**3) / 4)  # 4 bytes per float32
 
             # Allocate on GPU
-            test_tensor = torch.zeros(num_elements, dtype=torch.float32, device='cuda')
+            test_tensor = torch.zeros(num_elements, dtype=torch.float32, device="cuda")
             torch.cuda.synchronize()
 
             allocated = torch.cuda.memory_allocated(0) / (1024**3)
@@ -463,19 +498,19 @@ def test_dataloader_pin_memory_simple():
 
         def __getitem__(self, idx):
             # Return a dict like your real dataset
-            return {
-                'data': torch.randn(self.tensor_size, dtype=torch.float32)
-            }
+            return {"data": torch.randn(self.tensor_size, dtype=torch.float32)}
 
     # Test with increasing sizes
     test_configs = [
-        (10, 100),   # 10 samples, 100MB each = 1GB total
-        (10, 172),   # 10 samples, 172MB each = 1.72GB total
-        (20, 172),   # 20 samples, 172MB each = 3.44GB total
+        (10, 100),  # 10 samples, 100MB each = 1GB total
+        (10, 172),  # 10 samples, 172MB each = 1.72GB total
+        (20, 172),  # 20 samples, 172MB each = 3.44GB total
     ]
 
     for num_samples, tensor_mb in test_configs:
-        print(f"\nTesting {num_samples} samples × {tensor_mb}MB = {num_samples * tensor_mb / 1024:.2f}GB")
+        print(
+            f"\nTesting {num_samples} samples × {tensor_mb}MB = {num_samples * tensor_mb / 1024:.2f}GB"
+        )
 
         dataset = SimpleDataset(num_samples, tensor_mb)
 
@@ -493,7 +528,7 @@ def test_dataloader_pin_memory_simple():
             for i, batch in enumerate(dataloader):
                 if i >= 5:  # Just test first 5 batches
                     break
-                _ = batch['data'].cuda()
+                _ = batch["data"].cuda()
 
             print("✅ Success!")
 
@@ -527,7 +562,7 @@ def analyze_trajectory_file(file_path: str, target_steps: int = 17):
     print(f"\n📁 Compressed file size: {compressed_size / (1024**2):.2f} MB")
 
     # 2. Load and analyze trajectories
-    trajectories = load_compressed(file_path, map_location='cpu')
+    trajectories = load_compressed(file_path, map_location="cpu")
     num_trajectories = len(trajectories)
     print(f"📊 Number of trajectories: {num_trajectories}")
 
@@ -543,8 +578,10 @@ def analyze_trajectory_file(file_path: str, target_steps: int = 17):
         tensor_size = tensor.element_size() * tensor.numel()
         traj_memory += tensor_size
 
-        print(f"  {key:15s}: shape={str(tuple(tensor.shape)):20s} "
-              f"dtype={str(tensor.dtype):15s} size={tensor_size / (1024**2):8.2f} MB")
+        print(
+            f"  {key:15s}: shape={str(tuple(tensor.shape)):20s} "
+            f"dtype={str(tensor.dtype):15s} size={tensor_size / (1024**2):8.2f} MB"
+        )
 
     print(f"{'─' * 70}")
     print(f"  {'TOTAL':15s}: {traj_memory / (1024**2):53.2f} MB")
@@ -552,7 +589,9 @@ def analyze_trajectory_file(file_path: str, target_steps: int = 17):
     # 4. Calculate batch size (512 trajectories)
     batch_size = 512
     batch_memory = traj_memory * batch_size
-    print(f"\n📦 Batch size ({batch_size} trajectories): {batch_memory / (1024**2):.2f} MB")
+    print(
+        f"\n📦 Batch size ({batch_size} trajectories): {batch_memory / (1024**2):.2f} MB"
+    )
     print(f"                                   = {batch_memory / (1024**3):.2f} GB")
 
     # 5. Calculate full file memory when decompressed
@@ -561,15 +600,17 @@ def analyze_trajectory_file(file_path: str, target_steps: int = 17):
     print(f"                                  = {total_memory / (1024**3):.2f} GB")
 
     compression_ratio = compressed_size / total_memory
-    print(f"\n📉 Compression ratio: {compression_ratio:.2%} "
-          f"({1.0 / compression_ratio:.1f}x compression)")
+    print(
+        f"\n📉 Compression ratio: {compression_ratio:.2%} "
+        f"({1.0 / compression_ratio:.1f}x compression)"
+    )
 
     # 6. Simulate truncation to target_steps
     print(f"\n{'─' * 70}")
     print(f"SIMULATING TRUNCATION TO {target_steps} STEPS:")
     print(f"{'─' * 70}")
 
-    actual_steps = first_traj['states'].shape[0]
+    actual_steps = first_traj["states"].shape[0]
     print(f"  Current steps: {actual_steps}")
     print(f"  Target steps:  {target_steps}")
 
@@ -585,7 +626,9 @@ def analyze_trajectory_file(file_path: str, target_steps: int = 17):
         for key, tensor in first_traj.items():
             if tensor.dim() > 0 and tensor.shape[0] == actual_steps:
                 # This tensor has a time dimension
-                truncated_size = tensor.element_size() * (tensor.numel() // actual_steps) * target_steps
+                truncated_size = (
+                    tensor.element_size() * (tensor.numel() // actual_steps) * target_steps
+                )
             else:
                 # No time dimension (shouldn't happen in your data)
                 truncated_size = tensor.element_size() * tensor.numel()
@@ -597,12 +640,18 @@ def analyze_trajectory_file(file_path: str, target_steps: int = 17):
 
         reduction_pct = (1 - truncated_traj_memory / traj_memory) * 100
 
-        print(f"\n  Truncated trajectory size: {truncated_traj_memory / (1024**2):.2f} MB "
-              f"({reduction_pct:.1f}% reduction)")
-        print(f"  Truncated batch size:      {truncated_batch_memory / (1024**2):.2f} MB "
-              f"({truncated_batch_memory / (1024**3):.2f} GB)")
-        print(f"  Truncated file in RAM:     {truncated_total_memory / (1024**2):.2f} MB "
-              f"({truncated_total_memory / (1024**3):.2f} GB)")
+        print(
+            f"\n  Truncated trajectory size: {truncated_traj_memory / (1024**2):.2f} MB "
+            f"({reduction_pct:.1f}% reduction)"
+        )
+        print(
+            f"  Truncated batch size:      {truncated_batch_memory / (1024**2):.2f} MB "
+            f"({truncated_batch_memory / (1024**3):.2f} GB)"
+        )
+        print(
+            f"  Truncated file in RAM:     {truncated_total_memory / (1024**2):.2f} MB "
+            f"({truncated_total_memory / (1024**3):.2f} GB)"
+        )
 
     # Summary
     print(f"\n{'=' * 70}")
@@ -616,28 +665,31 @@ def analyze_trajectory_file(file_path: str, target_steps: int = 17):
     if actual_steps > target_steps:
         print(f"\n  If truncated to {target_steps} steps:")
         print(f"    File in RAM:             {truncated_total_memory / (1024**3):8.2f} GB")
-        print(f"    Batch (512 trajectories): {truncated_batch_memory / (1024**3):8.2f} GB")
-        print(f"    Memory savings:          {(total_memory - truncated_total_memory) / (1024**3):8.2f} GB "
-              f"({reduction_pct:.1f}%)")
+        print(
+            f"    Batch (512 trajectories): {truncated_batch_memory / (1024**3):8.2f} GB"
+        )
+        print(
+            f"    Memory savings:          {(total_memory - truncated_total_memory) / (1024**3):8.2f} GB "
+            f"({reduction_pct:.1f}%)"
+        )
 
     return {
-        'compressed_size_mb': compressed_size / (1024**2),
-        'num_trajectories': num_trajectories,
-        'trajectory_size_mb': traj_memory / (1024**2),
-        'batch_size_gb': batch_memory / (1024**3),
-        'total_decompressed_gb': total_memory / (1024**3),
-        'compression_ratio': compression_ratio,
-        'actual_steps': actual_steps,
-        'target_steps': target_steps,
-        'truncated_trajectory_size_mb': truncated_traj_memory / (1024**2),
-        'truncated_batch_size_gb': truncated_batch_memory / (1024**3),
-        'truncated_total_gb': truncated_total_memory / (1024**3),
+        "compressed_size_mb": compressed_size / (1024**2),
+        "num_trajectories": num_trajectories,
+        "trajectory_size_mb": traj_memory / (1024**2),
+        "batch_size_gb": batch_memory / (1024**3),
+        "total_decompressed_gb": total_memory / (1024**3),
+        "compression_ratio": compression_ratio,
+        "actual_steps": actual_steps,
+        "target_steps": target_steps,
+        "truncated_trajectory_size_mb": truncated_traj_memory / (1024**2),
+        "truncated_batch_size_gb": truncated_batch_memory / (1024**3),
+        "truncated_total_gb": truncated_total_memory / (1024**3),
     }
 
 
 def main(data_path):
-
-    torch.multiprocessing.set_sharing_strategy('file_system')
+    torch.multiprocessing.set_sharing_strategy("file_system")
 
     print("Starting!")
 
@@ -646,7 +698,9 @@ def main(data_path):
         print("Initializing CUDA context...")
         _ = torch.zeros(1).cuda()
         torch.cuda.synchronize()
-        print(f"CUDA initialized. Memory: {torch.cuda.memory_allocated(0) / (1024**3):.2f} GB\n")
+        print(
+            f"CUDA initialized. Memory: {torch.cuda.memory_allocated(0) / (1024**3):.2f} GB\n"
+        )
 
     # =============================== FIRST, TEST GPU MEMORY ALLOCATION ===============================
     # Run comprehensive diagnostics
@@ -686,16 +740,24 @@ def main(data_path):
     start = time.time()
 
     # Windows memory sharing optimization that needs to be done
-    torch.multiprocessing.set_sharing_strategy('file_system')
+    torch.multiprocessing.set_sharing_strategy("file_system")
     successful_loader = None
 
     # You can play around with the parameters here to find the right balance
     embedder, train_loader = None, None
     try:
-        embedder = Embedder(format="gen9vgc2023regulationc", feature_set=Embedder.FULL, omniscient=False)
-        print(f"\nEmbedder initialized. Size: {embedder.embedding_size}! Loading datasets...")
-        train_loader = OptimizedBattleDataLoader(data_path, embedder=embedder, batch_size=512)
-        print(f"DataLoader created in {time.time() - start:.2f}s! Size: {len(train_loader)} batches.")
+        embedder = Embedder(
+            format="gen9vgc2023regulationc", feature_set=Embedder.FULL, omniscient=False
+        )
+        print(
+            f"\nEmbedder initialized. Size: {embedder.embedding_size}! Loading datasets..."
+        )
+        train_loader = OptimizedBattleDataLoader(
+            data_path, embedder=embedder, batch_size=512
+        )
+        print(
+            f"DataLoader created in {time.time() - start:.2f}s! Size: {len(train_loader)} batches."
+        )
 
         # Try to profile
         result = profile_dataloader(train_loader)
@@ -719,6 +781,7 @@ def main(data_path):
         error_msg = str(e)
         print(f"\n❌ Unexpected error: {e}")
         import traceback
+
         traceback.print_exc()
         raise
 
@@ -754,7 +817,9 @@ def main(data_path):
         num_teampreview_actions=MDBO.teampreview_space(),
         max_seq_len=17,
     ).to("cuda")
-    print(f"Finished loading data and model! for a total of {sum(p.numel() for p in model.parameters() if p.requires_grad):,} trainable parameters")
+    print(
+        f"Finished loading data and model! for a total of {sum(p.numel() for p in model.parameters() if p.requires_grad):,} trainable parameters"
+    )
 
     # Initialize optimizer
     optimizer = torch.optim.Adam(

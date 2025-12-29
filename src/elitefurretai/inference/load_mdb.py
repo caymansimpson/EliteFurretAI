@@ -1,14 +1,14 @@
 # -*- coding: utf-8 -*-
-"""This script analyzes VGC logs
-"""
+"""This script analyzes VGC logs"""
+
 import sys
 import time
 
 import orjson
 from poke_env.data.normalize import to_id_str
 
-from elitefurretai.inference.meta_db import MetaDB
 from elitefurretai.etl.battle_data import BattleData
+from elitefurretai.inference.meta_db import MetaDB
 
 
 def load_files(files):
@@ -34,7 +34,6 @@ def main(filename):
 
     # Go through each file
     for bd in load_files(files):
-
         battle_id = str(hash("".join(bd.logs)))
         team_ids = {}
 

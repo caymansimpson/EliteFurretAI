@@ -26,7 +26,6 @@ def main(files):
 
     # Iterate through batches of battles with data_loader
     for states, actions, action_masks, wins, masks in dataloader:
-
         # Do training things
         pass
 

@@ -15,24 +15,24 @@ The data_directory should contain train/, test/, and val/ subdirectories.
 The config_override file (if provided) will override matching keys from the model's saved config.
 """
 
+import argparse
 import os
 import time
-import argparse
-import torch
-import wandb
-import orjson
 from typing import Optional
 
-from elitefurretai.etl import Embedder
+import orjson
+import torch
+
+import wandb
+from elitefurretai.etl import Embedder, OptimizedBattleDataLoader
 from elitefurretai.etl.encoder import MDBO
-from elitefurretai.etl import OptimizedBattleDataLoader
-from elitefurretai.supervised.train_utils import evaluate, format_time
 
 # Import the model and training components from the original script
-from elitefurretai.supervised.three_headed_transformer import (
+from elitefurretai.supervised.train import (
     FlexibleThreeHeadedModel,
     train_epoch,
 )
+from elitefurretai.supervised.train_utils import evaluate, format_time
 
 
 def load_model_and_config(model_path: str, device: str):
@@ -49,17 +49,17 @@ def load_model_and_config(model_path: str, device: str):
     print(f"Loading model from {model_path}...")
     checkpoint = torch.load(model_path, map_location=device)
 
-    if 'config' not in checkpoint:
-        raise ValueError(f"Model checkpoint at {model_path} does not contain config. Please ensure the model was saved with both model_state_dict and config.")
+    if "config" not in checkpoint:
+        raise ValueError(
+            f"Model checkpoint at {model_path} does not contain config. Please ensure the model was saved with both model_state_dict and config."
+        )
 
-    config = checkpoint['config']
+    config = checkpoint["config"]
     print(f"Loaded config with {len(config)} parameters")
 
     # Create embedder (same as in training)
     embedder = Embedder(
-        format="gen9vgc2023regulationc",
-        feature_set=Embedder.FULL,
-        omniscient=False
+        format="gen9vgc2023regulationc", feature_set=Embedder.FULL, omniscient=False
     )
 
     # Create model with same architecture
@@ -74,7 +74,9 @@ def load_model_and_config(model_path: str, device: str):
         early_attention_heads=config["early_attention_heads"],
         late_attention_heads=config["late_attention_heads"],
         use_grouped_encoder=config["use_grouped_encoder"],
-        group_sizes=embedder.group_embedding_sizes if config["use_grouped_encoder"] else None,
+        group_sizes=(
+            embedder.group_embedding_sizes if config["use_grouped_encoder"] else None
+        ),
         grouped_encoder_hidden_dim=config["grouped_encoder_hidden_dim"],
         grouped_encoder_aggregated_dim=config["grouped_encoder_aggregated_dim"],
         pokemon_attention_heads=config["pokemon_attention_heads"],
@@ -88,7 +90,7 @@ def load_model_and_config(model_path: str, device: str):
     ).to(device)
 
     # Load the state dict
-    model.load_state_dict(checkpoint['model_state_dict'])
+    model.load_state_dict(checkpoint["model_state_dict"])
     print("Model weights loaded successfully")
 
     num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -127,7 +129,7 @@ def finetune(
     # Override config with new values if provided
     if config_override_path:
         print(f"\nLoading config overrides from {config_override_path}...")
-        with open(config_override_path, 'rb') as f:
+        with open(config_override_path, "rb") as f:
             config_override = orjson.loads(f.read())
 
         for key, value in config_override.items():
@@ -148,10 +150,7 @@ def finetune(
         project="elitefurretai-hydreigon",  # Same project as original training
         name=wandb_run_name,
         config=wandb_config,
-        settings=wandb.Settings(
-            x_service_wait=30,
-            start_method="thread"
-        )
+        settings=wandb.Settings(x_service_wait=30, start_method="thread"),
     )
 
     try:
@@ -168,7 +167,7 @@ def finetune(
 
     # Set up data loaders
     print("Setting up data loaders...")
-    torch.multiprocessing.set_sharing_strategy('file_system')
+    torch.multiprocessing.set_sharing_strategy("file_system")
 
     train_loader = OptimizedBattleDataLoader(
         train_path,
@@ -185,7 +184,7 @@ def finetune(
         batch_size=config["worker_batch_size"],
         num_workers=4,
         prefetch_factor=2,
-        files_per_worker=1
+        files_per_worker=1,
     )
     val_loader = OptimizedBattleDataLoader(
         val_path,
@@ -193,7 +192,7 @@ def finetune(
         batch_size=config["worker_batch_size"],
         num_workers=4,
         prefetch_factor=2,
-        files_per_worker=1
+        files_per_worker=1,
     )
 
     wandb.watch(model, log="all", log_freq=1000)
@@ -222,7 +221,7 @@ def finetune(
     )
 
     # Mixed precision scaler (CUDA only)
-    scaler = torch.amp.GradScaler('cuda') if config['device'] == 'cuda' else None  # type: ignore
+    scaler = torch.amp.GradScaler("cuda") if config["device"] == "cuda" else None  # type: ignore
 
     print("Initialized model! Starting training...")
 
@@ -293,16 +292,14 @@ def finetune(
         scheduler.step(
             float(
                 metrics["win_mse"] * config["win_loss_weight"]
-                + metrics.get("teampreview_top3_loss", 0) * config["teampreview_loss_weight"]
+                + metrics.get("teampreview_top3_loss", 0)
+                * config["teampreview_loss_weight"]
                 + metrics.get("turn_top3_loss", 0) * config["turn_loss_weight"]
             )
         )
 
     # Save model with config embedded
-    save_dict = {
-        'model_state_dict': model.state_dict(),
-        'config': config
-    }
+    save_dict = {"model_state_dict": model.state_dict(), "config": config}
     save_path = os.path.join(config["save_path"], f"{wandb.run.name}.pt")  # type: ignore
     torch.save(save_dict, save_path)
     print(f"\nModel and config saved to {save_path}")
@@ -361,29 +358,23 @@ Examples:
       data/models/my_model.pt \\
       my_model_with_lower_lr \\
       --config-override config_override.cfg
-        """
+        """,
     )
 
     parser.add_argument(
         "data_directory",
         type=str,
-        help="Path to data directory containing train/, test/, and val/ subdirectories"
+        help="Path to data directory containing train/, test/, and val/ subdirectories",
     )
     parser.add_argument(
-        "model_path",
-        type=str,
-        help="Path to saved model checkpoint (.pt file)"
+        "model_path", type=str, help="Path to saved model checkpoint (.pt file)"
     )
-    parser.add_argument(
-        "wandb_run_name",
-        type=str,
-        help="Custom name for the wandb run"
-    )
+    parser.add_argument("wandb_run_name", type=str, help="Custom name for the wandb run")
     parser.add_argument(
         "--config-override",
         type=str,
         default=None,
-        help="Optional path to JSON config file to override loaded model config"
+        help="Optional path to JSON config file to override loaded model config",
     )
 
     args = parser.parse_args()
@@ -399,7 +390,7 @@ Examples:
         parser.error(f"Config override file not found: {args.config_override}")
 
     # Verify subdirectories exist
-    for subdir in ['train', 'test', 'val']:
+    for subdir in ["train", "test", "val"]:
         path = os.path.join(args.data_directory, subdir)
         if not os.path.exists(path):
             print(f"Warning: {subdir} directory not found at {path}")

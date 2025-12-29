@@ -330,7 +330,6 @@ def test_generate_opponent_pokemon_features(vgc_battle_p1_logs):
 
 
 def test_embed_turn(vgc_json_anon):
-
     embedder = Embedder(feature_set="raw")
 
     # Generate battle
@@ -416,7 +415,6 @@ def test_simplify_features(vgc_battle_p1_logs):
 
 
 def test_embed_teampreview(vgc_json_anon):
-
     embedder = Embedder(feature_set="raw")
 
     # Generate battle
@@ -449,7 +447,6 @@ def test_embed_teampreview(vgc_json_anon):
 
 
 def test_omniscience(vgc_json_anon):
-
     e1 = Embedder(feature_set="full", omniscient=True)
     e2 = Embedder(feature_set="full", omniscient=False)
 

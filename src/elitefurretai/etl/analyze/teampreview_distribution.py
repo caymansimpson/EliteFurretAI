@@ -4,13 +4,14 @@
 Quick script to analyze teampreview action distribution in raw battle files.
 """
 
+import math
 import os
 import sys
 from collections import Counter
-import orjson
-import math
 
-from elitefurretai.etl import BattleData, BattleIterator, MDBO
+import orjson
+
+from elitefurretai.etl import MDBO, BattleData, BattleIterator
 from elitefurretai.etl.encoder import _TEAMPREVIEW_ORDER_TO_INT
 
 
@@ -27,7 +28,7 @@ def analyze_teampreview_distribution(battle_files_dir: str, num_files: int = 100
     all_files = [
         os.path.join(battle_files_dir, f)
         for f in os.listdir(battle_files_dir)
-        if f.endswith('.json')
+        if f.endswith(".json")
     ][:num_files]
 
     print(f"Analyzing {len(all_files)} battle files...\n")
@@ -44,11 +45,11 @@ def analyze_teampreview_distribution(battle_files_dir: str, num_files: int = 100
 
     for i, file_path in enumerate(all_files):
         if (i + 1) % 10 == 0:
-            print(f"Processed {i + 1}/{len(all_files)} files...", end='\r')
+            print(f"Processed {i + 1}/{len(all_files)} files...", end="\r")
 
         try:
             # Load battle data
-            with open(file_path, 'r') as f:
+            with open(file_path, "r") as f:
                 json_data = orjson.loads(f.read())
 
             bd = BattleData.from_showdown_json(json_data)
@@ -134,13 +135,21 @@ def analyze_teampreview_distribution(battle_files_dir: str, num_files: int = 100
         first_four_action = _TEAMPREVIEW_ORDER_TO_INT["2143"]
         print("\nIf JSON teams are pre-ordered by teampreview choice:")
         print(f"  Choosing Pokemon [1,2,3,4] = Action {first_four_action}")
-        print(f"  P1 frequency: {p1_action_ints[first_four_action]} / {sum(p1_action_ints.values())} = {p1_action_ints[first_four_action] / sum(p1_action_ints.values()) * 100:.1f}%")
-        print(f"  P2 frequency: {p2_action_ints[first_four_action]} / {sum(p2_action_ints.values())} = {p2_action_ints[first_four_action] / sum(p2_action_ints.values()) * 100:.1f}%")
+        print(
+            f"  P1 frequency: {p1_action_ints[first_four_action]} / {sum(p1_action_ints.values())} = {p1_action_ints[first_four_action] / sum(p1_action_ints.values()) * 100:.1f}%"
+        )
+        print(
+            f"  P2 frequency: {p2_action_ints[first_four_action]} / {sum(p2_action_ints.values())} = {p2_action_ints[first_four_action] / sum(p2_action_ints.values()) * 100:.1f}%"
+        )
 
     # Calculate entropy to see how uniform the distribution is
     def entropy(counter):
         total = sum(counter.values())
-        return -sum((count / total) * math.log2(count / total) for count in counter.values() if count > 0)
+        return -sum(
+            (count / total) * math.log2(count / total)
+            for count in counter.values()
+            if count > 0
+        )
 
     max_entropy = math.log2(90)  # Uniform distribution over 90 actions
     p1_entropy = entropy(p1_action_ints)
@@ -150,8 +159,12 @@ def analyze_teampreview_distribution(battle_files_dir: str, num_files: int = 100
     print("DISTRIBUTION UNIFORMITY (Entropy Analysis)")
     print("=" * 80)
     print(f"Maximum possible entropy (uniform): {max_entropy:.3f} bits")
-    print(f"P1 action entropy: {p1_entropy:.3f} bits ({p1_entropy / max_entropy * 100:.1f}% of maximum)")
-    print(f"P2 action entropy: {p2_entropy:.3f} bits ({p2_entropy / max_entropy * 100:.1f}% of maximum)")
+    print(
+        f"P1 action entropy: {p1_entropy:.3f} bits ({p1_entropy / max_entropy * 100:.1f}% of maximum)"
+    )
+    print(
+        f"P2 action entropy: {p2_entropy:.3f} bits ({p2_entropy / max_entropy * 100:.1f}% of maximum)"
+    )
     print("\nInterpretation:")
     print("  - High entropy (~6.5 bits) = Uniform distribution, no obvious pattern")
     print("  - Low entropy (<4 bits) = Clustered around few actions, potential leakage")

@@ -33,19 +33,38 @@ dynamic = ["dependencies"]
 Repository = "https://github.com/caymansimpson/elitefurretai"
 Research = "https://docs.google.com/document/d/14menCHw8z06KJWZ5F_K-MjgWVo_b7PESR7RlG-em4ic/edit"
 
-[tool.black]
+[tool.ruff]
 line-length = 91
-
-[tool.isort]
-profile = "black"
-multi_line_output = 3
-skip = [
-    "data/"
+target-version = "py38"
+exclude = [
+    "data/",
 ]
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # pyflakes
+    "I",      # isort
+]
+ignore = [
+    "E203",   # whitespace before ':' (conflicts with black-style formatting)
+    "E501",   # line too long (handled by formatter)
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["elitefurretai"]
+
+[tool.ruff.format]
+# Use black-compatible formatting
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
 
 [tool.pyright]
 include = ["src"]
-exclude = ["src/elitefurretai/scripts", "data/battles", "data/database", "data/models"]
+exclude = ["data/battles", "data/database", "data/models"]
 pythonVersion = "3.7"
 
 [tool.pytest.ini_options]

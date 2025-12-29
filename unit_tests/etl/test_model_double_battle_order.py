@@ -1,8 +1,61 @@
 # -*- coding: utf-8 -*-
-from poke_env.battle import Move
-from poke_env.player.battle_order import DoubleBattleOrder, SingleBattleOrder
+from typing import Union
+
+from poke_env.battle import Move, Pokemon
+from poke_env.player.battle_order import (
+    DefaultBattleOrder,
+    DoubleBattleOrder,
+    SingleBattleOrder,
+)
 
 from elitefurretai.etl import MDBO, BattleData, BattleIterator
+
+
+def orders_equal(
+    o1: Union[DoubleBattleOrder, DefaultBattleOrder],
+    o2: Union[DoubleBattleOrder, DefaultBattleOrder],
+) -> bool:
+    """
+    Compare two DoubleBattleOrders by their semantic content.
+
+    Move objects don't have __eq__ defined, so we compare by move ID.
+    Pokemon objects are compared by species.
+    """
+    # Handle DefaultBattleOrder
+    if isinstance(o1, DefaultBattleOrder) and isinstance(o2, DefaultBattleOrder):
+        return True
+    if isinstance(o1, DefaultBattleOrder) or isinstance(o2, DefaultBattleOrder):
+        return False
+
+    # Now both are DoubleBattleOrder
+    assert isinstance(o1, DoubleBattleOrder)
+    assert isinstance(o2, DoubleBattleOrder)
+
+    def single_order_equal(s1: SingleBattleOrder, s2: SingleBattleOrder) -> bool:
+        if s1.mega != s2.mega:
+            return False
+        if s1.z_move != s2.z_move:
+            return False
+        if s1.dynamax != s2.dynamax:
+            return False
+        if s1.terastallize != s2.terastallize:
+            return False
+        if s1.move_target != s2.move_target:
+            return False
+
+        # Compare order (Move or Pokemon)
+        if isinstance(s1.order, Move) and isinstance(s2.order, Move):
+            return s1.order.id == s2.order.id
+        elif isinstance(s1.order, Pokemon) and isinstance(s2.order, Pokemon):
+            return s1.order.species == s2.order.species
+        elif s1.order is None and s2.order is None:
+            return True
+        else:
+            return s1.order == s2.order
+
+    return single_order_equal(o1.first_order, o2.first_order) and single_order_equal(
+        o1.second_order, o2.second_order
+    )
 
 
 def test_mdbo():
@@ -54,15 +107,20 @@ def test_mdbo_2(vgc_json_anon2):
         second_order=SingleBattleOrder(order=Move("heavyslam", gen=9), move_target=1),
     )
 
-    # Test conversion
-    assert o1 == o2
+    # Test conversion (use orders_equal since Move objects don't have __eq__)
+    assert orders_equal(o1, o2)
 
     # Test self-target
-    assert MDBO(MDBO.TURN, "/choose move 2 -2 terastallize, move 4 -1").to_double_battle_order(iter.battle) == DoubleBattleOrder(  # type: ignore
-        first_order=SingleBattleOrder(
-            order=Move("ruination", gen=9), terastallize=True, move_target=-2
+    assert orders_equal(
+        MDBO(
+            MDBO.TURN, "/choose move 2 -2 terastallize, move 4 -1"
+        ).to_double_battle_order(iter.battle),  # type: ignore
+        DoubleBattleOrder(
+            first_order=SingleBattleOrder(
+                order=Move("ruination", gen=9), terastallize=True, move_target=-2
+            ),
+            second_order=SingleBattleOrder(order=Move("heavyslam", gen=9), move_target=-1),
         ),
-        second_order=SingleBattleOrder(order=Move("heavyslam", gen=9), move_target=-1),
     )
 
     iter.next_input()
@@ -71,9 +129,12 @@ def test_mdbo_2(vgc_json_anon2):
 
     # Test switch
     key = list(iter.battle.team.keys())[2]
-    assert iter.last_order().to_double_battle_order(iter.battle) == DoubleBattleOrder(  # type: ignore
-        first_order=SingleBattleOrder(order=iter.battle.team[key]),
-        second_order=SingleBattleOrder(order=Move("drainpunch", gen=9), move_target=1),
+    assert orders_equal(
+        iter.last_order().to_double_battle_order(iter.battle),  # type: ignore
+        DoubleBattleOrder(
+            first_order=SingleBattleOrder(order=iter.battle.team[key]),
+            second_order=SingleBattleOrder(order=Move("drainpunch", gen=9), move_target=1),
+        ),
     )
 
     iter.next_input()

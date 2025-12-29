@@ -5,13 +5,14 @@ Maintains multiple reference models and regularizes against the best one,
 inspired by Ataraxos paper. Uses mixed precision (FP16) for faster training.
 """
 
+import copy
+from typing import Any, Dict, List
+
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.distributions import Categorical
-import numpy as np
-from typing import Dict, Any, List
-import copy
 
 from elitefurretai.rl.agent import RNaDAgent
 
@@ -40,7 +41,7 @@ class PortfolioRNaDLearner:
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
         use_mixed_precision: bool = True,
         max_portfolio_size: int = 5,
-        portfolio_update_strategy: str = "diverse"  # "diverse", "best", "recent"
+        portfolio_update_strategy: str = "diverse",  # "diverse", "best", "recent"
     ):
         """
         Args:
@@ -71,7 +72,11 @@ class PortfolioRNaDLearner:
         self.portfolio_update_strategy = portfolio_update_strategy
 
         # Mixed precision scaler
-        self.scaler = torch.amp.GradScaler(device=self.device) if use_mixed_precision else None  # type: ignore
+        self.scaler = (
+            torch.amp.GradScaler(device=self.device)  # type: ignore[attr-defined]
+            if use_mixed_precision
+            else None
+        )
 
         # Freeze ref models
         for ref_model in self.ref_models:
@@ -133,7 +138,13 @@ class PortfolioRNaDLearner:
             new_ref = RNaDAgent(copy.deepcopy(self.model.model))
             self.add_reference_model(new_ref)
 
-    def _compute_portfolio_kl(self, curr_dist: Categorical, states: torch.Tensor, initial_hidden, is_teampreview: bool) -> torch.Tensor:
+    def _compute_portfolio_kl(
+        self,
+        curr_dist: Categorical,
+        states: torch.Tensor,
+        initial_hidden,
+        is_teampreview: bool,
+    ) -> torch.Tensor:
         """
         Compute KL divergence to all reference models and return minimum.
 
@@ -189,25 +200,34 @@ class PortfolioRNaDLearner:
         Returns:
             Dictionary of loss components and metrics
         """
-        states = batch['states'].to(self.device)
-        actions = batch['actions'].to(self.device)
-        old_log_probs = batch['log_probs'].to(self.device)
-        advantages = batch['advantages'].to(self.device)
-        returns = batch['returns'].to(self.device)
-        is_teampreview = batch['is_teampreview'].to(self.device)
-        padding_mask = batch.get('padding_mask', torch.ones_like(actions, dtype=torch.bool)).to(self.device)
+        states = batch["states"].to(self.device)
+        actions = batch["actions"].to(self.device)
+        old_log_probs = batch["log_probs"].to(self.device)
+        advantages = batch["advantages"].to(self.device)
+        returns = batch["returns"].to(self.device)
+        is_teampreview = batch["is_teampreview"].to(self.device)
+        padding_mask = batch.get(
+            "padding_mask", torch.ones_like(actions, dtype=torch.bool)
+        ).to(self.device)
 
         # Normalize advantages
         valid_advantages = advantages[padding_mask]
         if len(valid_advantages) > 1:
-            advantages = (advantages - valid_advantages.mean()) / (valid_advantages.std() + 1e-8)
+            advantages = (advantages - valid_advantages.mean()) / (
+                valid_advantages.std() + 1e-8
+            )
 
         # Handle hidden states
-        initial_hidden = batch.get('initial_hidden', None)
+        initial_hidden = batch.get("initial_hidden", None)
         if initial_hidden is None:
-            initial_hidden_state = self.model.get_initial_state(states.shape[0], self.device)
+            initial_hidden_state = self.model.get_initial_state(
+                states.shape[0], self.device
+            )
         else:
-            initial_hidden_state = (initial_hidden[0].to(self.device), initial_hidden[1].to(self.device))
+            initial_hidden_state = (
+                initial_hidden[0].to(self.device),
+                initial_hidden[1].to(self.device),
+            )
 
         # Mixed precision forward pass
         with torch.amp.autocast(device_type=self.device, enabled=self.use_mixed_precision):  # type: ignore
@@ -241,13 +261,18 @@ class PortfolioRNaDLearner:
                 curr_dist = Categorical(logits=curr_tp_logits)
 
                 # Portfolio KL
-                rnad_loss_tp = self._compute_portfolio_kl(curr_dist, states, initial_hidden_state, is_teampreview=True)
+                rnad_loss_tp = self._compute_portfolio_kl(
+                    curr_dist, states, initial_hidden_state, is_teampreview=True
+                )
 
                 # PPO Loss
                 curr_log_probs = curr_dist.log_prob(flat_actions[tp_indices])
                 ratio = torch.exp(curr_log_probs - flat_old_log_probs[tp_indices])
                 surr1 = ratio * flat_advantages[tp_indices]
-                surr2 = torch.clamp(ratio, 1.0 - self.clip_range, 1.0 + self.clip_range) * flat_advantages[tp_indices]
+                surr2 = (
+                    torch.clamp(ratio, 1.0 - self.clip_range, 1.0 + self.clip_range)
+                    * flat_advantages[tp_indices]
+                )
                 policy_loss_tp = -torch.min(surr1, surr2).mean()
 
                 # Entropy
@@ -257,17 +282,24 @@ class PortfolioRNaDLearner:
             valid_turn_mask = (~flat_is_tp) & flat_padding_mask
             if valid_turn_mask.any():
                 turn_indices = torch.nonzero(valid_turn_mask, as_tuple=False).squeeze(-1)
-                curr_turn_logits = turn_logits.reshape(-1, turn_logits.shape[-1])[turn_indices]
+                curr_turn_logits = turn_logits.reshape(-1, turn_logits.shape[-1])[
+                    turn_indices
+                ]
                 curr_dist = Categorical(logits=curr_turn_logits)
 
                 # Portfolio KL
-                rnad_loss_turn = self._compute_portfolio_kl(curr_dist, states, initial_hidden_state, is_teampreview=False)
+                rnad_loss_turn = self._compute_portfolio_kl(
+                    curr_dist, states, initial_hidden_state, is_teampreview=False
+                )
 
                 # PPO Loss
                 curr_log_probs = curr_dist.log_prob(flat_actions[turn_indices])
                 ratio = torch.exp(curr_log_probs - flat_old_log_probs[turn_indices])
                 surr1 = ratio * flat_advantages[turn_indices]
-                surr2 = torch.clamp(ratio, 1.0 - self.clip_range, 1.0 + self.clip_range) * flat_advantages[turn_indices]
+                surr2 = (
+                    torch.clamp(ratio, 1.0 - self.clip_range, 1.0 + self.clip_range)
+                    * flat_advantages[turn_indices]
+                )
                 policy_loss_turn = -torch.min(surr1, surr2).mean()
 
                 # Entropy
@@ -275,8 +307,12 @@ class PortfolioRNaDLearner:
 
             # --- Value Loss ---
             if flat_padding_mask.any():
-                valid_indices = torch.nonzero(flat_padding_mask, as_tuple=False).squeeze(-1)
-                value_loss = nn.MSELoss()(flat_values[valid_indices], flat_returns[valid_indices])
+                valid_indices = torch.nonzero(flat_padding_mask, as_tuple=False).squeeze(
+                    -1
+                )
+                value_loss = nn.MSELoss()(
+                    flat_values[valid_indices], flat_returns[valid_indices]
+                )
 
             # Total loss
             policy_loss = policy_loss_tp + policy_loss_turn
@@ -301,20 +337,22 @@ class PortfolioRNaDLearner:
             self.optimizer.step()
 
         return {
-            'loss': total_loss.item(),
-            'policy_loss': policy_loss.item(),
-            'value_loss': value_loss.item(),
-            'entropy': entropy_loss.item(),
-            'rnad_loss': rnad_loss.item(),
-            'portfolio_size': len(self.ref_models),
-            'portfolio_selections': dict(enumerate(self.portfolio_selection_counts))
+            "loss": total_loss.item(),
+            "policy_loss": policy_loss.item(),
+            "value_loss": value_loss.item(),
+            "entropy": entropy_loss.item(),
+            "rnad_loss": rnad_loss.item(),
+            "portfolio_size": len(self.ref_models),
+            "portfolio_selections": dict(enumerate(self.portfolio_selection_counts)),
         }
 
     def get_portfolio_stats(self) -> Dict[str, Any]:
         """Get statistics about the reference portfolio."""
         stats = {
-            'portfolio_size': len(self.ref_models),
-            'selection_counts': self.portfolio_selection_counts.copy(),
-            'avg_kl_per_ref': [np.mean(kls) if kls else 0.0 for kls in self.portfolio_kl_history]
+            "portfolio_size": len(self.ref_models),
+            "selection_counts": self.portfolio_selection_counts.copy(),
+            "avg_kl_per_ref": [
+                np.mean(kls) if kls else 0.0 for kls in self.portfolio_kl_history
+            ],
         }
         return stats
