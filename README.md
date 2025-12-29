@@ -48,17 +48,35 @@ Ultimately, we think that Search-based will be the quickest way to get to peak h
 There is quite a lot of complexity in the above, and we encourage you to check out [the doc linked above](https://docs.google.com/document/d/14menCHw8z06KJWZ5F_K-MjgWVo_b7PESR7RlG-em4ic/edit#heading=h.p6dz1cv0mnpx) if you want to learn more about the sequencing of steps and models to build out the above.
 
 ### Where am I right now?
-Currently, I've built a [supervised deep learning model](https://wandb.ai/caymansimpson/elitefurretai-scovillain/runs/mmhseltv/logs) that predicts a human's action with the following accuracy:
-- Teampreview
-  - Top-1: 48.8%
-  - Top-3: 91.4%
-  - Top-5: 99.2%
-- Move Choice
-  - Top-1: 16.6%
-  - Top-3: 33.9%
-  - Top-5: 42.4%
+Currently, I've built [supervised deep learning models](./src/elitefurretai/supervised/SUPERVISED.md) that predicts a human's action with the following accuracy (~135M parameters each):
+*   **Teampreview**:
+    *   **Top-1**: 99.9%
+    *   **Top-3**: 99.9%
+    *   **Top-5**: 99.9%
+    *   *Takeaway*: The dataset has little strategic variation; analysis shows that for a given team composition, 88.6% of the time, a player will choose the same teampreview choice. This means our model is just creating a look-up table. This model is overfit, but is the nature of this dataset.
 
-I'm going to start exploring a sweep on parameters to optimize the model. My hope is to get it's move choice predictions to Top-3 50%. Then, I will then use it to improve RL, which I will approach next.
+*   **Turn Actions (Move Choice)**:
+    *   **Top-1**: 28.9%
+    *   **Top-3**: 43.5%
+    *   **Top-5**: 53.8%
+    *   *Takeaway*: Predicting the *exact* move a human makes is difficult due to playstyle variety and "rock-paper-scissors" scenarios. However, the Top-5 accuracy suggests the model consistently identifies the pool of reasonable moves.
+
+*   **Win Advantage**:
+    *   **Correlation**: 0.856
+    *   **Accuracy w/ Win Prediction**: 68.7%
+    *   **Brier Score**:  0.2026
+    *   *Takeaway*: The win model is doing a decent job at predicting state advantage, better than the average state evaluation used by Foul Play.
+
+*   **Unified Model**:
+    *   **Win Correlation**: 0.726
+    *   **Top 1/3/5/10 Move Accuracy**: 26%/40%/48%
+    *   **Top 1/3/5 Teampreview Accuracy**:  79%/95%/99%
+    *   *Takeaway*: This model is a single well-rounded model that balances all tasks. It doesn't overfit on teampreview and slightly underperforms against models that are trained on a single objective.
+
+Now, I'm starting with RL -- for now, I'm going with the following approach:
+- RNaD based on the recent superhuman performance of the algorithm in Stratego, which is very similar to Pokemon
+- Arena training vs self, ghosts (past selves), exploiters and BV model -- to ensure our agent learns robust strategies with many teams (this will be key for learning how to play with Furret and future teambuilding applications)
+- Portfolio-based regularization -- I'll be experimenting with regularizing against a portfolio of models, vs a single reference model.
 
 ## Why the name EliteFurretAI?
 As mentioned above, the penultimate goal of this work is to make Furret central to the VGC meta. Because Nintendo refuses to give Furret the Simple/Shadow Tag/Pure Power/Adaptability/Prankster buffs it desperately needs, only a superhuman AI will be able to build around this dark horse and use it in a way that unleashes its latent potential. This bot is the first step to doing so; once it can appropriately accurately value starting positions, we can use it to start building teams with basic meta stats.

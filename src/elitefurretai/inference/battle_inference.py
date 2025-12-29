@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
-"""This module tracks pokemons' moves, stats and items inferences throughout a battle
-"""
+"""This module tracks pokemons' moves, stats and items inferences throughout a battle"""
 
 import sys
 from typing import Any, Dict, Optional, Union

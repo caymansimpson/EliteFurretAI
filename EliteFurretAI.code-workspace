@@ -1,0 +1,18 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../poke-env"
+		},
+		{
+			"path": "../pokemon-showdown"
+		}
+	],
+	"settings": {
+		"python-envs.defaultEnvManager": "ms-python.python:system",
+		"python.testing.pytestEnabled": true,
+		"python.testing.pytestPath": ""
+	}
+}
