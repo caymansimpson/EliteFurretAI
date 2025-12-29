@@ -24,7 +24,7 @@ from sklearn.metrics import (
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader
 
-from elitefurretai.model_utils import BattleDataset, format_time
+from elitefurretai.etl import BattleDataset, format_time
 
 
 def evaluate(y_true, y_pred):

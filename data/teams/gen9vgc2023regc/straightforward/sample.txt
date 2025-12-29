@@ -1,0 +1,45 @@
+Iron Hands @ Booster Energy  
+Ability: Quark Drive  
+Level: 50  
+Tera Type: Grass  
+EVs: 252 HP / 252 Atk / 4 SpD  
+Adamant Nature  
+- Fake Out  
+- Drain Punch  
+- Wild Charge  
+- Swords Dance  
+
+Amoonguss @ Sitrus Berry  
+Ability: Effect Spore  
+Level: 50  
+Tera Type: Dark  
+EVs: 252 HP / 4 SpA / 252 SpD  
+Calm Nature  
+IVs: 0 Atk  
+- Pollen Puff  
+- Rage Powder  
+- Protect  
+- Spore  
+
+Dragonite @ Lum Berry  
+Ability: Multiscale  
+Level: 50  
+Tera Type: Flying  
+EVs: 252 HP / 252 Atk / 4 SpA  
+Brave Nature  
+- Extreme Speed  
+- Tera Blast  
+- Protect  
+- Ice Spinner  
+
+Palafin @ Mystic Water  
+Ability: Zero to Hero  
+Level: 50  
+Tera Type: Water  
+EVs: 252 Atk / 4 SpD / 252 Spe  
+Jolly Nature  
+- Protect  
+- Jet Punch  
+- Wave Crash  
+- Haze  
+

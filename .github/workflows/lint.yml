@@ -39,14 +39,11 @@ jobs:
           pip install -r requirements.txt
           pip install -r requirements-dev.txt
 
-      - name: Run isort
-        run: isort src/ unit_tests/ --check --diff
+      - name: Run ruff check (linting)
+        run: ruff check src/ unit_tests/
 
-      - name: Run black
-        run: black src/ unit_tests/ --check --diff
-
-      - name: Run flake8
-        run: flake8 src/ unit_tests/
+      - name: Run ruff format (formatting)
+        run: ruff format src/ unit_tests/ --check --diff
 
       - name: Run pyright
         run: pyright src/ unit_tests/

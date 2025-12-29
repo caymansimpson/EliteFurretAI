@@ -1,14 +1,12 @@
 # -*- coding: utf-8 -*-
-import elitefurretai.agents as agents
+import elitefurretai.etl as etl
 import elitefurretai.inference as inference
-import elitefurretai.model_utils as model_utils
-import elitefurretai.scripts as scripts
-import elitefurretai.utils as utils
+import elitefurretai.rl as rl
+import elitefurretai.supervised as supervised
 
 __all__ = [
-    "model_utils",
-    "utils",
-    "agents",
+    "etl",
+    "rl",
+    "supervised",
     "inference",
-    "scripts",
 ]

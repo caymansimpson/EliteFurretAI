@@ -5,7 +5,7 @@ import time
 import orjson
 from torch.utils.data import DataLoader
 
-from elitefurretai.model_utils import (
+from elitefurretai.etl import (
     BattleData,
     BattleDataset,
     BattleIterator,
