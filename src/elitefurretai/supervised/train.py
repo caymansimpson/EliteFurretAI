@@ -421,7 +421,7 @@ def main(train_path, test_path, val_path, config={}):
         teampreview_head_dropout=config["teampreview_head_dropout"],
         teampreview_attention_heads=config["teampreview_attention_heads"],
         turn_head_layers=config["turn_head_layers"],
-        max_seq_len=17,
+        max_seq_len=config["max_seq_len"],
     ).to(config["device"])
     wandb.watch(model, log="all", log_freq=1000)
 

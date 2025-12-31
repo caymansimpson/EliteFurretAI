@@ -545,5 +545,163 @@ def test_collate_preserves_dtypes():
     assert batch["is_teampreview"].dtype == torch.bool
 
 
+# =============================================================================
+# TRAJECTORY TRUNCATION TESTS
+# These test the fix for "Sequence length X exceeds max_seq_len" error.
+# See src/elitefurretai/rl/DEBUG_LEARNINGS.md for details.
+# =============================================================================
+
+
+def collate_trajectories_with_truncation(
+    trajectories: List[List[Dict[str, Any]]], device: str, max_seq_len: int = 17
+):
+    """
+    Copy of collate_trajectories with truncation logic from train.py.
+
+    Trajectories longer than max_seq_len are truncated to last N steps,
+    since later game decisions are typically more impactful.
+    """
+    # Truncate long trajectories
+    truncated_trajectories = []
+    for traj in trajectories:
+        if len(traj) > max_seq_len:
+            truncated_trajectories.append(traj[-max_seq_len:])
+        else:
+            truncated_trajectories.append(traj)
+
+    # Use the standard collation on truncated data
+    return collate_trajectories_for_test(truncated_trajectories, device)
+
+
+def test_trajectory_truncation_enforces_max_length():
+    """
+    Test that trajectories exceeding max_seq_len are truncated.
+
+    Scenario: Battle with 39 decision points (many force_switches).
+    Model has max_seq_len=17 for positional embeddings.
+
+    Expected: Trajectory truncated to last 17 steps.
+    """
+    # Create a long trajectory (39 steps like we saw in debugging)
+    long_trajectory = []
+    for i in range(39):
+        long_trajectory.append(
+            {
+                "state": np.random.randn(100).astype(np.float32),
+                "action": i % 2025,
+                "log_prob": -0.5,
+                "value": 0.1,
+                "reward": 1.0 if i == 38 else 0.0,
+                "is_teampreview": (i == 0),
+            }
+        )
+
+    batch = collate_trajectories_with_truncation([long_trajectory], "cpu", max_seq_len=17)
+
+    # Sequence length should be capped at 17
+    assert batch["states"].shape[1] == 17
+    assert batch["actions"].shape[1] == 17
+
+
+def test_trajectory_truncation_keeps_last_steps():
+    """
+    Test that truncation keeps the LAST N steps, not first N.
+
+    Rationale: Later game decisions (endgame) are more impactful
+    and shouldn't be discarded.
+    """
+    trajectory = []
+    for i in range(25):
+        trajectory.append(
+            {
+                "state": np.ones(10, dtype=np.float32) * i,  # State encodes step index
+                "action": i,
+                "log_prob": -0.5,
+                "value": 0.1,
+                "reward": 1.0 if i == 24 else 0.0,
+                "is_teampreview": (i == 0),
+            }
+        )
+
+    batch = collate_trajectories_with_truncation([trajectory], "cpu", max_seq_len=10)
+
+    # Should keep steps 15-24 (last 10)
+    actions = batch["actions"][0].tolist()
+    assert actions == list(range(15, 25)), f"Expected last 10 steps, got {actions}"
+
+
+def test_trajectory_truncation_preserves_short_trajectories():
+    """
+    Test that trajectories shorter than max_seq_len are not modified.
+    """
+    short_trajectory = []
+    for i in range(5):
+        short_trajectory.append(
+            {
+                "state": np.random.randn(10).astype(np.float32),
+                "action": i,
+                "log_prob": -0.5,
+                "value": 0.1,
+                "reward": 1.0 if i == 4 else 0.0,
+                "is_teampreview": (i == 0),
+            }
+        )
+
+    batch = collate_trajectories_with_truncation([short_trajectory], "cpu", max_seq_len=17)
+
+    # Should preserve original length
+    assert batch["states"].shape[1] == 5
+    actions = batch["actions"][0].tolist()
+    assert actions == [0, 1, 2, 3, 4]
+
+
+def test_trajectory_truncation_mixed_lengths():
+    """
+    Test batch with mix of short and long trajectories.
+
+    Expected: Long ones truncated, short ones preserved, proper padding.
+    """
+    trajectories = []
+
+    # Short trajectory (5 steps)
+    short = [
+        {
+            "state": np.ones(10, dtype=np.float32) * i,
+            "action": i,
+            "log_prob": -0.5,
+            "value": 0.1,
+            "reward": 0.0,
+            "is_teampreview": False,
+        }
+        for i in range(5)
+    ]
+    trajectories.append(short)
+
+    # Long trajectory (25 steps)
+    long = [
+        {
+            "state": np.ones(10, dtype=np.float32) * (100 + i),
+            "action": 100 + i,
+            "log_prob": -0.5,
+            "value": 0.1,
+            "reward": 0.0,
+            "is_teampreview": False,
+        }
+        for i in range(25)
+    ]
+    trajectories.append(long)
+
+    batch = collate_trajectories_with_truncation(trajectories, "cpu", max_seq_len=10)
+
+    # Max length should be 10 (from truncated long trajectory)
+    assert batch["states"].shape == (2, 10, 10)
+
+    # First trajectory should be padded (original 5 steps + 5 padding)
+    assert batch["padding_mask"][0].sum() == 5
+
+    # Second trajectory should be full (10 steps after truncation)
+    assert batch["padding_mask"][1].sum() == 10
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -94,11 +94,36 @@ def _is_valid_doubles_order(double_order: DoubleBattleOrder, battle: DoubleBattl
         ):
             return False
 
-        # The order is only allowed to not exist if we're forced to switch out another pokemon or if one doesn't exist
+        # The order is only allowed to not exist (pass) if:
+        # 1. This slot does NOT need to force switch
+        # 2. AND (the other slot needs to force switch OR this slot has no active pokemon)
+        # EXCEPTION: If both slots need to force switch but there aren't enough
+        # available switches (e.g., only 1 Pokemon left), pass is valid for one slot.
         if order is None or isinstance(order, PassBattleOrder):
+            # If THIS slot must switch, pass is usually not valid
+            if battle.force_switch[i]:
+                # Exception: both slots need to switch but not enough mons available
+                # In this case, one slot switches and the other must pass
+                if battle.force_switch[0] and battle.force_switch[1]:
+                    # Count unique available switches across both slots
+                    all_available = set()
+                    for slot_switches in battle.available_switches:
+                        for mon in slot_switches:
+                            all_available.add(mon.species)
+                    # If there's only 1 available switch, one slot MUST pass
+                    if len(all_available) <= 1:
+                        pass  # Allow pass in this case
+                    else:
+                        return False
+                else:
+                    return False
+            # Otherwise, pass is valid if other slot is switching or we have no active mon
             if not (battle.force_switch[1 - i] or not battle.active_pokemon[i]):
                 return False
         elif order.order is None:
+            # Same logic for order.order being None
+            if battle.force_switch[i]:
+                return False
             if not (battle.force_switch[1 - i] or not battle.active_pokemon[i]):
                 return False
 

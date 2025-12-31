@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import torch
 from poke_env.battle import AbstractBattle, DoubleBattle
+from poke_env.concurrency import POKE_LOOP, create_in_poke_loop
 from poke_env.player import Player
 from poke_env.player.battle_order import (
     BattleOrder,
@@ -27,9 +28,17 @@ class BatchInferencePlayer(Player):
         batch_timeout=0.01,
         probabilistic=True,
         trajectory_queue=None,
+        accept_open_team_sheet=True,
         **kwargs,
     ):
-        super().__init__(**kwargs)
+        # IMPORTANT: Set up instance attributes BEFORE calling super().__init__()
+        # because poke-env Player starts listening for websocket messages immediately
+        # (start_listening=True by default), and message handlers may access these
+        # attributes before __init__ completes.
+
+        # Extract battle_format from kwargs since we need it before super().__init__
+        battle_format = kwargs.get("battle_format", "gen9vgc2023regulationc")
+
         self.model = model
         self.device = device
         self.batch_size = batch_size
@@ -37,9 +46,12 @@ class BatchInferencePlayer(Player):
         self.probabilistic = probabilistic
         self.trajectory_queue = trajectory_queue
         self.embedder = Embedder(
-            format=self.format, feature_set=Embedder.FULL, omniscient=False
+            format=battle_format, feature_set=Embedder.FULL, omniscient=False
         )
-        self.queue: asyncio.Queue = asyncio.Queue()
+        # CRITICAL: Create the queue in POKE_LOOP since that's where battle handling runs
+        # poke-env runs all websocket/battle handling in a separate event loop (POKE_LOOP)
+        # If we create the queue in a different loop, cross-loop access will deadlock
+        self.queue: asyncio.Queue = create_in_poke_loop(asyncio.Queue)
         self.hidden_states: Dict[
             str, Tuple[torch.Tensor, torch.Tensor]
         ] = {}  # battle_tag -> (h, c)
@@ -52,8 +64,22 @@ class BatchInferencePlayer(Player):
             Dict[str, Any]
         ] = []  # For debugging/inspection when no training queue
 
-    async def start_inference_loop(self):
-        self._inference_task = asyncio.create_task(self._inference_loop())
+        # Now call parent init - this starts the websocket listener
+        super().__init__(accept_open_team_sheet=accept_open_team_sheet, **kwargs)
+
+    def start_inference_loop(self):
+        """
+        Start the inference loop in POKE_LOOP (poke-env's event loop).
+
+        CRITICAL: This is NOT async because we need to schedule the task in POKE_LOOP,
+        not in whatever event loop is currently running. All battle handling happens
+        in POKE_LOOP, so the inference loop must also run there to avoid cross-loop
+        deadlocks when accessing the shared asyncio.Queue.
+        """
+        # Schedule the inference loop coroutine in POKE_LOOP
+        future = asyncio.run_coroutine_threadsafe(self._inference_loop(), POKE_LOOP)
+        # We don't await or .result() here - the loop runs indefinitely in the background
+        self._inference_future = future
 
     async def _inference_loop(self):
         while True:
@@ -67,6 +93,8 @@ class BatchInferencePlayer(Player):
                 # Wait for first item
                 item = await self.queue.get()
                 self._add_to_batch(batch, futures, battle_tags, is_tps, masks, item)
+
+                # Collect more
 
                 # Collect more
                 start_time = asyncio.get_event_loop().time()
@@ -318,9 +346,22 @@ class BatchInferencePlayer(Player):
                 order = "/team 123456"
         else:
             try:
-                mdbo = MDBO.from_int(action_idx, type=MDBO.TURN)
+                # Use FORCE_SWITCH type if any pokemon needs to switch in
+                action_type = MDBO.FORCE_SWITCH if any(battle.force_switch) else MDBO.TURN
+                mdbo = MDBO.from_int(action_idx, type=action_type)
                 order = mdbo.to_double_battle_order(battle)
-            except ValueError:
+
+                # Debug: log force_switch actions and mask
+                # Removed DEBUG_FORCE_SWITCH logging - fix verified working
+            except (ValueError, KeyError, AttributeError, IndexError, AssertionError) as e:
+                # Action conversion failed - this shouldn't happen if masking is correct
+                # Log it for debugging and use default order
+                print(
+                    f"WARNING: Action {action_idx} conversion failed: {type(e).__name__}: {e}"
+                )
+                print(
+                    f"  force_switch={battle.force_switch}, mask_sum={mask.sum() if mask is not None else 'None'}"
+                )
                 order = DefaultBattleOrder()
 
         return order  # type: ignore
@@ -361,6 +402,9 @@ class BatchInferencePlayer(Player):
 
         # Validate each possible action by attempting to convert it to a battle order
         # and checking if that order is legal in the current game state
+        debug_exceptions = {}  # Track exception types for debugging
+        debug_valid_but_rejected = []  # Track orders that converted but were rejected
+        debug_pass_switch_actions = []  # Track pass+switch actions specifically
         for i in range(MDBO.action_space()):
             try:
                 # MDBO.from_int() converts integer action index to MDBO object
@@ -371,13 +415,18 @@ class BatchInferencePlayer(Player):
                 # is_valid_order() checks all game rules
                 if isinstance(order, DoubleBattleOrder) and is_valid_order(order, battle):
                     mask[i] = 1.0
-            except (ValueError, KeyError, AttributeError):
+                elif isinstance(order, DoubleBattleOrder):
+                    # Track pass+switch actions specifically
+                    if "pass" in mdbo.message and "switch" in mdbo.message:
+                        debug_pass_switch_actions.append((i, mdbo.message, str(order)))
+                    elif len(debug_valid_but_rejected) < 3:
+                        debug_valid_but_rejected.append((i, mdbo.message, str(order)))
+            except (ValueError, KeyError, AttributeError, IndexError, AssertionError) as e:
                 # Action conversion failed - this action is invalid
-                # Common causes:
-                # - Action refers to a Pokemon not on the field
-                # - Action refers to a move the Pokemon doesn't have
-                # - Action has invalid target specification
-                pass
+                # Track exception type for debugging
+                exc_type = type(e).__name__
+                if exc_type not in debug_exceptions:
+                    debug_exceptions[exc_type] = str(e)
 
         # Safety check: ensure at least one action is valid
         # If no actions are valid, something is wrong with the game state
@@ -386,6 +435,40 @@ class BatchInferencePlayer(Player):
                 f"WARNING: No valid actions found for battle {battle.battle_tag}. "
                 f"Force switch: {battle.force_switch}, Active: {battle.active_pokemon}"
             )
+            print(f"  Exception types encountered: {debug_exceptions}")
+            print(f"  Available switches: {battle.available_switches}")
+            print(f"  Available moves: {battle.available_moves}")
+            print(f"  Pass+switch actions tested: {debug_pass_switch_actions[:5]}")
+            print(f"  Team keys: {list(battle.team.keys())}")
+            print(f"  Team species: {[p.species for p in battle.team.values()]}")
+            print(
+                f"  Avail switch species: {[[s.species for s in slot] for slot in battle.available_switches]}"
+            )
+
+            # Manually test action 2020-2023 (pass, switch 1-4)
+            for test_idx in range(2020, 2024):
+                try:
+                    test_mdbo = MDBO.from_int(test_idx, type=action_type)
+                    test_order = test_mdbo.to_double_battle_order(battle)
+                    valid = is_valid_order(test_order, battle)
+                    print(f"  Action {test_idx} ({test_mdbo.message}): valid={valid}")
+                    if not valid:
+                        # Debug why it's invalid
+                        if isinstance(test_order, DoubleBattleOrder):
+                            order2 = test_order.second_order
+                            if (
+                                order2
+                                and hasattr(order2, "order")
+                                and hasattr(order2.order, "species")
+                            ):
+                                switch_species = order2.order.species
+                                avail = [s.species for s in battle.available_switches[1]]
+                                print(
+                                    f"    Switch target: {switch_species}, Available: {avail}"
+                                )
+                except Exception as e:
+                    print(f"  Action {test_idx} failed: {type(e).__name__}: {e}")
+
             # Return all-ones as fallback to avoid crashes (model will pick randomly)
             return np.ones(MDBO.action_space(), dtype=np.float32)
 

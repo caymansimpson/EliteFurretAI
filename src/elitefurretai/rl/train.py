@@ -93,7 +93,7 @@ def load_model(filepath, device):
         turn_head_layers=config.get("turn_head_layers", []),
         num_actions=MDBO.action_space(),
         num_teampreview_actions=MDBO.teampreview_space(),
-        max_seq_len=17,
+        max_seq_len=config["max_seq_len"],
     ).to(device)
 
     if state_dict:
@@ -110,6 +110,7 @@ def worker_loop(
     port_offset: int,
     team_repo: TeamRepo,
     battle_format: str,
+    run_id: str,
     team_subdirectory: Optional[str] = None,
     batch_size: int = 16,
 ):
@@ -124,6 +125,7 @@ def worker_loop(
         port_offset: Port offset for showdown server (0, 1, 2, 3 for ports 8000-8003)
         team_repo: TeamRepo for random team sampling
         battle_format: Game format string for battle initialization and team sampling (e.g., gen9vgc2023regulationc)
+        run_id: Unique identifier for this training run (prevents stale server state issues)
         team_subdirectory: Optional subdirectory within format to sample teams from (e.g., "easy", "rental_teams")
     """
     loop = asyncio.new_event_loop()
@@ -140,11 +142,12 @@ def worker_loop(
         # Sample random team if repo provided
         team = team_repo.sample_team(battle_format, subdirectory=team_subdirectory)
 
+        # Use run_id in player names to prevent stale state on Showdown server
         player = BatchInferencePlayer(
             model=opponent_pool.main_model,
             device=opponent_pool.device,
             batch_size=batch_size,
-            account_configuration=AccountConfiguration(f"Worker_{worker_id}_{i}", None),
+            account_configuration=AccountConfiguration(f"W{run_id}_{worker_id}_{i}", None),
             server_configuration=server_config,
             trajectory_queue=traj_queue,
             battle_format=battle_format,
@@ -152,16 +155,26 @@ def worker_loop(
         )
         players.append(player)
 
-    # Start inference loops
+    # Start inference loops for main players in POKE_LOOP (poke-env's event loop)
+    # This is done synchronously BEFORE starting battles because:
+    # 1. The queue and battle handlers run in POKE_LOOP
+    # 2. start_inference_loop() schedules the loop in POKE_LOOP via run_coroutine_threadsafe
     for p in players:
-        loop.create_task(p.start_inference_loop())
+        p.start_inference_loop()
 
     async def run_battles():
+        # Give inference loops time to start in POKE_LOOP
+        await asyncio.sleep(0.2)
+
+        battle_batch = 0
         while True:
+            battle_batch += 1
+            print(f"[Worker {worker_id}] Starting battle batch {battle_batch}...")
+
             # Sample opponents for each player (with random teams if available)
             opponents = []
             for i in range(num_players):
-                opp_config = AccountConfiguration(f"Opponent_{worker_id}_{i}", None)
+                opp_config = AccountConfiguration(f"O{run_id}_{worker_id}_{i}", None)
                 opponent_team = team_repo.sample_team(
                     battle_format, subdirectory=team_subdirectory
                 )
@@ -171,11 +184,14 @@ def worker_loop(
                 opponents.append(opponent)
 
             # CRITICAL: Start inference loops for BatchInferencePlayer opponents
-            # Without this, opponents using our neural network will hang forever
-            # waiting for inference results that never come (queue never processed)
+            # This is now synchronous - schedules in POKE_LOOP via run_coroutine_threadsafe
             for opponent in opponents:
                 if isinstance(opponent, BatchInferencePlayer):
-                    await opponent.start_inference_loop()
+                    opponent.start_inference_loop()
+
+            print(
+                f"[Worker {worker_id}] Running {len(players)} battles against opponents..."
+            )
 
             # Run a batch of battles
             tasks = []
@@ -183,24 +199,45 @@ def worker_loop(
                 tasks.append(player.battle_against(opponent, n_battles=20))
             await asyncio.gather(*tasks)
 
-            # Clean up: Cancel inference loops for opponents to prevent memory leak
+            print(f"[Worker {worker_id}] Batch {battle_batch} completed!")
+
+            # Clean up: Cancel inference futures for opponents to prevent memory leak
             # Opponents are recreated each battle batch, so their loops must be stopped
             for opponent in opponents:
-                if isinstance(opponent, BatchInferencePlayer) and opponent._inference_task:
-                    opponent._inference_task.cancel()
-                    try:
-                        await opponent._inference_task
-                    except asyncio.CancelledError:
-                        pass  # Expected when cancelling
+                if isinstance(opponent, BatchInferencePlayer) and hasattr(
+                    opponent, "_inference_future"
+                ):
+                    opponent._inference_future.cancel()
 
     try:
         loop.run_until_complete(run_battles())
     except Exception as e:
         print(f"Worker {worker_id} crashed: {e}")
+        import traceback
+
+        traceback.print_exc()
 
 
-def collate_trajectories(trajectories, device):
-    """Collate list of trajectories into batched tensors with padding."""
+def collate_trajectories(trajectories, device, max_seq_len=17):
+    """Collate list of trajectories into batched tensors with padding.
+
+    Args:
+        trajectories: List of trajectory dicts
+        device: torch device
+        max_seq_len: Maximum sequence length (matches model's positional embedding size)
+                     Trajectories longer than this are truncated (keeping last N steps
+                     since later game decisions are typically more impactful).
+    """
+    # Truncate long trajectories to max_seq_len
+    truncated_trajectories = []
+    for traj in trajectories:
+        if len(traj) > max_seq_len:
+            # Keep last max_seq_len steps (later decisions matter more)
+            truncated_trajectories.append(traj[-max_seq_len:])
+        else:
+            truncated_trajectories.append(traj)
+    trajectories = truncated_trajectories
+
     batch_size = len(trajectories)
     max_len = max(len(t) for t in trajectories)
 
@@ -394,6 +431,10 @@ def main():
     device = config.device if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
 
+    # Generate unique run ID to avoid stale state on Showdown server
+    # Showdown remembers player names, so we need unique names per run
+    run_id = datetime.now().strftime("%H%M%S")
+
     # Initialize wandb
     if config.use_wandb:
         wandb.init(
@@ -535,9 +576,9 @@ def main():
     # Each worker runs multiple players concurrently in an asyncio loop
     threads = []
     for i in range(config.num_workers):
-        # Distribute workers across multiple Showdown servers (ports 8000-8003)
-        # This prevents server bottlenecks when running many concurrent battles
-        port_offset = i % 4  # Cycle through 4 servers on ports 8000-8003
+        # Distribute workers across available Showdown servers
+        # Use num_showdown_servers from config (default 1 = all on port 8000)
+        port_offset = i % config.num_showdown_servers
 
         # Create daemon thread for this worker (exits when main thread exits)
         t = threading.Thread(
@@ -550,6 +591,7 @@ def main():
                 port_offset,
                 team_repo,
                 config.battle_format,
+                run_id,
                 team_subdirectory,
                 config.batch_size,
             ),

@@ -7,6 +7,7 @@ Adamant Nature
 - Drain Punch  
 - Wild Charge  
 - Swords Dance  
+- Fake Out
 
 Amoonguss @ Sitrus Berry  
 Ability: Effect Spore  
@@ -15,7 +16,10 @@ Tera Type: Dark
 EVs: 252 HP / 4 SpA / 252 SpD  
 Calm Nature  
 IVs: 0 Atk  
-- Pollen Puff
+- Pollen Puff  
+- Sweet Scent
+- Astonish
+- Absorb
 
 Dragonite @ Lum Berry  
 Ability: Inner Focus  
@@ -25,6 +29,9 @@ EVs: 252 HP / 252 Atk / 4 SpA
 Brave Nature  
 - Extreme Speed  
 - Protect  
+- Scary Face
+- Mist
+
 
 Palafin @ Mystic Water  
 Ability: Zero to Hero  
@@ -33,4 +40,28 @@ Tera Type: Water
 EVs: 252 Atk / 4 SpD / 252 Spe  
 Jolly Nature  
 - Protect  
-- Wave Crash
+- Wave Crash  
+- Flip Turn
+- Mist
+
+Growlithe @ Choice Band
+Ability: Justified
+Tera Type: Fire
+EVs: 1 Def
+Modest Nature
+IVs: 0 Atk
+- Sleep Talk
+- Covet
+- Endure
+- Scary Face
+
+Fletchling @ Air Balloon
+Ability: Big Pecks
+Tera Type: Normal
+EVs: 1 Atk
+Quiet Nature
+IVs: 0 Atk
+- Agility
+- Quick Guard
+- Sleep Talk
+- Defog

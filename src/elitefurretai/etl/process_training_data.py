@@ -59,6 +59,7 @@ def trajectories(
     num_workers=4,
     compressed=True,
     augment_teampreview=True,
+    steps_per_battle=40,
 ):
     """
     Loads battles, processes them into trajectories, and saves them in manageable chunks.
@@ -81,7 +82,10 @@ def trajectories(
 
     # Create a BattleDataset that yields full trajectories (one per __getitem__)
     dataset = BattleDataset(
-        files, embedder=emb, steps_per_battle=17, augment_teampreview=augment_teampreview
+        files,
+        embedder=emb,
+        steps_per_battle=steps_per_battle,
+        augment_teampreview=augment_teampreview,
     )
 
     # Use a DataLoader to iterate through the dataset one trajectory at a time
@@ -172,6 +176,7 @@ def teampreview(
     save_dir,
     chunk_size=8096,
     batch_size=1,
+    steps_per_battle=1,
     auxiliary_objectives=False,
     num_workers=4,
     compressed=True,
@@ -358,6 +363,12 @@ Examples:
         help="Batch size for data loading (default: 32)",
     )
     parser.add_argument(
+        "--steps-per-battle",
+        type=int,
+        default=40,
+        help="Number of steps to process per battle (default: 40)",
+    )
+    parser.add_argument(
         "--auxiliary-objectives",
         action="store_true",
         help="Include auxiliary objectives like move order, KO order, and switch order",
@@ -442,6 +453,7 @@ if __name__ == "__main__":
     print(f"\nProcessing mode: {args.mode}")
     print(f"Chunk size: {args.chunk_size}")
     print(f"Batch size: {args.batch_size}")
+    print(f"Steps per battle: {args.steps_per_battle}")
     print(f"Auxiliary objectives: {args.auxiliary_objectives}")
     print(f"Compressed: {compressed}")
 
@@ -454,6 +466,7 @@ if __name__ == "__main__":
         train_dir,
         chunk_size=args.chunk_size,
         batch_size=args.batch_size,
+        steps_per_battle=args.steps_per_battle,
         auxiliary_objectives=args.auxiliary_objectives,
         num_workers=args.num_workers,
         compressed=compressed,
@@ -467,6 +480,7 @@ if __name__ == "__main__":
         test_dir,
         chunk_size=args.chunk_size,
         batch_size=args.batch_size,
+        steps_per_battle=args.steps_per_battle,
         auxiliary_objectives=args.auxiliary_objectives,
         num_workers=args.num_workers,
         compressed=compressed,
@@ -480,6 +494,7 @@ if __name__ == "__main__":
         val_dir,
         chunk_size=args.chunk_size,
         batch_size=args.batch_size,
+        steps_per_battle=args.steps_per_battle,
         auxiliary_objectives=args.auxiliary_objectives,
         num_workers=args.num_workers,
         compressed=compressed,

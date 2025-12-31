@@ -23,12 +23,17 @@ class BCPlayer(Player):
         probabilistic=True,
         device: str = "cpu",
         verbose: bool = False,
+        accept_open_team_sheet: bool = True,
         **kwargs,
     ):
         # pull in all player information manually
         if verbose:
             print("[BCPlayer] Initializing player...")
-        super().__init__(**kwargs, battle_format=battle_format)
+        super().__init__(
+            **kwargs,
+            battle_format=battle_format,
+            accept_open_team_sheet=accept_open_team_sheet,
+        )
 
         if verbose:
             print(f"[BCPlayer] Creating embedder for format: {battle_format}")

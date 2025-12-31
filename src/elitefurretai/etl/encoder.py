@@ -191,9 +191,46 @@ class MDBO(BattleOrder):
             elif order == "default":
                 return DefaultBattleOrder()
             elif order.startswith("switch "):
-                # Switch to a specific Pokémon in the team
-                key = list(battle.team.keys())[int(order[7]) - 1]
-                orders.append(SingleBattleOrder(order=battle.team[key]))
+                # Switch to a specific Pokémon from the team
+                # In Showdown protocol, "switch N" refers to the N-th Pokemon in the
+                # request's side.pokemon list (1-indexed). After teampreview, this list
+                # is reordered so positions 1-4 are the Pokemon brought to battle.
+                #
+                # IMPORTANT: We MUST use battle.last_request to get the correct order,
+                # because battle.team is a dict populated during teampreview and its
+                # iteration order may not match the request's Pokemon order.
+                switch_idx = int(order[7]) - 1  # Convert 1-indexed to 0-indexed
+
+                # Get Pokemon order from the last request's side.pokemon list
+                if battle.last_request and "side" in battle.last_request:
+                    request_pokemon = battle.last_request["side"]["pokemon"]
+                    if switch_idx < len(request_pokemon):
+                        # Get the identifier (e.g., "p1: Iron Hands") from request
+                        ident = request_pokemon[switch_idx]["ident"]
+                        # Look up the Pokemon object from battle.team using identifier
+                        if ident in battle.team:
+                            mon = battle.team[ident]
+                            orders.append(SingleBattleOrder(order=mon))
+                        else:
+                            raise ValueError(
+                                f"Pokemon {ident} from request not found in battle.team. "
+                                f"Team keys: {list(battle.team.keys())}"
+                            )
+                    else:
+                        raise ValueError(
+                            f"Switch index {switch_idx + 1} out of bounds for request "
+                            f"pokemon list of size {len(request_pokemon)}"
+                        )
+                else:
+                    # Fallback to old behavior if no request available (eg supervised learning)
+                    team_list = list(battle.team.values())
+                    if switch_idx < len(team_list):
+                        mon = team_list[switch_idx]
+                        orders.append(SingleBattleOrder(order=mon))
+                    else:
+                        raise ValueError(
+                            f"Switch index {switch_idx + 1} out of bounds for team of size {len(team_list)}"
+                        )
 
             # move
             else:
@@ -201,7 +238,26 @@ class MDBO(BattleOrder):
                 assert (
                     moving_mon is not None
                 ), "Cannot convert an order for a pokemon when it is not active"
-                move_key = list(moving_mon.moves.keys())[int(order[5]) - 1]
+
+                # Special case: struggle/recharge are not in the Pokemon's move list
+                # but can appear in available_moves when all PP is depleted.
+                # In this case, use available_moves instead of the Pokemon's moveset.
+                if len(battle.available_moves[i]) == 1 and battle.available_moves[i][
+                    0
+                ].id in ["struggle", "recharge"]:
+                    # For struggle/recharge, any "move X" should use this move
+                    move = battle.available_moves[i][0]
+                else:
+                    # Normal case: look up move from Pokemon's moveset
+                    move_idx = int(order[5]) - 1  # Convert 1-indexed to 0-indexed
+                    move_keys = list(moving_mon.moves.keys())
+                    if move_idx >= len(move_keys):
+                        raise ValueError(
+                            f"Move index {move_idx + 1} out of bounds for {moving_mon.species} "
+                            f"with {len(move_keys)} moves"
+                        )
+                    move_key = move_keys[move_idx]
+                    move = moving_mon.moves[move_key]
 
                 target = DoubleBattle.EMPTY_TARGET_POSITION
                 if len(order) > 7 and order.replace(" terastallize", "")[7:] in [
@@ -214,7 +270,7 @@ class MDBO(BattleOrder):
 
                 orders.append(
                     SingleBattleOrder(
-                        order=moving_mon.moves[move_key],
+                        order=move,
                         terastallize="terastallize" in order,
                         move_target=target,
                     )

@@ -41,7 +41,7 @@ class BattleDataset(Dataset):
         embedder: Embedder = Embedder(
             format="gen9vgc2023regulationc", feature_set="full", omniscient=True
         ),
-        steps_per_battle: int = 17,
+        steps_per_battle: int = 40,
         augment_teampreview: bool = True,
     ):
         assert len(files) > 0

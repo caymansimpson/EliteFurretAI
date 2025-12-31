@@ -371,3 +371,108 @@ def test_is_valid_doubles_order(example_doubles_request):
             assert is_valid_order(dbo, battle)
         else:
             assert not is_valid_order(dbo, battle)
+
+
+class TestDoubleForceSwitch:
+    """
+    Tests for force_switch=[True, True] edge cases.
+
+    When both active Pokemon faint but limited replacements are available,
+    one slot must switch and the other must pass.
+
+    See src/elitefurretai/rl/DEBUG_LEARNINGS.md for details.
+    """
+
+    def test_double_force_switch_with_one_pokemon_allows_pass(self):
+        """
+        When force_switch=[True, True] but only 1 Pokemon available,
+        one slot can pass because there's nothing to switch to.
+        """
+        logger = MagicMock()
+        battle = DoubleBattle("battle-gen9vgc2023regc-1", "username", logger, gen=9)
+        battle._player_role = "p1"  # Required for active_pokemon property
+
+        # Both slots need to force switch
+        battle._force_switch = [True, True]
+
+        # Only one Pokemon available (e.g., all others fainted)
+        remaining_mon = Pokemon(gen=9, species="dragonite")
+        remaining_mon._active = False
+
+        battle._available_switches = [[remaining_mon], [remaining_mon]]
+        battle._active_pokemon = {"p1a": None, "p1b": None}
+
+        # switch + pass should be valid
+        switch_order = SingleBattleOrder(order=remaining_mon)
+        pass_order = PassBattleOrder()
+
+        order1 = DoubleBattleOrder(first_order=switch_order, second_order=pass_order)
+        order2 = DoubleBattleOrder(first_order=pass_order, second_order=switch_order)
+
+        assert is_valid_order(order1, battle), "switch, pass should be valid with 1 mon"
+        assert is_valid_order(order2, battle), "pass, switch should be valid with 1 mon"
+
+    def test_double_force_switch_with_two_pokemon_requires_both_switch(self):
+        """
+        When force_switch=[True, True] and 2+ Pokemon available,
+        both slots must switch (pass is not valid).
+        """
+        logger = MagicMock()
+        battle = DoubleBattle("battle-gen9vgc2023regc-2", "username", logger, gen=9)
+        battle._player_role = "p1"
+
+        battle._force_switch = [True, True]
+
+        mon1 = Pokemon(gen=9, species="amoonguss")
+        mon1._active = False
+        mon2 = Pokemon(gen=9, species="dragonite")
+        mon2._active = False
+
+        battle._available_switches = [[mon1, mon2], [mon1, mon2]]
+        battle._active_pokemon = {"p1a": None, "p1b": None}
+
+        # Both switching should be valid
+        order_both_switch = DoubleBattleOrder(
+            first_order=SingleBattleOrder(order=mon1),
+            second_order=SingleBattleOrder(order=mon2),
+        )
+        assert is_valid_order(order_both_switch, battle)
+
+        # One pass should be invalid when 2 mons available
+        order_with_pass = DoubleBattleOrder(
+            first_order=SingleBattleOrder(order=mon1), second_order=PassBattleOrder()
+        )
+        assert not is_valid_order(order_with_pass, battle)
+
+    def test_single_force_switch_pass_behavior(self):
+        """
+        When force_switch=[False, True], the switching slot cannot pass
+        and the non-switching slot must pass.
+        """
+        logger = MagicMock()
+        battle = DoubleBattle("battle-gen9vgc2023regc-3", "username", logger, gen=9)
+        battle._player_role = "p1"
+
+        battle._force_switch = [False, True]
+
+        active_mon = Pokemon(gen=9, species="ironhands")
+        active_mon._active = True
+
+        switch_target = Pokemon(gen=9, species="amoonguss")
+        switch_target._active = False
+
+        battle._available_switches = [[], [switch_target]]
+        battle._active_pokemon = {"p1a": active_mon, "p1b": None}
+
+        # Correct: pass for non-switching slot, switch for switching slot
+        valid_order = DoubleBattleOrder(
+            first_order=PassBattleOrder(),
+            second_order=SingleBattleOrder(order=switch_target),
+        )
+        assert is_valid_order(valid_order, battle)
+
+        # Invalid: switching slot tries to pass
+        invalid_order = DoubleBattleOrder(
+            first_order=PassBattleOrder(), second_order=PassBattleOrder()
+        )
+        assert not is_valid_order(invalid_order, battle)

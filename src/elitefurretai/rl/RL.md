@@ -58,7 +58,7 @@ The system follows a **single-machine, multi-threaded Actor-Learner architecture
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                    TRAINING COORDINATOR                     │
-│                    (train_v2.py)                            │
+│                          (train.py)                         │
 └────────────┬───────────────────-───────────────-──┬─────────┘
              │                                      │
              │                                      ▼
@@ -243,10 +243,10 @@ The training script saves comprehensive checkpoints that include the model weigh
 
 ```bash
 # Resume from the most recent checkpoint in the save directory
-python src/elitefurretai/rl/train_v2.py --resume
+python src/elitefurretai/rl/train.py --resume
 
 # Resume from a specific checkpoint
-python src/elitefurretai/rl/train_v2.py --checkpoint path/to/checkpoint.pt
+python src/elitefurretai/rl/train.py --checkpoint path/to/checkpoint.pt
 ```
 
 ### Automatic Exploiter Training
@@ -337,7 +337,7 @@ with open(team_path, "w") as f:
 return {"model_path": exploiter_path, "team": exploiter_team}
 ```
 
-**In `train_v2.py`** (main training coordinator):
+**In `train.py`** (main training coordinator):
 ```python
 # After exploiter subprocess completes
 exploiter_path = os.path.join(
@@ -379,7 +379,7 @@ def _create_exploiter_opponent(self, exploiter_info: Dict[str, Any]):
 The complete data flow for exploiter training and integration:
 
 ```
-MAIN TRAINING LOOP (train_v2.py)
+MAIN TRAINING LOOP (train.py)
         │
         ├─ Every exploiter_check_interval updates (e.g., 5000)
         │
@@ -415,7 +415,7 @@ MAIN TRAINING LOOP (train_v2.py)
 └──────────────────────────────────────────────────────────-─────┘
         │
         ▼
-  MAIN TRAINING RESUMES (train_v2.py)
+  MAIN TRAINING RESUMES (train.py)
         │
         ├─ Read saved team file
         │  team_path = exploiter_path.replace(".pt", "_team.txt")
@@ -708,7 +708,7 @@ Each worker connects to different server port, distributing CPU load across mult
 4.  **Edit `my_config.yaml`**: Set `checkpoint_path` to your BC model and configure other settings.
 5.  **Train**:
     ```bash
-    python src/elitefurretai/rl/train_v2.py --config my_config.yaml
+    python src/elitefurretai/rl/train.py --config my_config.yaml
     ```
 
 ### Example Configurations
