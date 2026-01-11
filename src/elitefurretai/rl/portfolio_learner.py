@@ -148,8 +148,16 @@ class PortfolioRNaDLearner:
         """
         Compute KL divergence to all reference models and return minimum.
 
-        This is the key innovation: regularize against the CLOSEST reference,
-        preventing forgetting of multiple strategies.
+        This implements MINIMUM KL DIVERGENCE portfolio regularization:
+        - Computes KL(current_policy || ref_policy) for each reference in portfolio
+        - Returns the MINIMUM KL value across all references
+
+        Intuition: "Stay close to at least ONE past strategy"
+        - Prevents collapse to single exploitable strategy
+        - Maintains diversity by allowing drift from some refs as long as we stay close to others
+        - More permissive than maximum/average KL (allows faster learning)
+
+        See PORTFOLIO_REGULARIZATION.md Section 5.6 for detailed explanation.
         """
         min_kl = None
         best_ref_idx = 0

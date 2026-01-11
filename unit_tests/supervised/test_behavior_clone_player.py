@@ -234,6 +234,7 @@ def test_predict_advantage_with_trajectory():
         mock_model.eval = MagicMock()
 
         player.win_model = mock_model
+        player._device = "cpu"  # Add device attribute
         player._trajectories = {"test-battle": [[0.0] * 100 for _ in range(5)]}
 
         mock_battle = MagicMock()

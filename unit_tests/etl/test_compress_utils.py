@@ -157,9 +157,9 @@ def test_compressed_file_smaller_than_uncompressed(temp_dir, sample_dict):
     compressed_size = os.path.getsize(compressed_path)
     uncompressed_size = os.path.getsize(uncompressed_path)
 
-    assert (
-        compressed_size < uncompressed_size
-    ), f"Compressed ({compressed_size}) should be smaller than uncompressed ({uncompressed_size})"
+    assert compressed_size < uncompressed_size, (
+        f"Compressed ({compressed_size}) should be smaller than uncompressed ({uncompressed_size})"
+    )
 
 
 def test_compression_level_affects_size(temp_dir, sample_dict):
@@ -182,9 +182,9 @@ def test_compression_level_affects_size(temp_dir, sample_dict):
 
     # Higher compression should generally produce smaller files
     # (may not always be true for small data, but usually is)
-    assert (
-        size_level10 <= size_level1
-    ), f"Level 10 ({size_level10}) should be <= level 1 ({size_level1})"
+    assert size_level10 <= size_level1, (
+        f"Level 10 ({size_level10}) should be <= level 1 ({size_level1})"
+    )
 
 
 # =============================================================================

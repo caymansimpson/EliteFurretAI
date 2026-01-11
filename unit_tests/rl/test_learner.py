@@ -211,9 +211,9 @@ def test_update_ref_model(learner):
     for main_param, ref_param in zip(
         learner.model.parameters(), learner.ref_model.parameters()
     ):
-        assert torch.allclose(
-            main_param, ref_param
-        ), "Ref model should match main model after update"
+        assert torch.allclose(main_param, ref_param), (
+            "Ref model should match main model after update"
+        )
 
 
 def test_update_ref_model_keeps_frozen(learner):

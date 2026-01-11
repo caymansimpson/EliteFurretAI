@@ -59,7 +59,7 @@ def load_model_and_config(model_path: str, device: str):
 
     # Create embedder (same as in training)
     embedder = Embedder(
-        format="gen9vgc2023regulationc", feature_set=Embedder.FULL, omniscient=False
+        format="gen9vgc2023regc", feature_set=Embedder.FULL, omniscient=False
     )
 
     # Create model with same architecture

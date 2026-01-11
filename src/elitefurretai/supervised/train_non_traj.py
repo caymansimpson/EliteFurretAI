@@ -131,7 +131,7 @@ def main(train_path, test_path, val_path):
     random.seed(config["seed"])
 
     embedder = Embedder(
-        format="gen9vgc2023regulationc", feature_set=Embedder.FULL, omniscient=True
+        format="gen9vgc2023regc", feature_set=Embedder.FULL, omniscient=True
     )
     feature_names = {name: i for i, name in enumerate(embedder.feature_names)}
     config["teampreview_idx"] = feature_names["teampreview"]

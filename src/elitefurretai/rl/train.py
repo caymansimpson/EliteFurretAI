@@ -12,11 +12,13 @@ import asyncio
 import copy
 import os
 import queue
+import signal
 import subprocess
 import sys
 import threading
+import time
 from datetime import datetime
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
 import torch
@@ -37,10 +39,6 @@ from elitefurretai.supervised.model_archs import FlexibleThreeHeadedModel
 
 def load_model(filepath, device):
     """Load model from checkpoint or create new one."""
-    embedder = Embedder(
-        format="gen9vgc2023regulationc", feature_set=Embedder.FULL, omniscient=False
-    )
-    input_size = embedder.embedding_size
 
     if not os.path.exists(filepath):
         print(f"Checkpoint not found at {filepath}. Initializing random model.")
@@ -67,6 +65,13 @@ def load_model(filepath, device):
         checkpoint = torch.load(filepath, map_location=device)
         config = checkpoint["config"]
         state_dict = checkpoint["model_state_dict"]
+
+    embedder = Embedder(
+        format="gen9vgc2023regc",
+        feature_set=config["embedder_feature_set"],
+        omniscient=False,
+    )
+    input_size = embedder.embedding_size
 
     model = FlexibleThreeHeadedModel(
         input_size=input_size,
@@ -124,7 +129,7 @@ def worker_loop(
         worker_id: Unique worker ID
         port_offset: Port offset for showdown server (0, 1, 2, 3 for ports 8000-8003)
         team_repo: TeamRepo for random team sampling
-        battle_format: Game format string for battle initialization and team sampling (e.g., gen9vgc2023regulationc)
+        battle_format: Game format string for battle initialization and team sampling (e.g., gen9vgc2023regc)
         run_id: Unique identifier for this training run (prevents stale server state issues)
         team_subdirectory: Optional subdirectory within format to sample teams from (e.g., "easy", "rental_teams")
     """
@@ -190,7 +195,7 @@ def worker_loop(
                     opponent.start_inference_loop()
 
             print(
-                f"[Worker {worker_id}] Running {len(players)} battles against opponents..."
+                f"[Worker {worker_id}] Running {len(players)} pairs × 20 battles = {len(players) * 20} total battles..."
             )
 
             # Run a batch of battles
@@ -201,13 +206,17 @@ def worker_loop(
 
             print(f"[Worker {worker_id}] Batch {battle_batch} completed!")
 
-            # Clean up: Cancel inference futures for opponents to prevent memory leak
-            # Opponents are recreated each battle batch, so their loops must be stopped
+            # Clean up: Stop opponent inference loops
+            # Websockets are automatically cleaned up when opponent objects are garbage collected
             for opponent in opponents:
-                if isinstance(opponent, BatchInferencePlayer) and hasattr(
-                    opponent, "_inference_future"
-                ):
-                    opponent._inference_future.cancel()
+                try:
+                    # Cancel inference future to stop the inference loop
+                    if isinstance(opponent, BatchInferencePlayer) and hasattr(
+                        opponent, "_inference_future"
+                    ):
+                        opponent._inference_future.cancel()
+                except Exception as e:
+                    print(f"[Worker {worker_id}] Warning: Error stopping opponent: {e}")
 
     try:
         loop.run_until_complete(run_battles())
@@ -398,6 +407,120 @@ def train_exploiter_subprocess(victim_checkpoint: str, config: RNaDConfig):
     print("\nExploiter training complete!")
 
 
+def launch_showdown_servers(
+    num_servers: int, start_port: int = 8000
+) -> List[subprocess.Popen]:
+    """Launch Showdown servers on consecutive ports.
+
+    Args:
+        num_servers: Number of servers to launch
+        start_port: Starting port number (default 8000)
+
+    Returns:
+        List of subprocess.Popen objects for each server
+    """
+    print(f"\n{'=' * 60}")
+    print(f"LAUNCHING {num_servers} SHOWDOWN SERVERS")
+    print(f"Ports: {start_port}-{start_port + num_servers - 1}")
+    print(f"{'=' * 60}\n")
+
+    # Determine path to pokemon-showdown (relative to repo root)
+    # Script is in src/elitefurretai/rl/train.py, so go up 4 levels to repo root
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    repo_root = os.path.abspath(os.path.join(script_dir, "..", "..", ".."))
+    showdown_dir = os.path.join(repo_root, "..", "pokemon-showdown")
+
+    if not os.path.exists(showdown_dir):
+        raise FileNotFoundError(f"Pokemon Showdown not found at {showdown_dir}")
+
+    server_processes = []
+    for i in range(num_servers):
+        port = start_port + i
+        try:
+            # Launch server with stdout/stderr redirected to suppress logs
+            process = subprocess.Popen(
+                [
+                    "node",
+                    "pokemon-showdown",
+                    "start",
+                    "--no-security",
+                    "--port",
+                    str(port),
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                cwd=showdown_dir,  # Run from pokemon-showdown directory
+                preexec_fn=os.setsid
+                if os.name != "nt"
+                else None,  # Create process group on Unix
+            )
+            server_processes.append(process)
+            print(f"✓ Launched Showdown server on port {port} (PID: {process.pid})")
+            time.sleep(0.5)  # Small delay between launches
+        except FileNotFoundError:
+            print(f"ERROR: 'node' or 'pokemon-showdown' not found at {showdown_dir}")
+            # Clean up already launched servers
+            shutdown_showdown_servers(server_processes)
+            raise
+        except Exception as e:
+            print(f"ERROR launching server on port {port}: {e}")
+            shutdown_showdown_servers(server_processes)
+            raise
+
+    # Give servers time to fully start
+    print("\nWaiting for servers to initialize...")
+    time.sleep(2)
+    print(f"All {num_servers} servers ready!\n")
+    return server_processes
+
+
+def shutdown_showdown_servers(server_processes: List[subprocess.Popen]) -> None:
+    """Gracefully shut down all Showdown server processes.
+
+    Args:
+        server_processes: List of subprocess.Popen objects to terminate
+    """
+    if not server_processes:
+        return
+
+    print(f"\n{'=' * 60}")
+    print(f"SHUTTING DOWN {len(server_processes)} SHOWDOWN SERVERS")
+    print(f"{'=' * 60}\n")
+
+    for i, process in enumerate(server_processes):
+        if process.poll() is None:  # Process is still running
+            try:
+                print(
+                    f"Terminating server {i + 1}/{len(server_processes)} (PID: {process.pid})..."
+                )
+                if os.name != "nt":  # Unix
+                    # Kill entire process group to catch child processes
+                    os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+                else:  # Windows
+                    process.terminate()
+
+                # Wait up to 3 seconds for graceful shutdown
+                try:
+                    process.wait(timeout=3)
+                    print(f"✓ Server on PID {process.pid} terminated gracefully")
+                except subprocess.TimeoutExpired:
+                    # Force kill if graceful shutdown fails
+                    print(
+                        f"⚠ Server on PID {process.pid} didn't respond, force killing..."
+                    )
+                    if os.name != "nt":
+                        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+                    else:
+                        process.kill()
+                    process.wait()
+            except ProcessLookupError:
+                print(f"Server on PID {process.pid} already terminated")
+            except Exception as e:
+                print(f"Error terminating server PID {process.pid}: {e}")
+
+    print("\nAll servers shut down.\n")
+
+
 def main():
     parser = argparse.ArgumentParser(description="RNaD RL Training for Pokemon VGC")
     parser.add_argument("--config", type=str, default=None, help="Path to config YAML")
@@ -430,6 +553,11 @@ def main():
 
     device = config.device if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
+
+    # Launch Showdown servers
+    server_processes = launch_showdown_servers(
+        config.num_showdown_servers, config.showdown_start_port
+    )
 
     # Generate unique run ID to avoid stale state on Showdown server
     # Showdown remembers player names, so we need unique names per run
@@ -804,6 +932,14 @@ def main():
         # Close W&B run properly to ensure all logs are synced
         if config.use_wandb:
             wandb.finish()
+
+        # Shutdown Showdown servers
+        shutdown_showdown_servers(server_processes)
+
+    finally:
+        # Ensure servers are always cleaned up, even on unexpected errors
+        if "server_processes" in locals():
+            shutdown_showdown_servers(server_processes)
 
 
 if __name__ == "__main__":

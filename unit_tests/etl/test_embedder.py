@@ -363,7 +363,7 @@ def test_embed_turn(vgc_json_anon):
     assert emb["OPP_MON:0:sent"] == 1
     assert emb["OPP_MON:0:active"] == 1
 
-    assert emb["FORMAT:gen9vgc2023regulationc"] == 1
+    # FORMAT feature was removed from embedder
     assert emb["teampreview"] == 0
     assert emb["turn"] == 1
 

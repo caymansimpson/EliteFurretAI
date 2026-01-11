@@ -313,7 +313,7 @@ Now, regularize against **all of them** (or a weighted combination):
 
 $$L_{portfolio} = \alpha \cdot \sum_{i=1}^{K} w_i \cdot D_{KL}(\pi \| \pi_i)$$
 
-**Intuition**: "Don't stray too far from ANY of your past successful strategies."
+**Intuition**: "Don't stray too far from ANY of your past successful strategies." [TODO: call out that this is max, not min]
 
 ### 4.3 Visual Comparison
 
@@ -491,7 +491,7 @@ def compute_portfolio_loss_performance(
 
 **When to use**: When you have compute budget for evaluation games; for fine-tuning a strong agent.
 
-### 5.4 Diversity-Based Sampling (Your Current Implementation)
+### 5.4 Diversity-Based Sampling
 
 **Idea**: Instead of computing KL to ALL references each step, sample ONE reference based on how often each has been sampled.
 
@@ -576,7 +576,69 @@ def compute_portfolio_loss_max_kl(current_logits, portfolio_models, states):
 
 **When to use**: When preventing forgetting is the top priority.
 
-### 5.6 Hybrid Approach: Anchor + Sampling (Recommended)
+### 5.6 Minimum KL Selection (Implemented)
+
+**Idea**: Regularize against the reference we're CLOSEST to (minimum KL divergence).
+
+```python
+def compute_portfolio_loss_min_kl(current_logits, portfolio_models, states):
+    """
+    Find the reference we're closest to, regularize against it.
+
+    Intuition: "Stay close to at least ONE past strategy."
+    """
+    min_kl = None
+    min_ref_logits = None
+
+    for ref_model in portfolio_models:
+        with torch.no_grad():
+            ref_logits = ref_model(states)
+
+        kl = kl_divergence(current_logits, ref_logits)
+        if min_kl is None or kl < min_kl:
+            min_kl = kl
+            min_ref_logits = ref_logits
+
+    # Return KL to the closest reference
+    return kl_divergence(current_logits, min_ref_logits)
+```
+
+**Pros**:
+- **Allows faster learning**: Only penalized for diverging from ALL strategies, not ANY strategy
+- **Maintains diversity naturally**: Can specialize away from some refs as long as close to others
+- **Prevents strategy collapse**: As long as one past strategy is maintained, avoids cycling
+- **More permissive than averaging**: Lower regularization penalty = faster adaptation to new strategies
+
+**Cons**:
+- **Can still forget strategies**: If policy drifts to be close to ref A, it might be very far from refs B, C, D
+- **May not prevent all cycling**: If minimum KL reference keeps changing, could still oscillate
+- **Less conservative**: Allows more deviation from portfolio than uniform/max approaches
+
+**Comparison to Maximum KL**:
+- **Maximum KL** (section 5.5): "Don't forget ANYTHING" — very conservative, slow learning
+- **Minimum KL** (this section): "Stay close to SOMETHING" — more permissive, faster learning
+- **Trade-off**: Minimum KL allows specialization while maximum KL forces generalization
+
+**When to use**: 
+- When you want fast adaptation while maintaining some stability
+- When portfolio contains diverse strategies and you want agent to pick compatible ones
+- **Currently implemented in `PortfolioRNaDLearner`** — this is the default approach
+
+**Mathematical intuition**: 
+With K references, minimum KL creates a "union" of safe zones:
+```
+Policy Space:
+           ○ ref_1        Minimum KL: stay in any circle
+              ○ ref_2     (allows movement between them)
+    ○ ref_3
+         ○ ref_4
+
+Current policy can be in ref_1's neighborhood OR ref_2's OR ref_3's OR ref_4's
+```
+
+With maximum/average KL, you'd need to stay close to ALL references simultaneously (intersection of neighborhoods), which is much more restrictive.
+
+### 5.7 Hybrid Approach: Anchor + Sampling (Recommended)
 
 **Idea**: Combine the best of multiple approaches:
 1. **Always** regularize against a fixed "anchor" (e.g., the BC model)

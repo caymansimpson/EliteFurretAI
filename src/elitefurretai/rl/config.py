@@ -10,7 +10,7 @@ class RNaDConfig:
     """Configuration for RNaD training."""
 
     # ===== Format =====
-    battle_format: str = "gen9vgc2023regulationc"  # Pokemon Showdown battle format string
+    battle_format: str = "gen9vgc2023regc"  # Pokemon Showdown battle format string
 
     # ===== Model paths =====
     initialize_path: Optional[str] = (

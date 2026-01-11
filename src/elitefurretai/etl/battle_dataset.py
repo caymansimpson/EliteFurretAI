@@ -39,7 +39,7 @@ class BattleDataset(Dataset):
         self,
         files: List[str],
         embedder: Embedder = Embedder(
-            format="gen9vgc2023regulationc", feature_set="full", omniscient=True
+            format="gen9vgc2023regc", feature_set="full", omniscient=True
         ),
         steps_per_battle: int = 40,
         augment_teampreview: bool = True,
@@ -473,7 +473,7 @@ class PreprocessedBattleDataset(Dataset):
         folder_path,
         metadata_filename: str = "_metadata.json",
         embedder: Embedder = Embedder(
-            format="gen9vgc2023regulationc", feature_set="full", omniscient=True
+            format="gen9vgc2023regc", feature_set="full", omniscient=True
         ),
         steps_per_battle=17,
     ):
@@ -587,7 +587,7 @@ class OptimizedPreprocessedTrajectoryDataset(Dataset):
         folder_path: str,
         metadata_filename: str = "_metadata.json",
         embedder: Embedder = Embedder(
-            format="gen9vgc2023regulationc", feature_set="full", omniscient=False
+            format="gen9vgc2023regc", feature_set="full", omniscient=False
         ),
         files_per_worker: Union[int, str] = "default",
     ):

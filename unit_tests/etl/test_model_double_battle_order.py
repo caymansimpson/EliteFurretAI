@@ -458,6 +458,10 @@ def test_mdbo_to_double_battle_order():
         type("DummyMon", (), {"moves": {"a": 1}})(),
     ]
     battle.team = {str(i): i for i in range(6)}
+    battle.available_moves = [
+        [type("DummyMove", (), {"id": "a"})()],
+        [type("DummyMove", (), {"id": "a"})()],
+    ]  # type: ignore[attr-defined]
     dbo = mdbo.to_double_battle_order(battle)  # type: ignore
     assert dbo is not None
 

@@ -23,7 +23,9 @@ def load_model(filepath: str, device: str) -> RNaDAgent:
     state_dict = checkpoint["model_state_dict"]
 
     embedder = Embedder(
-        format="gen9vgc2023regulationc", feature_set=Embedder.FULL, omniscient=False
+        format="gen9vgc2023regc",
+        feature_set=config["embedder_feature_set"],
+        omniscient=False,
     )
     input_size = embedder.embedding_size
 
@@ -99,7 +101,7 @@ async def run_evaluation(
         batch_size=16,
         account_configuration=AccountConfiguration("Model1", None),
         server_configuration=server_config,
-        battle_format="gen9vgc2023regulationc",
+        battle_format="gen9vgc2023regc",
         probabilistic=False,  # Use deterministic for evaluation
     )
 
@@ -109,13 +111,13 @@ async def run_evaluation(
         batch_size=16,
         account_configuration=AccountConfiguration("Model2", None),
         server_configuration=server_config,
-        battle_format="gen9vgc2023regulationc",
+        battle_format="gen9vgc2023regc",
         probabilistic=False,
     )
 
     # Start inference loops
-    await player1.start_inference_loop()
-    await player2.start_inference_loop()
+    player1.start_inference_loop()
+    player2.start_inference_loop()
 
     print(f"Running {num_battles} battles...")
 

@@ -400,7 +400,7 @@ class TestDoubleForceSwitch:
         remaining_mon._active = False
 
         battle._available_switches = [[remaining_mon], [remaining_mon]]
-        battle._active_pokemon = {"p1a": None, "p1b": None}
+        battle._active_pokemon = {"p1a": None, "p1b": None}  # type: ignore
 
         # switch + pass should be valid
         switch_order = SingleBattleOrder(order=remaining_mon)
@@ -429,7 +429,7 @@ class TestDoubleForceSwitch:
         mon2._active = False
 
         battle._available_switches = [[mon1, mon2], [mon1, mon2]]
-        battle._active_pokemon = {"p1a": None, "p1b": None}
+        battle._active_pokemon = {"p1a": None, "p1b": None}  # type: ignore
 
         # Both switching should be valid
         order_both_switch = DoubleBattleOrder(
@@ -462,7 +462,7 @@ class TestDoubleForceSwitch:
         switch_target._active = False
 
         battle._available_switches = [[], [switch_target]]
-        battle._active_pokemon = {"p1a": active_mon, "p1b": None}
+        battle._active_pokemon = {"p1a": active_mon, "p1b": None}  # type: ignore
 
         # Correct: pass for non-switching slot, switch for switching slot
         valid_order = DoubleBattleOrder(

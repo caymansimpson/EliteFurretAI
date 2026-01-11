@@ -3,12 +3,12 @@
 Team Repository Management for Pokemon VGC Teams
 
 This module provides TeamRepo, a utility for loading, managing, and sampling Pokemon teams
-in PokePaste format. Teams are organized by format (e.g., gen9vgc2023regulationc) and can be
+in PokePaste format. Teams are organized by format (e.g., gen9vgc2023regc) and can be
 loaded from directories or subdirectories.
 
 Expected File Structure:
     data/teams/
-    ├── gen9vgc2023regulationc/        # Format directory
+    ├── gen9vgc2023regc/        # Format directory
     │   ├── team1.txt                  # Individual team files
     │   ├── team2.txt
     │   ├── rental_teams/              # Subdirectories are supported (recursive)
@@ -30,13 +30,13 @@ Usage:
     repo = TeamRepo(filepath="data/teams")
 
     # Sample a random team from a format
-    team = repo.sample_team("gen9vgc2023regulationc")
+    team = repo.sample_team("gen9vgc2023regc")
 
     # Save a new team
-    repo.save_team(team_string, "gen9vgc2023regulationc", "my_team")
+    repo.save_team(team_string, "gen9vgc2023regc", "my_team")
 
     # Get specific team
-    team = repo.get(format="gen9vgc2023regulationc", name="team1")
+    team = repo.get(format="gen9vgc2023regc", name="team1")
 """
 
 import os
@@ -64,7 +64,7 @@ class TeamRepo:
     Example:
         >>> repo = TeamRepo("data/teams")
         >>> formats = list(repo.formats)
-        >>> team = repo.sample_team("gen9vgc2023regulationc")
+        >>> team = repo.sample_team("gen9vgc2023regc")
     """
 
     def __init__(
@@ -138,7 +138,7 @@ class TeamRepo:
         Recursively load all .txt files from a directory and its subdirectories.
 
         This allows organizing teams into subdirectories within a format folder.
-        For example: gen9vgc2023regulationc/rental_teams/team1.txt
+        For example: gen9vgc2023regc/rental_teams/team1.txt
 
         Args:
             format_name: The format these teams belong to
@@ -204,7 +204,7 @@ class TeamRepo:
 
         Args:
             team: Team string in PokePaste format
-            format: Pokemon format to validate against (e.g., "gen9vgc2023regulationc")
+            format: Pokemon format to validate against (e.g., "gen9vgc2023regc")
             showdown_path: Path to pokemon-showdown directory
 
         Returns:
@@ -263,14 +263,14 @@ class TeamRepo:
         Get a specific team by format and name.
 
         Args:
-            format: Pokemon format (e.g., "gen9vgc2023regulationc")
+            format: Pokemon format (e.g., "gen9vgc2023regc")
             name: Team name (filename without .txt, may include subdirectory path)
 
         Returns:
             Team string in PokePaste format
 
         Example:
-            >>> repo.get("gen9vgc2023regulationc", "rental_teams/team1")
+            >>> repo.get("gen9vgc2023regc", "rental_teams/team1")
         """
         return self._teams[format][name]
 
@@ -279,7 +279,7 @@ class TeamRepo:
         Get all teams for a specific format.
 
         Args:
-            format: Pokemon format (e.g., "gen9vgc2023regulationc")
+            format: Pokemon format (e.g., "gen9vgc2023regc")
 
         Returns:
             Dictionary mapping team names to team strings
@@ -291,7 +291,7 @@ class TeamRepo:
         Sample a random team from the specified format.
 
         Args:
-            format: Pokemon format (e.g., "gen9vgc2023regulationc")
+            format: Pokemon format (e.g., "gen9vgc2023regc")
             subdirectory: Optional subdirectory path to sample from (e.g., "rental_teams" or "tournament_teams/worlds_2023")
                          If None, samples from all teams in the format (default: None)
 
@@ -302,8 +302,8 @@ class TeamRepo:
             ValueError: If format not found, no teams available, or subdirectory has no teams
 
         Examples:
-            >>> repo.sample_team("gen9vgc2023regulationc")  # Sample from all teams
-            >>> repo.sample_team("gen9vgc2023regulationc", "rental_teams")  # Sample from rental_teams only
+            >>> repo.sample_team("gen9vgc2023regc")  # Sample from all teams
+            >>> repo.sample_team("gen9vgc2023regc", "rental_teams")  # Sample from rental_teams only
         """
         if format not in self._teams:
             raise ValueError(
@@ -345,7 +345,7 @@ class TeamRepo:
         Sample multiple random teams from the specified format.
 
         Args:
-            format: Pokemon format (e.g., "gen9vgc2023regulationc")
+            format: Pokemon format (e.g., "gen9vgc2023regc")
             n: Number of teams to sample
             with_replacement: If True, same team can be sampled multiple times.
                             If False, each team can only be sampled once (default: False)
@@ -360,9 +360,9 @@ class TeamRepo:
                        or n > available teams when with_replacement=False
 
         Examples:
-            >>> repo.sample_n_teams("gen9vgc2023regulationc", 5)  # 5 unique teams from all
-            >>> repo.sample_n_teams("gen9vgc2023regulationc", 10, with_replacement=True)  # 10 teams, may repeat
-            >>> repo.sample_n_teams("gen9vgc2023regulationc", 3, subdirectory="rental_teams")  # 3 from rentals only
+            >>> repo.sample_n_teams("gen9vgc2023regc", 5)  # 5 unique teams from all
+            >>> repo.sample_n_teams("gen9vgc2023regc", 10, with_replacement=True)  # 10 teams, may repeat
+            >>> repo.sample_n_teams("gen9vgc2023regc", 3, subdirectory="rental_teams")  # 3 from rentals only
         """
         if format not in self._teams:
             raise ValueError(
@@ -420,7 +420,7 @@ class TeamRepo:
 
         Args:
             team: Team string in PokePaste format
-            format: Pokemon format (e.g., "gen9vgc2023regulationc")
+            format: Pokemon format (e.g., "gen9vgc2023regc")
             relative_path: Relative path within the format folder (e.g., "my_team" or "rental_teams/team1")
                           Extension (.txt) is optional and will be added if missing
             validate: Whether to validate the team before saving (default: True)
@@ -433,8 +433,8 @@ class TeamRepo:
             ValueError: If validation fails or directory cannot be created
 
         Examples:
-            >>> repo.save_team(team, "gen9vgc2023regulationc", "my_team")  # Saves to format root
-            >>> repo.save_team(team, "gen9vgc2023regulationc", "rental_teams/team1")  # Saves to subdirectory
+            >>> repo.save_team(team, "gen9vgc2023regc", "my_team")  # Saves to format root
+            >>> repo.save_team(team, "gen9vgc2023regc", "rental_teams/team1")  # Saves to subdirectory
         """
         # Validate team if requested
         if validate and not self.validate_team(team, format, showdown_path):

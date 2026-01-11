@@ -182,9 +182,9 @@ class SpeedInference:
     # can find a speed that makes the set of equations work. If it's only one mon, we know it's choicescarf! If
     # we find an optimal solution, we set the new speed bounds.
     def _solve_speeds(self, orders: List[List[Tuple[str, float]]]):
-        assert (
-            self._battle.opponent_role is not None
-        ), "Battle must be set before solving speeds"
+        assert self._battle.opponent_role is not None, (
+            "Battle must be set before solving speeds"
+        )
 
         # Add all our orders to full set of orders we've observed in the battle
         self._orders.extend(orders)
@@ -626,9 +626,9 @@ class SpeedInference:
     def _parse_switch(
         self, events: List[List[str]]
     ) -> List[List[Tuple[str, Optional[float]]]]:
-        assert (
-            self._battle.opponent_role is not None
-        ), "Battle must be set before solving speeds"
+        assert self._battle.opponent_role is not None, (
+            "Battle must be set before solving speeds"
+        )
         last_switched = None
         last_multipliers: Dict[str, Optional[float]] = {}
         speed_orders: List[List[Tuple[str, Optional[float]]]] = []

@@ -34,7 +34,7 @@ def test_get_default_config():
     config = get_default_config()
 
     assert isinstance(config, RNaDConfig)
-    assert config.battle_format == "gen9vgc2023regulationc"
+    assert config.battle_format == "gen9vgc2023regc"
     assert config.device in ["cuda", "cpu"]
 
 
@@ -410,7 +410,7 @@ def test_load_partial_yaml():
         assert loaded.num_workers == 8
 
         # Default values for unspecified fields
-        assert loaded.battle_format == "gen9vgc2023regulationc"
+        assert loaded.battle_format == "gen9vgc2023regc"
         assert loaded.gamma == 0.99
 
 

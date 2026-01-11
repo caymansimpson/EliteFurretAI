@@ -1,7 +1,7 @@
 # Model paths
-bc_action_path: data/models/supervised/criso-htunder-48.pt
-bc_teampreview_path: data/models/supervised/youthful-totem-68.pt
-bc_win_path: data/models/supervised/ethereal-flower-59-extended.pt
+bc_action_path: data/models/supervised/magic-resonance-88.pt
+bc_teampreview_path: data/models/supervised/magic-resonance-88.pt
+bc_win_path: data/models/supervised/magic-resonance-88.pt
 resume_from: null
 
 # Team configurations
@@ -11,17 +11,20 @@ team_pool_path: easy
 use_random_teams: true
 
 # Training hyperparameters
-num_workers: 2
-players_per_worker: 1
-batch_size: 128
-lr: 0.0001
-train_batch_size: 32 # batch size used for policy updates
+# OPTIMAL CONFIG: 8 servers × 2 pairs = ~2,750 battles/hr (5.5x baseline)
+# See OPTIMIZATIONS.md Session 4 for full stress test results
+# CPU: 16%, RAM: 9GB, GPU: ~3GB - bottleneck is Showdown WebSocket I/O
+num_workers: 7               # One worker per server
+players_per_worker: 2        # 2 pairs per worker = 16 concurrent total
+batch_size: 16  # Max batch size for inference
+lr: 5e-5
+train_batch_size: 128 # batch size used for policy updates
 max_updates: 100000
-rnad_alpha: 0.01
+rnad_alpha: 0.005
 gamma: 0.99
 gae_lambda: 0.95
-clip_range: 0.2
-ent_coef: 0.01
+clip_range: 0.1
+ent_coef: 0.001
 vf_coef: 0.5
 device: cuda
 
@@ -36,7 +39,7 @@ use_mixed_precision: true
 gradient_clip: 0.5
 
 # Checkpointing
-initialize_path: data/models/supervised/olive-snowball-71.pt 
+initialize_path: data/models/supervised/magic-resonance-88.pt 
 checkpoint_interval: 1000
 max_past_models: 10
 ref_update_interval: 1000
@@ -72,5 +75,7 @@ wandb_tags:
   - test
 
 # Server parameters
-num_showdown_servers: 1
+# OPTIMAL: 8 servers × 2 pairs = ~2,750 battles/hr (tested in OPTIMIZATIONS.md Session 4)
+# Start servers: for port in 8000 8001 8002 8003 8004 8005 8006 8007; do node pokemon-showdown start --no-security --port $port &; done
+num_showdown_servers: 7
 showdown_start_port: 8000

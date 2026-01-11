@@ -49,7 +49,7 @@ class Embedder:
     FULL = "full"
 
     def __init__(
-        self, format="gen9vgc2023regulationc", feature_set: str = "raw", omniscient=False
+        self, format="gen9vgc2023regc", feature_set: str = "raw", omniscient=False
     ):
         """
         Initialize the Embedder with a given format and feature set.
@@ -165,9 +165,9 @@ class Embedder:
         Returns the sizes of feature groups for advanced model architectures.
         Only available for RAW and FULL feature sets.
         """
-        assert (
-            self.feature_set != self.SIMPLE
-        ), "Group embedding sizes are not available for SIMPLE feature set"
+        assert self.feature_set != self.SIMPLE, (
+            "Group embedding sizes are not available for SIMPLE feature set"
+        )
         group_sizes = (
             [self._pokemon_embedding_size] * 6
             + [self._opponent_pokemon_embedding_size] * 6
@@ -1211,7 +1211,7 @@ TRACKED_FORMATS = {
     "gen9vgc2024regulationf",
     "gen9vgc2024regulationg",
     "gen9vgc2024regulationh",
-    "gen9vgc2023regulationc",
+    "gen9vgc2023regc",
     "gen9vgc2023regulationb",
     "gen9vgc2023regulationa",
 }

@@ -125,8 +125,8 @@ class TestSwitchEncodingWithRequestOrder:
         mdbo = MDBO(MDBO.FORCE_SWITCH, "/choose pass, switch 3")
         order = mdbo.to_double_battle_order(battle)
 
-        assert isinstance(order.second_order.order, Pokemon)
-        assert order.second_order.order.species == "growlithe"
+        assert isinstance(order.second_order.order, Pokemon)  # type: ignore[attr-defined]
+        assert order.second_order.order.species == "growlithe"  # type: ignore[attr-defined, union-attr]
 
 
 class TestStruggleRechargeHandling:
@@ -172,8 +172,8 @@ class TestStruggleRechargeHandling:
         mdbo = MDBO(MDBO.TURN, "/choose move 1, move 1")
         order = mdbo.to_double_battle_order(battle)
 
-        assert isinstance(order.first_order.order, Move)
-        assert order.first_order.order.id == "struggle"
+        assert isinstance(order.first_order.order, Move)  # type: ignore[attr-defined]
+        assert order.first_order.order.id == "struggle"  # type: ignore[attr-defined, union-attr]
 
     def test_recharge_uses_available_moves(self):
         """
@@ -203,7 +203,7 @@ class TestStruggleRechargeHandling:
         mdbo = MDBO(MDBO.TURN, "/choose move 1, move 1")
         order = mdbo.to_double_battle_order(battle)
 
-        assert order.first_order.order.id == "recharge"
+        assert order.first_order.order.id == "recharge"  # type: ignore[attr-defined, union-attr]
 
     def test_normal_move_uses_pokemon_moveset(self):
         """
@@ -233,7 +233,7 @@ class TestStruggleRechargeHandling:
         mdbo = MDBO(MDBO.TURN, "/choose move 2, pass")
         order = mdbo.to_double_battle_order(battle)
 
-        assert order.first_order.order.id == "wildcharge"
+        assert order.first_order.order.id == "wildcharge"  # type: ignore[attr-defined, union-attr]
 
 
 class TestMDBORoundtrip:
@@ -273,6 +273,6 @@ class TestMDBORoundtrip:
             # First slot action is (40 + switch_idx - 1), second is pass (44)
             expected_first = 40 + switch_idx - 1
             expected = expected_first * 45 + 44  # first * 45 + second
-            assert (
-                int_val == expected
-            ), f"switch {switch_idx} mapped to {int_val}, expected {expected}"
+            assert int_val == expected, (
+                f"switch {switch_idx} mapped to {int_val}, expected {expected}"
+            )

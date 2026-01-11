@@ -18,6 +18,7 @@ from typing import Any, Dict, Optional
 
 import numpy as np
 import torch
+from tqdm import tqdm
 
 from elitefurretai.etl import MDBO, Embedder, OptimizedBattleDataLoader
 from elitefurretai.supervised.model_archs import FlexibleThreeHeadedModel
@@ -371,7 +372,9 @@ def main(model_path: str, data_path: str, max_batches: Optional[int] = 100):
 
     # Initialize embedder
     embedder = Embedder(
-        format="gen9vgc2023regulationc", feature_set=Embedder.FULL, omniscient=False
+        format="gen9vgc2023regc",
+        feature_set=config["embedder_feature_set"],
+        omniscient=False,
     )
 
     # Get feature indices
@@ -405,7 +408,7 @@ def main(model_path: str, data_path: str, max_batches: Optional[int] = 100):
         teampreview_head_dropout=0.0,
         teampreview_attention_heads=config["teampreview_attention_heads"],
         turn_head_layers=config["turn_head_layers"],
-        max_seq_len=17,
+        max_seq_len=config["max_seq_len"],
     ).to(device)
 
     model.load_state_dict(checkpoint["model_state_dict"])
@@ -425,27 +428,29 @@ def main(model_path: str, data_path: str, max_batches: Optional[int] = 100):
     )
 
     # Run diagnostics
-    total_batches = max_batches or len(dataloader)
-    print(f"Running diagnostics on {total_batches} batches...")
+    print("Running diagnostics...")
     diagnostics = ActionDiagnostics(model, device)
-    processed_batches = 0
-    for i, batch in enumerate(dataloader):
+
+    # Use tqdm for progress bar
+    dataloader_iter = enumerate(dataloader)
+    if max_batches is not None:
+        dataloader_iter = enumerate(
+            tqdm(dataloader, total=max_batches, desc="Processing batches")
+        )
+    else:
+        dataloader_iter = enumerate(tqdm(dataloader, desc="Processing batches"))
+
+    for i, batch in dataloader_iter:
         if max_batches is not None and i >= max_batches:
             break
         diagnostics.analyze_batch(batch, feature_idx)
-        processed_batches += 1
-        if (processed_batches) % 10 == 0:
-            print(
-                f"\033[2K\rProcessed {processed_batches}/{total_batches} ({(processed_batches / total_batches) * 100:.1f}%) batches...",
-                end="",
-            )
 
     # Generate and print report
     report = diagnostics.generate_report()
     diagnostics.print_report(report)
 
     # Save report to JSON
-    output_path = model_path.replace(".pt", "_diagnostics.json")
+    output_path = model_path.replace(".pt", "_action_diagnostics.json")
     with open(output_path, "w") as f:
         json.dump(report, f, indent=2)
     print(f"\nReport saved to {output_path}")

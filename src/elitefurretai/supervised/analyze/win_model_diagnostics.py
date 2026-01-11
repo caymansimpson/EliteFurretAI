@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-Win Prediction Model Analysis
+Synthetic Win Advantage Model Analysis
 
-Analyzes a trained model's win prediction performance across various dimensions:
-1. Prediction accuracy by turn number (early/mid/late game)
-2. Prediction accuracy by turns from game end (proximity to outcome)
-3. Calibration curves (predicted vs actual win rates)
-4. Performance by game outcome (winning vs losing positions)
-5. Confidence distribution analysis
+Analyzes a trained model's synthetic win advantage prediction performance:
+1. PRIMARY: Prediction accuracy vs synthetic win advantage (training target)
+2. SECONDARY: How predictions and targets correlate with actual game outcomes
+3. Breakdown by turn number (early/mid/late game)
+4. Breakdown by turns from game end (proximity to outcome)
+5. Performance by game outcome (winning vs losing positions)
 6. Prediction trajectory over the course of games
 7. Error analysis: when does the model get it most wrong?
 
@@ -30,31 +30,36 @@ from elitefurretai.supervised.model_archs import FlexibleThreeHeadedModel
 
 
 class WinPredictionAnalyzer:
-    """Comprehensive analyzer for win prediction model performance."""
+    """Comprehensive analyzer for synthetic win advantage prediction model performance."""
 
     def __init__(self, model: torch.nn.Module, device: str = "cuda"):
         self.model = model
         self.device = device
         self.model.eval()
 
-        # Storage for analysis
-        self.predictions_by_turn: Dict[int, List[Tuple[float, bool]]] = defaultdict(list)
-        self.predictions_by_turns_to_end: Dict[int, List[Tuple[float, bool]]] = (
-            defaultdict(list)
-        )
-        self.predictions_by_outcome: Dict[str, List[Tuple[float, bool]]] = defaultdict(
-            list
-        )
-        self.all_predictions: List[Tuple[float, bool]] = []
-
-        # Synthetic win advantage analysis (comparing against training target)
+        # PRIMARY: Synthetic win advantage analysis (prediction vs training target)
         self.synthetic_predictions_by_turn: Dict[int, List[Tuple[float, float]]] = (
             defaultdict(list)
         )
         self.synthetic_predictions_by_turns_to_end: Dict[
             int, List[Tuple[float, float]]
         ] = defaultdict(list)
+        self.synthetic_predictions_by_outcome: Dict[str, List[Tuple[float, float]]] = (
+            defaultdict(list)
+        )
         self.all_synthetic_predictions: List[Tuple[float, float]] = []
+
+        # SECONDARY: Actual win outcome analysis (for correlation checks)
+        self.predictions_vs_actual_by_turn: Dict[int, List[Tuple[float, bool]]] = (
+            defaultdict(list)
+        )
+        self.predictions_vs_actual_by_turns_to_end: Dict[int, List[Tuple[float, bool]]] = (
+            defaultdict(list)
+        )
+        self.all_predictions_vs_actual: List[Tuple[float, bool]] = []
+
+        # Synthetic targets vs actual wins (to evaluate training target quality)
+        self.synthetic_vs_actual: List[Tuple[float, bool]] = []
 
         self.prediction_trajectories: List[List[float]] = []
         self.win_trajectories: List[bool] = []
@@ -111,33 +116,41 @@ class WinPredictionAnalyzer:
                     pred = float(sequence_preds[step])
                     outcome = actual_win
 
-                    # Synthetic win advantage (training target)
-                    # Convert from [-1, 1] to [0, 1]
+                    # Synthetic win advantage (training target) - keep in [-1, 1] range
                     synthetic_adv = float(sequence_wins[step])
-                    synthetic_prob = (synthetic_adv + 1.0) / 2.0
 
-                    # Store for overall analysis
-                    self.all_predictions.append((pred, outcome))
-                    self.all_synthetic_predictions.append((pred, synthetic_prob))
+                    # PRIMARY: Store prediction vs synthetic target
+                    self.all_synthetic_predictions.append((pred, synthetic_adv))
+
+                    # SECONDARY: Store prediction vs actual outcome
+                    self.all_predictions_vs_actual.append((pred, outcome))
+
+                    # Store synthetic target vs actual outcome (evaluate training target quality)
+                    self.synthetic_vs_actual.append((synthetic_adv, outcome))
+
                     self.calibration_data.append((pred, outcome))
 
                     # By turn number (0 = teampreview, 1-16 = turns)
                     turn_number = step
-                    self.predictions_by_turn[turn_number].append((pred, outcome))
                     self.synthetic_predictions_by_turn[turn_number].append(
-                        (pred, synthetic_prob)
+                        (pred, synthetic_adv)
                     )
+                    self.predictions_vs_actual_by_turn[turn_number].append((pred, outcome))
 
                     # By turns to end (0 = final turn, 1 = one turn before end, etc.)
                     turns_to_end = num_steps - step - 1
-                    self.predictions_by_turns_to_end[turns_to_end].append((pred, outcome))
                     self.synthetic_predictions_by_turns_to_end[turns_to_end].append(
-                        (pred, synthetic_prob)
+                        (pred, synthetic_adv)
+                    )
+                    self.predictions_vs_actual_by_turns_to_end[turns_to_end].append(
+                        (pred, outcome)
                     )
 
                     # By game outcome
                     outcome_key = "winning_positions" if outcome else "losing_positions"
-                    self.predictions_by_outcome[outcome_key].append((pred, outcome))
+                    self.synthetic_predictions_by_outcome[outcome_key].append(
+                        (pred, synthetic_adv)
+                    )
 
     def compute_metrics(self, predictions: List[Tuple[float, bool]]) -> Dict[str, float]:
         """
@@ -164,8 +177,8 @@ class WinPredictionAnalyzer:
         # MAE
         mae = float(np.mean(np.abs(preds - actuals)))
 
-        # Classification accuracy (threshold at 0.5)
-        binary_preds = (preds > 0.5).astype(float)
+        # Classification accuracy (threshold at 0.0 for [-1, 1] range)
+        binary_preds = (preds > 0.0).astype(float)
         accuracy = float(np.mean(binary_preds == actuals))
 
         # Brier score (calibration metric)
@@ -378,44 +391,55 @@ class WinPredictionAnalyzer:
         """
         report: Dict[str, Any] = {}
 
-        # Overall metrics
-        report["overall"] = self.compute_metrics(self.all_predictions)
-
-        # Synthetic metrics (training target)
+        # PRIMARY: Synthetic metrics (prediction vs training target)
         report["synthetic_overall"] = self.compute_synthetic_metrics(
             self.all_synthetic_predictions
         )
 
+        # SECONDARY: Prediction vs actual win metrics
+        report["prediction_vs_actual_overall"] = self.compute_metrics(
+            self.all_predictions_vs_actual
+        )
+
+        # Synthetic target vs actual win metrics (training target quality)
+        report["synthetic_target_vs_actual_overall"] = self.compute_metrics(
+            self.synthetic_vs_actual
+        )
+
         # By turn number
-        report["by_turn_number"] = {}
         report["synthetic_by_turn_number"] = {}
-        for turn in sorted(self.predictions_by_turn.keys()):
-            report["by_turn_number"][turn] = self.compute_metrics(
-                self.predictions_by_turn[turn]
+        report["prediction_vs_actual_by_turn_number"] = {}
+        for turn in sorted(self.synthetic_predictions_by_turn.keys()):
+            report["synthetic_by_turn_number"][turn] = self.compute_synthetic_metrics(
+                self.synthetic_predictions_by_turn[turn]
             )
-            if turn in self.synthetic_predictions_by_turn:
-                report["synthetic_by_turn_number"][turn] = self.compute_synthetic_metrics(
-                    self.synthetic_predictions_by_turn[turn]
+            if turn in self.predictions_vs_actual_by_turn:
+                report["prediction_vs_actual_by_turn_number"][turn] = self.compute_metrics(
+                    self.predictions_vs_actual_by_turn[turn]
                 )
 
         # By turns to end
-        report["by_turns_to_end"] = {}
         report["synthetic_by_turns_to_end"] = {}
-        for turns_to_end in sorted(self.predictions_by_turns_to_end.keys()):
-            report["by_turns_to_end"][turns_to_end] = self.compute_metrics(
-                self.predictions_by_turns_to_end[turns_to_end]
+        report["prediction_vs_actual_by_turns_to_end"] = {}
+        for turns_to_end in sorted(self.synthetic_predictions_by_turns_to_end.keys()):
+            report["synthetic_by_turns_to_end"][turns_to_end] = (
+                self.compute_synthetic_metrics(
+                    self.synthetic_predictions_by_turns_to_end[turns_to_end]
+                )
             )
-            if turns_to_end in self.synthetic_predictions_by_turns_to_end:
-                report["synthetic_by_turns_to_end"][turns_to_end] = (
-                    self.compute_synthetic_metrics(
-                        self.synthetic_predictions_by_turns_to_end[turns_to_end]
+            if turns_to_end in self.predictions_vs_actual_by_turns_to_end:
+                report["prediction_vs_actual_by_turns_to_end"][turns_to_end] = (
+                    self.compute_metrics(
+                        self.predictions_vs_actual_by_turns_to_end[turns_to_end]
                     )
                 )
 
         # By outcome
-        report["by_outcome"] = {}
-        for outcome_type, preds in self.predictions_by_outcome.items():
-            report["by_outcome"][outcome_type] = self.compute_metrics(preds)
+        report["synthetic_by_outcome"] = {}
+        for outcome_type, preds in self.synthetic_predictions_by_outcome.items():
+            report["synthetic_by_outcome"][outcome_type] = self.compute_synthetic_metrics(
+                preds
+            )
 
         # Calibration curve
         bin_centers, actual_freqs, counts = self.get_calibration_curve()
@@ -436,64 +460,82 @@ class WinPredictionAnalyzer:
     def print_summary(self, report: Dict[str, Any]) -> None:
         """Print human-readable summary of analysis."""
         print("\n" + "=" * 80)
-        print("WIN PREDICTION MODEL ANALYSIS")
+        print("SYNTHETIC WIN ADVANTAGE MODEL ANALYSIS")
         print("=" * 80)
 
-        # Overall performance
-        print("\n### OVERALL PERFORMANCE ###")
-        overall = report["overall"]
-        print(f"  Total Predictions: {overall['count']:,}")
-        print(f"  Correlation:       {overall['correlation']:.4f}")
-        print(f"  Accuracy:          {overall['accuracy']:.4f}")
-        print(f"  MSE:               {overall['mse']:.4f}")
-        print(f"  MAE:               {overall['mae']:.4f}")
-        print(f"  Brier Score:       {overall['brier_score']:.4f}")
-        print(f"  ECE:               {overall['ece']:.4f}")
-        print(
-            f"  Mean Confidence:   {overall['mean_confidence']:.4f} ± {overall['std_confidence']:.4f}"
-        )
+        # PRIMARY: Synthetic win advantage performance
+        print("\n### PRIMARY: PREDICTION vs SYNTHETIC TARGET (Training Goal) ###")
+        syn = report["synthetic_overall"]
+        print(f"  Total Predictions: {syn['count']:,}")
+        print(f"  Correlation:       {syn['correlation']:.4f}")
+        print(f"  MSE:               {syn['mse']:.4f}")
+        print(f"  MAE:               {syn['mae']:.4f}")
+        print(f"  Mean Prediction:   {syn['mean_prediction']:.4f}")
+        print(f"  Mean Target:       {syn['mean_target']:.4f}")
 
-        # Synthetic performance (Training Target)
-        if "synthetic_overall" in report:
-            print("\n### SYNTHETIC WIN ADVANTAGE (TRAINING TARGET) ###")
-            syn = report["synthetic_overall"]
-            print(f"  Correlation:       {syn['correlation']:.4f}")
-            print(f"  MSE:               {syn['mse']:.4f}")
-            print(f"  MAE:               {syn['mae']:.4f}")
+        # SECONDARY: Predictions vs actual wins
+        print("\n### SECONDARY: PREDICTION vs ACTUAL WIN (Binary Outcome) ###")
+        pred_actual = report["prediction_vs_actual_overall"]
+        print(f"  Correlation:       {pred_actual['correlation']:.4f}")
+        print(f"  Accuracy:          {pred_actual['accuracy']:.4f} (threshold=0.0)")
+        print(f"  Brier Score:       {pred_actual['brier_score']:.4f}")
+        print(f"  ECE:               {pred_actual['ece']:.4f}")
 
-        # By turn number
-        print("\n### PERFORMANCE BY TURN NUMBER ###")
-        print(f"{'Turn':<6} {'Count':<10} {'Corr':<8} {'Acc':<8} {'MSE':<8} {'ECE':<8}")
+        # Synthetic target quality
+        print("\n### TRAINING TARGET QUALITY: SYNTHETIC vs ACTUAL WIN ###")
+        syn_actual = report["synthetic_target_vs_actual_overall"]
+        print(f"  Correlation:       {syn_actual['correlation']:.4f}")
+        print(f"  Accuracy:          {syn_actual['accuracy']:.4f} (threshold=0.0)")
+        print(f"  Brier Score:       {syn_actual['brier_score']:.4f}")
+
+        # By turn number - Synthetic
+        print("\n### PERFORMANCE BY TURN NUMBER (vs Synthetic Target) ###")
+        print(f"{'Turn':<6} {'Count':<10} {'Corr':<8} {'MSE':<8} {'MAE':<8}")
         print("-" * 60)
-        for turn in sorted(report["by_turn_number"].keys())[:17]:
-            metrics = report["by_turn_number"][turn]
+        for turn in sorted(report["synthetic_by_turn_number"].keys())[:17]:
+            metrics = report["synthetic_by_turn_number"][turn]
+            turn_name = "T-Pre" if turn == 0 else f"T{turn}"
+            print(
+                f"{turn_name:<6} {metrics['count']:<10,} "
+                f"{metrics['correlation']:<8.4f} {metrics['mse']:<8.4f} "
+                f"{metrics['mae']:<8.4f}"
+            )
+
+        # By turn number - vs Actual wins
+        print("\n### PERFORMANCE BY TURN NUMBER (vs Actual Win) ###")
+        print(f"{'Turn':<6} {'Count':<10} {'Corr':<8} {'Acc':<8} {'Brier':<8}")
+        print("-" * 60)
+        for turn in sorted(report["prediction_vs_actual_by_turn_number"].keys())[:17]:
+            metrics = report["prediction_vs_actual_by_turn_number"][turn]
             turn_name = "T-Pre" if turn == 0 else f"T{turn}"
             print(
                 f"{turn_name:<6} {metrics['count']:<10,} "
                 f"{metrics['correlation']:<8.4f} {metrics['accuracy']:<8.4f} "
-                f"{metrics['mse']:<8.4f} {metrics['ece']:<8.4f}"
+                f"{metrics['brier_score']:<8.4f}"
             )
 
-        # By turns to end
-        print("\n### PERFORMANCE BY TURNS FROM GAME END ###")
-        print(f"{'T-End':<6} {'Count':<10} {'Corr':<8} {'Acc':<8} {'MSE':<8} {'ECE':<8}")
+        # By turns to end - Synthetic
+        print("\n### PERFORMANCE BY TURNS FROM GAME END (vs Synthetic Target) ###")
+        print(f"{'T-End':<6} {'Count':<10} {'Corr':<8} {'MSE':<8} {'MAE':<8}")
         print("-" * 60)
-        for turns_to_end in sorted(report["by_turns_to_end"].keys())[:10]:
-            metrics = report["by_turns_to_end"][turns_to_end]
+        for turns_to_end in sorted(report["synthetic_by_turns_to_end"].keys())[:10]:
+            metrics = report["synthetic_by_turns_to_end"][turns_to_end]
             print(
                 f"{turns_to_end:<6} {metrics['count']:<10,} "
-                f"{metrics['correlation']:<8.4f} {metrics['accuracy']:<8.4f} "
-                f"{metrics['mse']:<8.4f} {metrics['ece']:<8.4f}"
+                f"{metrics['correlation']:<8.4f} {metrics['mse']:<8.4f} "
+                f"{metrics['mae']:<8.4f}"
             )
 
         # By outcome
-        print("\n### PERFORMANCE BY GAME OUTCOME ###")
-        for outcome_type, metrics in report["by_outcome"].items():
+        print("\n### PERFORMANCE BY GAME OUTCOME (vs Synthetic Target) ###")
+        for outcome_type, metrics in report["synthetic_by_outcome"].items():
             print(f"\n{outcome_type.replace('_', ' ').title()}:")
             print(f"  Count:       {metrics['count']:,}")
             print(f"  Correlation: {metrics['correlation']:.4f}")
-            print(f"  Accuracy:    {metrics['accuracy']:.4f}")
+            print(f"  MSE:         {metrics['mse']:.4f}")
+            print(f"  MAE:         {metrics['mae']:.4f}")
             print(f"  Mean Pred:   {metrics['mean_prediction']:.4f}")
+            print(f"  Mean Target: {metrics['mean_target']:.4f}")
 
         # Stability
         print("\n### PREDICTION STABILITY ###")
@@ -525,7 +567,7 @@ class WinPredictionAnalyzer:
 
 def load_model_from_checkpoint(
     checkpoint_path: str, device: str = "cuda"
-) -> torch.nn.Module:
+) -> Tuple[Dict[str, Any], torch.nn.Module]:
     """
     Load a trained model from checkpoint.
 
@@ -545,9 +587,7 @@ def load_model_from_checkpoint(
         raise ValueError("Checkpoint missing 'config' key")
 
     # Create embedder to get input size and group sizes
-    embedder = Embedder(
-        format="gen9vgc2023regulationc", feature_set="full", omniscient=False
-    )
+    embedder = Embedder(format="gen9vgc2023regc", feature_set="full", omniscient=False)
     input_size = embedder.embedding_size
     group_sizes = (
         embedder.group_embedding_sizes
@@ -575,7 +615,7 @@ def load_model_from_checkpoint(
         teampreview_head_dropout=config.get("teampreview_head_dropout", 0.1),
         teampreview_attention_heads=config.get("teampreview_attention_heads", 4),
         turn_head_layers=config.get("turn_head_layers", []),
-        max_seq_len=17,
+        max_seq_len=config.get("max_seq_len", 17),
     )
 
     # Load state dict
@@ -586,7 +626,7 @@ def load_model_from_checkpoint(
     print(f"Model loaded from {checkpoint_path}")
     print(f"Training steps: {checkpoint.get('steps', 'unknown')}")
 
-    return model
+    return config, model
 
 
 def main():
@@ -624,15 +664,17 @@ def main():
         model_name = os.path.splitext(os.path.basename(args.model_path))[0]
         output_dir = "data/models/supervised"
         os.makedirs(output_dir, exist_ok=True)
-        args.output = os.path.join(output_dir, f"{model_name}_diagnostics.json")
+        args.output = os.path.join(output_dir, f"{model_name}_win_diagnostics.json")
 
     # Load model
     print(f"Loading model from {args.model_path}...")
-    model = load_model_from_checkpoint(args.model_path, device=device)
+    config, model = load_model_from_checkpoint(args.model_path, device=device)
 
     # Setup embedder
     embedder = Embedder(
-        format="gen9vgc2023regulationc", feature_set="full", omniscient=False
+        format="gen9vgc2023regc",
+        feature_set=config.get("embedder_feature_set", "full"),
+        omniscient=False,
     )
 
     # Create dataloader
@@ -654,7 +696,7 @@ def main():
     print("Analyzing predictions...")
     num_batches_processed = 0
     for batch_idx, batch in enumerate(tqdm(dataloader)):
-        analyzer.analyze_batch(batch)
+        analyzer.analyze_batch(batch, max_seq_len=config.get("max_seq_len", 17))
         num_batches_processed += 1
 
         if args.max_batches and num_batches_processed >= args.max_batches:

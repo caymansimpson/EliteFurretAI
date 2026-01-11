@@ -92,7 +92,7 @@ class TrainingProfiler:
     def _load_model(self) -> RNaDAgent:
         """Load model for profiling."""
         embedder = Embedder(
-            format="gen9vgc2023regulationc", feature_set=Embedder.FULL, omniscient=False
+            format="gen9vgc2023regc", feature_set=Embedder.FULL, omniscient=False
         )
 
         if Path(self.model_path).exists():
@@ -137,7 +137,7 @@ class TrainingProfiler:
             Dict with timing statistics
         """
         embedder = Embedder(
-            format="gen9vgc2023regulationc", feature_set=Embedder.FULL, omniscient=False
+            format="gen9vgc2023regc", feature_set=Embedder.FULL, omniscient=False
         )
 
         # Create dummy batch
@@ -199,7 +199,7 @@ class TrainingProfiler:
             learner.scaler = GradScaler()
 
         embedder = Embedder(
-            format="gen9vgc2023regulationc", feature_set=Embedder.FULL, omniscient=False
+            format="gen9vgc2023regc", feature_set=Embedder.FULL, omniscient=False
         )
 
         # Create dummy batch

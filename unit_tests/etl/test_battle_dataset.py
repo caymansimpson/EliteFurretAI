@@ -79,9 +79,9 @@ def test_battle_dataset_actions_and_wins(request, fixture_name):
                     continue
 
                 action_idx = int(actions[i].item())
-                assert (
-                    action_masks[i, action_idx] == 1
-                ), f"Step {i}: Action {action_idx} not valid in action_masks for {fixture_name}, perspective {perspective}"
+                assert action_masks[i, action_idx] == 1, (
+                    f"Step {i}: Action {action_idx} not valid in action_masks for {fixture_name}, perspective {perspective}"
+                )
 
                 input_type = iter.last_input_type
                 order = MDBO.from_int(
@@ -95,9 +95,9 @@ def test_battle_dataset_actions_and_wins(request, fixture_name):
                 )
 
                 expected_win = int(bd.winner == iter.battle.player_username)
-                assert (
-                    int(wins[i].item()) == expected_win
-                ), f"Step {i}: Win label {wins[i].item()} incorrect for {fixture_name}, perspective {perspective}"
+                assert int(wins[i].item()) == expected_win, (
+                    f"Step {i}: Win label {wins[i].item()} incorrect for {fixture_name}, perspective {perspective}"
+                )
                 iter.next_input()
     finally:
         os.remove(temp_path)

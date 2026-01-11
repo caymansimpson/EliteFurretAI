@@ -17,6 +17,7 @@ from elitefurretai.etl.battle_order_validator import is_valid_order
 from elitefurretai.etl.embedder import Embedder
 from elitefurretai.etl.encoder import MDBO
 from elitefurretai.rl.agent import RNaDAgent
+from elitefurretai.rl.fast_action_mask import fast_get_action_mask
 
 
 class BatchInferencePlayer(Player):
@@ -37,7 +38,7 @@ class BatchInferencePlayer(Player):
         # attributes before __init__ completes.
 
         # Extract battle_format from kwargs since we need it before super().__init__
-        battle_format = kwargs.get("battle_format", "gen9vgc2023regulationc")
+        battle_format = kwargs.get("battle_format", "gen9vgc2023regc")
 
         self.model = model
         self.device = device
@@ -305,8 +306,9 @@ class BatchInferencePlayer(Player):
             # Teampreview: all 90 actions are valid, no mask needed
             mask = None
         else:
-            # Turn actions: must validate each of 2,025 possible action combinations
-            mask = self._get_action_mask(battle)
+            # Turn actions: use fast action mask generation from battle.last_request
+            # This is ~100x faster than iterating all 2025 actions
+            mask = fast_get_action_mask(battle)
 
         # Create future
         loop = asyncio.get_running_loop()
@@ -340,9 +342,9 @@ class BatchInferencePlayer(Player):
             try:
                 mdbo = MDBO.from_int(action_idx, type=MDBO.TEAMPREVIEW)
                 order = mdbo.message
-            except ValueError:
-                # Fallback to random team order
-                # "123456" is a valid order string part, but we need "/team 123456"
+            except (ValueError, AssertionError):
+                # Fallback to random team order if action index is invalid
+                # This shouldn't happen if sampling is correct, but provides robustness
                 order = "/team 123456"
         else:
             try:
@@ -402,9 +404,6 @@ class BatchInferencePlayer(Player):
 
         # Validate each possible action by attempting to convert it to a battle order
         # and checking if that order is legal in the current game state
-        debug_exceptions = {}  # Track exception types for debugging
-        debug_valid_but_rejected = []  # Track orders that converted but were rejected
-        debug_pass_switch_actions = []  # Track pass+switch actions specifically
         for i in range(MDBO.action_space()):
             try:
                 # MDBO.from_int() converts integer action index to MDBO object
@@ -415,61 +414,13 @@ class BatchInferencePlayer(Player):
                 # is_valid_order() checks all game rules
                 if isinstance(order, DoubleBattleOrder) and is_valid_order(order, battle):
                     mask[i] = 1.0
-                elif isinstance(order, DoubleBattleOrder):
-                    # Track pass+switch actions specifically
-                    if "pass" in mdbo.message and "switch" in mdbo.message:
-                        debug_pass_switch_actions.append((i, mdbo.message, str(order)))
-                    elif len(debug_valid_but_rejected) < 3:
-                        debug_valid_but_rejected.append((i, mdbo.message, str(order)))
-            except (ValueError, KeyError, AttributeError, IndexError, AssertionError) as e:
-                # Action conversion failed - this action is invalid
-                # Track exception type for debugging
-                exc_type = type(e).__name__
-                if exc_type not in debug_exceptions:
-                    debug_exceptions[exc_type] = str(e)
+            except (ValueError, KeyError, AttributeError, IndexError, AssertionError):
+                pass
 
         # Safety check: ensure at least one action is valid
         # If no actions are valid, something is wrong with the game state
+        # Return all-ones as fallback to avoid crashes (model will pick randomly)
         if mask.sum() == 0:
-            print(
-                f"WARNING: No valid actions found for battle {battle.battle_tag}. "
-                f"Force switch: {battle.force_switch}, Active: {battle.active_pokemon}"
-            )
-            print(f"  Exception types encountered: {debug_exceptions}")
-            print(f"  Available switches: {battle.available_switches}")
-            print(f"  Available moves: {battle.available_moves}")
-            print(f"  Pass+switch actions tested: {debug_pass_switch_actions[:5]}")
-            print(f"  Team keys: {list(battle.team.keys())}")
-            print(f"  Team species: {[p.species for p in battle.team.values()]}")
-            print(
-                f"  Avail switch species: {[[s.species for s in slot] for slot in battle.available_switches]}"
-            )
-
-            # Manually test action 2020-2023 (pass, switch 1-4)
-            for test_idx in range(2020, 2024):
-                try:
-                    test_mdbo = MDBO.from_int(test_idx, type=action_type)
-                    test_order = test_mdbo.to_double_battle_order(battle)
-                    valid = is_valid_order(test_order, battle)
-                    print(f"  Action {test_idx} ({test_mdbo.message}): valid={valid}")
-                    if not valid:
-                        # Debug why it's invalid
-                        if isinstance(test_order, DoubleBattleOrder):
-                            order2 = test_order.second_order
-                            if (
-                                order2
-                                and hasattr(order2, "order")
-                                and hasattr(order2.order, "species")
-                            ):
-                                switch_species = order2.order.species
-                                avail = [s.species for s in battle.available_switches[1]]
-                                print(
-                                    f"    Switch target: {switch_species}, Available: {avail}"
-                                )
-                except Exception as e:
-                    print(f"  Action {test_idx} failed: {type(e).__name__}: {e}")
-
-            # Return all-ones as fallback to avoid crashes (model will pick randomly)
             return np.ones(MDBO.action_space(), dtype=np.float32)
 
         return mask

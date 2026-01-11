@@ -204,8 +204,8 @@ This shows how the agent takes a single step's features and the previous hidden 
 ### `utils/team_repo.py`: The Team Repository System
 
 -   **What it is**: The `TeamRepo` class loads and manages Pokémon teams in PokePaste `.txt` format for multiple formats. It provides two core methods:
-    -   `sample_team(format)`: Returns a random team string for the specified format (e.g., "gen9vgc2023regulationc")
-    -   `sample_n_teams(format, path)`: Returns n random team strings for the specified format or path (e.g., `sample_n_teams("gen9vgc2023regulationc", "trickroom")`)
+    -   `sample_team(format)`: Returns a random team string for the specified format (e.g., "gen9vgc2023regc")
+    -   `sample_n_teams(format, path)`: Returns n random team strings for the specified format or path (e.g., `sample_n_teams("gen9vgc2023regc", "trickroom")`)
     -   `save_team(team, format, path, name, validate=True)`: Saves a team string to the repository
 -   **How it fits in**:
     -   **Main training**: If a `team_pool_path` is specified in the config, workers sample random teams for diverse training
@@ -730,7 +730,7 @@ train_exploiters: false
 # production.yaml
 # Model
 checkpoint_path: "data/models/bc_action_model.pt"
-team_pool_path: "data/teams/gen9vgc2023regulationc"
+team_pool_path: "data/teams/gen9vgc2023regc"
 
 # Training
 learning_rate: 0.0001

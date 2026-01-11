@@ -247,11 +247,15 @@ class OpponentPool:
         team: str,
     ) -> Player:
         """Create a self-play opponent (copy of main model)."""
+        # Make username identifiable
+        new_config = AccountConfiguration(
+            f"Self_{player_config.username}", player_config.password
+        )
         return BatchInferencePlayer(
             model=self.main_model,
             device=self.device,
             batch_size=16,
-            account_configuration=player_config,
+            account_configuration=new_config,
             server_configuration=server_config,
             battle_format=self.battle_format,
             probabilistic=True,
@@ -264,6 +268,10 @@ class OpponentPool:
             # Fallback to self-play if BC not configured
             return self._create_self_play_opponent(player_config, server_config, team)
 
+        # Make username identifiable
+        new_config = AccountConfiguration(
+            f"BC_{player_config.username}", player_config.password
+        )
         return BCPlayer(
             teampreview_model_filepath=self.bc_player_config["teampreview"],
             action_model_filepath=self.bc_player_config["action"],
@@ -271,7 +279,7 @@ class OpponentPool:
             battle_format=self.battle_format,
             probabilistic=True,
             device=self.device,
-            account_configuration=player_config,
+            account_configuration=new_config,
             server_configuration=server_config,
             team=team,
         )
@@ -301,11 +309,17 @@ class OpponentPool:
             "team", team
         )  # Fallback to provided team if not found
 
+        # Make username identifiable with exploiter ID
+        exploiter_id = exploiter_info.get("id", "Unknown")
+        new_config = AccountConfiguration(
+            f"Exp_{exploiter_id}_{player_config.username}", player_config.password
+        )
+
         return BatchInferencePlayer(
             model=exploiter_model,
             device=self.device,
             batch_size=16,
-            account_configuration=player_config,
+            account_configuration=new_config,
             server_configuration=server_config,
             battle_format=self.battle_format,
             probabilistic=True,
@@ -326,11 +340,16 @@ class OpponentPool:
 
         past_model = load_model(filepath, self.device)
 
+        # Make username identifiable with step number
+        new_config = AccountConfiguration(
+            f"Ghost_{step}_{player_config.username}", player_config.password
+        )
+
         return BatchInferencePlayer(
             model=past_model,
             device=self.device,
             batch_size=16,
-            account_configuration=player_config,
+            account_configuration=new_config,
             server_configuration=server_config,
             battle_format=self.battle_format,
             probabilistic=True,

@@ -145,28 +145,28 @@ class MDBO(BattleOrder):
         if self._type == self.DEFAULT:
             return -1
 
-        assert (
-            self._msg is not None
-        ), "msg is None and not default; cant turn it into an int"
+        assert self._msg is not None, (
+            "msg is None and not default; cant turn it into an int"
+        )
         if self._type == self.TEAMPREVIEW:
             # Remove spaces/commas and look up in teampreview mapping
             key = re.sub(r"[\s,]", "", self._msg[5:])
-            assert (
-                key in _TEAMPREVIEW_ORDER_TO_INT
-            ), f"{key} not in TEAMPREVIEW_ORDER_TO_INT. Message: {self._msg}"
+            assert key in _TEAMPREVIEW_ORDER_TO_INT, (
+                f"{key} not in TEAMPREVIEW_ORDER_TO_INT. Message: {self._msg}"
+            )
             return _TEAMPREVIEW_ORDER_TO_INT[key]
         else:
             # For turn/force_switch: parse both orders and encode as a single int
             orders = self._msg[8:].split(", ")
-            assert (
-                len(orders) == 2
-            ), f"Only got one order for a double battle order: {self._msg}"
-            assert (
-                orders[0] in _ORDER_MAPPINGS_TO_INT
-            ), f"{orders[0]} not in ORDER_MAPPINGS_TO_INT. Label: {self._msg}"
-            assert (
-                orders[1] in _ORDER_MAPPINGS_TO_INT
-            ), f"{orders[1]} not in ORDER_MAPPINGS_TO_INT. Label: {self._msg}"
+            assert len(orders) == 2, (
+                f"Only got one order for a double battle order: {self._msg}"
+            )
+            assert orders[0] in _ORDER_MAPPINGS_TO_INT, (
+                f"{orders[0]} not in ORDER_MAPPINGS_TO_INT. Label: {self._msg}"
+            )
+            assert orders[1] in _ORDER_MAPPINGS_TO_INT, (
+                f"{orders[1]} not in ORDER_MAPPINGS_TO_INT. Label: {self._msg}"
+            )
             return (
                 _ORDER_MAPPINGS_TO_INT[orders[0]] * len(_ORDER_MAPPINGS_TO_INT)
                 + _ORDER_MAPPINGS_TO_INT[orders[1]]
@@ -178,12 +178,12 @@ class MDBO(BattleOrder):
         """
         Converts this MDBO to a PyPokéEnv DoubleBattleOrder or DefaultBattleOrder.
         """
-        assert not self.message.startswith(
-            "/team"
-        ), "MDBO cannot be converted into DBO when it is a teampreview"
-        assert (
-            battle.player_role is not None
-        ), "Cannot convert MDBO to DBO when player_role is None because we assume we have the right perspective"
+        assert not self.message.startswith("/team"), (
+            "MDBO cannot be converted into DBO when it is a teampreview"
+        )
+        assert battle.player_role is not None, (
+            "Cannot convert MDBO to DBO when player_role is None because we assume we have the right perspective"
+        )
         orders: List[SingleBattleOrder] = []
         for i, order in enumerate(self.message.replace("/choose ", "").split(", ")):
             if order == "pass":
@@ -235,9 +235,9 @@ class MDBO(BattleOrder):
             # move
             else:
                 moving_mon = battle.active_pokemon[i]
-                assert (
-                    moving_mon is not None
-                ), "Cannot convert an order for a pokemon when it is not active"
+                assert moving_mon is not None, (
+                    "Cannot convert an order for a pokemon when it is not active"
+                )
 
                 # Special case: struggle/recharge are not in the Pokemon's move list
                 # but can appear in available_moves when all PP is depleted.

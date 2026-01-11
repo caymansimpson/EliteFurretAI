@@ -9,6 +9,7 @@ import os.path
 import random
 import sys
 import time
+import warnings
 from typing import Any, Dict
 
 import orjson
@@ -103,7 +104,7 @@ def train_epoch(
                 flat_turn_win_logits = win_logits[turn_valid_mask]
 
                 # Choose loss function based on config
-                loss_type = config.get("turn_loss_type", "top3")
+                loss_type = config.get("turn_loss_type", "topk")
                 if loss_type == "focal":
                     turn_loss = focal_topk_cross_entropy_loss(
                         flat_turn_logits,
@@ -114,7 +115,7 @@ def train_epoch(
                         alpha=config.get("focal_alpha", 0.25),
                         label_smoothing=config.get("label_smoothing", 0.0),
                     )
-                else:  # "top3" or default
+                else:  # "topk" or default
                     turn_loss = topk_cross_entropy_loss(
                         flat_turn_logits,
                         flat_turn_actions,
@@ -312,7 +313,7 @@ def main(train_path, test_path, val_path, config={}):
         "keep_force_switch": True,  # If True, include force switch examples from training
         "entropy_weight": 0.0,  # Entropy regularization to encourage prediction diversity (0.0 = off, try 0.01-0.1)
         # Loss Function Type
-        "turn_loss_type": "top3",  # "top3" (standard topk CE) or "focal" (focal loss for hard examples)
+        "turn_loss_type": "topk",  # "topk" (standard topk CE) or "focal" (focal loss for hard examples)
         "train_topk_k": 3,  # Number of top predictions to consider (2025 = all actions, 3 = top-3 only)
         "focal_gamma": 2.0,  # Focal loss focusing parameter (higher = more focus on hard examples)
         "focal_alpha": 0.25,  # Focal loss weighting parameter
@@ -358,7 +359,9 @@ def main(train_path, test_path, val_path, config={}):
     # Initialize Embedder and find indices of special features; these will be used
     # for weighting training and analyzing model performance
     embedder = Embedder(
-        format="gen9vgc2023regulationc", feature_set=Embedder.FULL, omniscient=False
+        format="gen9vgc2023regc",
+        feature_set=config["embedder_feature_set"],
+        omniscient=False,
     )
     feature_names = {name: i for i, name in enumerate(embedder.feature_names)}
     config["teampreview_idx"] = feature_names["teampreview"]
@@ -577,8 +580,12 @@ def main(train_path, test_path, val_path, config={}):
 
 
 if __name__ == "__main__":
+    # Use file_system sharing to avoid Windows shared memory limits
+    torch.multiprocessing.set_sharing_strategy("file_system")
+    warnings.filterwarnings("ignore", message=".*socket.send.*")
+
     if len(sys.argv) < 2:
-        print("Usage: python three_headed_transformer.py <data_directory> <config>")
+        print("Usage: python supervised/train.py <data_directory> <config>")
         sys.exit(1)
     elif len(sys.argv) == 2:
         main(

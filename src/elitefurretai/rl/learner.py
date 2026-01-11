@@ -147,8 +147,9 @@ class RNaDLearner:
             # Log probs
             curr_log_probs = curr_dist.log_prob(flat_actions[tp_indices])
 
-            # RNaD KL Divergence
-            # KL(pi || pi_ref)
+            # RNaD KL Divergence: KL(current_policy || reference_policy)
+            # Standard RNaD uses single reference model for regularization
+            # This prevents policy from diverging too far from the reference
             kl = torch.distributions.kl_divergence(curr_dist, ref_dist)
             total_rnad_loss += kl.mean().item()
 
@@ -193,7 +194,8 @@ class RNaDLearner:
 
             curr_log_probs = curr_dist.log_prob(flat_actions[turn_indices])
 
-            # RNaD KL
+            # RNaD KL Divergence: KL(current_policy || reference_policy)
+            # Standard RNaD uses single reference model for regularization
             kl = torch.distributions.kl_divergence(curr_dist, ref_dist)
             total_rnad_loss += kl.mean().item()
 

@@ -8,7 +8,7 @@ and shows model predictions vs. actual actions taken at each decision point.
 
 Usage:
     python behavior_clone_replay.py \\
-        --battle-file data/battles/gen9vgc2023regulationc_raw/2023-01-gen9vgc2023regulationc-1500.json \\
+        --battle-file data/battles/gen9vgc2023regc_raw/2023-01-gen9vgc2023regc-1500.json \\
         --teampreview-model-path data/models/teampreview_model.pt \\
         --action-model-path data/models/action_model.pt \\
         --win-model-path data/models/win_model.pt \\
@@ -483,8 +483,8 @@ def main():
     parser.add_argument(
         "--battle-format",
         type=str,
-        default="gen9vgc2023regulationc",
-        help="Battle format (default: gen9vgc2023regulationc)",
+        default="gen9vgc2023regc",
+        help="Battle format (default: gen9vgc2023regc)",
     )
 
     args = parser.parse_args()

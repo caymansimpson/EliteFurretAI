@@ -747,7 +747,7 @@ def main(data_path):
     embedder, train_loader = None, None
     try:
         embedder = Embedder(
-            format="gen9vgc2023regulationc", feature_set=Embedder.FULL, omniscient=False
+            format="gen9vgc2023regc", feature_set=Embedder.FULL, omniscient=False
         )
         print(
             f"\nEmbedder initialized. Size: {embedder.embedding_size}! Loading datasets..."
