@@ -12,7 +12,6 @@ These tests verify that fast_get_action_mask correctly:
 7. Handles edge cases (fainted Pokemon, no valid actions)
 """
 
-from typing import cast
 
 import numpy as np
 import pytest

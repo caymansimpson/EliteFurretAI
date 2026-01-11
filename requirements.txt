@@ -2,7 +2,7 @@ git+https://github.com/caymansimpson/poke-env.git@development#egg=poke-env
 orjson
 pulp
 pyscipopt
-numpy
+numpy>=2.02
 torch
 torch_geometric
 zstd
