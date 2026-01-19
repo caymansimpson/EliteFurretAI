@@ -83,6 +83,10 @@ class Embedder:
         self._knowledge["Field"] = TRACKED_FIELDS
         self._knowledge["Ability"] = TRACKED_ABILITIES
 
+        # Cache for static move features (move.id -> features dict without prefix)
+        # This dramatically speeds up embedding since move features are mostly static
+        self._move_cache: Dict[str, Dict[str, float]] = {}
+
         # Generate embedding size and feature names programmatically upon instantiation
         dummy_battle = self._generate_dummy_battle()
         self._embedding_size = len(self.embed(dummy_battle))
@@ -214,6 +218,25 @@ class Embedder:
         for key in sorted(features.keys()):
             vec.append(float(features[key]))
         return vec
+
+    def embed_to_vector(
+        self, battle: DoubleBattle, bi: Optional["BattleInference"] = None
+    ) -> List[float]:
+        """
+        Embed battle state directly to a vector using cached sorted keys.
+        This is faster than embed() + feature_dict_to_vector() because
+        the sorted key order is cached.
+
+        Args:
+            battle: The battle state to embed
+            bi: Optional BattleInference for additional features
+
+        Returns:
+            List of floats representing the embedded state
+        """
+        features = self.embed(battle, bi)
+        # Use cached feature names (already sorted at init time)
+        return [float(features[key]) for key in self._feature_names]
 
     def _simplify_features(self, features: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -457,151 +480,220 @@ class Embedder:
         self, move: Optional[Move], prefix: str = ""
     ) -> Dict[str, float]:
         """
-        Returns a feature dict representing a Move
-        """
+        Returns a feature dict representing a Move.
 
+        Uses caching for static move features (everything except current_pp and used).
+        This provides significant speedup since moves are embedded many times per battle.
+        """
         emb: Dict[str, float] = {}
 
-        emb[prefix + "accuracy"] = move.accuracy if move else -1
-        emb[prefix + "base_power"] = move.base_power if move else -1
-        emb[prefix + "current_pp"] = min(move.current_pp, 5) if move else -1
+        if move is None:
+            # No move - return all -1s (can't cache this with prefix)
+            return self._generate_null_move_features(prefix)
 
-        # To maintain representation of public belief state
-        emb[prefix + "used"] = int(move.current_pp < move.max_pp) if move else -1
+        # Check cache for static features (keyed by move.id, no prefix)
+        move_id = move.id
+        if move_id not in self._move_cache:
+            self._move_cache[move_id] = self._generate_static_move_features(move)
 
-        if move:
-            emb[prefix + "damage"] = move.damage if isinstance(move.damage, int) else 50
-        else:
-            emb[prefix + "damage"] = -1
-        emb[prefix + "drain"] = move.drain if move else -1
-        emb[prefix + "force_switch"] = move.force_switch if move else -1
-        emb[prefix + "heal"] = move.heal if move else -1
-        emb[prefix + "is_protect_move"] = move.is_protect_move if move else -1
-        emb[prefix + "is_side_protect_move"] = move.is_side_protect_move if move else -1
-        if move:
-            emb[prefix + "min_hits"] = move.n_hit[0] if move.n_hit else 1
-            emb[prefix + "max_hits"] = move.n_hit[1] if move.n_hit else 1
-        else:
-            emb[prefix + "min_hits"] = -1
-            emb[prefix + "max_hits"] = -1
-        emb[prefix + "priority"] = move.priority if move else -1
-        emb[prefix + "recoil"] = move.recoil if move else -1
-        emb[prefix + "self_switch"] = (
-            int(True if move.self_switch else False) if move else -1
-        )
-        emb[prefix + "use_target_offensive"] = (
-            int(move.use_target_offensive) if move else -1
-        )
+        # Copy cached static features with prefix
+        cached = self._move_cache[move_id]
+        for key, val in cached.items():
+            emb[prefix + key] = val
+
+        # Add dynamic features that depend on battle state
+        emb[prefix + "current_pp"] = min(move.current_pp, 5)
+        emb[prefix + "used"] = int(move.current_pp < move.max_pp)
+
+        return emb
+
+    def _generate_null_move_features(self, prefix: str = "") -> Dict[str, float]:
+        """Generate features for a null move (all -1s)."""
+        emb: Dict[str, float] = {}
+
+        # Scalar features
+        for key in [
+            "accuracy", "base_power", "current_pp", "used", "damage", "drain",
+            "force_switch", "heal", "is_protect_move", "is_side_protect_move",
+            "min_hits", "max_hits", "priority", "recoil", "self_switch",
+            "use_target_offensive", "chance"
+        ]:
+            emb[prefix + key] = -1
 
         # OHE Category
         for cat in self._knowledge["MoveCategory"]:
-            emb[prefix + "OFF_CAT:" + cat.name] = int(move.category == cat) if move else -1
-
-        # OHE Defensive Category
-        for cat in self._knowledge["MoveCategory"]:
-            emb[prefix + "DEF_CAT:" + cat.name] = (
-                int(move.defensive_category == cat) if move else -1
-            )
+            emb[prefix + "OFF_CAT:" + cat.name] = -1
+            emb[prefix + "DEF_CAT:" + cat.name] = -1
 
         # OHE Move Type
         for ptype in self._knowledge["PokemonType"]:
-            if ptype in [
-                PokemonType.THREE_QUESTION_MARKS,
-                PokemonType.STELLAR,
-            ]:  # not eligible for moves
-                continue
-            emb[prefix + "TYPE:" + ptype.name] = int(ptype == move.type) if move else -1
+            if ptype not in [PokemonType.THREE_QUESTION_MARKS, PokemonType.STELLAR]:
+                emb[prefix + "TYPE:" + ptype.name] = -1
 
         # OHE Side Conditions
         for sc in self._knowledge["SideCondition"]:
-            emb[prefix + "SC:" + sc.name] = int(move.side_condition == sc) if move else -1
+            emb[prefix + "SC:" + sc.name] = -1
 
         # OHE Fields
         for field in self._knowledge["Field"]:
-            val = -1
-            if move and move.terrain:
-                val = int(move.terrain == field)
-            elif move and move.pseudo_weather:
-                val = int(Field.from_showdown_message(move.entry["name"]) == field)
-            emb[prefix + "FIELD:" + field.name] = val
+            emb[prefix + "FIELD:" + field.name] = -1
 
         # OHE Weathers
         for weather in self._knowledge["Weather"]:
-            emb[prefix + "WEATHER:" + weather.name] = (
-                int(move.weather == weather) if move else -1
-            )
+            emb[prefix + "WEATHER:" + weather.name] = -1
 
         # OHE Targeting Types
         for t in self._knowledge["Target"]:
-            emb[prefix + "TARGET:" + t.name] = (
-                int(move.deduced_target == t) if move else -1
-            )
+            emb[prefix + "TARGET:" + t.name] = -1
 
         # OHE Volatility Statuses
         for vs in self._knowledge["Effect_VolatileStatus"]:
-            val = 0
-            if not move:
-                val = -1
-            elif vs == move.volatile_status:
-                val = 1
-            elif move.secondary and self._prep(vs.name) in list(
-                map(lambda x: self._prep(x.get("volatileStatus", "")), move.secondary)
-            ):
-                val = 1
-            emb[prefix + "EFFECT:" + vs.name] = val
+            emb[prefix + "EFFECT:" + vs.name] = -1
 
         # OHE Statuses
         for status in self._knowledge["Status"]:
+            if status != Status.FNT:
+                emb[prefix + "STATUS:" + status.name] = -1
+
+        # Boosts and Self-boosts
+        for stat in ["atk", "def", "spa", "spd", "spe"]:
+            emb[prefix + "BOOST:" + stat] = -1
+            emb[prefix + "SELFBOOST:" + stat] = -1
+
+        return emb
+
+    def _generate_static_move_features(self, move: Move) -> Dict[str, float]:
+        """
+        Generate static move features (without prefix) that can be cached.
+        Excludes current_pp and used which are dynamic.
+        """
+        emb: Dict[str, float] = {}
+
+        # Static scalar features
+        emb["accuracy"] = move.accuracy
+        emb["base_power"] = move.base_power
+        emb["damage"] = move.damage if isinstance(move.damage, int) else 50
+        emb["drain"] = move.drain
+        emb["force_switch"] = move.force_switch
+        emb["heal"] = move.heal
+        emb["is_protect_move"] = move.is_protect_move
+        emb["is_side_protect_move"] = move.is_side_protect_move
+        emb["min_hits"] = move.n_hit[0] if move.n_hit else 1
+        emb["max_hits"] = move.n_hit[1] if move.n_hit else 1
+        emb["priority"] = move.priority
+        emb["recoil"] = move.recoil
+        emb["self_switch"] = int(True if move.self_switch else False)
+        emb["use_target_offensive"] = int(move.use_target_offensive)
+
+        # Cache secondary list access
+        secondary = move.secondary
+
+        # OHE Category
+        category = move.category
+        defensive_category = move.defensive_category
+        for cat in self._knowledge["MoveCategory"]:
+            emb["OFF_CAT:" + cat.name] = int(category == cat)
+            emb["DEF_CAT:" + cat.name] = int(defensive_category == cat)
+
+        # OHE Move Type
+        move_type = move.type
+        for ptype in self._knowledge["PokemonType"]:
+            if ptype not in [PokemonType.THREE_QUESTION_MARKS, PokemonType.STELLAR]:
+                emb["TYPE:" + ptype.name] = int(ptype == move_type)
+
+        # OHE Side Conditions
+        side_condition = move.side_condition
+        for sc in self._knowledge["SideCondition"]:
+            emb["SC:" + sc.name] = int(side_condition == sc)
+
+        # OHE Fields
+        terrain = move.terrain
+        pseudo_weather = move.pseudo_weather
+        for field in self._knowledge["Field"]:
+            val = -1
+            if terrain:
+                val = int(terrain == field)
+            elif pseudo_weather:
+                val = int(Field.from_showdown_message(move.entry["name"]) == field)
+            emb["FIELD:" + field.name] = val
+
+        # OHE Weathers
+        move_weather = move.weather
+        for weather in self._knowledge["Weather"]:
+            emb["WEATHER:" + weather.name] = int(move_weather == weather)
+
+        # OHE Targeting Types
+        deduced_target = move.deduced_target
+        for t in self._knowledge["Target"]:
+            emb["TARGET:" + t.name] = int(deduced_target == t)
+
+        # Pre-compute secondary lookups for volatile status and status
+        secondary_volatile = set()
+        secondary_status = set()
+        secondary_boosts: Dict[str, int] = {}
+        secondary_self_boosts: Dict[str, int] = {}
+
+        if secondary:
+            for info in secondary:
+                vs = info.get("volatileStatus", "")
+                if vs:
+                    secondary_volatile.add(self._prep(vs))
+                st = info.get("status", "")
+                if st:
+                    secondary_status.add(self._prep(st))
+                if "boosts" in info:
+                    for stat, val in info["boosts"].items():
+                        secondary_boosts[stat] = val
+                if "self" in info and "boosts" in info["self"]:
+                    for stat, val in info["self"]["boosts"].items():
+                        secondary_self_boosts[stat] = val
+
+        # OHE Volatility Statuses
+        volatile_status = move.volatile_status
+        for vs in self._knowledge["Effect_VolatileStatus"]:
             val = 0
+            if vs == volatile_status:
+                val = 1
+            elif self._prep(vs.name) in secondary_volatile:
+                val = 1
+            emb["EFFECT:" + vs.name] = val
+
+        # OHE Statuses
+        move_status = move.status
+        for status in self._knowledge["Status"]:
             if status == Status.FNT:
-                continue  # Moves dont cause this
-            elif not move:
-                val = -1
-            elif status == move.status:
+                continue
+            val = 0
+            if status == move_status:
                 val = 1
-            elif move.secondary and self._prep(status.name) in list(
-                map(lambda x: self._prep(x.get("status", "")), move.secondary)
-            ):
+            elif self._prep(status.name) in secondary_status:
                 val = 1
-            emb[prefix + "STATUS:" + status.name] = val
+            emb["STATUS:" + status.name] = val
 
         # Add Boosts
+        boosts = move.boosts
         for stat in ["atk", "def", "spa", "spd", "spe"]:
             val = 0
-            if not move:
-                val = -1
-            elif move.boosts and stat in move.boosts:
-                val = move.boosts[stat]
-            elif move.secondary:
-                for info in move.secondary:
-                    if "boosts" in info and stat in info["boosts"]:
-                        val = info["boosts"][stat]
-            emb[prefix + "BOOST:" + stat] = val
+            if boosts and stat in boosts:
+                val = boosts[stat]
+            elif stat in secondary_boosts:
+                val = secondary_boosts[stat]
+            emb["BOOST:" + stat] = val
 
         # Add Self-Boosts
         for stat in ["atk", "def", "spa", "spd", "spe"]:
             val = 0
-            if not move:
-                val = -1
-            elif move.boosts and stat in move.boosts:
-                val = move.boosts[stat]
-            elif move.secondary:
-                for info in move.secondary:
-                    if (
-                        "self" in info
-                        and "boosts" in info["self"]
-                        and stat in info["self"]["boosts"]
-                    ):
-                        val = info["self"]["boosts"][stat]
-            emb[prefix + "SELFBOOST:" + stat] = val
+            if boosts and stat in boosts:
+                val = boosts[stat]
+            elif stat in secondary_self_boosts:
+                val = secondary_self_boosts[stat]
+            emb["SELFBOOST:" + stat] = val
 
-        # Introduce the chance of a secondary effect happening
+        # Chance of secondary effect
         val = 0
-        if not move:
-            val = -1
-        elif move.secondary:
-            val = max(map(lambda x: x.get("chance", 0), move.secondary))
-        emb[prefix + "chance"] = val
+        if secondary:
+            val = max(info.get("chance", 0) for info in secondary)
+        emb["chance"] = val
 
         return emb
 

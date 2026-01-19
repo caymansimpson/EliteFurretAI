@@ -1,5 +1,6 @@
 import asyncio
 import random
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -19,6 +20,10 @@ from elitefurretai.etl.encoder import MDBO
 from elitefurretai.rl.agent import RNaDAgent
 from elitefurretai.rl.fast_action_mask import fast_get_action_mask
 
+# Shared thread pool for GPU inference to avoid blocking POKE_LOOP
+# Using 1 thread since GPU ops are already parallelized and we want to avoid contention
+_INFERENCE_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="inference")
+
 
 class BatchInferencePlayer(Player):
     def __init__(
@@ -29,7 +34,7 @@ class BatchInferencePlayer(Player):
         batch_timeout=0.01,
         probabilistic=True,
         trajectory_queue=None,
-        accept_open_team_sheet=True,
+        accept_open_team_sheet=False,  # Default False to avoid OTS deadlock
         **kwargs,
     ):
         # IMPORTANT: Set up instance attributes BEFORE calling super().__init__()
@@ -67,6 +72,13 @@ class BatchInferencePlayer(Player):
 
         # Now call parent init - this starts the websocket listener
         super().__init__(accept_open_team_sheet=accept_open_team_sheet, **kwargs)
+
+    async def stop_listening(self):
+        """Stop listening to the server and close the websocket connection.
+        
+        Delegates to the underlying PSClient's stop_listening method.
+        """
+        await self.ps_client.stop_listening()
 
     def start_inference_loop(self):
         """
@@ -126,41 +138,65 @@ class BatchInferencePlayer(Player):
         is_tps.append(item[3])
         masks.append(item[4])
 
-    async def _run_batch(self, states, futures, battle_tags, is_tps, masks):
-        # Prepare inputs
-        states_tensor = (
-            torch.tensor(np.array(states), dtype=torch.float32)
-            .to(self.device)
-            .unsqueeze(1)
-        )  # (batch, 1, dim)
+    def _gpu_inference_sync(self, states_np, h_cpu, c_cpu):
+        """
+        Synchronous GPU inference - runs in ThreadPoolExecutor to avoid blocking POKE_LOOP.
+        
+        This is the CPU/GPU-bound part that would otherwise block the asyncio event loop.
+        By running it in a thread pool, we allow other coroutines (websocket handling,
+        other players' inference requests) to run while waiting for GPU.
+        
+        IMPORTANT: Takes CPU numpy/tensors as input and returns CPU tensors/numpy to avoid
+        cross-thread GPU tensor access issues. GPU transfer happens inside this function.
+        """
+        # Move to GPU inside the inference thread to avoid cross-thread GPU access
+        states_tensor = torch.tensor(states_np, dtype=torch.float32).to(self.device).unsqueeze(1)
+        hidden = (h_cpu.to(self.device), c_cpu.to(self.device))
+        
+        with torch.no_grad():
+            turn_logits, tp_logits, values, next_hidden = self.model(states_tensor, hidden)
+        
+        # Move ALL results to CPU before returning to avoid cross-thread GPU access issues
+        turn_probs = torch.softmax(turn_logits, dim=-1).cpu().numpy()
+        tp_probs = torch.softmax(tp_logits, dim=-1).cpu().numpy()
+        values_np = values.cpu().numpy()
+        # Also move hidden states to CPU for safe cross-thread access
+        h_next_cpu = next_hidden[0].cpu()
+        c_next_cpu = next_hidden[1].cpu()
+        
+        return turn_probs, tp_probs, values_np, h_next_cpu, c_next_cpu
 
-        # Get hidden states
+    async def _run_batch(self, states, futures, battle_tags, is_tps, masks):
+        # Prepare inputs as numpy/CPU tensors (GPU transfer happens in executor thread)
+        states_np = np.array(states)
+
+        # Get hidden states (stored on CPU)
         h_list = []
         c_list = []
         for tag in battle_tags:
             if tag not in self.hidden_states:
-                h, c = self.model.get_initial_state(1, self.device)
+                # Initialize on CPU - will be moved to GPU in inference thread
+                h, c = self.model.get_initial_state(1, "cpu")
                 self.hidden_states[tag] = (h, c)
             h_list.append(self.hidden_states[tag][0])
             c_list.append(self.hidden_states[tag][1])
 
         h_batch = torch.cat(h_list, dim=1)
         c_batch = torch.cat(c_list, dim=1)
-        hidden = (h_batch, c_batch)
 
-        # Run model
-        with torch.no_grad():
-            turn_logits, tp_logits, values, next_hidden = self.model(states_tensor, hidden)
+        # Run GPU inference in thread pool to avoid blocking POKE_LOOP
+        loop = asyncio.get_running_loop()
+        turn_probs, tp_probs, values, h_next_cpu, c_next_cpu = await loop.run_in_executor(
+            _INFERENCE_EXECUTOR,
+            self._gpu_inference_sync,
+            states_np,
+            h_batch,
+            c_batch
+        )
 
-        # Update hidden states
-        h_next, c_next = next_hidden
+        # Update hidden states (stored on CPU for safe cross-thread access)
         for i, tag in enumerate(battle_tags):
-            self.hidden_states[tag] = (h_next[:, i : i + 1, :], c_next[:, i : i + 1, :])
-
-        # Process outputs
-        turn_probs = torch.softmax(turn_logits, dim=-1).cpu().numpy()
-        tp_probs = torch.softmax(tp_logits, dim=-1).cpu().numpy()
-        values = values.cpu().numpy()
+            self.hidden_states[tag] = (h_next_cpu[:, i : i + 1, :], c_next_cpu[:, i : i + 1, :])
 
         for i, future in enumerate(futures):
             is_tp = is_tps[i]

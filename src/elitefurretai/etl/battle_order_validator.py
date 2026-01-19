@@ -242,6 +242,20 @@ def _is_valid_doubles_order(double_order: DoubleBattleOrder, battle: DoubleBattl
                 if order.move_target != DoubleBattle.EMPTY_TARGET_POSITION:
                     return False
 
+            # Spread moves that hit multiple targets automatically should NOT have a target
+            # These include moves like Dazzling Gleam, Earthquake, Surf, Heat Wave, etc.
+            elif order.order.target in (
+                Target.ALL_ADJACENT_FOES,  # Hits all adjacent opponents (e.g., Dazzling Gleam)
+                Target.ALL_ADJACENT,       # Hits all adjacent pokemon including ally (e.g., Earthquake)
+                Target.ALL,                # Hits all pokemon on field (e.g., Perish Song)
+                Target.FOE_SIDE,           # Targets opponent's side of field (e.g., Stealth Rock)
+                Target.ALLY_SIDE,          # Targets your side of field (e.g., Reflect)
+                Target.ALLIES,             # Targets all allies
+                Target.ALLY_TEAM,          # Targets entire ally team
+            ):
+                if order.move_target != DoubleBattle.EMPTY_TARGET_POSITION:
+                    return False
+
     # Check cases where orders could invalidate each other
     if (
         double_order.first_order

@@ -79,7 +79,7 @@ def trajectories(
 
     # Create an Embedder instance for feature extraction
     emb = Embedder(
-        format="gen9vgc2023regulationc", feature_set=Embedder.RAW, omniscient=False
+        format="gen9vgc2023regulationc", feature_set=Embedder.FULL, omniscient=False
     )
 
     # Create a BattleDataset that yields full trajectories (one per __getitem__)

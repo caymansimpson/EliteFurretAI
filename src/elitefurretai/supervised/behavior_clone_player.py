@@ -9,6 +9,7 @@ from poke_env.player import BattleOrder, DefaultBattleOrder, Player
 from elitefurretai.etl.battle_order_validator import is_valid_order
 from elitefurretai.etl.embedder import Embedder
 from elitefurretai.etl.encoder import MDBO
+from elitefurretai.rl.fast_action_mask import fast_get_action_mask
 from elitefurretai.supervised.model_archs import FlexibleThreeHeadedModel
 
 
@@ -23,7 +24,7 @@ class BCPlayer(Player):
         probabilistic=True,
         device: str = "cpu",
         verbose: bool = False,
-        accept_open_team_sheet: bool = True,
+        accept_open_team_sheet: bool = False,  # Default False to avoid OTS deadlock
         **kwargs,
     ):
         # pull in all player information manually
@@ -396,18 +397,9 @@ class BCPlayer(Player):
                     < MDBO.teampreview_space()
                 )
             else:
-                mask = torch.zeros(
-                    last_logits.size(0), dtype=torch.bool, device=last_logits.device
-                )
-                valid_count = 0
-                for i in range(last_logits.size(0)):
-                    try:
-                        dbo = MDBO.from_int(i, action_type).to_double_battle_order(battle)
-                        if is_valid_order(dbo, battle):  # type: ignore
-                            mask[i] = 1
-                            valid_count += 1
-                    except Exception:
-                        continue
+                # Use fast action mask generator (~100x faster than iterating 2025 actions)
+                mask_np = fast_get_action_mask(battle)
+                mask = torch.from_numpy(mask_np).bool().to(last_logits.device)
 
             # Mask out invalid actions
             masked_logits = last_logits.masked_fill(~mask, float("-inf"))
@@ -415,19 +407,20 @@ class BCPlayer(Player):
             # Softmax over valid actions
             probs = torch.softmax(masked_logits, dim=-1)
 
-            # Build output lists
-            # CRITICAL: Only process actions that passed validation (are in the mask)
+            # Build output lists - only iterate over VALID indices (not all 2025)
             actions = []
             probabilities = []
             mask_cpu = mask.cpu().numpy()
             probs_cpu = probs.cpu().numpy()
 
-            for i in range(len(probs_cpu)):
-                # Skip actions that weren't validated or have zero probability
-                if not mask_cpu[i] or probs_cpu[i] <= 0 or i >= max_actions:
+            # Get indices of valid actions to avoid iterating over all 2025
+            valid_indices = np.where(mask_cpu & (probs_cpu > 0))[0]
+
+            for i in valid_indices:
+                if i >= max_actions:
                     continue
 
-                mdbo = MDBO.from_int(i, type=action_type)
+                mdbo = MDBO.from_int(int(i), type=action_type)
                 if battle.teampreview:
                     # For teampreview, store the message string
                     actions.append(mdbo.message)  # type: ignore
@@ -529,3 +522,10 @@ class BCPlayer(Player):
     # to create omniscient BattleData object
     def _battle_finished_callback(self, battle: AbstractBattle):
         pass
+
+    async def stop_listening(self):
+        """Stop listening to the server and close the websocket connection.
+        
+        Delegates to the underlying PSClient's stop_listening method.
+        """
+        await self.ps_client.stop_listening()

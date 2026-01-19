@@ -80,7 +80,7 @@ class RNaDConfig:
     use_mixed_precision: bool = (
         True  # Enable automatic mixed precision (FP16) for ~2x speedup and reduced memory
     )
-    gradient_clip: float = (
+    max_grad_norm: float = (
         0.5  # Maximum gradient norm for gradient clipping (prevents exploding gradients)
     )
 
@@ -137,6 +137,9 @@ class RNaDConfig:
     )
     showdown_start_port: int = (
         8000  # Starting port for Showdown servers (increments for multiple servers)
+    )
+    max_players_per_server: int = (
+        2  # Maximum concurrent players assigned to a single Showdown server (prevents I/O contention)
     )
 
     # ===== Logging =====

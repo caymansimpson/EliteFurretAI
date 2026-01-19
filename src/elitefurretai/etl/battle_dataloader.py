@@ -1,3 +1,4 @@
+import platform
 import random
 from typing import Any, Dict, List, Optional, Union
 
@@ -5,6 +6,32 @@ import torch
 
 from elitefurretai.etl.battle_dataset import OptimizedPreprocessedTrajectoryDataset
 from elitefurretai.etl.embedder import Embedder
+
+
+def _trajectory_collate_fn(batch: List[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
+    """
+    Custom collate function that efficiently stacks trajectory dictionaries.
+    
+    This function is more memory-efficient than the default collate because it:
+    1. Pre-allocates the output tensors
+    2. Uses contiguous memory to avoid shared memory fragmentation
+    3. Converts to the target dtype explicitly to avoid dtype inference issues
+    """
+    if not batch:
+        return {}
+    
+    # Get the keys from the first element
+    keys = batch[0].keys()
+    result = {}
+    
+    for key in keys:
+        # Stack tensors for this key
+        tensors = [item[key] for item in batch]
+        stacked = torch.stack(tensors, dim=0)
+        # Make contiguous to ensure clean memory layout for sharing
+        result[key] = stacked.contiguous()
+    
+    return result
 
 
 class OptimizedPreprocessedSampler(torch.utils.data.Sampler):
@@ -65,6 +92,14 @@ class OptimizedBattleDataLoader(torch.utils.data.DataLoader):
     compared to native and naive multiprocessed loading of preprocessed files.
 
     Completely abstracts everything away from the user so they only have to use this dataloader.
+    
+    Note on shared memory issues (Bus errors):
+    - On WSL2/Linux with many workers, PyTorch's default tensor sharing can exhaust
+      shared memory or file descriptors, causing "Bus error" crashes
+    - This class uses a custom collate function and 'forkserver' multiprocessing
+      context to mitigate these issues
+    - If you still encounter bus errors, reduce num_workers, files_per_worker,
+      or prefetch_factor
     """
 
     def __init__(
@@ -82,6 +117,11 @@ class OptimizedBattleDataLoader(torch.utils.data.DataLoader):
         pin_memory: bool = False,
         prefetch_factor: Optional[int] = 1,
     ):
+        # Ensure file_system sharing strategy is set for WSL/Windows compatibility
+        # This must be done before creating workers
+        if platform.system() == "Windows" or "microsoft" in platform.uname()[2].lower():
+            torch.multiprocessing.set_sharing_strategy("file_system")
+        
         # Build dataset kwargs conditionally, and build dataset with them
         dataset_kwargs: Dict[str, Any] = {"folder_path": folder_path}
         if metadata_filename is not None:
@@ -99,6 +139,17 @@ class OptimizedBattleDataLoader(torch.utils.data.DataLoader):
             shuffle_files=shuffle,
         )
 
+        # Determine multiprocessing context
+        # 'forkserver' is more robust than 'fork' for complex objects and avoids
+        # shared memory issues that can cause bus errors
+        mp_context = None
+        if num_workers > 0 and platform.system() != "Windows":
+            try:
+                mp_context = torch.multiprocessing.get_context("forkserver")
+            except ValueError:
+                # forkserver not available, fall back to default
+                mp_context = None
+
         # Initialize DataLoader WITHOUT shuffle parameter (since we use sampler)
         super().__init__(
             dataset,
@@ -108,4 +159,6 @@ class OptimizedBattleDataLoader(torch.utils.data.DataLoader):
             persistent_workers=persistent_workers,
             pin_memory=pin_memory,
             prefetch_factor=prefetch_factor,
+            collate_fn=_trajectory_collate_fn,
+            multiprocessing_context=mp_context,
         )

@@ -18,7 +18,7 @@ import sys
 import threading
 import time
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
@@ -112,7 +112,7 @@ def worker_loop(
     traj_queue: queue.Queue,
     num_players: int,
     worker_id: int,
-    port_offset: int,
+    server_port: int,
     team_repo: TeamRepo,
     battle_format: str,
     run_id: str,
@@ -127,7 +127,7 @@ def worker_loop(
         traj_queue: Queue for pushing completed trajectories
         num_players: Number of concurrent players in this worker
         worker_id: Unique worker ID
-        port_offset: Port offset for showdown server (0, 1, 2, 3 for ports 8000-8003)
+        server_port: Absolute port number of the assigned showdown server
         team_repo: TeamRepo for random team sampling
         battle_format: Game format string for battle initialization and team sampling (e.g., gen9vgc2023regc)
         run_id: Unique identifier for this training run (prevents stale server state issues)
@@ -136,7 +136,6 @@ def worker_loop(
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
-    server_port = 8000 + port_offset
     server_config = ServerConfiguration(
         f"ws://localhost:{server_port}/showdown/websocket",
         None,  # type: ignore[arg-type]
@@ -147,12 +146,13 @@ def worker_loop(
         # Sample random team if repo provided
         team = team_repo.sample_team(battle_format, subdirectory=team_subdirectory)
 
-        # Use run_id in player names to prevent stale state on Showdown server
+        # Compact format without separators (Showdown strips all special chars)
+        # Format: W{worker}{pair}R{run_id} e.g. W01R2324 (9 chars)
         player = BatchInferencePlayer(
             model=opponent_pool.main_model,
             device=opponent_pool.device,
             batch_size=batch_size,
-            account_configuration=AccountConfiguration(f"W{run_id}_{worker_id}_{i}", None),
+            account_configuration=AccountConfiguration(f"W{worker_id}{i}R{run_id}", None),
             server_configuration=server_config,
             trajectory_queue=traj_queue,
             battle_format=battle_format,
@@ -177,9 +177,13 @@ def worker_loop(
             print(f"[Worker {worker_id}] Starting battle batch {battle_batch}...")
 
             # Sample opponents for each player (with random teams if available)
+            # Compact alphanumeric format: {worker}{batch:05d}{pair}R{run_id}
+            # Example: 00000100R2324 = worker 0, batch 00001, pair 0, run 2324
+            # After opponent_pool prefix (e.g. "Self"): Self00000100R2324 (16 chars)
+            # Supports up to 99,999 batches (batch_batch:05d)
             opponents = []
             for i in range(num_players):
-                opp_config = AccountConfiguration(f"O{run_id}_{worker_id}_{i}", None)
+                opp_config = AccountConfiguration(f"{worker_id}{battle_batch:05d}{i}R{run_id}", None)
                 opponent_team = team_repo.sample_team(
                     battle_format, subdirectory=team_subdirectory
                 )
@@ -206,8 +210,9 @@ def worker_loop(
 
             print(f"[Worker {worker_id}] Batch {battle_batch} completed!")
 
-            # Clean up: Stop opponent inference loops
-            # Websockets are automatically cleaned up when opponent objects are garbage collected
+            # Clean up: Stop opponent inference loops AND disconnect from server
+            # CRITICAL: Must await stop_listening() to properly close websocket connections
+            # Otherwise old players remain connected and new ones with same names get rejected
             for opponent in opponents:
                 try:
                     # Cancel inference future to stop the inference loop
@@ -215,16 +220,22 @@ def worker_loop(
                         opponent, "_inference_future"
                     ):
                         opponent._inference_future.cancel()
+                    # Disconnect from Showdown server to free the username
+                    await opponent.stop_listening()  # type: ignore
                 except Exception as e:
                     print(f"[Worker {worker_id}] Warning: Error stopping opponent: {e}")
+            
+            # Give server time to process disconnections before creating new opponents
+            await asyncio.sleep(0.5)
 
     try:
         loop.run_until_complete(run_battles())
     except Exception as e:
-        print(f"Worker {worker_id} crashed: {e}")
+        print(f"[Worker {worker_id}] FATAL ERROR: {e}")
         import traceback
-
         traceback.print_exc()
+        # Re-raise to ensure main thread knows worker died
+        raise
 
 
 def collate_trajectories(trajectories, device, max_seq_len=17):
@@ -377,10 +388,10 @@ def train_exploiter_subprocess(victim_checkpoint: str, config: RNaDConfig):
     print(f"Victim: {victim_checkpoint}")
     print(f"{'=' * 60}\n")
 
-    # Launch train_exploiter.py as subprocess
+    # Launch exploiter_train.py as subprocess
     cmd = [
         sys.executable,
-        "src/elitefurretai/rl/train_exploiter.py",
+        "src/elitefurretai/rl/exploiter_train.py",
         "--victim",
         victim_checkpoint,
         "--steps",
@@ -521,6 +532,47 @@ def shutdown_showdown_servers(server_processes: List[subprocess.Popen]) -> None:
     print("\nAll servers shut down.\n")
 
 
+def allocate_server_ports(
+    num_workers: int,
+    players_per_worker: int,
+    num_showdown_servers: int,
+    max_players_per_server: int,
+    showdown_start_port: int,
+) -> Tuple[List[int], List[int]]:
+    """Distribute workers across servers while respecting per-server player caps."""
+
+    total_players = num_workers * players_per_worker
+    total_capacity = num_showdown_servers * max_players_per_server
+    if total_players > total_capacity:
+        raise ValueError(
+            "Not enough Showdown server capacity. "
+            f"Need {total_players} concurrent players but only have capacity for {total_capacity}. "
+            "Increase num_showdown_servers or max_players_per_server (see OPTIMIZATIONS.md)."
+        )
+
+    server_loads = [0 for _ in range(num_showdown_servers)]
+    worker_ports: List[int] = []
+
+    for _ in range(num_workers):
+        selected_idx: Optional[int] = None
+        for idx in range(num_showdown_servers):
+            projected = server_loads[idx] + players_per_worker
+            if projected <= max_players_per_server:
+                if selected_idx is None or server_loads[idx] < server_loads[selected_idx]:
+                    selected_idx = idx
+
+        if selected_idx is None:
+            raise ValueError(
+                "Unable to allocate worker to a Showdown server without exceeding max_players_per_server. "
+                "Try increasing num_showdown_servers or relaxing the per-server cap."
+            )
+
+        server_loads[selected_idx] += players_per_worker
+        worker_ports.append(showdown_start_port + selected_idx)
+
+    return worker_ports, server_loads
+
+
 def main():
     parser = argparse.ArgumentParser(description="RNaD RL Training for Pokemon VGC")
     parser.add_argument("--config", type=str, default=None, help="Path to config YAML")
@@ -534,6 +586,18 @@ def main():
         help="Initialize model weights from checkpoint (starts fresh training)",
     )
     args = parser.parse_args()
+
+    # Set up signal handlers for graceful shutdown (e.g., when killed via nohup)
+    shutdown_requested = threading.Event()
+    
+    def signal_handler(signum, frame):
+        """Handle SIGTERM and SIGINT for graceful shutdown."""
+        sig_name = "SIGTERM" if signum == signal.SIGTERM else "SIGINT"
+        print(f"\n{sig_name} received. Initiating graceful shutdown...")
+        shutdown_requested.set()
+    
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
 
     # Load or create config
     if args.config:
@@ -560,8 +624,8 @@ def main():
     )
 
     # Generate unique run ID to avoid stale state on Showdown server
-    # Showdown remembers player names, so we need unique names per run
-    run_id = datetime.now().strftime("%H%M%S")
+    # Use last 4 digits only (HHMM) for compact usernames that survive Showdown's char stripping
+    run_id = datetime.now().strftime("%H%M")
 
     # Initialize wandb
     if config.use_wandb:
@@ -642,7 +706,7 @@ def main():
             ent_coef=config.ent_coef,
             vf_coef=config.vf_coef,
             use_mixed_precision=config.use_mixed_precision,
-            gradient_clip=config.gradient_clip,
+            gradient_clip=config.max_grad_norm,
         )
 
     # Resume from checkpoint if requested (restore optimizer + step state)
@@ -702,13 +766,16 @@ def main():
 
     # Workers generate training data by playing battles against opponent pool
     # Each worker runs multiple players concurrently in an asyncio loop
-    threads = []
-    for i in range(config.num_workers):
-        # Distribute workers across available Showdown servers
-        # Use num_showdown_servers from config (default 1 = all on port 8000)
-        port_offset = i % config.num_showdown_servers
+    worker_ports, server_loads = allocate_server_ports(
+        config.num_workers,
+        config.players_per_worker,
+        config.num_showdown_servers,
+        getattr(config, "max_players_per_server", config.players_per_worker),
+        config.showdown_start_port,
+    )
 
-        # Create daemon thread for this worker (exits when main thread exits)
+    threads = []
+    for i, server_port in enumerate(worker_ports):
         t = threading.Thread(
             target=worker_loop,
             args=(
@@ -716,14 +783,15 @@ def main():
                 traj_queue,
                 config.players_per_worker,
                 i,
-                port_offset,
+                server_port,
                 team_repo,
                 config.battle_format,
                 run_id,
                 team_subdirectory,
                 config.batch_size,
             ),
-            daemon=True,
+            daemon=False,  # Non-daemon so crashes are visible
+            name=f"Worker-{i}",
         )
         t.start()
         threads.append(t)
@@ -732,20 +800,39 @@ def main():
         f"Started {config.num_workers} workers with {config.players_per_worker} players each."
     )
     if config.num_showdown_servers > 1:
-        print(
-            f"Workers distributed across ports 8000-{8000 + config.num_showdown_servers - 1}"
-        )
+        print("Server allocation (players per server):")
+        for idx, load in enumerate(server_loads):
+            port = config.showdown_start_port + idx
+            cap = getattr(config, "max_players_per_server", config.players_per_worker)
+            print(f"  - Port {port}: {load}/{cap} players")
     else:
-        print("All workers using single showdown server on port 8000")
+        print(f"All workers using single showdown server on port {config.showdown_start_port}")
 
     # ==================== MAIN TRAINING LOOP ====================
     # Collect trajectories from workers, batch them, and perform policy updates
     trajectories = []  # Buffer to accumulate trajectories before training
     updates = start_step  # Current training step (may be >0 if resumed from checkpoint)
     last_exploiter_check = start_step  # Track when we last checked for exploiter training
+    total_battles = 0  # Track total number of battles completed across all workers
 
     try:
         while updates < config.max_updates:
+            # Check for shutdown signal (from SIGTERM/SIGINT)
+            if shutdown_requested.is_set():
+                print("\nShutdown requested. Saving checkpoint and exiting...")
+                break
+            
+            # Check if any worker threads have died
+            dead_workers = [t for t in threads if not t.is_alive()]
+            if dead_workers:
+                print(f"\n{'='*60}")
+                print(f"ERROR: {len(dead_workers)} worker(s) died:")
+                for t in dead_workers:
+                    print(f"  - {t.name}")
+                print("Training cannot continue. Saving checkpoint and exiting...")
+                print(f"{'='*60}\n")
+                break
+            
             # ===== COLLECT TRAJECTORIES FROM WORKERS =====
             # Workers push completed battle trajectories to the queue asynchronously
             # We collect them here until we have enough for a training batch
@@ -754,6 +841,7 @@ def main():
                     timeout=1.0
                 )  # Wait up to 1 second for new trajectory
                 trajectories.append(traj)
+                total_battles += 1  # Each trajectory represents one completed battle
             except queue.Empty:
                 # No new trajectories yet, continue waiting
                 continue
@@ -778,6 +866,7 @@ def main():
                         "entropy": metrics["entropy"],
                         "rnad_loss": metrics["rnad_loss"],
                         "update_step": updates,
+                        "total_battles": total_battles,
                     }
 
                     # Portfolio-specific metrics
@@ -914,9 +1003,11 @@ def main():
                 trajectories = []
 
     except KeyboardInterrupt:
+        print("\nKeyboardInterrupt detected...")
+    finally:
         # ===== GRACEFUL SHUTDOWN =====
-        # User interrupted training (Ctrl+C) - save progress before exiting
-        print("\nStopping training...")
+        # Save progress before exiting (handles Ctrl+C, kill, or normal completion)
+        print("\nShutting down training...")
 
         # Save final checkpoint so training can be resumed later
         final_path = save_checkpoint(
@@ -935,11 +1026,6 @@ def main():
 
         # Shutdown Showdown servers
         shutdown_showdown_servers(server_processes)
-
-    finally:
-        # Ensure servers are always cleaned up, even on unexpected errors
-        if "server_processes" in locals():
-            shutdown_showdown_servers(server_processes)
 
 
 if __name__ == "__main__":
