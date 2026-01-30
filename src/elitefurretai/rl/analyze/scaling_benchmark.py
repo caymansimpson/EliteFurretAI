@@ -17,7 +17,7 @@ from poke_env import AccountConfiguration, ServerConfiguration
 from elitefurretai.etl.embedder import Embedder
 from elitefurretai.etl.encoder import MDBO
 from elitefurretai.rl.agent import RNaDAgent
-from elitefurretai.rl.worker import BatchInferencePlayer
+from elitefurretai.rl.multiprocess_actor import BatchInferencePlayer
 from elitefurretai.supervised.model_archs import FlexibleThreeHeadedModel
 
 

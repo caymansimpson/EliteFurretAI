@@ -10,7 +10,7 @@ from poke_env.ps_client import AccountConfiguration, ServerConfiguration
 
 from elitefurretai.rl.agent import RNaDAgent
 from elitefurretai.rl.evaluate import load_model
-from elitefurretai.rl.worker import BatchInferencePlayer
+from elitefurretai.rl.multiprocess_actor import BatchInferencePlayer
 from elitefurretai.supervised.behavior_clone_player import BCPlayer
 
 
@@ -138,7 +138,7 @@ class OpponentPool:
         self._cached_bc_model: Optional[Any] = None
         self._cached_bc_embedder: Optional[Any] = None
         self._cached_bc_config: Optional[Dict] = None
-        
+
         if bc_teampreview_path and bc_action_path and bc_win_path:
             self.bc_player_config = {
                 "teampreview": bc_teampreview_path,
@@ -171,34 +171,34 @@ class OpponentPool:
 
     def _preload_bc_model(self):
         """Pre-load and cache the BC model to avoid repeated disk loads.
-        
+
         BCPlayer normally loads models from disk on each instantiation.
         Since we create many BCPlayer opponents during training, this causes:
         1. Massive memory bloat (each instance holds its own copy)
         2. Slow creation times (disk I/O for 500MB+ models)
-        
+
         By pre-loading once and sharing, we save ~500MB per concurrent BCPlayer.
         """
         if not self.bc_player_config:
             return
-            
+
         from elitefurretai.etl.embedder import Embedder
         from elitefurretai.supervised.model_archs import FlexibleThreeHeadedModel
-        
+
         # Load model from first path (they're all the same in easy_test.yaml)
         filepath = self.bc_player_config["teampreview"]
         print(f"[OpponentPool] Pre-loading BC model from {filepath}...")
-        
+
         checkpoint = torch.load(filepath, map_location=self.device)
         config = checkpoint["config"]
-        
+
         # Create embedder
         embedder = Embedder(
             format="gen9vgc2023regc",
             feature_set=config.get("embedder_feature_set", "raw"),
             omniscient=False,
         )
-        
+
         # Create model
         model = FlexibleThreeHeadedModel(
             input_size=embedder.embedding_size,
@@ -227,16 +227,16 @@ class OpponentPool:
             num_teampreview_actions=90,  # MDBO.teampreview_space()
             max_seq_len=config.get("max_seq_len", 17),
         ).to(self.device)
-        
+
         model.load_state_dict(checkpoint["model_state_dict"])
         model.eval()  # BC model doesn't need gradients
-        
+
         # Cache for reuse
         self._cached_bc_model = model
         self._cached_bc_embedder = embedder
         self._cached_bc_config = config
-        
-        print(f"[OpponentPool] BC model cached (saves ~500MB per BCPlayer instance)")
+
+        print("[OpponentPool] BC model cached (saves ~500MB per BCPlayer instance)")
 
     def _load_past_models(self):
         """Scan past_models_dir and load available checkpoints."""
@@ -280,6 +280,7 @@ class OpponentPool:
         player_config: AccountConfiguration,
         server_config: ServerConfiguration,
         team: str,
+        worker_id: Optional[int] = None,  # Option 2a: worker-specific executor
     ) -> Player:
         """
         Sample an opponent based on curriculum.
@@ -287,6 +288,8 @@ class OpponentPool:
         Args:
             player_config: AccountConfiguration for the opponent
             server_config: ServerConfiguration for battles
+            team: Team string for the opponent
+            worker_id: Worker ID for worker-specific executor (Option 2a)
 
         Returns:
             Player instance
@@ -308,18 +311,18 @@ class OpponentPool:
 
         # Create opponent based on type
         if opponent_type == "self_play":
-            return self._create_self_play_opponent(player_config, server_config, team)
+            return self._create_self_play_opponent(player_config, server_config, team, worker_id)
         elif opponent_type == "bc_player":
             return self._create_bc_opponent(player_config, server_config, team)
         elif opponent_type == "exploiters":
-            return self._create_exploiter_opponent(player_config, server_config, team)
+            return self._create_exploiter_opponent(player_config, server_config, team, worker_id)
         elif opponent_type == "ghosts":
-            return self._create_past_opponent(player_config, server_config, team)
+            return self._create_past_opponent(player_config, server_config, team, worker_id)
         elif opponent_type == "max_damage":
             return self._create_max_damage_opponent(player_config, server_config, team)
         else:
             # Fallback to self-play
-            return self._create_self_play_opponent(player_config, server_config, team)
+            return self._create_self_play_opponent(player_config, server_config, team, worker_id)
 
     def _create_max_damage_opponent(
         self,
@@ -344,6 +347,7 @@ class OpponentPool:
         player_config: AccountConfiguration,
         server_config: ServerConfiguration,
         team: str,
+        worker_id: Optional[int] = None,
     ) -> Player:
         """Create a self-play opponent (copy of main model)."""
         # Make username identifiable
@@ -359,11 +363,12 @@ class OpponentPool:
             battle_format=self.battle_format,
             probabilistic=True,
             team=team,
+            worker_id=worker_id,  # Option 2a: worker-specific executor
         )
 
     def _create_bc_opponent(self, player_config, server_config, team: str) -> Player:
         """Create a BC player opponent using cached model.
-        
+
         Uses pre-loaded model from _preload_bc_model() to avoid:
         1. Repeated disk I/O (loading 500MB+ model files)
         2. Memory bloat (each BCPlayer would hold its own copy)
@@ -376,10 +381,10 @@ class OpponentPool:
         new_config = AccountConfiguration(
             f"BC_{player_config.username}", player_config.password
         )
-        
+
         # Create BCPlayer with pre-loaded model (shared, not copied)
         bc_player = BCPlayer.__new__(BCPlayer)
-        
+
         # Initialize Player base class properly
         Player.__init__(
             bc_player,
@@ -389,14 +394,14 @@ class OpponentPool:
             team=team,
             accept_open_team_sheet=True,
         )
-        
+
         # Set ALL BCPlayer-specific attributes (must match __init__ in behavior_clone_player.py)
         bc_player._battle_format = self.battle_format
         bc_player._probabilistic = True
         bc_player._trajectories = {}
         bc_player._device = self.device
         bc_player._verbose = False
-        
+
         # Share the cached model (no copy - saves ~500MB per instance)
         # Type ignores: we already checked these aren't None above
         bc_player.teampreview_model = self._cached_bc_model
@@ -408,13 +413,13 @@ class OpponentPool:
         bc_player.teampreview_config = self._cached_bc_config  # type: ignore[assignment]
         bc_player.action_config = self._cached_bc_config  # type: ignore[assignment]
         bc_player.win_config = self._cached_bc_config  # type: ignore[assignment]
-        
+
         # Initialize tracking attributes (required by choose_move and other methods)
         bc_player._last_message_error = {}
         bc_player._last_message = {}
         bc_player._last_win_advantage = {}
         bc_player._win_advantage_threshold = 0.5
-        
+
         return bc_player
 
     def _create_exploiter_opponent(
@@ -422,16 +427,14 @@ class OpponentPool:
         player_config: AccountConfiguration,
         server_config: ServerConfiguration,
         team: str,
+        worker_id: Optional[int] = None,
     ) -> Player:
         """Create an exploiter opponent using its trained team."""
         active_exploiters = self.exploiter_registry.get_active_exploiters()
 
         if not active_exploiters:
-            # Fallback to BC or self-play
-            if self.bc_player_config:
-                return self._create_bc_opponent(player_config, server_config, team)
-            else:
-                return self._create_self_play_opponent(player_config, server_config, team)
+            # Fallback to self-play (BCPlayer is too slow due to sync inference)
+            return self._create_self_play_opponent(player_config, server_config, team, worker_id)
 
         # Sample random exploiter
         exploiter_info = random.choice(active_exploiters)
@@ -457,16 +460,20 @@ class OpponentPool:
             battle_format=self.battle_format,
             probabilistic=True,
             team=exploiter_team,
+            worker_id=worker_id,  # Option 2a: worker-specific executor
         )
 
-    def _create_past_opponent(self, player_config, server_config, team: str) -> Player:
+    def _create_past_opponent(
+        self,
+        player_config: AccountConfiguration,
+        server_config: ServerConfiguration,
+        team: str,
+        worker_id: Optional[int] = None,
+    ) -> Player:
         """Create an opponent from past model versions."""
         if not self.past_models:
-            # Fallback to BC or self-play
-            if self.bc_player_config:
-                return self._create_bc_opponent(player_config, server_config, team)
-            else:
-                return self._create_self_play_opponent(player_config, server_config, team)
+            # Fallback to self-play (BCPlayer is too slow due to sync inference)
+            return self._create_self_play_opponent(player_config, server_config, team, worker_id)
 
         # Sample random past model
         step, filepath = self.past_models[np.random.randint(len(self.past_models))]
@@ -487,6 +494,7 @@ class OpponentPool:
             battle_format=self.battle_format,
             probabilistic=True,
             team=team,
+            worker_id=worker_id,  # Option 2a: worker-specific executor
         )
 
     def add_past_model(self, step: int, filepath: str):

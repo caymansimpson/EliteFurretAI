@@ -16,6 +16,9 @@ Usage:
 import argparse
 import asyncio
 import gc
+
+# Reduce logging verbosity
+import logging
 import os
 import socket
 import subprocess
@@ -23,13 +26,10 @@ import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime
-from typing import List, Optional
+from typing import List
 
-# Reduce logging verbosity
-import logging
 logging.getLogger("poke_env").setLevel(logging.WARNING)
 
-import numpy as np
 import psutil
 import torch
 from poke_env.player import RandomPlayer
@@ -70,7 +70,7 @@ def start_showdown_servers(num_servers: int, start_port: int = 8000) -> List[sub
     """Start Showdown servers and return process handles."""
     processes = []
     showdown_path = os.path.expanduser("~/Repositories/pokemon-showdown")
-    
+
     print(f"Starting {num_servers} Showdown servers...")
     for i in range(num_servers):
         port = start_port + i
@@ -81,7 +81,7 @@ def start_showdown_servers(num_servers: int, start_port: int = 8000) -> List[sub
             cwd=showdown_path,
         )
         processes.append(proc)
-    
+
     # Wait for servers to be ready
     for i in range(num_servers):
         port = start_port + i
@@ -89,7 +89,7 @@ def start_showdown_servers(num_servers: int, start_port: int = 8000) -> List[sub
             print(f"  Server on port {port} ready")
         else:
             print(f"  WARNING: Server on port {port} may not be ready")
-    
+
     return processes
 
 
@@ -131,18 +131,18 @@ async def run_random_vs_random(
     print("Test: RandomPlayer vs RandomPlayer")
     print(f"Servers: {num_servers}, Players/server: {players_per_server}")
     print(f"{'='*60}")
-    
+
     # Load team
     team = load_team()
-    
+
     # Create players
     players = []
     opponents = []
     player_id = 0
-    
+
     for server_idx in range(num_servers):
         server_config = get_server_config(start_port + server_idx)
-        
+
         for _ in range(players_per_server):
             p = RandomPlayer(
                 battle_format="gen9vgc2023regc",
@@ -161,18 +161,17 @@ async def run_random_vs_random(
             players.append(p)
             opponents.append(o)
             player_id += 1
-    
+
     # Run battles
     start_time = time.time()
     battles_completed = 0
     errors = 0
-    ram_samples = []
-    
+
     total_pairs = len(players)
     battles_per_pair = (num_battles + total_pairs - 1) // total_pairs
-    
+
     print(f"Running {battles_per_pair} battles per pair ({total_pairs} pairs)...")
-    
+
     async def run_pair_battles(player, opponent, n):
         nonlocal battles_completed, errors
         try:
@@ -181,21 +180,21 @@ async def run_random_vs_random(
         except Exception as e:
             errors += 1
             print(f"Error: {e}")
-    
+
     # Sample RAM periodically
     tasks = []
     for p, o in zip(players, opponents):
         tasks.append(run_pair_battles(p, o, battles_per_pair))
-    
+
     # Run all battles concurrently
     await asyncio.gather(*tasks, return_exceptions=True)
-    
+
     duration = time.time() - start_time
-    
+
     # Get RAM usage
     process = psutil.Process()
     ram_mb = process.memory_info().rss / 1024 / 1024
-    
+
     result = BenchmarkResult(
         name="RandomPlayer vs RandomPlayer",
         battles_completed=battles_completed,
@@ -207,14 +206,14 @@ async def run_random_vs_random(
         peak_ram_usage_mb=ram_mb,
         errors=errors,
     )
-    
-    print(f"\nResults:")
+
+    print("\nResults:")
     print(f"  Battles: {result.battles_completed}")
     print(f"  Duration: {result.duration_seconds:.1f}s")
     print(f"  Throughput: {result.battles_per_second:.2f} battles/s")
     print(f"  RAM: {result.avg_ram_usage_mb:.0f} MB")
     print(f"  Errors: {result.errors}")
-    
+
     return result
 
 
@@ -228,24 +227,24 @@ async def run_bc_vs_bc(
 ) -> BenchmarkResult:
     """Benchmark BCPlayer vs BCPlayer."""
     from elitefurretai.supervised.behavior_clone_player import BCPlayer
-    
+
     print(f"\n{'='*60}")
     print(f"Test: BCPlayer vs BCPlayer ({device.upper()})")
     print(f"Servers: {num_servers}, Players/server: {players_per_server}")
     print(f"Model: {model_path}")
     print(f"{'='*60}")
-    
+
     # Load team
     team = load_team()
-    
+
     # Create players
     players = []
     opponents = []
     player_id = 0
-    
+
     for server_idx in range(num_servers):
         server_config = get_server_config(start_port + server_idx)
-        
+
         for _ in range(players_per_server):
             p = BCPlayer(
                 unified_model_filepath=model_path,
@@ -270,18 +269,17 @@ async def run_bc_vs_bc(
             players.append(p)
             opponents.append(o)
             player_id += 1
-    
+
     # Run battles
     start_time = time.time()
     battles_completed = 0
     errors = 0
-    gpu_samples = []
-    
+
     total_pairs = len(players)
     battles_per_pair = (num_battles + total_pairs - 1) // total_pairs
-    
+
     print(f"Running {battles_per_pair} battles per pair ({total_pairs} pairs)...")
-    
+
     async def run_pair_battles(player, opponent, n):
         nonlocal battles_completed, errors
         try:
@@ -290,19 +288,19 @@ async def run_bc_vs_bc(
         except Exception as e:
             errors += 1
             print(f"Error: {e}")
-    
+
     tasks = []
     for p, o in zip(players, opponents):
         tasks.append(run_pair_battles(p, o, battles_per_pair))
-    
+
     await asyncio.gather(*tasks, return_exceptions=True)
-    
+
     duration = time.time() - start_time
-    
+
     # Get resource usage
     process = psutil.Process()
     ram_mb = process.memory_info().rss / 1024 / 1024
-    
+
     gpu_util = 0
     gpu_mem = 0
     if device == "cuda" and torch.cuda.is_available():
@@ -317,7 +315,7 @@ async def run_bc_vs_bc(
                 gpu_mem = float(mem)
         except Exception:
             pass
-    
+
     result = BenchmarkResult(
         name=f"BCPlayer vs BCPlayer ({device})",
         battles_completed=battles_completed,
@@ -329,8 +327,8 @@ async def run_bc_vs_bc(
         peak_ram_usage_mb=ram_mb,
         errors=errors,
     )
-    
-    print(f"\nResults:")
+
+    print("\nResults:")
     print(f"  Battles: {result.battles_completed}")
     print(f"  Duration: {result.duration_seconds:.1f}s")
     print(f"  Throughput: {result.battles_per_second:.2f} battles/s")
@@ -338,12 +336,12 @@ async def run_bc_vs_bc(
     print(f"  GPU Mem: {result.avg_gpu_memory_mb:.0f} MB")
     print(f"  RAM: {result.avg_ram_usage_mb:.0f} MB")
     print(f"  Errors: {result.errors}")
-    
+
     # Cleanup
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
-    
+
     return result
 
 
@@ -357,36 +355,36 @@ async def run_batch_inference(
 ) -> BenchmarkResult:
     """Benchmark BatchInferencePlayer vs BatchInferencePlayer."""
     from elitefurretai.rl.agent import RNaDAgent
+    from elitefurretai.rl.multiprocess_actor import BatchInferencePlayer
     from elitefurretai.rl.train import load_model
-    from elitefurretai.rl.worker import BatchInferencePlayer
-    
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    
+
     print(f"\n{'='*60}")
-    print(f"Test: BatchInferencePlayer vs BatchInferencePlayer")
+    print("Test: BatchInferencePlayer vs BatchInferencePlayer")
     print(f"Servers: {num_servers}, Players/server: {players_per_server}")
     print(f"Batch size: {batch_size}, Device: {device}")
     print(f"Model: {model_path}")
     print(f"{'='*60}")
-    
+
     # Load team
     team = load_team()
-    
+
     # Load model once
     print("Loading model...")
     base_model = load_model(model_path, device)
     agent = RNaDAgent(base_model)
     agent.to(device)
     agent.eval()
-    
+
     # Create players
     players = []
     opponents = []
     player_id = 0
-    
+
     for server_idx in range(num_servers):
         server_config = get_server_config(start_port + server_idx)
-        
+
         for _ in range(players_per_server):
             p = BatchInferencePlayer(
                 model=agent,
@@ -413,23 +411,23 @@ async def run_batch_inference(
             players.append(p)
             opponents.append(o)
             player_id += 1
-    
+
     # Start inference loops
     for p in players:
         p.start_inference_loop()
     for o in opponents:
         o.start_inference_loop()
-    
+
     # Run battles
     start_time = time.time()
     battles_completed = 0
     errors = 0
-    
+
     total_pairs = len(players)
     battles_per_pair = (num_battles + total_pairs - 1) // total_pairs
-    
+
     print(f"Running {battles_per_pair} battles per pair ({total_pairs} pairs)...")
-    
+
     async def run_pair_battles(player, opponent, n):
         nonlocal battles_completed, errors
         try:
@@ -438,19 +436,19 @@ async def run_batch_inference(
         except Exception as e:
             errors += 1
             print(f"Error: {e}")
-    
+
     tasks = []
     for p, o in zip(players, opponents):
         tasks.append(run_pair_battles(p, o, battles_per_pair))
-    
+
     await asyncio.gather(*tasks, return_exceptions=True)
-    
+
     duration = time.time() - start_time
-    
+
     # Get resource usage
     process = psutil.Process()
     ram_mb = process.memory_info().rss / 1024 / 1024
-    
+
     gpu_util = 0
     gpu_mem = 0
     if torch.cuda.is_available():
@@ -465,7 +463,7 @@ async def run_batch_inference(
                 gpu_mem = float(mem)
         except Exception:
             pass
-    
+
     result = BenchmarkResult(
         name=f"BatchInferencePlayer (bs={batch_size})",
         battles_completed=battles_completed,
@@ -477,8 +475,8 @@ async def run_batch_inference(
         peak_ram_usage_mb=ram_mb,
         errors=errors,
     )
-    
-    print(f"\nResults:")
+
+    print("\nResults:")
     print(f"  Battles: {result.battles_completed}")
     print(f"  Duration: {result.duration_seconds:.1f}s")
     print(f"  Throughput: {result.battles_per_second:.2f} battles/s")
@@ -486,42 +484,42 @@ async def run_batch_inference(
     print(f"  GPU Mem: {result.avg_gpu_memory_mb:.0f} MB")
     print(f"  RAM: {result.avg_ram_usage_mb:.0f} MB")
     print(f"  Errors: {result.errors}")
-    
+
     # Cleanup
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
-    
+
     return result
 
 
 def save_results(results: List[BenchmarkResult], output_file: str):
     """Append results to markdown file."""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
+
     # Check if file exists and has content
     file_exists = os.path.exists(output_file) and os.path.getsize(output_file) > 0
-    
+
     with open(output_file, "a") as f:
         if not file_exists:
             f.write("# RL Training Optimizations V2\n\n")
             f.write("This document contains benchmark results for optimizing RL training throughput.\n\n")
-        
+
         f.write(f"## Benchmark Run - {timestamp}\n\n")
-        
+
         # Results table
         f.write("| Test | Battles | Duration | Battles/s | GPU% | GPU MB | RAM MB | Errors |\n")
         f.write("|------|---------|----------|-----------|------|--------|--------|--------|\n")
-        
+
         for r in results:
             f.write(
                 f"| {r.name} | {r.battles_completed} | {r.duration_seconds:.1f}s | "
                 f"{r.battles_per_second:.2f} | {r.avg_gpu_utilization:.0f} | "
                 f"{r.avg_gpu_memory_mb:.0f} | {r.avg_ram_usage_mb:.0f} | {r.errors} |\n"
             )
-        
+
         f.write("\n")
-        
+
         # Summary
         if results:
             best = max(results, key=lambda r: r.battles_per_second)
@@ -530,7 +528,7 @@ def save_results(results: List[BenchmarkResult], output_file: str):
 
 async def main():
     parser = argparse.ArgumentParser(description="Benchmark RL training throughput")
-    parser.add_argument("--test", type=str, default="all", 
+    parser.add_argument("--test", type=str, default="all",
                        choices=["random", "bc_cpu", "bc_gpu", "batch", "all", "scaling", "batch_sizes"],
                        help="Which test to run")
     parser.add_argument("--battles", type=int, default=100,
@@ -541,26 +539,26 @@ async def main():
                        help="Players per server")
     parser.add_argument("--batch-size", type=int, default=8,
                        help="Batch size for BatchInferencePlayer")
-    parser.add_argument("--model", type=str, 
+    parser.add_argument("--model", type=str,
                        default="data/models/supervised/dauntless-hill-95.pt",
                        help="Path to model checkpoint")
     parser.add_argument("--output", type=str,
                        default="src/elitefurretai/rl/OPTIMIZATIONS_V2.md",
                        help="Output markdown file")
     args = parser.parse_args()
-    
+
     # Check model exists
     if args.test in ["bc_cpu", "bc_gpu", "batch", "all"]:
         if not os.path.exists(args.model):
             print(f"ERROR: Model not found at {args.model}")
             sys.exit(1)
-    
+
     # Start servers
     servers = start_showdown_servers(args.servers, 8000)
-    
+
     try:
         results = []
-        
+
         if args.test in ["random", "all"]:
             r = await run_random_vs_random(
                 args.battles, args.servers, args.players, 8000
@@ -568,14 +566,14 @@ async def main():
             results.append(r)
             # Brief pause between tests
             await asyncio.sleep(2)
-        
+
         if args.test in ["bc_cpu", "all"]:
             r = await run_bc_vs_bc(
                 args.battles, args.model, "cpu", args.servers, args.players, 8000
             )
             results.append(r)
             await asyncio.sleep(2)
-        
+
         if args.test in ["bc_gpu", "all"]:
             if torch.cuda.is_available():
                 r = await run_bc_vs_bc(
@@ -585,13 +583,13 @@ async def main():
                 await asyncio.sleep(2)
             else:
                 print("CUDA not available, skipping bc_gpu test")
-        
+
         if args.test in ["batch", "all"]:
             r = await run_batch_inference(
                 args.battles, args.model, args.batch_size, args.servers, args.players, 8000
             )
             results.append(r)
-        
+
         # Test scaling: vary number of concurrent players
         if args.test == "scaling":
             print("\n" + "="*60)
@@ -603,7 +601,7 @@ async def main():
                 )
                 results.append(r)
                 await asyncio.sleep(2)
-        
+
         # Test batch sizes
         if args.test == "batch_sizes":
             print("\n" + "="*60)
@@ -615,11 +613,11 @@ async def main():
                 )
                 results.append(r)
                 await asyncio.sleep(2)
-        
+
         # Save results
         save_results(results, args.output)
         print(f"\nResults saved to {args.output}")
-        
+
     finally:
         stop_showdown_servers(servers)
 

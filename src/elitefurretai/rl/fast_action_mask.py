@@ -206,10 +206,15 @@ def _get_valid_targets_for_move(
     opp_active = battle.opponent_active_pokemon
     ally_active = battle.active_pokemon
 
-    # Determine which opponent slots are occupied
-    opp_1_exists = opp_active[0] is not None
-    opp_2_exists = opp_active[1] is not None
-    ally_exists = [ally_active[0] is not None, ally_active[1] is not None]
+    # Determine which opponent slots are occupied AND not fainted
+    # A Pokemon can be in opponent_active_pokemon but fainted (awaiting switch)
+    opp_1_exists = opp_active[0] is not None and not opp_active[0].fainted
+    opp_2_exists = opp_active[1] is not None and not opp_active[1].fainted
+    # Same for allies
+    ally_exists = [
+        ally_active[0] is not None and not ally_active[0].fainted,
+        ally_active[1] is not None and not ally_active[1].fainted,
+    ]
 
     if target_type == "self":
         # Self-targeting moves have no explicit target
@@ -232,19 +237,21 @@ def _get_valid_targets_for_move(
         return [0]
 
     elif target_type == "adjacentFoe":
-        # Must target an opponent
+        # Must target an opponent - single target moves REQUIRE explicit target
         targets = []
         if opp_1_exists:
             targets.append(-2)
         if opp_2_exists:
             targets.append(-1)
-        # If only one opponent, can use no-target
-        if len(targets) == 1:
-            targets.append(0)
-        return targets if targets else [0]
+        # NOTE: Do NOT add 0 (no-target) for adjacentFoe moves!
+        # Even if only one opponent exists, Showdown still requires explicit target
+        # for single-target moves like Wild Charge, Thunderbolt, etc.
+        # If no valid targets, return empty - move shouldn't be allowed
+        return targets
 
     elif target_type in ("normal", "any"):
         # Can target anyone - opponent preferred, ally possible
+        # These are single-target moves that REQUIRE explicit target selection
         targets = []
         if opp_1_exists:
             targets.append(-2)
@@ -254,10 +261,10 @@ def _get_valid_targets_for_move(
         other_slot = 1 - slot
         if ally_exists[other_slot]:
             targets.append(1 + other_slot)  # Convert to 1-indexed position
-        # If only one valid target, can use no-target
-        if len(targets) == 1:
-            targets.append(0)
-        return targets if targets else [0]
+        # NOTE: For normal/any moves, we MUST have at least one valid target.
+        # If no valid targets exist (all fainted), return empty list - the move
+        # should not be allowed. Returning [0] caused "Invalid target for Defog".
+        return targets
 
     elif target_type == "adjacentAllyOrSelf":
         # Target self or ally
@@ -323,9 +330,12 @@ def fast_get_action_mask(battle: DoubleBattle) -> np.ndarray:
         if force_switch[0] and force_switch[1]:
             _mark_valid_switch_pairs(mask, slot0_actions, slot1_actions, request)
         else:
-            # Only one slot switching - simple cartesian product
+            # Only one slot switching - cartesian product, but ensure switch actually happens
             for a0 in slot0_actions:
                 for a1 in slot1_actions:
+                    # At least one slot must actually switch (can't both pass)
+                    if a0 == PASS_ACTION and a1 == PASS_ACTION:
+                        continue
                     action_idx = a0 * ACTIONS_PER_SLOT + a1
                     mask[action_idx] = 1.0
 

@@ -13,7 +13,6 @@ Usage:
 
 import asyncio
 import gc
-import itertools
 import json
 import os
 import subprocess
@@ -21,7 +20,7 @@ import time
 from collections import defaultdict
 from dataclasses import asdict, dataclass
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import psutil
@@ -30,8 +29,7 @@ from poke_env.player import RandomPlayer
 from poke_env.ps_client import AccountConfiguration, ServerConfiguration
 
 from elitefurretai.rl.agent import RNaDAgent
-from elitefurretai.rl.config import RNaDConfig
-from elitefurretai.rl.worker import BatchInferencePlayer
+from elitefurretai.rl.multiprocess_actor import BatchInferencePlayer
 from elitefurretai.rl.train import load_model
 from elitefurretai.supervised.behavior_clone_player import BCPlayer
 
@@ -131,7 +129,7 @@ class ShowdownServerManager:
                 cwd=os.path.expanduser("~/Repositories/pokemon-showdown"),
             )
             self.processes.append(proc)
-        
+
         # Wait for each server to actually be listening
         for i in range(self.num_servers):
             port = self.start_port + i
@@ -139,7 +137,7 @@ class ShowdownServerManager:
                 print(f"  Server on port {port} is ready")
             else:
                 print(f"  WARNING: Server on port {port} may not be ready")
-        
+
         print(f"Servers started on ports {self.start_port}-{self.start_port + self.num_servers - 1}")
 
     def stop_servers(self):
@@ -339,7 +337,6 @@ class BattleBenchmark:
 
         try:
             # Create players distributed across servers
-            tasks = []
             players = []
             opponents = []
 
@@ -435,7 +432,7 @@ class BattleBenchmark:
             errors=self.errors[:10],  # Keep only first 10 errors
         )
 
-        print(f"\nResults:")
+        print("\nResults:")
         print(f"  Battles completed: {result.battles_completed}")
         print(f"  Duration: {result.duration_seconds:.1f}s")
         print(f"  Battles/sec: {result.battles_per_second:.2f}")
@@ -683,16 +680,16 @@ def generate_report(results: List[BenchmarkResult], output_file: str):
 
         if random_results:
             avg_random = np.mean([r.battles_per_second for r in random_results])
-            f.write(f"### RandomPlayer Baseline\n")
+            f.write("### RandomPlayer Baseline\n")
             f.write(f"- Average throughput: {avg_random:.2f} battles/s\n\n")
 
         if bc_results:
             avg_bc = np.mean([r.battles_per_second for r in bc_results])
-            f.write(f"### BCPlayer\n")
+            f.write("### BCPlayer\n")
             f.write(f"- Average throughput: {avg_bc:.2f} battles/s\n")
             if random_results:
                 f.write(f"- Overhead vs Random: {(1 - avg_bc/avg_random)*100:.1f}%\n")
-            
+
             # CPU vs GPU comparison
             bc_cpu = [r for r in bc_results if r.config.device == "cpu"]
             bc_gpu = [r for r in bc_results if r.config.device == "cuda"]
@@ -706,11 +703,11 @@ def generate_report(results: List[BenchmarkResult], output_file: str):
 
         if batch_results:
             avg_batch = np.mean([r.battles_per_second for r in batch_results])
-            f.write(f"### BatchInferencePlayer\n")
+            f.write("### BatchInferencePlayer\n")
             f.write(f"- Average throughput: {avg_batch:.2f} battles/s\n")
             if bc_results:
                 f.write(f"- Speedup vs BCPlayer: {avg_batch/avg_bc:.2f}x\n")
-            
+
             # Batch size comparison
             batch_sizes = {}
             for r in batch_results:
@@ -718,7 +715,7 @@ def generate_report(results: List[BenchmarkResult], output_file: str):
                 if bs not in batch_sizes:
                     batch_sizes[bs] = []
                 batch_sizes[bs].append(r.battles_per_second)
-            
+
             f.write("\n**Batch Size Impact:**\n")
             for bs in sorted(batch_sizes.keys()):
                 avg = np.mean(batch_sizes[bs])
@@ -748,13 +745,13 @@ def generate_report(results: List[BenchmarkResult], output_file: str):
         f.write("Based on the benchmark results:\n\n")
         f.write(f"1. **Best overall config:** {best_result.config}\n")
         f.write(f"2. **Expected throughput:** {best_result.battles_per_second:.2f} battles/s\n")
-        
+
         if batch_results and bc_results:
             if avg_batch > avg_bc:
                 f.write(f"3. **Use BatchInferencePlayer** - {avg_batch/avg_bc:.2f}x faster than BCPlayer\n")
             else:
-                f.write(f"3. **Use BCPlayer** - BatchInferencePlayer shows no improvement\n")
-        
+                f.write("3. **Use BCPlayer** - BatchInferencePlayer shows no improvement\n")
+
         f.write("\n")
 
 

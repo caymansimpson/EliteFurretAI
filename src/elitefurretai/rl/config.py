@@ -41,8 +41,7 @@ class RNaDConfig:
     )
 
     # ===== Training hyperparameters =====
-    num_workers: int = 1  # Number of parallel worker threads generating battle data
-    players_per_worker: int = 4  # Number of concurrent players per worker (total players = num_workers * players_per_worker)
+    num_actors: int = 4  # Number of actor processes (IMPALA architecture)
     batch_size: int = 16  # Batch size for model inference during battle play
     train_batch_size: int = (
         32  # Number of trajectories to collect before performing a training update
@@ -141,6 +140,20 @@ class RNaDConfig:
     max_players_per_server: int = (
         2  # Maximum concurrent players assigned to a single Showdown server (prevents I/O contention)
     )
+    max_battle_steps: int = (
+        40  # Maximum trajectory steps per battle before forfeiting to prevent memory explosion.
+        # VGC battles typically end in 10-20 turns (~20-40 steps). Battles exceeding this
+        # are likely stuck in error-retry loops and should be terminated.
+    )
+    num_battles_per_pair: int = (
+        20  # Number of battles each player-opponent pair runs per batch.
+        # Higher values = more efficient GPU utilization but longer between weight updates.
+    )
+    use_multiprocessing: bool = (
+        False  # Option 1: Use true multiprocessing (separate processes) instead of threading.
+        # Each process has its own GIL and model copy, enabling true parallelism.
+        # Requires more memory but can achieve higher throughput.
+    )
 
     # ===== Logging =====
     use_wandb: bool = True  # Enable Weights & Biases logging for metrics and artifacts
@@ -176,6 +189,18 @@ class RNaDConfig:
     def to_dict(self) -> Dict:
         """Convert config to dictionary."""
         return asdict(self)
+
+    # Backward compatibility properties for train.py
+    # train.py still uses threaded workers, map num_actors -> workers
+    @property
+    def num_workers(self) -> int:
+        """Map num_actors to num_workers for backward compatibility."""
+        return self.num_actors
+
+    @property
+    def players_per_worker(self) -> int:
+        """Each worker runs 1 player for backward compatibility."""
+        return 1
 
 
 def get_default_config() -> RNaDConfig:

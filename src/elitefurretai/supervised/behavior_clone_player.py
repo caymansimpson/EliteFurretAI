@@ -6,7 +6,6 @@ import torch
 from poke_env.battle import AbstractBattle, DoubleBattle
 from poke_env.player import BattleOrder, DefaultBattleOrder, Player
 
-from elitefurretai.etl.battle_order_validator import is_valid_order
 from elitefurretai.etl.embedder import Embedder
 from elitefurretai.etl.encoder import MDBO
 from elitefurretai.rl.fast_action_mask import fast_get_action_mask
@@ -525,7 +524,7 @@ class BCPlayer(Player):
 
     async def stop_listening(self):
         """Stop listening to the server and close the websocket connection.
-        
+
         Delegates to the underlying PSClient's stop_listening method.
         """
         await self.ps_client.stop_listening()

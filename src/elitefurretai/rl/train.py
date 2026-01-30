@@ -5,11 +5,15 @@ Enhanced RNaD training with:
 - Integrated exploiter training
 - Team pool randomization
 - Comprehensive wandb tracking
+- Option 1: True multiprocessing (separate processes, bypasses GIL)
+- Option 2a: Per-worker executors (threading with reduced contention)
 """
 
 import argparse
 import asyncio
 import copy
+import gc
+import multiprocessing as mp
 import os
 import queue
 import signal
@@ -18,11 +22,13 @@ import sys
 import threading
 import time
 from datetime import datetime
+from multiprocessing import Queue as MPQueue
+from multiprocessing.synchronize import Event as MPEvent
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
-from poke_env.ps_client import AccountConfiguration, ServerConfiguration
+from poke_env import AccountConfiguration, ServerConfiguration
 
 import wandb
 from elitefurretai.etl.embedder import Embedder
@@ -31,10 +37,14 @@ from elitefurretai.etl.team_repo import TeamRepo
 from elitefurretai.rl.agent import RNaDAgent
 from elitefurretai.rl.config import RNaDConfig
 from elitefurretai.rl.learner import RNaDLearner
+from elitefurretai.rl.multiprocess_actor import (
+    BatchInferencePlayer,
+    cleanup_worker_executors,
+)
 from elitefurretai.rl.opponent_pool import ExploiterRegistry, OpponentPool
 from elitefurretai.rl.portfolio_learner import PortfolioRNaDLearner
-from elitefurretai.rl.worker import BatchInferencePlayer
 from elitefurretai.supervised.model_archs import FlexibleThreeHeadedModel
+from elitefurretai.supervised.train_utils import format_time
 
 
 def load_model(filepath, device):
@@ -116,6 +126,7 @@ def worker_loop(
     team_repo: TeamRepo,
     battle_format: str,
     run_id: str,
+    stop_event: threading.Event,
     team_subdirectory: Optional[str] = None,
     batch_size: int = 16,
 ):
@@ -131,6 +142,7 @@ def worker_loop(
         team_repo: TeamRepo for random team sampling
         battle_format: Game format string for battle initialization and team sampling (e.g., gen9vgc2023regc)
         run_id: Unique identifier for this training run (prevents stale server state issues)
+        stop_event: Event to signal this worker to stop
         team_subdirectory: Optional subdirectory within format to sample teams from (e.g., "easy", "rental_teams")
     """
     loop = asyncio.new_event_loop()
@@ -148,6 +160,7 @@ def worker_loop(
 
         # Compact format without separators (Showdown strips all special chars)
         # Format: W{worker}{pair}R{run_id} e.g. W01R2324 (9 chars)
+        # Option 2a: Pass worker_id so each player uses worker-specific executor
         player = BatchInferencePlayer(
             model=opponent_pool.main_model,
             device=opponent_pool.device,
@@ -157,6 +170,7 @@ def worker_loop(
             trajectory_queue=traj_queue,
             battle_format=battle_format,
             team=team,
+            worker_id=worker_id,  # Option 2a: worker-specific executor
         )
         players.append(player)
 
@@ -172,8 +186,9 @@ def worker_loop(
         await asyncio.sleep(0.2)
 
         battle_batch = 0
-        while True:
+        while not stop_event.is_set():
             battle_batch += 1
+            start = time.time()
             print(f"[Worker {worker_id}] Starting battle batch {battle_batch}...")
 
             # Sample opponents for each player (with random teams if available)
@@ -187,8 +202,9 @@ def worker_loop(
                 opponent_team = team_repo.sample_team(
                     battle_format, subdirectory=team_subdirectory
                 )
+                # Option 2a: Pass worker_id for worker-specific executor
                 opponent = opponent_pool.sample_opponent(
-                    opp_config, server_config, team=opponent_team
+                    opp_config, server_config, team=opponent_team, worker_id=worker_id
                 )
                 opponents.append(opponent)
 
@@ -208,7 +224,8 @@ def worker_loop(
                 tasks.append(player.battle_against(opponent, n_battles=20))
             await asyncio.gather(*tasks)
 
-            print(f"[Worker {worker_id}] Batch {battle_batch} completed!")
+            total_time = time.time() - start
+            print(f"[Worker {worker_id}] Batch {battle_batch} completed in {total_time:.2f}s ({len(players) * 20 / total_time:.2f} battles/s)!")
 
             # Clean up: Stop opponent inference loops AND disconnect from server
             # CRITICAL: Must await stop_listening() to properly close websocket connections
@@ -224,17 +241,412 @@ def worker_loop(
                     await opponent.stop_listening()  # type: ignore
                 except Exception as e:
                     print(f"[Worker {worker_id}] Warning: Error stopping opponent: {e}")
-            
+
+            # MEMORY CLEANUP: Clear completed battles from poke-env's internal dict
+            # poke-env stores all battles in player._battles which grows unboundedly
+            for player in players:
+                player.reset_battles()
+
             # Give server time to process disconnections before creating new opponents
             await asyncio.sleep(0.5)
 
+        print(f"[Worker {worker_id}] Stop requested, exiting battle loop...")
+
     try:
         loop.run_until_complete(run_battles())
+        print(f"[Worker {worker_id}] Worker finished gracefully.")
     except Exception as e:
         print(f"[Worker {worker_id}] FATAL ERROR: {e}")
         import traceback
         traceback.print_exc()
         # Re-raise to ensure main thread knows worker died
+        raise
+
+
+# =============================================================================
+# Option 1: True Multiprocessing Worker
+# Each worker runs in a separate Python process with its own GIL, model copy,
+# and can run truly in parallel with other workers.
+# =============================================================================
+
+
+def mp_worker_process(
+    worker_id: int,
+    server_port: int,
+    model_path: str,
+    model_config: Dict[str, Any],
+    traj_queue: MPQueue,
+    weight_queue: MPQueue,
+    error_queue: MPQueue,
+    stop_event: MPEvent,
+    battle_format: str,
+    team_pool_path: str,
+    team_subdirectory: Optional[str],
+    num_players: int,
+    run_id: str,
+    device: str = "cuda",
+    batch_size: int = 16,
+    max_battle_steps: int = 40,
+    num_battles_per_pair: int = 20,
+):
+    """
+    Multiprocessing worker process for true parallel RL data collection.
+
+    Each worker process has:
+    - Its own Python GIL (true parallelism)
+    - Its own model copy (no contention)
+    - Its own GPU memory allocation
+    - Its own asyncio event loop
+
+    Args:
+        worker_id: Unique worker identifier
+        server_port: Showdown server port
+        model_path: Path to model checkpoint
+        model_config: Model configuration dict
+        traj_queue: Multiprocessing queue for sending trajectories to learner
+        weight_queue: Multiprocessing queue for receiving weight updates
+        error_queue: Multiprocessing queue for reporting errors to main process
+        stop_event: Multiprocessing event to signal shutdown
+        battle_format: Pokemon Showdown format string
+        team_pool_path: Base path for team repository
+        team_subdirectory: Subdirectory within format for teams
+        num_players: Number of concurrent battles per worker
+        run_id: Unique run identifier
+        device: Device for model inference
+        batch_size: Batch size for inference
+    """
+    def get_memory_usage_mb():
+        """Get current process memory usage in MB."""
+        import psutil
+        process = psutil.Process(os.getpid())
+        return process.memory_info().rss / 1024 / 1024
+
+    try:
+        print(f"[MPWorker {worker_id}] Starting (PID: {os.getpid()})...", flush=True)
+        print(f"[MPWorker {worker_id}] Initial memory: {get_memory_usage_mb():.1f} MB", flush=True)
+
+        # Set thread count to avoid contention within process
+        torch.set_num_threads(2)
+
+        # IMPORTANT: Load model to CPU first, then move to device
+        # This avoids CUDA re-initialization issues with forked processes
+        print(f"[MPWorker {worker_id}] Loading model from {model_path}...", flush=True)
+        checkpoint = torch.load(model_path, map_location="cpu", weights_only=False)
+        print(f"[MPWorker {worker_id}] Checkpoint loaded, memory: {get_memory_usage_mb():.1f} MB", flush=True)
+
+        # Extract needed data from checkpoint before building model
+        embedder_feature_set = checkpoint["config"].get("embedder_feature_set", "full")
+        model_state_dict = checkpoint["model_state_dict"]
+
+        # Create embedder for this process
+        print(f"[MPWorker {worker_id}] Creating embedder (feature_set={embedder_feature_set})...", flush=True)
+        embedder = Embedder(
+            format=battle_format,
+            feature_set=embedder_feature_set,
+            omniscient=False,
+        )
+        print(f"[MPWorker {worker_id}] Embedder created, memory: {get_memory_usage_mb():.1f} MB", flush=True)
+
+        # Free checkpoint to save memory (we've extracted what we need)
+        del checkpoint
+        gc.collect()
+        print(f"[MPWorker {worker_id}] After checkpoint cleanup, memory: {get_memory_usage_mb():.1f} MB", flush=True)
+
+        # Build model
+        print(f"[MPWorker {worker_id}] Building model on device={device}...", flush=True)
+        model = FlexibleThreeHeadedModel(
+            input_size=embedder.embedding_size,
+            early_layers=model_config["early_layers"],
+            late_layers=model_config["late_layers"],
+            lstm_layers=model_config.get("lstm_layers", 2),
+            lstm_hidden_size=model_config.get("lstm_hidden_size", 512),
+            dropout=model_config.get("dropout", 0.1),
+            gated_residuals=model_config.get("gated_residuals", False),
+            early_attention_heads=model_config.get("early_attention_heads", 8),
+            late_attention_heads=model_config.get("late_attention_heads", 8),
+            use_grouped_encoder=model_config.get("use_grouped_encoder", False),
+            group_sizes=(
+                embedder.group_embedding_sizes
+                if model_config.get("use_grouped_encoder", False)
+                else None
+            ),
+            grouped_encoder_hidden_dim=model_config.get("grouped_encoder_hidden_dim", 128),
+            grouped_encoder_aggregated_dim=model_config.get("grouped_encoder_aggregated_dim", 1024),
+            pokemon_attention_heads=model_config.get("pokemon_attention_heads", 2),
+            teampreview_head_layers=model_config.get("teampreview_head_layers", []),
+            teampreview_head_dropout=model_config.get("teampreview_head_dropout", 0.1),
+            teampreview_attention_heads=model_config.get("teampreview_attention_heads", 4),
+            turn_head_layers=model_config.get("turn_head_layers", []),
+            num_actions=MDBO.action_space(),
+            num_teampreview_actions=MDBO.teampreview_space(),
+            max_seq_len=model_config.get("max_seq_len", 17),
+        ).to(device)
+        print(f"[MPWorker {worker_id}] Model built and moved to {device}, memory: {get_memory_usage_mb():.1f} MB", flush=True)
+
+        model.load_state_dict(model_state_dict)
+
+        # Clean up state dict now that it's loaded
+        del model_state_dict
+        gc.collect()
+        model.eval()
+        print(f"[MPWorker {worker_id}] Model weights loaded, memory: {get_memory_usage_mb():.1f} MB", flush=True)
+
+        # Wrap in RNaDAgent
+        agent = RNaDAgent(model)
+
+        # Load team repo
+        print(f"[MPWorker {worker_id}] Loading team repo from {team_pool_path}...", flush=True)
+        team_repo = TeamRepo(team_pool_path)
+        print(f"[MPWorker {worker_id}] Team repo loaded, memory: {get_memory_usage_mb():.1f} MB", flush=True)
+
+        print(f"[MPWorker {worker_id}] Setting up players...", flush=True)
+
+        # Create a simple opponent pool that only does self-play
+        # (In multiprocessing mode, we keep it simple - just self-play with own model copy)
+
+        # Set up asyncio event loop for this process
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        server_config = ServerConfiguration(
+            f"ws://localhost:{server_port}/showdown/websocket",
+            None,  # type: ignore[arg-type]
+        )
+
+        # Create local trajectory queue (thread-safe within process)
+        local_traj_queue: queue.Queue = queue.Queue()
+
+        # Create players
+        players = []
+        opponents = []
+        for i in range(num_players):
+            team = team_repo.sample_team(battle_format, subdirectory=team_subdirectory)
+            opponent_team = team_repo.sample_team(battle_format, subdirectory=team_subdirectory)
+
+            player = BatchInferencePlayer(
+                model=agent,
+                device=device,
+                batch_size=batch_size,
+                account_configuration=AccountConfiguration(f"MP{worker_id}P{i}R{run_id}", None),
+                server_configuration=server_config,
+                trajectory_queue=local_traj_queue,
+                battle_format=battle_format,
+                team=team,
+                worker_id=worker_id,
+                embedder=embedder,  # Share embedder to save memory
+                max_battle_steps=max_battle_steps,
+            )
+            players.append(player)
+
+            # Self-play opponent (uses same model copy - no contention since same process)
+            opponent = BatchInferencePlayer(
+                model=agent,
+                device=device,
+                batch_size=batch_size,
+                account_configuration=AccountConfiguration(f"MP{worker_id}O{i}R{run_id}", None),
+                server_configuration=server_config,
+                trajectory_queue=None,  # Opponent doesn't collect trajectories
+                battle_format=battle_format,
+                team=opponent_team,
+                worker_id=worker_id,
+                embedder=embedder,  # Share embedder to save memory
+                max_battle_steps=max_battle_steps,
+            )
+            opponents.append(opponent)
+            print(f"[MPWorker {worker_id}] Created player pair {i}, memory: {get_memory_usage_mb():.1f} MB", flush=True)
+
+        # Start inference loops
+        print(f"[MPWorker {worker_id}] Starting inference loops for {len(players)} players and {len(opponents)} opponents...", flush=True)
+        for p in players:
+            p.start_inference_loop()
+        for o in opponents:
+            o.start_inference_loop()
+        print(f"[MPWorker {worker_id}] Inference loops started, memory: {get_memory_usage_mb():.1f} MB", flush=True)
+        print(f"[MPWorker {worker_id}] Beginning battle loop...", flush=True)
+
+        async def run_battles(num_battles_per_pair):
+            # Give inference loops time to start
+            await asyncio.sleep(0.2)
+
+            battle_batch = 0
+            last_weight_check = time.time()
+
+            while not stop_event.is_set():
+                battle_batch += 1
+                start = time.time()
+
+                # Check for weight updates every second
+                if time.time() - last_weight_check > 1.0:
+                    try:
+                        while not weight_queue.empty():
+                            new_weights = weight_queue.get_nowait()
+                            model.load_state_dict(new_weights)
+                            print(f"[MPWorker {worker_id}] Updated weights")
+                    except Exception:
+                        pass
+                    last_weight_check = time.time()
+
+                # Track memory before battles for leak detection
+                mem_before_battles = get_memory_usage_mb()
+
+                # Run battles
+                tasks = []
+                for player, opponent in zip(players, opponents):
+                    tasks.append(player.battle_against(opponent, n_battles=num_battles_per_pair))
+                await asyncio.gather(*tasks)
+
+                total_time = time.time() - start
+                battles_completed = num_players * num_battles_per_pair
+                mem_mb = get_memory_usage_mb()
+
+                # Log memory delta to detect leaks (only if significant growth)
+                mem_delta = mem_mb - mem_before_battles
+                if mem_delta > 500:  # More than 500MB growth in one batch
+                    print(f"[MPWorker {worker_id}] WARNING: Large memory growth in batch {battle_batch}: +{mem_delta:.0f}MB", flush=True)
+
+                # Transfer trajectories from local queue to multiprocessing queue
+                transferred = 0
+                while not local_traj_queue.empty():
+                    try:
+                        traj = local_traj_queue.get_nowait()
+                        traj_queue.put(traj)
+                        transferred += 1
+                    except Exception:
+                        break
+
+                print(f"[MPWorker {worker_id}] Batch {battle_batch}: {battles_completed} battles in {total_time:.2f}s ({battles_completed / total_time:.2f} b/s), mem={mem_mb:.0f}MB | Sent {transferred} trajectories to learner", flush=True)
+
+                # Report memory stats BEFORE cleanup to diagnose leaks
+                if battle_batch % 5 == 0:
+                    num_hidden = sum(len(p.hidden_states) for p in players) + sum(len(o.hidden_states) for o in opponents)
+                    num_traj = sum(len(p.current_trajectories) for p in players)
+                    num_completed = sum(len(p.completed_trajectories) for p in players) + sum(len(o.completed_trajectories) for o in opponents)
+                    num_battles_p = sum(len(p._battles) for p in players)
+                    num_battles_o = sum(len(o._battles) for o in opponents)
+
+                    # === MEMORY LEAK DIAGNOSTIC ===
+                    # Check Battle._observations sizes (suspected leak source)
+                    import sys
+                    total_obs_size = 0
+                    total_obs_count = 0
+                    for p in players + opponents:
+                        for battle in list(p._battles.values()):
+                            if hasattr(battle, '_observations'):
+                                obs_dict = battle._observations
+                                total_obs_count += len(obs_dict)
+                                total_obs_size += sys.getsizeof(obs_dict)
+                                for obs in list(obs_dict.values()):
+                                    total_obs_size += sys.getsizeof(obs)
+                                    # Observation contains dicts - estimate their size
+                                    if hasattr(obs, '__dict__'):
+                                        total_obs_size += sys.getsizeof(obs.__dict__)
+
+                    # Check hidden state tensor sizes
+                    hidden_tensor_size = 0
+                    hidden_tensor_count = 0
+                    for p in players + opponents:
+                        for tag, (h, c) in list(p.hidden_states.items()):
+                            hidden_tensor_count += 1
+                            hidden_tensor_size += h.nelement() * h.element_size()
+                            hidden_tensor_size += c.nelement() * c.element_size()
+
+                    # Check trajectory data sizes
+                    traj_data_size = 0
+                    for p in players:
+                        for tag, traj_list in list(p.current_trajectories.items()):
+                            traj_data_size += sys.getsizeof(traj_list)
+                            for step in traj_list:
+                                if step is not None:
+                                    traj_data_size += sys.getsizeof(step)
+                                    if isinstance(step, dict):
+                                        for v in step.values():
+                                            traj_data_size += sys.getsizeof(v)
+
+                    print(f"[MPWorker {worker_id}] LEAK DIAG: obs={total_obs_size/1024/1024:.2f}MB ({total_obs_count} obs), hidden={hidden_tensor_size/1024/1024:.2f}MB ({hidden_tensor_count} states), traj={traj_data_size/1024/1024:.2f}MB", flush=True)
+                    # === END MEMORY LEAK DIAGNOSTIC ===
+
+                    # Detailed per-player memory diagnostics
+                    for pi, p in enumerate(players):
+                        if len(p.hidden_states) > 10 or len(p.current_trajectories) > 10:
+                            print(f"[MPWorker {worker_id}] Player {pi}: hidden={len(p.hidden_states)}, current_traj={len(p.current_trajectories)}, completed_traj={len(p.completed_trajectories)}, battles={len(p._battles)}", flush=True)
+                    for oi, o in enumerate(opponents):
+                        if len(o.hidden_states) > 10 or len(o.completed_trajectories) > 100:
+                            print(f"[MPWorker {worker_id}] Opponent {oi}: hidden={len(o.hidden_states)}, completed_traj={len(o.completed_trajectories)}, battles={len(o._battles)}", flush=True)
+
+                    print(f"[MPWorker {worker_id}] PRE-cleanup: hidden={num_hidden}, active_traj={num_traj}, completed_traj={num_completed}, battles_p={num_battles_p}, battles_o={num_battles_o}", flush=True)
+
+                # MEMORY CLEANUP: Clear completed battles from poke-env's internal dict
+                # poke-env stores all battles in player._battles which grows unboundedly
+                # This caused OOM after ~40 updates with hundreds of completed battles
+                for player in players:
+                    player.reset_battles()
+                    player.clear_completed_trajectories()
+                    # Also clear hidden states for battles that ended
+                    # (they should be auto-cleaned but belt-and-suspenders)
+                    player.hidden_states.clear()
+                    player.current_trajectories.clear()
+                for opponent in opponents:
+                    opponent.reset_battles()
+                    opponent.clear_completed_trajectories()  # Critical for opponents!
+                    opponent.hidden_states.clear()
+
+                # Force garbage collection every batch and report memory
+                gc.collect()
+                mem_after_gc = get_memory_usage_mb()
+                if battle_batch % 5 == 0:
+                    print(f"[MPWorker {worker_id}] Memory after GC: {mem_after_gc:.0f}MB", flush=True)
+
+                # MEMORY THRESHOLD KILL: If worker exceeds 10GB, something is very wrong
+                # Kill this worker so main process can restart or continue without it
+                MEMORY_LIMIT_MB = 10000  # 10GB
+                if mem_after_gc > MEMORY_LIMIT_MB:
+                    print(f"[MPWorker {worker_id}] CRITICAL: Memory {mem_after_gc:.0f}MB exceeds limit {MEMORY_LIMIT_MB}MB. Terminating worker.", flush=True)
+
+                    # Try to diagnose what's using memory before dying
+                    import sys
+                    try:
+                        # Get top 20 objects by size
+                        all_objects = gc.get_objects()
+                        type_counts: Dict[str, int] = {}
+                        type_sizes: Dict[str, int] = {}
+                        for obj in all_objects:
+                            t = type(obj).__name__
+                            type_counts[t] = type_counts.get(t, 0) + 1
+                            try:
+                                type_sizes[t] = type_sizes.get(t, 0) + sys.getsizeof(obj)
+                            except Exception:
+                                pass
+
+                        print(f"[MPWorker {worker_id}] Top object types by count:", flush=True)
+                        for t, c in sorted(type_counts.items(), key=lambda x: -x[1])[:10]:
+                            print(f"  {t}: {c} objects, ~{type_sizes.get(t, 0) / 1024 / 1024:.1f}MB", flush=True)
+                    except Exception as e:
+                        print(f"[MPWorker {worker_id}] Failed to get memory breakdown: {e}", flush=True)
+
+                    # Signal error and exit
+                    try:
+                        error_queue.put_nowait({
+                            "worker_id": worker_id,
+                            "error": f"Memory limit exceeded: {mem_after_gc:.0f}MB > {MEMORY_LIMIT_MB}MB",
+                            "traceback": ""
+                        })
+                    except Exception:
+                        pass
+                    return  # Exit the async function, which will exit the worker
+
+        loop.run_until_complete(run_battles(num_battles_per_pair))
+        print(f"[MPWorker {worker_id}] Finished gracefully", flush=True)
+
+    except Exception as e:
+        import traceback
+        error_msg = f"[MPWorker {worker_id}] FATAL ERROR: {e}\n{traceback.format_exc()}"
+        print(error_msg, flush=True)
+        # Send error to main process for visibility
+        try:
+            error_queue.put_nowait({"worker_id": worker_id, "error": str(e), "traceback": traceback.format_exc()})
+        except Exception:
+            pass  # Queue might be full or closed
+        # Re-raise so exitcode is non-zero
         raise
 
 
@@ -589,13 +1001,13 @@ def main():
 
     # Set up signal handlers for graceful shutdown (e.g., when killed via nohup)
     shutdown_requested = threading.Event()
-    
+
     def signal_handler(signum, frame):
         """Handle SIGTERM and SIGINT for graceful shutdown."""
         sig_name = "SIGTERM" if signum == signal.SIGTERM else "SIGINT"
         print(f"\n{sig_name} received. Initiating graceful shutdown...")
         shutdown_requested.set()
-    
+
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
 
@@ -712,6 +1124,7 @@ def main():
     # Resume from checkpoint if requested (restore optimizer + step state)
     # Note: --checkpoint is for model initialization only, not resuming training state
     start_step = 0
+    start = time.time()
     curriculum = {}
     if config.resume_from or args.resume:
         # Priority: CLI flag --resume > config.resume_from
@@ -759,13 +1172,10 @@ def main():
         opponent_pool.curriculum = curriculum
         print(f"Restored curriculum: {curriculum}")
 
-    # ==================== START WORKER THREADS ====================
-    # Create shared queue for workers to push completed battle trajectories
-    # Workers run battles asynchronously and add trajectory data here for training
-    traj_queue: queue.Queue = queue.Queue()
-
+    # ==================== START WORKERS ====================
     # Workers generate training data by playing battles against opponent pool
-    # Each worker runs multiple players concurrently in an asyncio loop
+
+    # Allocate ports for all workers
     worker_ports, server_loads = allocate_server_ports(
         config.num_workers,
         config.players_per_worker,
@@ -774,30 +1184,107 @@ def main():
         config.showdown_start_port,
     )
 
-    threads = []
-    for i, server_port in enumerate(worker_ports):
-        t = threading.Thread(
-            target=worker_loop,
-            args=(
-                opponent_pool,
-                traj_queue,
-                config.players_per_worker,
-                i,
-                server_port,
-                team_repo,
-                config.battle_format,
-                run_id,
-                team_subdirectory,
-                config.batch_size,
-            ),
-            daemon=False,  # Non-daemon so crashes are visible
-            name=f"Worker-{i}",
-        )
-        t.start()
-        threads.append(t)
+    # Choose between multiprocessing (Option 1) and threading (Option 2a)
+    if config.use_multiprocessing:
+        # ==================== OPTION 1: MULTIPROCESSING ====================
+        print("\n=== Using TRUE MULTIPROCESSING mode (Option 1) ===")
+        print("Each worker runs in a separate process with its own GIL and model copy.")
+        print(f"  - Learner: {device}")
+        print(f"  - Workers: {device}")
+
+        # Create multiprocessing queues
+        mp_traj_queue: Optional[MPQueue] = MPQueue(maxsize=1000)
+        weight_queues: List[MPQueue] = [MPQueue(maxsize=5) for _ in range(config.num_workers)]
+        mp_error_queue: Optional[MPQueue] = MPQueue(maxsize=100)  # For workers to report errors
+        mp_stop_event: Optional[MPEvent] = mp.Event()
+
+        # Get model config for worker processes
+        model_config = base_model.config if hasattr(base_model, 'config') else {}
+        # If config is not on model, extract from checkpoint
+        checkpoint = torch.load(model_init_path, map_location="cpu", weights_only=False)
+        model_config = checkpoint.get("config", {})
+
+        processes: List[mp.Process] = []
+        for i, server_port in enumerate(worker_ports):
+            assert mp_traj_queue is not None
+            assert mp_error_queue is not None
+            assert mp_stop_event is not None
+            p = mp.Process(
+                target=mp_worker_process,
+                args=(
+                    i,  # worker_id
+                    server_port,
+                    model_init_path,  # model_path
+                    model_config,
+                    mp_traj_queue,
+                    weight_queues[i],
+                    mp_error_queue,  # error reporting queue
+                    mp_stop_event,
+                    config.battle_format,
+                    config.base_team_path,
+                    team_subdirectory,
+                    config.players_per_worker,
+                    run_id,
+                    device,  # Use same device as learner (GPU has more memory: 32GB vs 24GB CPU RAM)
+                    config.batch_size,
+                    config.max_battle_steps,
+                    config.num_battles_per_pair,
+                ),
+                daemon=True,
+                name=f"MPWorker-{i}",
+            )
+            p.start()
+            processes.append(p)
+            print(f"✓ Started multiprocessing worker {i} (PID: {p.pid}) on port {server_port}")
+
+        # For main loop, we'll use mp_traj_queue
+        # Threading variables set to None for compatibility
+        threads: List[threading.Thread] = []  # Empty list
+        thread_traj_queue: Optional[queue.Queue] = None  # Will use mp_traj_queue instead
+        thread_stop_event: Optional[threading.Event] = None  # Will use mp_stop_event instead
+
+    else:
+        # ==================== OPTION 2a: THREADING ====================
+        print("\n=== Using THREADING mode with per-worker executors (Option 2a) ===")
+        print("Workers share memory but have separate inference executors to reduce contention.")
+
+        # Create threading queue
+        thread_traj_queue = queue.Queue()
+        thread_stop_event = threading.Event()
+
+        # Multiprocessing variables set to None/empty
+        mp_traj_queue = None
+        mp_error_queue = None
+        mp_stop_event = None
+        weight_queues = []
+        processes = []
+
+        threads = []
+        for i, server_port in enumerate(worker_ports):
+            t = threading.Thread(
+                target=worker_loop,
+                args=(
+                    opponent_pool,
+                    thread_traj_queue,
+                    config.players_per_worker,
+                    i,
+                    server_port,
+                    team_repo,
+                    config.battle_format,
+                    run_id,
+                    thread_stop_event,  # Fixed: was worker_stop_event
+                    team_subdirectory,
+                    config.batch_size,
+                ),
+                daemon=True,  # Daemon threads die when main exits
+                name=f"Worker-{i}",
+            )
+            t.start()
+            threads.append(t)
+            print(f"✓ Started threading worker {i} on port {server_port}")
 
     print(
-        f"Started {config.num_workers} workers with {config.players_per_worker} players each."
+        f"\nStarted {config.num_workers} workers with {config.players_per_worker} players each."
     )
     if config.num_showdown_servers > 1:
         print("Server allocation (players per server):")
@@ -819,30 +1306,75 @@ def main():
         while updates < config.max_updates:
             # Check for shutdown signal (from SIGTERM/SIGINT)
             if shutdown_requested.is_set():
-                print("\nShutdown requested. Saving checkpoint and exiting...")
+                print("\nShutdown requested. Signaling workers to stop...")
+                if config.use_multiprocessing and mp_stop_event is not None:
+                    mp_stop_event.set()
+                elif thread_stop_event is not None:
+                    thread_stop_event.set()
                 break
-            
-            # Check if any worker threads have died
-            dead_workers = [t for t in threads if not t.is_alive()]
-            if dead_workers:
-                print(f"\n{'='*60}")
-                print(f"ERROR: {len(dead_workers)} worker(s) died:")
-                for t in dead_workers:
-                    print(f"  - {t.name}")
-                print("Training cannot continue. Saving checkpoint and exiting...")
-                print(f"{'='*60}\n")
-                break
-            
+
+            # Check if workers have died
+            if config.use_multiprocessing:
+                dead_procs = [p for p in processes if not p.is_alive()]
+                if dead_procs:
+                    print(f"\n{'='*60}")
+                    print(f"ERROR: {len(dead_procs)} worker process(es) died:")
+                    for p in dead_procs:
+                        exit_code = p.exitcode
+                        exit_reason = {
+                            None: "still running (race condition?)",
+                            0: "normal exit",
+                            1: "general error",
+                            -9: "SIGKILL (out of memory?)",
+                            -11: "SIGSEGV (segmentation fault)",
+                            -15: "SIGTERM (terminated)",
+                        }.get(exit_code, f"exit code {exit_code}")
+                        print(f"  - {p.name} (PID: {p.pid}): {exit_reason}")
+
+                    # Check error queue for detailed error messages from workers
+                    if mp_error_queue is not None:
+                        print("\nChecking for error reports from workers...")
+                        error_found = False
+                        while True:
+                            try:
+                                error_info = mp_error_queue.get_nowait()
+                                error_found = True
+                                print(f"\n--- Error from Worker {error_info['worker_id']} ---")
+                                print(f"Exception: {error_info['error']}")
+                                print(f"Traceback:\n{error_info['traceback']}")
+                            except Exception:
+                                break
+                        if not error_found:
+                            print("No error reports in queue (worker may have crashed before reporting)")
+
+                    print("\nTraining cannot continue. Saving checkpoint and exiting...")
+                    print(f"{'='*60}\n")
+                    break
+            else:
+                dead_threads = [t for t in threads if not t.is_alive()]
+                if dead_threads:
+                    print(f"\n{'='*60}")
+                    print(f"ERROR: {len(dead_threads)} worker thread(s) died:")
+                    for t in dead_threads:
+                        print(f"  - {t.name}")
+                    print("Training cannot continue. Saving checkpoint and exiting...")
+                    print(f"{'='*60}\n")
+                    break
+
             # ===== COLLECT TRAJECTORIES FROM WORKERS =====
             # Workers push completed battle trajectories to the queue asynchronously
             # We collect them here until we have enough for a training batch
             try:
-                traj = traj_queue.get(
-                    timeout=1.0
-                )  # Wait up to 1 second for new trajectory
+                if config.use_multiprocessing and mp_traj_queue is not None:
+                    traj = mp_traj_queue.get(timeout=1.0)
+                elif thread_traj_queue is not None:
+                    traj = thread_traj_queue.get(timeout=1.0)
+                else:
+                    time.sleep(0.1)
+                    continue
                 trajectories.append(traj)
                 total_battles += 1  # Each trajectory represents one completed battle
-            except queue.Empty:
+            except (queue.Empty, Exception):
                 # No new trajectories yet, continue waiting
                 continue
 
@@ -895,11 +1427,13 @@ def main():
                     wandb.log(log_dict)
 
                 # Print progress to console periodically
-                if updates % 10 == 0:
+                if updates % 1 == 0:
                     print(
                         f"Update {updates}: Loss={metrics['loss']:.4f}, "
                         f"Policy={metrics['policy_loss']:.4f}, "
-                        f"Value={metrics['value_loss']:.4f}"
+                        f"Value={metrics['value_loss']:.4f}, "
+                        f"Total Battles={total_battles} in {format_time(time.time() - start)}",
+                        flush=True
                     )
 
                 # ===== UPDATE REFERENCE MODEL =====
@@ -955,6 +1489,24 @@ def main():
                         artifact.add_file(checkpoint_path)
                         wandb.log_artifact(artifact)
 
+                    # ===== BROADCAST WEIGHTS TO WORKERS (MULTIPROCESSING MODE) =====
+                    # In multiprocessing mode, workers have their own model copies
+                    # We need to periodically sync them with the updated main model
+                    if config.use_multiprocessing:
+                        print(f"[Update {updates}] Broadcasting weights to worker processes...")
+                        cpu_weights = {k: v.cpu() for k, v in agent.model.state_dict().items()}
+                        for i, wq in enumerate(weight_queues):
+                            try:
+                                # Clear old weights to avoid queue overflow
+                                while not wq.empty():
+                                    try:
+                                        wq.get_nowait()
+                                    except Exception:
+                                        break
+                                wq.put_nowait(cpu_weights)
+                            except Exception as e:
+                                print(f"  Warning: Failed to broadcast to worker {i}: {e}")
+
                 # ===== UPDATE CURRICULUM (ADAPTIVE OPPONENT SAMPLING) =====
                 # Adjust weights for sampling different opponent types based on win rates
                 # E.g., if we're beating BC players too easily, reduce their sampling weight
@@ -1004,8 +1556,37 @@ def main():
 
     except KeyboardInterrupt:
         print("\nKeyboardInterrupt detected...")
+        if config.use_multiprocessing and mp_stop_event is not None:
+            mp_stop_event.set()
+        elif thread_stop_event is not None:
+            thread_stop_event.set()
     finally:
         # ===== GRACEFUL SHUTDOWN =====
+        print("\nWaiting for workers to finish (max 5 seconds)...")
+
+        if config.use_multiprocessing:
+            # Signal multiprocessing workers to stop
+            if mp_stop_event is not None:
+                mp_stop_event.set()
+
+            # Wait for processes to finish
+            for p in processes:
+                p.join(timeout=5.0)
+                if p.is_alive():
+                    print(f"  Worker {p.name} (PID: {p.pid}) still running, terminating...")
+                    p.terminate()
+                    p.join(timeout=1.0)
+        else:
+            # Signal threading workers to stop
+            if thread_stop_event is not None:
+                thread_stop_event.set()
+
+            # Wait for threads to finish
+            for t in threads:
+                t.join(timeout=5.0)
+                if t.is_alive():
+                    print(f"  Worker {t.name} still running, will be terminated.")
+
         # Save progress before exiting (handles Ctrl+C, kill, or normal completion)
         print("\nShutting down training...")
 
@@ -1024,11 +1605,19 @@ def main():
         if config.use_wandb:
             wandb.finish()
 
+        # Option 2a: Clean up worker-specific executors (threading mode)
+        if not config.use_multiprocessing:
+            cleanup_worker_executors()
+
         # Shutdown Showdown servers
         shutdown_showdown_servers(server_processes)
 
 
 if __name__ == "__main__":
+    # Set multiprocessing start method to 'spawn' for CUDA compatibility
+    # Must be done before any CUDA initialization or mp.Process creation
+    mp.set_start_method("spawn", force=True)
+
     # Set sharing strategy for WSL compatibility
     torch.multiprocessing.set_sharing_strategy("file_system")
     main()

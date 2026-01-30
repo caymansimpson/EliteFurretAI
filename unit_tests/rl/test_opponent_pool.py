@@ -317,7 +317,7 @@ def test_opponent_pool_initialization(
     assert np.isclose(sum(pool.curriculum.values()), 1.0)
 
     # Check all expected opponent types are present
-    expected_types = {"self_play", "bc_player", "exploiters", "ghosts"}
+    expected_types = {"self_play", "bc_player", "exploiters", "ghosts", "max_damage"}
     assert set(pool.curriculum.keys()) == expected_types
 
 

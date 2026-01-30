@@ -11,7 +11,7 @@ from elitefurretai.etl.embedder import Embedder
 def _trajectory_collate_fn(batch: List[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
     """
     Custom collate function that efficiently stacks trajectory dictionaries.
-    
+
     This function is more memory-efficient than the default collate because it:
     1. Pre-allocates the output tensors
     2. Uses contiguous memory to avoid shared memory fragmentation
@@ -19,18 +19,18 @@ def _trajectory_collate_fn(batch: List[Dict[str, torch.Tensor]]) -> Dict[str, to
     """
     if not batch:
         return {}
-    
+
     # Get the keys from the first element
     keys = batch[0].keys()
     result = {}
-    
+
     for key in keys:
         # Stack tensors for this key
         tensors = [item[key] for item in batch]
         stacked = torch.stack(tensors, dim=0)
         # Make contiguous to ensure clean memory layout for sharing
         result[key] = stacked.contiguous()
-    
+
     return result
 
 
@@ -92,7 +92,7 @@ class OptimizedBattleDataLoader(torch.utils.data.DataLoader):
     compared to native and naive multiprocessed loading of preprocessed files.
 
     Completely abstracts everything away from the user so they only have to use this dataloader.
-    
+
     Note on shared memory issues (Bus errors):
     - On WSL2/Linux with many workers, PyTorch's default tensor sharing can exhaust
       shared memory or file descriptors, causing "Bus error" crashes
@@ -121,7 +121,7 @@ class OptimizedBattleDataLoader(torch.utils.data.DataLoader):
         # This must be done before creating workers
         if platform.system() == "Windows" or "microsoft" in platform.uname()[2].lower():
             torch.multiprocessing.set_sharing_strategy("file_system")
-        
+
         # Build dataset kwargs conditionally, and build dataset with them
         dataset_kwargs: Dict[str, Any] = {"folder_path": folder_path}
         if metadata_filename is not None:

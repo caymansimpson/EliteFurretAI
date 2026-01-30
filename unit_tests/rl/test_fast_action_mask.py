@@ -15,6 +15,7 @@ These tests verify that fast_get_action_mask correctly:
 
 import numpy as np
 import pytest
+from poke_env.battle.double_battle import DoubleBattle
 
 from elitefurretai.etl import BattleData, BattleIterator
 from elitefurretai.etl.encoder import MDBO
@@ -579,6 +580,54 @@ def test_both_perspectives(vgc_json_anon):
 # =============================================================================
 # PERFORMANCE/COMPARISON TESTS
 # =============================================================================
+
+
+def test_single_target_move_requires_explicit_target():
+    """
+    Test that single-target moves (adjacentFoe, normal, any) require explicit target selection.
+    
+    This is a regression test for a bug where the mask allowed no-target (offset=2) for
+    single-target moves when only one opponent was remaining. This caused errors like:
+    "[Invalid choice] Can't move: Wild Charge needs a target"
+    
+    Single-target moves MUST have explicit target (-2, -1, 1, or 2), not 0.
+    """
+    from elitefurretai.rl.fast_action_mask import _get_valid_targets_for_move
+    from unittest.mock import MagicMock
+    
+    # Create mock battle with only one opponent (not fainted)
+    battle = MagicMock(spec=DoubleBattle)
+    opp_mon = MagicMock()
+    opp_mon.fainted = False  # Opponent is alive
+    ally_mon_0 = MagicMock()
+    ally_mon_0.fainted = False
+    ally_mon_1 = MagicMock()
+    ally_mon_1.fainted = False
+    battle.opponent_active_pokemon = [opp_mon, None]  # Only one opponent
+    battle.active_pokemon = [ally_mon_0, ally_mon_1]  # Both allies present
+    
+    # Test adjacentFoe - should NOT include 0 (no-target)
+    targets = _get_valid_targets_for_move(battle, slot=0, target_type="adjacentFoe")
+    assert 0 not in targets, "adjacentFoe should not allow no-target (0)"
+    assert -2 in targets, "adjacentFoe should allow targeting opponent at -2"
+    
+    # Test normal - should NOT include 0 (no-target)
+    targets = _get_valid_targets_for_move(battle, slot=0, target_type="normal")
+    assert 0 not in targets, "normal should not allow no-target (0)"
+    # Should allow opponent and ally targets
+    assert -2 in targets, "normal should allow targeting opponent"
+    assert 2 in targets, "normal should allow targeting ally (slot 1)"
+    
+    # Test any - should NOT include 0 (no-target)
+    targets = _get_valid_targets_for_move(battle, slot=0, target_type="any")
+    assert 0 not in targets, "any should not allow no-target (0)"
+    
+    # Contrast with spread moves - these SHOULD return [0]
+    targets = _get_valid_targets_for_move(battle, slot=0, target_type="allAdjacent")
+    assert targets == [0], "allAdjacent (spread) should use no-target (0)"
+    
+    targets = _get_valid_targets_for_move(battle, slot=0, target_type="allAdjacentFoes")
+    assert targets == [0], "allAdjacentFoes (spread) should use no-target (0)"
 
 
 def test_mask_generation_is_fast(vgc_json_anon):

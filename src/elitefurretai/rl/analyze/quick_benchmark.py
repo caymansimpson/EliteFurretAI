@@ -15,7 +15,7 @@ from poke_env import AccountConfiguration, ServerConfiguration
 from elitefurretai.etl.embedder import Embedder
 from elitefurretai.etl.encoder import MDBO
 from elitefurretai.rl.agent import RNaDAgent
-from elitefurretai.rl.worker import BatchInferencePlayer
+from elitefurretai.rl.multiprocess_actor import BatchInferencePlayer
 from elitefurretai.supervised.model_archs import FlexibleThreeHeadedModel
 
 
@@ -24,7 +24,7 @@ def launch_showdown_server(port: int) -> subprocess.Popen:
     script_dir = os.path.dirname(os.path.abspath(__file__))
     repo_root = os.path.abspath(os.path.join(script_dir, "..", "..", "..", ".."))
     showdown_dir = os.path.join(repo_root, "..", "pokemon-showdown")
-    
+
     process = subprocess.Popen(
         ["node", "pokemon-showdown", "start", "--no-security", "--port", str(port)],
         stdout=subprocess.DEVNULL,
@@ -63,15 +63,15 @@ async def run_benchmark(
     run_id: int = 0,
 ):
     """Run a fixed number of battles and measure time."""
-    
+
     server_config = create_server_config(port)
-    
+
     players = []
     opponents = []
-    
+
     for i in range(num_pairs):
         agent = RNaDAgent(model=model)
-        
+
         # Use unique names per run to avoid name collision issues
         player = BatchInferencePlayer(
             model=agent,
@@ -82,7 +82,7 @@ async def run_benchmark(
             team=team,
             accept_open_team_sheet=True,
         )
-        
+
         opponent = BatchInferencePlayer(
             model=agent,
             device="cuda",
@@ -92,36 +92,36 @@ async def run_benchmark(
             team=team,
             accept_open_team_sheet=True,
         )
-        
+
         players.append(player)
         opponents.append(opponent)
-    
+
     # Start inference loops
     for p in players:
         p.start_inference_loop()
     for o in opponents:
         o.start_inference_loop()
-    
+
     await asyncio.sleep(0.5)
-    
+
     print(f"Starting {num_pairs} pairs × {battles_per_pair} battles = {num_pairs * battles_per_pair} total...")
-    
+
     start_time = time.time()
-    
+
     tasks = []
     for player, opponent in zip(players, opponents):
         tasks.append(player.battle_against(opponent, n_battles=battles_per_pair))
-    
+
     await asyncio.gather(*tasks)
-    
+
     elapsed = time.time() - start_time
     total_battles = sum(p.n_finished_battles for p in players)
     rate_hr = (total_battles / elapsed) * 3600
-    
+
     print(f"Completed {total_battles} battles in {elapsed:.1f}s")
     print(f"Rate: {rate_hr:.0f} battles/hour")
     print(f"Per battle: {(elapsed / total_battles) * 1000:.0f}ms")
-    
+
     # Cleanup - properly disconnect players from server
     for p in players:
         if hasattr(p, "_inference_future") and p._inference_future:
@@ -137,10 +137,10 @@ async def run_benchmark(
             await o.stop_listening()
         except Exception:
             pass
-    
+
     # Give server time to cleanup connections
     await asyncio.sleep(1)
-    
+
     return {
         "pairs": num_pairs,
         "battles": total_battles,
@@ -153,27 +153,27 @@ async def main():
     print("=" * 60)
     print("BATTLE THROUGHPUT BENCHMARK (with ThreadPoolExecutor fix)")
     print("=" * 60)
-    
+
     # Start a showdown server
     print("\nStarting Showdown server on port 8000...")
     server_proc = launch_showdown_server(8000)
     await asyncio.sleep(3)
     print(f"Server ready! (PID: {server_proc.pid})")
-    
+
     # Load model
     print("\nLoading model...")
     device = torch.device("cuda")
-    
+
     checkpoint_path = "/home/cayman/Repositories/EliteFurretAI/data/models/supervised/magic-resonance-88.pt"
     team_path = "/home/cayman/Repositories/EliteFurretAI/data/teams/gen9vgc2023regc/easy/basic.txt"
-    
+
     with open(team_path) as f:
         team = f.read()
-    
+
     embedder = Embedder(format="gen9vgc2023regulationc", omniscient=False, feature_set="full")
     checkpoint = torch.load(checkpoint_path, map_location=device)
     config = checkpoint["config"]
-    
+
     model = FlexibleThreeHeadedModel(
         input_size=embedder.embedding_size,
         early_layers=config["early_layers"],
@@ -199,24 +199,24 @@ async def main():
     ).to(device)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
-    
+
     print(f"Model loaded: {sum(p.numel() for p in model.parameters()) / 1e6:.1f}M params")
     print(f"GPU: {torch.cuda.get_device_name(0)}")
-    
+
     # Run benchmark with different concurrency levels
     results = []
-    
+
     configs = [
         (1, 20),   # 1 pair, 20 battles - baseline
         (2, 20),   # 2 pairs, 20 each
         (4, 20),   # 4 pairs, 20 each
     ]
-    
+
     for run_idx, (num_pairs, battles_per_pair) in enumerate(configs):
         gc.collect()
         torch.cuda.empty_cache()
         await asyncio.sleep(1)
-        
+
         print(f"\n>>> Testing {num_pairs} concurrent pair(s)...")
         try:
             result = await run_benchmark(
@@ -232,7 +232,7 @@ async def main():
             print(f"Error: {e}")
             import traceback
             traceback.print_exc()
-    
+
     # Summary
     print("\n" + "=" * 60)
     print("BENCHMARK RESULTS")
@@ -241,12 +241,12 @@ async def main():
     print("-" * 40)
     for r in results:
         print(f"{r['pairs']:>6} {r['battles']:>8} {r['elapsed']:>7.1f}s {r['rate_hr']:>10.0f}")
-    
+
     if results:
         best = max(results, key=lambda r: r["rate_hr"])
         print("-" * 40)
         print(f"Best: {best['pairs']} pairs → {best['rate_hr']:.0f} battles/hour")
-    
+
     # Cleanup
     print("\nStopping server...")
     shutdown_server(server_proc)

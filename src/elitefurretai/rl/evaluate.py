@@ -12,7 +12,7 @@ from poke_env.ps_client import (
 from elitefurretai.etl.embedder import Embedder
 from elitefurretai.etl.encoder import MDBO
 from elitefurretai.rl.agent import RNaDAgent
-from elitefurretai.rl.worker import BatchInferencePlayer
+from elitefurretai.rl.multiprocess_actor import BatchInferencePlayer
 from elitefurretai.supervised.behavior_clone_player import FlexibleThreeHeadedModel
 
 
@@ -54,7 +54,7 @@ def load_model(filepath: str, device: str) -> RNaDAgent:
         turn_head_layers=config.get("turn_head_layers", []),
         num_actions=MDBO.action_space(),
         num_teampreview_actions=MDBO.teampreview_space(),
-        max_seq_len=17,
+        max_seq_len=config.get("max_seq_len", 17),
     ).to(device)
 
     base_model.load_state_dict(state_dict)

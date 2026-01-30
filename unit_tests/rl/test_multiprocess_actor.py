@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Unit tests for RL worker (BatchInferencePlayer).
+Unit tests for multiprocess_actor module (BatchInferencePlayer and ActorPlayer).
 
 These tests verify:
 1. Player initialization and configuration

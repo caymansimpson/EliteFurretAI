@@ -27,6 +27,9 @@ ent_coef: 0.01
 vf_coef: 0.5
 device: cuda
 
+# Battle limits
+max_battle_steps: 40  # Maximum steps per battle before forfeiting (prevents memory explosion)
+
 # Portfolio regularization
 use_portfolio_regularization: false
 max_portfolio_size: 5

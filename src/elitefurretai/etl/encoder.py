@@ -260,13 +260,14 @@ class MDBO(BattleOrder):
                     move = moving_mon.moves[move_key]
 
                 target = DoubleBattle.EMPTY_TARGET_POSITION
-                if len(order) > 7 and order.replace(" terastallize", "")[7:] in [
-                    "-1",
-                    "-2",
-                    "1",
-                    "2",
-                ]:
-                    target = int(order.replace(" terastallize", "")[7:])
+                # Extract target from order string (e.g., "move 1 -2" or "move 1 2 terastallize")
+                # Remove terastallize suffix first, then parse target after move number
+                order_without_tera = order.replace(" terastallize", "")
+                # Target starts after "move X " (7 chars), strip whitespace for ally targets
+                if len(order_without_tera) > 7:
+                    target_str = order_without_tera[7:].strip()
+                    if target_str in ["-1", "-2", "1", "2"]:
+                        target = int(target_str)
 
                 orders.append(
                     SingleBattleOrder(

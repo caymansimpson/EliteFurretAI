@@ -23,9 +23,9 @@ Usage:
 from elitefurretai.rl.agent import RNaDAgent
 from elitefurretai.rl.config import RNaDConfig
 from elitefurretai.rl.learner import RNaDLearner
+from elitefurretai.rl.multiprocess_actor import BatchInferencePlayer
 from elitefurretai.rl.opponent_pool import ExploiterRegistry, OpponentPool
 from elitefurretai.rl.portfolio_learner import PortfolioRNaDLearner
-from elitefurretai.rl.worker import BatchInferencePlayer
 
 __all__ = [
     # Core training components

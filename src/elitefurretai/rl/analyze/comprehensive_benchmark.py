@@ -23,7 +23,7 @@ import subprocess
 import sys
 import time
 from datetime import datetime
-from typing import List, Dict
+from typing import List
 
 import psutil
 import torch
@@ -279,26 +279,26 @@ async def run_bc_player_benchmark(
 
     team_repo = TeamRepo("data/teams")
     team = team_repo.sample_team("gen9vgc2023regc", subdirectory="straightforward")
-    
+
     # Force CPU for this benchmark to avoid CUDA multiprocessing overhead issues
     device = "cpu"
 
     # Record memory before loading model
     mem_before_model = get_memory_usage_mb()
     gpu_mem_before_model = get_gpu_memory_usage_mb()
-    
+
     # Load model ONCE and cache it (saves ~500MB per BCPlayer instance)
     print(f"    Loading model from {model_path}...")
     checkpoint = torch.load(model_path, map_location=device)
     config = checkpoint["config"]
-    
+
     # Create embedder
     embedder = Embedder(
         format="gen9vgc2023regc",
         feature_set=config.get("embedder_feature_set", "raw"),
         omniscient=False,
     )
-    
+
     # Create model
     cached_model = FlexibleThreeHeadedModel(
         input_size=embedder.embedding_size,
@@ -327,7 +327,7 @@ async def run_bc_player_benchmark(
         num_teampreview_actions=MDBO.teampreview_space(),
         max_seq_len=config.get("max_seq_len", 17),
     ).to(device)
-    
+
     cached_model.load_state_dict(checkpoint["model_state_dict"])
     cached_model.eval()
 
