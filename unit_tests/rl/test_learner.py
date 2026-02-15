@@ -17,8 +17,8 @@ import pytest
 import torch
 
 from elitefurretai.etl.encoder import MDBO
-from elitefurretai.rl.agent import RNaDAgent
-from elitefurretai.rl.learner import RNaDLearner
+from elitefurretai.rl.learners import RNaDLearner
+from elitefurretai.rl.players import RNaDAgent
 from elitefurretai.supervised.model_archs import FlexibleThreeHeadedModel
 
 # =============================================================================

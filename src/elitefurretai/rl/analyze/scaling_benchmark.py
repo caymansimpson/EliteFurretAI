@@ -16,8 +16,7 @@ from poke_env import AccountConfiguration, ServerConfiguration
 
 from elitefurretai.etl.embedder import Embedder
 from elitefurretai.etl.encoder import MDBO
-from elitefurretai.rl.agent import RNaDAgent
-from elitefurretai.rl.multiprocess_actor import BatchInferencePlayer
+from elitefurretai.rl.players import BatchInferencePlayer, RNaDAgent
 from elitefurretai.supervised.model_archs import FlexibleThreeHeadedModel
 
 
@@ -165,7 +164,7 @@ async def main():
     available_ports = [8000, 8001, 8002, 8003]
     battles_per_pair = 10  # Reduced for faster iteration, still enough for signal
     battle_format = "gen9vgc2023regc"  # Showdown format string
-    embedder_format = "gen9vgc2023regulationc"  # Embedder format string
+    embedder_format = "gen9vgc2023regc"  # Embedder format string
     team_path = (
         "/home/cayman/Repositories/EliteFurretAI/data/teams/gen9vgc2023regc/easy/basic.txt"
     )

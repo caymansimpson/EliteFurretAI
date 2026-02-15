@@ -23,8 +23,7 @@ from poke_env.ps_client import AccountConfiguration, ServerConfiguration
 
 from elitefurretai.etl.embedder import Embedder
 from elitefurretai.etl.encoder import MDBO
-from elitefurretai.rl.agent import RNaDAgent
-from elitefurretai.rl.multiprocess_actor import BatchInferencePlayer
+from elitefurretai.rl.players import BatchInferencePlayer, RNaDAgent
 
 # =============================================================================
 # FIXTURES: Reusable test components
@@ -509,7 +508,7 @@ def test_inference_loop_processes_queue():
     Note: Full async testing requires pytest-asyncio.
     This verifies the class has the method.
     """
-    from elitefurretai.rl.multiprocess_actor import BatchInferencePlayer
+    from elitefurretai.rl.players import BatchInferencePlayer
 
     # Verify the class has the method
     assert hasattr(BatchInferencePlayer, "_inference_loop")

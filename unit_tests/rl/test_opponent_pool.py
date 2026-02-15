@@ -19,8 +19,8 @@ import numpy as np
 import pytest
 from poke_env.ps_client import AccountConfiguration, ServerConfiguration
 
-from elitefurretai.rl.agent import RNaDAgent
-from elitefurretai.rl.opponent_pool import ExploiterRegistry, OpponentPool
+from elitefurretai.rl.opponents import ExploiterRegistry, OpponentPool
+from elitefurretai.rl.players import RNaDAgent
 
 # =============================================================================
 # FIXTURES: Reusable test components
@@ -307,7 +307,7 @@ def test_opponent_pool_initialization(
     pool = OpponentPool(
         main_model=mock_main_model,
         device="cpu",
-        battle_format="gen9vgc2023regulationc",
+        battle_format="gen9vgc2023regc",
         exploiter_registry_path=temp_registry_path,
         past_models_dir=temp_past_models_dir,
     )
@@ -335,12 +335,12 @@ def test_opponent_pool_stores_battle_format(
     pool = OpponentPool(
         main_model=mock_main_model,
         device="cpu",
-        battle_format="gen9vgc2023regulationc",
+        battle_format="gen9vgc2023regc",
         exploiter_registry_path=temp_registry_path,
         past_models_dir=temp_past_models_dir,
     )
 
-    assert pool.battle_format == "gen9vgc2023regulationc"
+    assert pool.battle_format == "gen9vgc2023regc"
 
 
 def test_opponent_pool_custom_curriculum(
@@ -363,7 +363,7 @@ def test_opponent_pool_custom_curriculum(
     pool = OpponentPool(
         main_model=mock_main_model,
         device="cpu",
-        battle_format="gen9vgc2023regulationc",
+        battle_format="gen9vgc2023regc",
         curriculum=custom_curriculum,
         exploiter_registry_path=temp_registry_path,
         past_models_dir=temp_past_models_dir,
@@ -394,7 +394,7 @@ def test_opponent_pool_rejects_invalid_curriculum(
         OpponentPool(
             main_model=mock_main_model,
             device="cpu",
-            battle_format="gen9vgc2023regulationc",
+            battle_format="gen9vgc2023regc",
             curriculum=bad_curriculum,
             exploiter_registry_path=temp_registry_path,
             past_models_dir=temp_past_models_dir,
@@ -427,7 +427,7 @@ def test_sample_opponent_respects_curriculum(
     pool = OpponentPool(
         main_model=mock_main_model,
         device="cpu",
-        battle_format="gen9vgc2023regulationc",
+        battle_format="gen9vgc2023regc",
         curriculum=curriculum,
         exploiter_registry_path=temp_registry_path,
         past_models_dir=temp_past_models_dir,
@@ -458,7 +458,7 @@ def test_add_past_model(mock_main_model, temp_registry_path, temp_past_models_di
     pool = OpponentPool(
         main_model=mock_main_model,
         device="cpu",
-        battle_format="gen9vgc2023regulationc",
+        battle_format="gen9vgc2023regc",
         max_past_models=5,
         exploiter_registry_path=temp_registry_path,
         past_models_dir=temp_past_models_dir,
@@ -492,7 +492,7 @@ def test_add_past_model_respects_limit(
     pool = OpponentPool(
         main_model=mock_main_model,
         device="cpu",
-        battle_format="gen9vgc2023regulationc",
+        battle_format="gen9vgc2023regc",
         max_past_models=3,
         exploiter_registry_path=temp_registry_path,
         past_models_dir=temp_past_models_dir,
@@ -531,7 +531,7 @@ def test_update_win_rate(mock_main_model, temp_registry_path, temp_past_models_d
     pool = OpponentPool(
         main_model=mock_main_model,
         device="cpu",
-        battle_format="gen9vgc2023regulationc",
+        battle_format="gen9vgc2023regc",
         exploiter_registry_path=temp_registry_path,
         past_models_dir=temp_past_models_dir,
     )
@@ -559,7 +559,7 @@ def test_get_win_rate_stats(mock_main_model, temp_registry_path, temp_past_model
     pool = OpponentPool(
         main_model=mock_main_model,
         device="cpu",
-        battle_format="gen9vgc2023regulationc",
+        battle_format="gen9vgc2023regc",
         exploiter_registry_path=temp_registry_path,
         past_models_dir=temp_past_models_dir,
     )
@@ -589,7 +589,7 @@ def test_get_win_rate_stats_with_window(
     pool = OpponentPool(
         main_model=mock_main_model,
         device="cpu",
-        battle_format="gen9vgc2023regulationc",
+        battle_format="gen9vgc2023regc",
         exploiter_registry_path=temp_registry_path,
         past_models_dir=temp_past_models_dir,
     )

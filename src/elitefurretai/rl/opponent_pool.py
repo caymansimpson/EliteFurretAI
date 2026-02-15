@@ -5,12 +5,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
-from poke_env.player import MaxBasePowerPlayer, Player
+from poke_env.player import Player
 from poke_env.ps_client import AccountConfiguration, ServerConfiguration
 
-from elitefurretai.rl.agent import RNaDAgent
 from elitefurretai.rl.evaluate import load_model
-from elitefurretai.rl.multiprocess_actor import BatchInferencePlayer
+from elitefurretai.rl.players import BatchInferencePlayer, MaxDamagePlayer, RNaDAgent
 from elitefurretai.supervised.behavior_clone_player import BCPlayer
 
 
@@ -84,6 +83,13 @@ class OpponentPool:
     - Past versions (historical checkpoints)
     """
 
+    # Opponent type constants for consistent string usage
+    SELF_PLAY = "self_play"
+    BC_PLAYER = "bc_player"
+    EXPLOITERS = "exploiters"
+    GHOSTS = "ghosts"  # previous models
+    MAX_DAMAGE = "max_damage"
+
     def __init__(
         self,
         main_model: RNaDAgent,
@@ -120,11 +126,11 @@ class OpponentPool:
 
         # Default curriculum: weights for sampling different opponent types
         self.curriculum = curriculum or {
-            "self_play": 0.40,  # 40% self-play
-            "bc_player": 0.20,  # 20% human baseline
-            "exploiters": 0.20,  # 20% exploiters
-            "ghosts": 0.20,  # 20% past versions
-            "max_damage": 0.0,  # 0% MaxBasePowerPlayer (for targeted training)
+            self.SELF_PLAY: 0.40,  # 40% self-play
+            self.BC_PLAYER: 0.20,  # 20% human baseline
+            self.EXPLOITERS: 0.20,  # 20% exploiters
+            self.GHOSTS: 0.20,  # 20% past versions
+            self.MAX_DAMAGE: 0.0,  # 0% MaxBasePowerPlayer (for targeted training)
         }
 
         # Validate curriculum sums to 1.0
@@ -162,11 +168,11 @@ class OpponentPool:
 
         # Win rate tracking
         self.win_rates: Dict[str, List[float]] = {
-            "self_play": [],
-            "bc_player": [],
-            "exploiters": [],
-            "ghosts": [],  # fka past_versions
-            "max_damage": [],
+            self.SELF_PLAY: [],
+            self.BC_PLAYER: [],
+            self.EXPLOITERS: [],
+            self.GHOSTS: [],  # fka past_versions
+            self.MAX_DAMAGE: [],
         }
 
     def _preload_bc_model(self):
@@ -307,18 +313,18 @@ class OpponentPool:
 
         # Fallback
         if opponent_type is None:
-            opponent_type = "self_play"
+            opponent_type = self.SELF_PLAY
 
         # Create opponent based on type
-        if opponent_type == "self_play":
+        if opponent_type == self.SELF_PLAY:
             return self._create_self_play_opponent(player_config, server_config, team, worker_id)
-        elif opponent_type == "bc_player":
+        elif opponent_type == self.BC_PLAYER:
             return self._create_bc_opponent(player_config, server_config, team)
-        elif opponent_type == "exploiters":
+        elif opponent_type == self.EXPLOITERS:
             return self._create_exploiter_opponent(player_config, server_config, team, worker_id)
-        elif opponent_type == "ghosts":
+        elif opponent_type == self.GHOSTS:
             return self._create_past_opponent(player_config, server_config, team, worker_id)
-        elif opponent_type == "max_damage":
+        elif opponent_type == self.MAX_DAMAGE:
             return self._create_max_damage_opponent(player_config, server_config, team)
         else:
             # Fallback to self-play
@@ -330,15 +336,15 @@ class OpponentPool:
         server_config: ServerConfiguration,
         team: str,
     ) -> Player:
-        """Create a MaxBasePowerPlayer opponent (picks highest base power moves)."""
+        """Create a MaxDamagePlayer opponent (greedy damage-maximizing heuristic)."""
         # Make username identifiable
         new_config = AccountConfiguration(
             f"MaxDmg_{player_config.username}", player_config.password
         )
-        return MaxBasePowerPlayer(
+        return MaxDamagePlayer(
+            battle_format=self.battle_format,
             account_configuration=new_config,
             server_configuration=server_config,
-            battle_format=self.battle_format,
             team=team,
         )
 
@@ -529,6 +535,8 @@ class OpponentPool:
                 stats[opp_type] = 0.0
         return stats
 
+    # TODO: find algorithm to update on last N steps, to update and ensure that win rates stay
+    # for all possible types of opponents? Should think about this one, maybe read MOBA again
     def update_curriculum(self, adaptive: bool = True):
         """
         Update curriculum based on performance (adaptive learning).
@@ -546,16 +554,16 @@ class OpponentPool:
 
         # If dominating exploiters, reduce their weight
         if (
-            stats.get("exploiters", 0) > 0.70
+            stats.get(self.EXPLOITERS, 0) > 0.70
             and self.exploiter_registry.get_active_exploiters()
         ):
-            new_curriculum["exploiters"] = max(0.10, new_curriculum["exploiters"] - 0.05)
-            new_curriculum["self_play"] += 0.05
+            new_curriculum[self.EXPLOITERS] = max(0.10, new_curriculum[self.EXPLOITERS] - 0.05)
+            new_curriculum[self.SELF_PLAY] += 0.05
 
         # If struggling against BC, increase BC weight
-        if stats.get("bc_player", 0) < 0.40 and self.bc_player_config:
-            new_curriculum["bc_player"] = min(0.40, new_curriculum["bc_player"] + 0.05)
-            new_curriculum["self_play"] = max(0.20, new_curriculum["self_play"] - 0.05)
+        if stats.get(self.BC_PLAYER, 0) < 0.40 and self.bc_player_config:
+            new_curriculum[self.BC_PLAYER] = min(0.40, new_curriculum[self.BC_PLAYER] + 0.05)
+            new_curriculum[self.SELF_PLAY] = max(0.20, new_curriculum[self.SELF_PLAY] - 0.05)
 
         # Renormalize
         total = sum(new_curriculum.values())

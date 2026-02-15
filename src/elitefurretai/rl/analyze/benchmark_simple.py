@@ -354,8 +354,7 @@ async def run_batch_inference(
     start_port: int = 8000,
 ) -> BenchmarkResult:
     """Benchmark BatchInferencePlayer vs BatchInferencePlayer."""
-    from elitefurretai.rl.agent import RNaDAgent
-    from elitefurretai.rl.multiprocess_actor import BatchInferencePlayer
+    from elitefurretai.rl.players import BatchInferencePlayer, RNaDAgent
     from elitefurretai.rl.train import load_model
 
     device = "cuda" if torch.cuda.is_available() else "cpu"

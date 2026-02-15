@@ -11,8 +11,7 @@ from poke_env.ps_client import (
 
 from elitefurretai.etl.embedder import Embedder
 from elitefurretai.etl.encoder import MDBO
-from elitefurretai.rl.agent import RNaDAgent
-from elitefurretai.rl.multiprocess_actor import BatchInferencePlayer
+from elitefurretai.rl.players import BatchInferencePlayer, RNaDAgent
 from elitefurretai.supervised.behavior_clone_player import FlexibleThreeHeadedModel
 
 

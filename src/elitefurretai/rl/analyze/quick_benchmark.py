@@ -14,8 +14,7 @@ from poke_env import AccountConfiguration, ServerConfiguration
 
 from elitefurretai.etl.embedder import Embedder
 from elitefurretai.etl.encoder import MDBO
-from elitefurretai.rl.agent import RNaDAgent
-from elitefurretai.rl.multiprocess_actor import BatchInferencePlayer
+from elitefurretai.rl.players import BatchInferencePlayer, RNaDAgent
 from elitefurretai.supervised.model_archs import FlexibleThreeHeadedModel
 
 
@@ -170,7 +169,7 @@ async def main():
     with open(team_path) as f:
         team = f.read()
 
-    embedder = Embedder(format="gen9vgc2023regulationc", omniscient=False, feature_set="full")
+    embedder = Embedder(format="gen9vgc2023regc", omniscient=False, feature_set="full")
     checkpoint = torch.load(checkpoint_path, map_location=device)
     config = checkpoint["config"]
 

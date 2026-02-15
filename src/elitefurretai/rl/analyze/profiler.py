@@ -18,8 +18,8 @@ import torch
 
 from elitefurretai.etl.embedder import Embedder
 from elitefurretai.etl.encoder import MDBO
-from elitefurretai.rl.agent import RNaDAgent
-from elitefurretai.rl.learner import RNaDLearner
+from elitefurretai.rl.learners import RNaDLearner
+from elitefurretai.rl.players import RNaDAgent
 from elitefurretai.supervised.behavior_clone_player import FlexibleThreeHeadedModel
 
 

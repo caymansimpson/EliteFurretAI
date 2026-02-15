@@ -28,8 +28,7 @@ import torch
 from poke_env.player import RandomPlayer
 from poke_env.ps_client import AccountConfiguration, ServerConfiguration
 
-from elitefurretai.rl.agent import RNaDAgent
-from elitefurretai.rl.multiprocess_actor import BatchInferencePlayer
+from elitefurretai.rl.players import BatchInferencePlayer, RNaDAgent
 from elitefurretai.rl.train import load_model
 from elitefurretai.supervised.behavior_clone_player import BCPlayer
 
