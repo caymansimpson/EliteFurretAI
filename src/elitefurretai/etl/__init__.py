@@ -51,15 +51,14 @@ __all__ = [
     "BattleDataset",
     "PreprocessedBattleDataset",
     "OptimizedBattleDataLoader",
-    # Feature engineering
+    # Encoding & Embedding
     "Embedder",
     "MDBO",
     "MoveOrderEncoder",
-    # Validation & utilities
+    # Utilities
     "is_valid_order",
     "evaluate_position_advantage",
     "TeamRepo",
-    # Compression utilities
-    "save_compressed",
     "load_compressed",
+    "save_compressed",
 ]

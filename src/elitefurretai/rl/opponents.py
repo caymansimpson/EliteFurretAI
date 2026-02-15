@@ -1,3 +1,29 @@
+"""Opponent management for RL training.
+
+This module contains three related but intentionally different classes:
+
+1) `ExploiterRegistry`
+    - Lightweight persistence layer for exploiter metadata
+    - Stores/loads exploiter records from JSON
+    - Does not create battle players or sample curriculum
+
+2) `OpponentPool`
+    - Learner/main-process opponent manager
+    - Samples opponent *types* using curriculum probabilities
+    - Lazily loads/caches models (BC, exploiters, ghost checkpoints)
+    - Creates concrete `Player` instances for evaluation/training contexts
+    - Tracks win rates and can adapt curriculum over time
+
+3) `WorkerOpponentFactory`
+    - Worker-process battle wiring helper
+    - Creates paired `BatchInferencePlayer` instances used by mp workers
+    - Reconfigures opponents each batch (self-play/BC/max-damage)
+    - Handles per-batch team randomization and battle-state cleanup
+
+In short: `OpponentPool` is global/curriculum-focused, while
+`WorkerOpponentFactory` is local/worker-loop-focused.
+"""
+
 import json
 import os
 import queue
@@ -19,7 +45,11 @@ from elitefurretai.supervised.behavior_clone_player import BCPlayer
 
 
 class ExploiterRegistry:
-    """Manages the registry of trained exploiter models."""
+    """Persistent index of exploiter checkpoints and metadata.
+
+    This class only manages bookkeeping (IDs, filepaths, team strings,
+    performance metadata). It intentionally does not build models or players.
+    """
 
     def __init__(self, registry_path: str = "data/models/exploiter_registry.json"):
         self.registry_path = registry_path
@@ -64,6 +94,19 @@ class ExploiterRegistry:
 
 
 class OpponentPool:
+    """Main-process opponent sampler and model cache.
+
+    Responsibilities:
+    - Own the curriculum distribution over opponent types
+    - Resolve sampled opponent types into concrete `Player` instances
+    - Cache expensive model artifacts (BC/exploiter/ghost models)
+    - Track win rates per opponent type and optionally adapt curriculum
+
+    Notably different from `WorkerOpponentFactory`:
+    - `OpponentPool` is global and policy-level (sampling + adaptation)
+    - `WorkerOpponentFactory` is per-worker and execution-level
+    """
+
     SELF_PLAY = "self_play"
     BC_PLAYER = "bc_player"
     EXPLOITERS = "exploiters"
@@ -219,6 +262,13 @@ class OpponentPool:
         team: str,
         worker_id: Optional[int] = None,
     ) -> Player:
+        """Sample and instantiate one opponent `Player` from curriculum.
+
+        Flow:
+        1) Sample opponent type from `self.curriculum`
+        2) Dispatch to the corresponding builder method
+        3) Return a concrete `Player` implementation
+        """
         roll = np.random.rand()
         cumsum = 0.0
         opponent_type = None
@@ -406,6 +456,13 @@ class OpponentPool:
         return stats
 
     def update_curriculum(self, adaptive: bool = True):
+        """Adapt curriculum weights from recent matchup performance.
+
+        Current heuristic:
+        - If exploiters are too easy, reduce exploiter weight
+        - If BC baseline is too hard, increase BC weight
+        - Renormalize to a valid probability distribution
+        """
         if not adaptive:
             return
 
@@ -431,6 +488,17 @@ class OpponentPool:
 
 
 class WorkerOpponentFactory:
+    """Worker-local helper for battle pair construction and batch reconfiguration.
+
+    This class is intentionally simpler than `OpponentPool`: it does not track
+    global win-rate stats or persist metadata. Instead, it focuses on the hot
+    path inside worker loops:
+    - create player/opponent pairs once
+    - swap opponent policy per batch
+    - randomize teams per batch
+    - reset battle state to avoid memory growth
+    """
+
     SELF_PLAY = "self_play"
     BC_PLAYER = "bc_player"
     EXPLOITERS = "exploiters"
@@ -484,6 +552,11 @@ class WorkerOpponentFactory:
         num_pairs: int,
         local_traj_queue: queue.Queue,
     ) -> Tuple[List[BatchInferencePlayer], List[BatchInferencePlayer]]:
+        """Create mirrored player/opponent `BatchInferencePlayer` pairs.
+
+        Players collect trajectories (`trajectory_queue` attached); opponents do
+        not collect trajectories. Both are reused across batches.
+        """
         self.players = []
         self.opponents = []
 
@@ -562,6 +635,12 @@ class WorkerOpponentFactory:
         player: BatchInferencePlayer,
         opponent: BatchInferencePlayer,
     ) -> str:
+        """Configure one pair for the next batch and return chosen type.
+
+        - `max_damage` is handled by separate MaxDamagePlayer instances
+        - `bc_player` swaps opponent.model to the frozen BC agent
+        - fallback is self-play against `main_agent`
+        """
         selected_type = self.sample_opponent_type()
 
         if selected_type == self.MAX_DAMAGE:
@@ -577,6 +656,7 @@ class WorkerOpponentFactory:
         return selected_type
 
     def randomize_all_teams(self) -> None:
+        """Resample teams for all participants before the next batch."""
         for player in self.players:
             player._team = ConstantTeambuilder(self.sample_team())
 
@@ -591,6 +671,7 @@ class WorkerOpponentFactory:
             player.start_inference_loop()
 
     def reset_all_battles(self) -> None:
+        """Clear per-battle runtime state after a batch completes."""
         for player in self.players:
             player.reset_battles()
             player.clear_completed_trajectories()

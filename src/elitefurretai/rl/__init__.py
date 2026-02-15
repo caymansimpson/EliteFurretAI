@@ -28,7 +28,11 @@ from elitefurretai.rl.model_io import (
     load_model_from_checkpoint,
     save_checkpoint,
 )
-from elitefurretai.rl.opponents import ExploiterRegistry, OpponentPool, WorkerOpponentFactory
+from elitefurretai.rl.opponents import (
+    ExploiterRegistry,
+    OpponentPool,
+    WorkerOpponentFactory,
+)
 from elitefurretai.rl.players import (
     BatchInferencePlayer,
     MaxDamagePlayer,

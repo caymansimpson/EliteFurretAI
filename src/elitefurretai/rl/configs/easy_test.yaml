@@ -1,10 +1,35 @@
-# Optimized RNaD Training Configuration for Maximum Throughput
-# Based on IMPALA benchmark results: ~3,100 battles/hr with 4 actors × 4 servers
-# Hardware: RTX 3090 (24GB), 8 cores, 24GB RAM (WSL2)
-# Date: 2026-01-18
+# ===== Training hyperparameters =====
+train_batch_size: 128  # Trajectories to collect before training update (lower = faster iteration)
+max_updates: 100000
+lr: 0.00003
+rnad_alpha: 0.25
+gamma: 0.999
+gae_lambda: 0.95
+clip_range: 0.2
+ent_coef: 0.02
+vf_coef: 0.5
+max_grad_norm: 0.5
 
-# ===== Format =====
+# ===== Opponent Pool (Curriculum --> Portfolio) =====
+curriculum:
+  self_play: 0.25
+  bc_player: 0.4
+  exploiters: 0.0
+  ghosts: 0
+  max_damage: 0.35
+adaptive_curriculum: false
+train_exploiters: false
+exploiter_registry_path: data/models/exploiter_registry.json
+use_portfolio_regularization: true
+portfolio_add_interval: 50
+portfolio_update_strategy: recent
+max_portfolio_size: 5
+max_past_models: 5  # TODO: figure out how this is different from max_portfolio_size and if we need both
+
+# ===== Team configurations =====
 battle_format: gen9vgc2023regc
+base_team_path: data/teams  # Where to find teams
+team_pool_path: straightforward  # Assumes there are subdirectories after format directories in base_team_path
 
 # ===== Model paths =====
 # Initialize from supervised learning model (dauntless-hill-95 is the latest)
@@ -14,94 +39,29 @@ bc_action_path: data/models/supervised/dauntless-hill-95.pt
 bc_win_path: data/models/supervised/dauntless-hill-95.pt
 resume_from: null
 
-# ===== Team configuration =====
-base_team_path: data/teams
-team_pool_path: easy  # Start with easier teams for faster learning
-use_random_teams: true
-
-# ===== IMPALA MULTIPROCESSING CONFIGURATION =====
-# Benchmark results from RL.md (2026-01-18):
-#   4×4: 3,106/hr (BEST - 1.21x baseline)
-#   6×3: 2,912/hr (good alternative with fewer servers)
-#   1×1: 2,569/hr (baseline)
-#
-# Key findings:
-# - CPU is bottleneck, not GPU - more than 6 actors causes contention
-# - 1:1 actor-to-server ratio works best
-# - Server warmup time of 3+ seconds needed for stability
-# - Each worker uses ~6GB+ RAM and grows, so with 24GB limit, use 1 worker
-num_actors: 3
-num_showdown_servers: 3
-num_battles_per_pair: 16  # Number of battles each actor plays against each opponent per loop
-batch_size: 16  # Batch size for inference (kept small for low latency)
-train_batch_size: 512  # Trajectories to collect before training update (lower = faster iteration)
-
-# ===== Hardware configuration =====
-device: cuda
-showdown_start_port: 8000
-# Option 1: True multiprocessing (separate processes, bypasses GIL completely)
-# Option 2a: Threading with per-worker executors (simpler, less memory)
-# Set to true for Option 1, false for Option 2a
-use_multiprocessing: true
-
-# Maximum steps per battle before forfeiting (prevents memory explosion from stuck battles)
-# VGC battles typically end in 10-20 turns; 40 is generous but safe
-max_battle_steps: 60
-
-# ===== Training hyperparameters =====
-max_updates: 100000
-lr: 0.00001
-rnad_alpha: 0.01
-gamma: 0.99
-gae_lambda: 0.95
-clip_range: 0.2
-ent_coef: 0.01
-vf_coef: 0.5
-
-# ===== Mixed precision (2x speedup) =====
+# ===== Performance configuration =====
+num_players: 12  # Total concurrent battle players
+num_workers: 5  # Worker processes for parallel data collection
+num_servers: 5  # Pokemon Showdown servers (1:1 with workers is optimal)
+num_battles_per_pair: 32  # Battles each worker plays per opponent per loop
+batch_size: 4  # Batch size for inference (kept small for low latency)
+batch_timeout: 0.005  # Max wait time (s) before sending incomplete batch for inference
 use_mixed_precision: true
-max_grad_norm: 0.5
+max_battle_steps: 30  # Maximum steps per battle before forfeiting (prevents memory explosion from stuck battles)
 
 # ===== Checkpointing =====
-checkpoint_interval: 100
-ref_update_interval: 100
+checkpoint_interval: 25 # also updates curriculum and adds to past models
+ref_update_interval: 25
 save_dir: data/models/rl
 past_models_dir: data/models/rl/past_versions
-max_past_models: 10
-
-# ===== Opponent pool =====
-# NOTE: BCPlayer uses synchronous blocking inference which severely degrades throughput.
-# For maximum speed, use 100% self-play until BCPlayer is converted to async.
-curriculum:
-  self_play: 0.7  # 100% self-play for maximum speed
-  bc_player: 0.3  # Disabled - BCPlayer's sync inference blocks event loop
-  exploiters: 0.00
-  ghosts: 0.00
-exploiter_registry_path: data/models/exploiter_registry.json
-curriculum_update_interval: 500
-
-# ===== Exploiter training (disabled for initial runs) =====
-train_exploiters: false
-exploiter_interval: 10000
-exploiter_updates: 50000
-exploiter_min_win_rate: 0.55
-exploiter_eval_games: 100
-exploiter_output_dir: data/models/exploiters
-exploiter_team_pool_path: null
-exploiter_lr: 0.0001
-exploiter_ent_coef: 0.02
-
-# ===== Portfolio regularization (disabled for speed) =====
-use_portfolio_regularization: false
-max_portfolio_size: 5
-portfolio_update_strategy: diverse
-portfolio_add_interval: 5000
 
 # ===== Logging =====
 use_wandb: true
 wandb_project: elitefurretai-rnad
 wandb_run_name: null  # Auto-generated
-wandb_tags:
-  - throughput-optimized
-  - 8-servers
-log_interval: 1  # Log every 10 updates to reduce overhead
+log_interval: 1
+
+# ===== Hardware configuration =====
+device: cuda
+showdown_start_port: 8000
+

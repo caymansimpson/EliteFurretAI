@@ -41,9 +41,6 @@ class RNaDConfig:
     )
 
     # ===== Worker/Server Configuration =====
-    num_actors: Optional[int] = (
-        None  # Backward-compatible alias for num_players
-    )
     num_players: int = 3  # Total number of concurrent battle players across all workers
     num_workers: int = 3  # Number of worker processes (IMPALA architecture)
     num_servers: int = 3  # Number of Pokemon Showdown servers to launch
@@ -171,13 +168,6 @@ class RNaDConfig:
         os.makedirs(os.path.dirname(filepath), exist_ok=True)
         with open(filepath, "w") as f:
             yaml.dump(asdict(self), f, default_flow_style=False)
-
-    def __post_init__(self):
-        """Normalize deprecated aliases to current fields."""
-        if self.num_actors is not None:
-            self.num_players = self.num_actors
-        else:
-            self.num_actors = self.num_players
 
     @classmethod
     def load(cls, filepath: str) -> "RNaDConfig":

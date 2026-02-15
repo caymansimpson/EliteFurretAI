@@ -52,7 +52,7 @@ def test_battle_dataset_actions_and_wins(request, fixture_name):
 
     try:
         embedder = Embedder(
-            format="gen9vgc2023regulationc", feature_set="full", omniscient=True
+            format="gen9vgc2023regc", feature_set="full", omniscient=True
         )
         dataset = BattleDataset([temp_path], embedder=embedder, steps_per_battle=17)
 

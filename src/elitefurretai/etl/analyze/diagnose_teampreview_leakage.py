@@ -29,7 +29,7 @@ def diagnose_leakage(val_data_path: str, max_samples: int = 10000):
 
     # Initialize embedder
     embedder = Embedder(
-        format="gen9vgc2023regulationc", feature_set=Embedder.FULL, omniscient=False
+        format="gen9vgc2023regc", feature_set=Embedder.FULL, omniscient=False
     )
 
     print(f"Embedder size: {embedder.embedding_size}")

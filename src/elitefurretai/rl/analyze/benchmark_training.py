@@ -15,6 +15,7 @@ import asyncio
 import gc
 import json
 import os
+import socket
 import subprocess
 import time
 from collections import defaultdict
@@ -87,10 +88,6 @@ class BenchmarkResult:
             "avg_cpu_percent": self.avg_cpu_percent,
             "errors": self.errors,
         }
-
-
-import socket
-
 
 class ShowdownServerManager:
     """Manages spawning and cleanup of local Showdown servers."""

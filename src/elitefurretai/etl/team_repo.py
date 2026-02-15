@@ -60,6 +60,8 @@ class TeamRepo:
     Attributes:
         _teams: Nested dict mapping format -> team_name -> team_string
         _verbose: Whether to print loading progress
+        _validate: Whether to validate teams against Pokemon Showdown on load (slow)
+        _shuffle: Whether we shuffle teams so models have to learn representations rather than position-based features
 
     Example:
         >>> repo = TeamRepo("data/teams")
@@ -73,6 +75,7 @@ class TeamRepo:
         showdown_path: str = "../pokemon-showdown",
         validate: bool = False,
         verbose: bool = False,
+        shuffle: bool = True,
     ):
         """
         Initialize TeamRepo by loading teams from the specified directory.
@@ -83,6 +86,8 @@ class TeamRepo:
             validate: Whether to validate each team against Pokemon Showdown (default: False)
                      WARNING: Validation is slow and requires pokemon-showdown installed
             verbose: Print loading progress and validation results (default: False)
+            shuffle: Whether to shuffle Pokemon order when sampling teams (default: True)
+                    Prevents models from learning position-based features
 
         Directory Structure:
             filepath/
@@ -96,6 +101,8 @@ class TeamRepo:
         """
         self._teams: Dict[str, Dict[str, str]] = {}
         self._verbose = verbose
+        self._validate = validate
+        self._shuffle = shuffle
 
         # If we have the default filepath, use the default
         if filepath is None:
@@ -174,7 +181,7 @@ class TeamRepo:
 
                     self._teams[format_name][team_name] = team_string
 
-                    if showdown_path:
+                    if showdown_path and self._validate:
                         self.validate_team(team_string, format_name, showdown_path)
                 except Exception as e:
                     if self._verbose:
@@ -189,6 +196,31 @@ class TeamRepo:
             yield
         finally:
             os.chdir(origin)
+
+    @staticmethod
+    def _shuffle_team_order(team_string: str) -> str:
+        """
+        Randomly shuffle the order of Pokemon in a PokePaste team string.
+
+        This prevents models from learning position-based features (e.g., "slot 0 is always Incineroar")
+        rather than learning Pokemon-specific properties. By shuffling team order before each battle,
+        the model must learn to recognize Pokemon by their actual attributes rather than their position.
+
+        Args:
+            team_string: PokePaste format team (Pokemon separated by double newlines)
+
+        Returns:
+            Team string with Pokemon in shuffled order
+        """
+        # Split by double newline to separate Pokemon blocks
+        # Strip to remove leading/trailing whitespace
+        pokemon_blocks = team_string.strip().split('\n\n')
+
+        # Shuffle in place
+        random.shuffle(pokemon_blocks)
+
+        # Rejoin with double newlines
+        return '\n\n'.join(pokemon_blocks)
 
     def validate_team(
         self,
@@ -332,7 +364,13 @@ class TeamRepo:
 
         # Return a random team from the (filtered) format
         team_name = random.choice(list(format_teams.keys()))
-        return format_teams[team_name]
+        team_string = format_teams[team_name]
+
+        # Shuffle Pokemon order if enabled
+        if self._shuffle:
+            team_string = self._shuffle_team_order(team_string)
+
+        return team_string
 
     def sample_n_teams(
         self,

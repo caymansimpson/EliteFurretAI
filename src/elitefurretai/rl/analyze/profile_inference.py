@@ -4,6 +4,7 @@ Profile BCPlayer inference to understand the bottleneck.
 """
 
 import asyncio
+import logging
 import os
 import socket
 import subprocess
@@ -11,19 +12,15 @@ import sys
 import time
 
 import torch
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../.."))
-
-# Configure logging before importing poke-env
-import logging
-
-logging.getLogger("poke_env").setLevel(logging.WARNING)
-
 from poke_env.player import RandomPlayer
 from poke_env.ps_client import AccountConfiguration, ServerConfiguration
 
 from elitefurretai.etl.team_repo import TeamRepo
 from elitefurretai.supervised.behavior_clone_player import BCPlayer
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../.."))
+
+logging.getLogger("poke_env").setLevel(logging.WARNING)
 
 MODEL_PATH = "data/models/supervised/dauntless-hill-95.pt"
 BATTLE_FORMAT = "gen9vgc2023regc"

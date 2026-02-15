@@ -102,7 +102,7 @@ def test_config_save_and_load():
         config = RNaDConfig(
             battle_format="gen9vgc2024regg",
             lr=0.0005,
-            num_actors=4,
+            num_players=4,
             train_batch_size=64,
         )
 
@@ -118,7 +118,7 @@ def test_config_save_and_load():
         # Verify values match
         assert loaded.battle_format == "gen9vgc2024regg"
         assert loaded.lr == 0.0005
-        assert loaded.num_actors == 4
+        assert loaded.num_players == 4
         assert loaded.train_batch_size == 64
 
 
@@ -181,7 +181,7 @@ def test_config_to_dict():
     # Check some key fields are present
     assert "battle_format" in d
     assert "lr" in d
-    assert "num_actors" in d
+    assert "num_players" in d
     assert "curriculum" in d
     assert "use_wandb" in d
 
@@ -374,7 +374,7 @@ def test_server_config():
     """
     config = get_default_config()
 
-    assert config.num_showdown_servers >= 1
+    assert config.num_servers >= 1
     assert config.showdown_start_port > 0
 
 
@@ -397,7 +397,7 @@ def test_load_partial_yaml():
         # Write partial config
         partial = {
             "lr": 0.001,
-            "num_actors": 8,
+            "num_players": 8,
         }
         with open(config_path, "w") as f:
             yaml.dump(partial, f)
@@ -407,7 +407,7 @@ def test_load_partial_yaml():
 
         # Specified values
         assert loaded.lr == 0.001
-        assert loaded.num_actors == 8
+        assert loaded.num_players == 8
 
         # Default values for unspecified fields
         assert loaded.battle_format == "gen9vgc2023regc"

@@ -64,7 +64,15 @@ line-ending = "auto"
 
 [tool.pyright]
 include = ["src"]
-exclude = ["data/battles", "data/database", "data/models"]
+exclude = [
+    "data/battles",
+    "data/database",
+    "data/models",
+    "src/elitefurretai/etl/analyze",
+    "src/elitefurretai/inference/analyze",
+    "src/elitefurretai/rl/analyze",
+    "src/elitefurretai/supervised/analyze",
+]
 pythonVersion = "3.7"
 
 [tool.pytest.ini_options]

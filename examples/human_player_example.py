@@ -13,8 +13,8 @@ async def main():
     """Run an interactive battle with human vs random player."""
 
     # Create players
-    human = HumanPlayer(battle_format="gen9vgc2023regulationc")
-    opponent = RandomPlayer(battle_format="gen9vgc2023regulationc")
+    human = HumanPlayer(battle_format="gen9vgc2023regc")
+    opponent = RandomPlayer(battle_format="gen9vgc2023regc")
 
     # Run a single battle
     print("Starting battle...")
@@ -45,12 +45,12 @@ async def battle_against_custom_team():
 
     # You can specify a custom team from a file
     human = HumanPlayer(
-        battle_format="gen9vgc2023regulationc",
+        battle_format="gen9vgc2023regc",
         team="data/teams/sample_team.txt"  # Optional: specify your team
     )
 
     # Battle against a stronger opponent
-    opponent = MaxBasePowerPlayer(battle_format="gen9vgc2023regulationc")
+    opponent = MaxBasePowerPlayer(battle_format="gen9vgc2023regc")
 
     print("Battling against MaxBasePowerPlayer (always picks highest base power move)...")
     await human.battle_against(opponent, n_battles=1)
@@ -58,8 +58,8 @@ async def battle_against_custom_team():
 
 async def play_multiple_battles():
     """Play a series of battles."""
-    human = HumanPlayer(battle_format="gen9vgc2023regulationc")
-    opponent = RandomPlayer(battle_format="gen9vgc2023regulationc")
+    human = HumanPlayer(battle_format="gen9vgc2023regc")
+    opponent = RandomPlayer(battle_format="gen9vgc2023regc")
 
     n_battles = 3
     print(f"Starting {n_battles} battles...")

@@ -179,7 +179,7 @@ def generate_data(dataloader):
     batch_turns_til_end = []
 
     embedder = Embedder(
-        format="gen9vgc2023regulationc", feature_set=Embedder.FULL, omniscient=True
+        format="gen9vgc2023regc", feature_set=Embedder.FULL, omniscient=True
     )
     max_seq_len = 17
 
@@ -303,7 +303,7 @@ def main(battlefile_path, model_filepath, num_battles):
 
     # Prepare embedder and dataset
     embedder = Embedder(
-        format="gen9vgc2023regulationc", feature_set=Embedder.FULL, omniscient=True
+        format="gen9vgc2023regc", feature_set=Embedder.FULL, omniscient=True
     )
     dataset = BattleDataset(files)
 

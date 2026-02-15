@@ -92,7 +92,7 @@ def test_bcplayer_requires_models():
     Expected: ValueError raised with descriptive message.
     """
     with pytest.raises(ValueError, match="Must provide either unified_model_filepath"):
-        BCPlayer(battle_format="gen9vgc2023regulationc")
+        BCPlayer(battle_format="gen9vgc2023regc")
 
 
 def test_bcplayer_rejects_both_model_types():
@@ -109,7 +109,7 @@ def test_bcplayer_rejects_both_model_types():
             teampreview_model_filepath="tp.pt",
             action_model_filepath="action.pt",
             win_model_filepath="win.pt",
-            battle_format="gen9vgc2023regulationc",
+            battle_format="gen9vgc2023regc",
         )
 
 
@@ -126,7 +126,7 @@ def test_bcplayer_requires_all_separate_models():
             teampreview_model_filepath="tp.pt",
             action_model_filepath="action.pt",
             # Missing win_model_filepath
-            battle_format="gen9vgc2023regulationc",
+            battle_format="gen9vgc2023regc",
         )
 
 

@@ -176,7 +176,7 @@ if __name__ == "__main__":
     else:
         num_files = 100
 
-    battle_dir = "data/battles/gen9vgc2023regulationc_raw"
+    battle_dir = "data/battles/gen9vgc2023regc_raw"
 
     if not os.path.exists(battle_dir):
         print(f"Error: Directory '{battle_dir}' not found!")

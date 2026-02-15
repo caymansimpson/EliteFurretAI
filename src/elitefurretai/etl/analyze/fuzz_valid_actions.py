@@ -34,7 +34,7 @@ def main(battle_filepath: str):
         files = orjson.loads(f.read())
 
     embedder = Embedder(
-        format="gen9vgc2023regulationc", feature_set=Embedder.FULL, omniscient=True
+        format="gen9vgc2023regc", feature_set=Embedder.FULL, omniscient=True
     )
 
     # Create datasets

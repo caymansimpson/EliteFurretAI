@@ -28,12 +28,12 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import List
 
-logging.getLogger("poke_env").setLevel(logging.WARNING)
-
 import psutil
 import torch
 from poke_env.player import RandomPlayer
 from poke_env.ps_client import AccountConfiguration, ServerConfiguration
+
+logging.getLogger("poke_env").setLevel(logging.WARNING)
 
 
 @dataclass
