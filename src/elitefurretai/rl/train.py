@@ -34,23 +34,23 @@ from poke_env import ServerConfiguration
 
 import wandb
 from elitefurretai.etl import Embedder, TeamRepo
-from elitefurretai.rl.checkpoint import load_checkpoint as _load_checkpoint
-from elitefurretai.rl.checkpoint import save_checkpoint as _save_checkpoint
 from elitefurretai.rl.config import RNaDConfig
 from elitefurretai.rl.learners import PortfolioRNaDLearner, RNaDLearner
-from elitefurretai.rl.model_builder import build_model_from_config
+from elitefurretai.rl.model_io import (
+    build_model_from_config,
+    load_checkpoint,
+    save_checkpoint,
+)
 from elitefurretai.rl.opponents import (
     ExploiterRegistry,
     OpponentPool,
     WorkerOpponentFactory,
 )
 from elitefurretai.rl.players import RNaDAgent, cleanup_worker_executors
-from elitefurretai.rl.server_manager import allocate_server_ports as _allocate_server_ports
 from elitefurretai.rl.server_manager import (
-    launch_showdown_servers as _launch_showdown_servers,
-)
-from elitefurretai.rl.server_manager import (
-    shutdown_showdown_servers as _shutdown_showdown_servers,
+    allocate_server_ports,
+    launch_showdown_servers,
+    shutdown_showdown_servers,
 )
 from elitefurretai.supervised import FlexibleThreeHeadedModel, format_time
 
@@ -478,25 +478,6 @@ def collate_trajectories(trajectories, device, gamma, gae_lambda, max_seq_len=40
     }, metadata
 
 
-def save_checkpoint(
-    model: RNaDAgent,
-    optimizer,
-    step: int,
-    config: RNaDConfig,
-    curriculum: Dict,
-    save_dir: str = "data/models",
-):
-    """Backward-compatible wrapper to rl.checkpoint.save_checkpoint."""
-    return _save_checkpoint(model, optimizer, step, config, curriculum, save_dir)
-
-
-def load_checkpoint(
-    filepath: str, model: RNaDAgent, optimizer, device: str
-) -> Tuple[int, RNaDConfig]:
-    """Backward-compatible wrapper to rl.checkpoint.load_checkpoint."""
-    return _load_checkpoint(filepath, model, optimizer, device)
-
-
 def train_exploiter_subprocess(victim_checkpoint: str, config: RNaDConfig):
     """Launch exploiter training as subprocess."""
     print(f"\n{'=' * 60}")
@@ -532,33 +513,6 @@ def train_exploiter_subprocess(victim_checkpoint: str, config: RNaDConfig):
 
     subprocess.run(cmd, check=True)
     print("\nExploiter training complete!")
-
-
-def launch_showdown_servers(num_servers: int, start_port: int = 8000) -> List[subprocess.Popen]:
-    """Backward-compatible wrapper to rl.server_manager.launch_showdown_servers."""
-    return _launch_showdown_servers(num_servers, start_port)
-
-
-def shutdown_showdown_servers(server_processes: List[subprocess.Popen]) -> None:
-    """Backward-compatible wrapper to rl.server_manager.shutdown_showdown_servers."""
-    _shutdown_showdown_servers(server_processes)
-
-
-def allocate_server_ports(
-    num_workers: int,
-    players_per_worker: int,
-    num_showdown_servers: int,
-    max_players_per_server: int,
-    showdown_start_port: int,
-) -> Tuple[List[int], List[int]]:
-    """Backward-compatible wrapper to rl.server_manager.allocate_server_ports."""
-    return _allocate_server_ports(
-        num_workers,
-        players_per_worker,
-        num_showdown_servers,
-        max_players_per_server,
-        showdown_start_port,
-    )
 
 
 def main():
@@ -600,7 +554,7 @@ def main():
 
     # Launch Showdown servers
     server_processes = launch_showdown_servers(
-        config.num_showdown_servers, config.showdown_start_port
+        config.num_servers, config.showdown_start_port
     )
 
     # Generate unique run ID to avoid stale state on Showdown server
@@ -710,7 +664,7 @@ def main():
     worker_ports, server_loads = allocate_server_ports(
         config.num_workers,
         config.players_per_worker,  # Number of concurrent players each worker runs
-        config.num_showdown_servers,
+        config.num_servers,
         config.max_players_per_server,
         config.showdown_start_port,
     )

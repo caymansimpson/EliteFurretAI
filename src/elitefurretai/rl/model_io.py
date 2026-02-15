@@ -1,10 +1,17 @@
-"""Model construction utilities for RL training."""
+"""Model I/O helpers for RL training.
 
+Includes model construction utilities and checkpoint load/save helpers.
+"""
+
+import os
+from datetime import datetime
 from typing import Any, Dict, Optional, Tuple
 
 import torch
 
 from elitefurretai.etl import MDBO, Embedder
+from elitefurretai.rl.config import RNaDConfig
+from elitefurretai.rl.players import RNaDAgent
 from elitefurretai.supervised import FlexibleThreeHeadedModel
 
 
@@ -68,4 +75,49 @@ def load_model_from_checkpoint(
     return model, embedder, config
 
 
-__all__ = ["build_model_from_config", "load_model_from_checkpoint"]
+def save_checkpoint(
+    model: RNaDAgent,
+    optimizer,
+    step: int,
+    config: RNaDConfig,
+    curriculum: Dict,
+    save_dir: str = "data/models",
+):
+    os.makedirs(save_dir, exist_ok=True)
+    filepath = os.path.join(save_dir, f"main_model_step_{step}.pt")
+
+    checkpoint = {
+        "model_state_dict": model.model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "step": step,
+        "curriculum": curriculum,
+        "config": config.to_dict(),
+        "timestamp": datetime.now().isoformat(),
+    }
+
+    torch.save(checkpoint, filepath)
+    print(f"Checkpoint saved to {filepath}")
+    return filepath
+
+
+def load_checkpoint(
+    filepath: str, model: RNaDAgent, optimizer, device: str
+) -> Tuple[int, RNaDConfig]:
+    print(f"Resuming from checkpoint: {filepath}")
+    checkpoint = torch.load(filepath, map_location=device)
+
+    model.model.load_state_dict(checkpoint["model_state_dict"])
+    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    step = checkpoint["step"]
+    old_config = RNaDConfig.from_dict(checkpoint["config"])
+
+    print(f"Resumed from step {step}")
+    return step, old_config
+
+
+__all__ = [
+    "build_model_from_config",
+    "load_model_from_checkpoint",
+    "save_checkpoint",
+    "load_checkpoint",
+]
