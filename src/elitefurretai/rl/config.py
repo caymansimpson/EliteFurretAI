@@ -40,9 +40,17 @@ class RNaDConfig:
         True  # Whether to sample random teams from pool for each battle (vs fixed team)
     )
 
+    # ===== Worker/Server Configuration =====
+    num_actors: Optional[int] = (
+        None  # Backward-compatible alias for num_players
+    )
+    num_players: int = 3  # Total number of concurrent battle players across all workers
+    num_workers: int = 3  # Number of worker processes (IMPALA architecture)
+    num_servers: int = 3  # Number of Pokemon Showdown servers to launch
+
     # ===== Training hyperparameters =====
-    num_actors: int = 4  # Number of actor processes (IMPALA architecture)
     batch_size: int = 16  # Batch size for model inference during battle play
+    batch_timeout: float = 0.05  # Max wait time (s) before sending incomplete batch for inference
     train_batch_size: int = (
         32  # Number of trajectories to collect before performing a training update
     )
@@ -104,9 +112,7 @@ class RNaDConfig:
         }
     )  # Curriculum weights for opponent sampling (must sum to 1.0). Keys must match opponent_pool.py
     exploiter_registry_path: str = "data/models/exploiter_registry.json"  # JSON file tracking trained exploiter models
-    curriculum_update_interval: int = (
-        500  # Update curriculum weights adaptively every N updates based on win rates
-    )
+    adaptive_curriculum: bool = True  # Whether to adapt curriculum weights based on win rates against each opponent type (dynamic difficulty adjustment)
 
     # ===== Exploiter training =====
     train_exploiters: bool = False  # Enable automatic exploiter training pipeline (trains agents to exploit main model)
@@ -131,14 +137,8 @@ class RNaDConfig:
 
     # ===== Hardware configuration =====
     device: str = "cuda"  # Device for training ("cuda" for GPU, "cpu" for CPU)
-    num_showdown_servers: int = (
-        1  # Number of Pokemon Showdown servers to run (for distributed battle generation)
-    )
     showdown_start_port: int = (
         8000  # Starting port for Showdown servers (increments for multiple servers)
-    )
-    max_players_per_server: int = (
-        2  # Maximum concurrent players assigned to a single Showdown server (prevents I/O contention)
     )
     max_battle_steps: int = (
         40  # Maximum trajectory steps per battle before forfeiting to prevent memory explosion.
@@ -172,12 +172,35 @@ class RNaDConfig:
         with open(filepath, "w") as f:
             yaml.dump(asdict(self), f, default_flow_style=False)
 
+    def __post_init__(self):
+        """Normalize deprecated aliases to current fields."""
+        if self.num_actors is not None:
+            self.num_players = self.num_actors
+        else:
+            self.num_actors = self.num_players
+
     @classmethod
     def load(cls, filepath: str) -> "RNaDConfig":
         """Load config from YAML file."""
         with open(filepath, "r") as f:
             data = yaml.safe_load(f)
         return cls(**data)
+
+    @classmethod
+    def from_dict(cls, data: Dict) -> "RNaDConfig":
+        """
+        Create a RNaDConfig from a dictionary (e.g., loaded from YAML or JSON).
+        Ignores extra keys and fills missing keys with defaults.
+        """
+        # Only use keys that are valid fields for the dataclass
+        field_names = set(f.name for f in cls.__dataclass_fields__.values())
+        filtered = {k: v for k, v in data.items() if k in field_names}
+
+        # Handle curriculum default if missing or None
+        if "curriculum" in filtered and filtered["curriculum"] is None:
+            filtered["curriculum"] = cls().curriculum
+
+        return cls(**filtered)
 
     def __str__(self) -> str:
         """Pretty print config."""
@@ -190,17 +213,24 @@ class RNaDConfig:
         """Convert config to dictionary."""
         return asdict(self)
 
-    # Backward compatibility properties for train.py
-    # train.py still uses threaded workers, map num_actors -> workers
-    @property
-    def num_workers(self) -> int:
-        """Map num_actors to num_workers for backward compatibility."""
-        return self.num_actors
-
     @property
     def players_per_worker(self) -> int:
-        """Each worker runs 1 player for backward compatibility."""
-        return 1
+        """Calculate how many players each worker should run (rounded up)."""
+        return (self.num_players + self.num_workers - 1) // self.num_workers
+
+    @property
+    def max_players_per_server(self) -> int:
+        """Calculate maximum players per server based on balanced allocation.
+
+        Each player needs 2 connections during battles (player + opponent).
+        This distributes total connections across servers with headroom.
+        """
+        return (self.num_players + self.num_servers - 1) // self.num_servers
+
+    @property
+    def num_showdown_servers(self) -> int:
+        """Alias for backward compatibility."""
+        return self.num_servers
 
 
 def get_default_config() -> RNaDConfig:

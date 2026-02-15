@@ -12,7 +12,6 @@ Enhanced RNaD training with:
 import argparse
 import asyncio
 import copy
-import gc
 import multiprocessing as mp
 import os
 import queue
@@ -21,253 +20,105 @@ import subprocess
 import sys
 import threading
 import time
+import warnings
+from collections import deque
 from datetime import datetime
 from multiprocessing import Queue as MPQueue
 from multiprocessing.synchronize import Event as MPEvent
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
+import psutil
 import torch
-from poke_env import AccountConfiguration, ServerConfiguration
+from poke_env import ServerConfiguration
 
 import wandb
-from elitefurretai.etl.embedder import Embedder
-from elitefurretai.etl.encoder import MDBO
-from elitefurretai.etl.team_repo import TeamRepo
-from elitefurretai.rl.agent import RNaDAgent
+from elitefurretai.etl import Embedder, TeamRepo
+from elitefurretai.rl.checkpoint import load_checkpoint as _load_checkpoint
+from elitefurretai.rl.checkpoint import save_checkpoint as _save_checkpoint
 from elitefurretai.rl.config import RNaDConfig
-from elitefurretai.rl.learner import RNaDLearner
-from elitefurretai.rl.multiprocess_actor import (
-    BatchInferencePlayer,
-    cleanup_worker_executors,
+from elitefurretai.rl.learners import PortfolioRNaDLearner, RNaDLearner
+from elitefurretai.rl.model_builder import build_model_from_config
+from elitefurretai.rl.opponents import (
+    ExploiterRegistry,
+    OpponentPool,
+    WorkerOpponentFactory,
 )
-from elitefurretai.rl.opponent_pool import ExploiterRegistry, OpponentPool
-from elitefurretai.rl.portfolio_learner import PortfolioRNaDLearner
-from elitefurretai.supervised.model_archs import FlexibleThreeHeadedModel
-from elitefurretai.supervised.train_utils import format_time
+from elitefurretai.rl.players import RNaDAgent, cleanup_worker_executors
+from elitefurretai.rl.server_manager import allocate_server_ports as _allocate_server_ports
+from elitefurretai.rl.server_manager import (
+    launch_showdown_servers as _launch_showdown_servers,
+)
+from elitefurretai.rl.server_manager import (
+    shutdown_showdown_servers as _shutdown_showdown_servers,
+)
+from elitefurretai.supervised import FlexibleThreeHeadedModel, format_time
+
+# Filter out Pydantic field attribute warnings
+warnings.filterwarnings("ignore", category=UserWarning, module="pydantic._internal._generate_schema")
 
 
-def load_model(filepath, device):
-    """Load model from checkpoint or create new one."""
+def load_model(filepath: Optional[str], device: str, config: Optional[RNaDConfig] = None) -> FlexibleThreeHeadedModel:
+    """Load model from checkpoint or create new one.
 
-    if not os.path.exists(filepath):
-        print(f"Checkpoint not found at {filepath}. Initializing random model.")
-        config: Dict[str, Any] = {
-            "dropout": 0.1,
-            "teampreview_head_dropout": 0.3,
-            "gated_residuals": False,
-            "use_grouped_encoder": True,
-            "grouped_encoder_hidden_dim": 512,
-            "grouped_encoder_aggregated_dim": 4096,
-            "pokemon_attention_heads": 16,
-            "early_layers": [4096, 2048, 2048, 1024],
-            "early_attention_heads": 16,
-            "lstm_layers": 4,
-            "lstm_hidden_size": 512,
-            "late_layers": [2048, 2048, 1024, 1024],
-            "late_attention_heads": 32,
-            "teampreview_head_layers": [512, 256],
-            "teampreview_attention_heads": 8,
-            "turn_head_layers": [2048, 1024, 1024, 1024],
-        }
+    Uses build_model_from_config for consistent model construction.
+    """
+    if filepath is not None:
+        checkpoint = torch.load(filepath, map_location=device)
+        cfg: Dict[str, Any] = checkpoint["config"]
+        state_dict = checkpoint["model_state_dict"]
+    elif config is not None:
+        cfg = config.to_dict()
         state_dict = None
     else:
-        checkpoint = torch.load(filepath, map_location=device)
-        config = checkpoint["config"]
-        state_dict = checkpoint["model_state_dict"]
+        raise ValueError("Either filepath or cfg must be provided.")
 
     embedder = Embedder(
         format="gen9vgc2023regc",
-        feature_set=config["embedder_feature_set"],
+        feature_set=cfg["embedder_feature_set"],
         omniscient=False,
     )
-    input_size = embedder.embedding_size
 
-    model = FlexibleThreeHeadedModel(
-        input_size=input_size,
-        early_layers=config["early_layers"],
-        late_layers=config["late_layers"],
-        lstm_layers=config.get("lstm_layers", 2),
-        lstm_hidden_size=config.get("lstm_hidden_size", 512),
-        dropout=config.get("dropout", 0.1),
-        gated_residuals=config.get("gated_residuals", False),
-        early_attention_heads=config.get("early_attention_heads", 8),
-        late_attention_heads=config.get("late_attention_heads", 8),
-        use_grouped_encoder=config.get("use_grouped_encoder", False),
-        group_sizes=(
-            embedder.group_embedding_sizes
-            if config.get("use_grouped_encoder", False)
-            else None
-        ),
-        grouped_encoder_hidden_dim=config.get("grouped_encoder_hidden_dim", 128),
-        grouped_encoder_aggregated_dim=config.get("grouped_encoder_aggregated_dim", 1024),
-        pokemon_attention_heads=config.get("pokemon_attention_heads", 2),
-        teampreview_head_layers=config.get("teampreview_head_layers", []),
-        teampreview_head_dropout=config.get("teampreview_head_dropout", 0.1),
-        teampreview_attention_heads=config.get("teampreview_attention_heads", 4),
-        turn_head_layers=config.get("turn_head_layers", []),
-        num_actions=MDBO.action_space(),
-        num_teampreview_actions=MDBO.teampreview_space(),
-        max_seq_len=config["max_seq_len"],
-    ).to(device)
-
-    if state_dict:
-        model.load_state_dict(state_dict)
-
-    return model
+    return build_model_from_config(cfg, embedder, device, state_dict)
 
 
-def worker_loop(
-    opponent_pool: OpponentPool,
-    traj_queue: queue.Queue,
-    num_players: int,
-    worker_id: int,
-    server_port: int,
-    team_repo: TeamRepo,
-    battle_format: str,
-    run_id: str,
-    stop_event: threading.Event,
-    team_subdirectory: Optional[str] = None,
-    batch_size: int = 16,
-):
-    """
-    Runs an asyncio loop for a set of players with dynamic opponent selection.
+def get_dead_workers(processes: List[mp.Process], error_queue: MPQueue, verbose: bool = True) -> List[mp.Process]:
+    dead_procs = [p for p in processes if not p.is_alive()]
 
-    Args:
-        opponent_pool: OpponentPool for sampling opponents
-        traj_queue: Queue for pushing completed trajectories
-        num_players: Number of concurrent players in this worker
-        worker_id: Unique worker ID
-        server_port: Absolute port number of the assigned showdown server
-        team_repo: TeamRepo for random team sampling
-        battle_format: Game format string for battle initialization and team sampling (e.g., gen9vgc2023regc)
-        run_id: Unique identifier for this training run (prevents stale server state issues)
-        stop_event: Event to signal this worker to stop
-        team_subdirectory: Optional subdirectory within format to sample teams from (e.g., "easy", "rental_teams")
-    """
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+    if verbose and len(dead_procs) > 0:
+        print(f"\n{'='*60}")
+        print(f"ERROR: {len(dead_procs)} worker process(es) died:")
+        for p in dead_procs:
+            exit_code = p.exitcode
+            exit_reason = {
+                None: "still running (race condition?)",
+                0: "normal exit",
+                1: "general error",
+                -9: "SIGKILL (out of memory?)",
+                -11: "SIGSEGV (segmentation fault)",
+                -15: "SIGTERM (terminated)",
+            }.get(exit_code, f"exit code {exit_code}")
+            print(f"  - {p.name} (PID: {p.pid}): {exit_reason}")
 
-    server_config = ServerConfiguration(
-        f"ws://localhost:{server_port}/showdown/websocket",
-        None,  # type: ignore[arg-type]
-    )
+        # Check error queue for detailed error messages from workers
+        print("\nChecking for error reports from workers...")
+        error_found = False
+        while True:
+            try:
+                error_info = error_queue.get_nowait()
+                error_found = True
+                print(f"\n--- Error from Worker {error_info['worker_id']} ---")
+                print(f"Exception: {error_info['error']}")
+                print(f"Traceback:\n{error_info['traceback']}")
+            except Exception:
+                break
+        if not error_found:
+            print("No error reports in queue (worker may have crashed before reporting)")
 
-    players = []
-    for i in range(num_players):
-        # Sample random team if repo provided
-        team = team_repo.sample_team(battle_format, subdirectory=team_subdirectory)
+        print("\nTraining cannot continue. Saving checkpoint and exiting...")
+        print(f"{'='*60}\n")
 
-        # Compact format without separators (Showdown strips all special chars)
-        # Format: W{worker}{pair}R{run_id} e.g. W01R2324 (9 chars)
-        # Option 2a: Pass worker_id so each player uses worker-specific executor
-        player = BatchInferencePlayer(
-            model=opponent_pool.main_model,
-            device=opponent_pool.device,
-            batch_size=batch_size,
-            account_configuration=AccountConfiguration(f"W{worker_id}{i}R{run_id}", None),
-            server_configuration=server_config,
-            trajectory_queue=traj_queue,
-            battle_format=battle_format,
-            team=team,
-            worker_id=worker_id,  # Option 2a: worker-specific executor
-        )
-        players.append(player)
-
-    # Start inference loops for main players in POKE_LOOP (poke-env's event loop)
-    # This is done synchronously BEFORE starting battles because:
-    # 1. The queue and battle handlers run in POKE_LOOP
-    # 2. start_inference_loop() schedules the loop in POKE_LOOP via run_coroutine_threadsafe
-    for p in players:
-        p.start_inference_loop()
-
-    async def run_battles():
-        # Give inference loops time to start in POKE_LOOP
-        await asyncio.sleep(0.2)
-
-        battle_batch = 0
-        while not stop_event.is_set():
-            battle_batch += 1
-            start = time.time()
-            print(f"[Worker {worker_id}] Starting battle batch {battle_batch}...")
-
-            # Sample opponents for each player (with random teams if available)
-            # Compact alphanumeric format: {worker}{batch:05d}{pair}R{run_id}
-            # Example: 00000100R2324 = worker 0, batch 00001, pair 0, run 2324
-            # After opponent_pool prefix (e.g. "Self"): Self00000100R2324 (16 chars)
-            # Supports up to 99,999 batches (batch_batch:05d)
-            opponents = []
-            for i in range(num_players):
-                opp_config = AccountConfiguration(f"{worker_id}{battle_batch:05d}{i}R{run_id}", None)
-                opponent_team = team_repo.sample_team(
-                    battle_format, subdirectory=team_subdirectory
-                )
-                # Option 2a: Pass worker_id for worker-specific executor
-                opponent = opponent_pool.sample_opponent(
-                    opp_config, server_config, team=opponent_team, worker_id=worker_id
-                )
-                opponents.append(opponent)
-
-            # CRITICAL: Start inference loops for BatchInferencePlayer opponents
-            # This is now synchronous - schedules in POKE_LOOP via run_coroutine_threadsafe
-            for opponent in opponents:
-                if isinstance(opponent, BatchInferencePlayer):
-                    opponent.start_inference_loop()
-
-            print(
-                f"[Worker {worker_id}] Running {len(players)} pairs × 20 battles = {len(players) * 20} total battles..."
-            )
-
-            # Run a batch of battles
-            tasks = []
-            for player, opponent in zip(players, opponents):
-                tasks.append(player.battle_against(opponent, n_battles=20))
-            await asyncio.gather(*tasks)
-
-            total_time = time.time() - start
-            print(f"[Worker {worker_id}] Batch {battle_batch} completed in {total_time:.2f}s ({len(players) * 20 / total_time:.2f} battles/s)!")
-
-            # Clean up: Stop opponent inference loops AND disconnect from server
-            # CRITICAL: Must await stop_listening() to properly close websocket connections
-            # Otherwise old players remain connected and new ones with same names get rejected
-            for opponent in opponents:
-                try:
-                    # Cancel inference future to stop the inference loop
-                    if isinstance(opponent, BatchInferencePlayer) and hasattr(
-                        opponent, "_inference_future"
-                    ):
-                        opponent._inference_future.cancel()
-                    # Disconnect from Showdown server to free the username
-                    await opponent.stop_listening()  # type: ignore
-                except Exception as e:
-                    print(f"[Worker {worker_id}] Warning: Error stopping opponent: {e}")
-
-            # MEMORY CLEANUP: Clear completed battles from poke-env's internal dict
-            # poke-env stores all battles in player._battles which grows unboundedly
-            for player in players:
-                player.reset_battles()
-
-            # Give server time to process disconnections before creating new opponents
-            await asyncio.sleep(0.5)
-
-        print(f"[Worker {worker_id}] Stop requested, exiting battle loop...")
-
-    try:
-        loop.run_until_complete(run_battles())
-        print(f"[Worker {worker_id}] Worker finished gracefully.")
-    except Exception as e:
-        print(f"[Worker {worker_id}] FATAL ERROR: {e}")
-        import traceback
-        traceback.print_exc()
-        # Re-raise to ensure main thread knows worker died
-        raise
-
-
-# =============================================================================
-# Option 1: True Multiprocessing Worker
-# Each worker runs in a separate Python process with its own GIL, model copy,
-# and can run truly in parallel with other workers.
-# =============================================================================
+    return dead_procs
 
 
 def mp_worker_process(
@@ -286,8 +137,12 @@ def mp_worker_process(
     run_id: str,
     device: str = "cuda",
     batch_size: int = 16,
+    batch_timeout: float = 0.01,
     max_battle_steps: int = 40,
     num_battles_per_pair: int = 20,
+    curriculum: Optional[Dict[str, float]] = None,
+    bc_model_path: Optional[str] = None,
+    verbose: bool = False,
 ):
     """
     Multiprocessing worker process for true parallel RL data collection.
@@ -314,159 +169,125 @@ def mp_worker_process(
         run_id: Unique run identifier
         device: Device for model inference
         batch_size: Batch size for inference
+        batch_timeout: Timeout for batching inference requests
+        max_battle_steps: Maximum steps before forfeiting battle
+        num_battles_per_pair: Number of battles to run per player pair per batch
+        curriculum: Dict of opponent type -> sampling probability
+        bc_model_path: Path to BC model for opponent sampling
+        verbose: Whether to print detailed logs
     """
     def get_memory_usage_mb():
-        """Get current process memory usage in MB."""
-        import psutil
+        """Get current process memory usage as a human-readable string (KB, MB, GB)."""
         process = psutil.Process(os.getpid())
-        return process.memory_info().rss / 1024 / 1024
+        mem_bytes = process.memory_info().rss
+        if mem_bytes < 1024 * 1024:
+            return f"{mem_bytes / 1024:.0f}KB"
+        elif mem_bytes < 1024 * 1024 * 1024:
+            return f"{mem_bytes / (1024 * 1024):.0f}MB"
+        else:
+            return f"{mem_bytes / (1024 * 1024 * 1024):.0f}GB"
 
     try:
-        print(f"[MPWorker {worker_id}] Starting (PID: {os.getpid()})...", flush=True)
-        print(f"[MPWorker {worker_id}] Initial memory: {get_memory_usage_mb():.1f} MB", flush=True)
+        if verbose:
+            print(f"[MPWorker {worker_id}] Starting (PID: {os.getpid()})... Initial memory: {get_memory_usage_mb()}", flush=True)
 
         # Set thread count to avoid contention within process
         torch.set_num_threads(2)
 
         # IMPORTANT: Load model to CPU first, then move to device
         # This avoids CUDA re-initialization issues with forked processes
-        print(f"[MPWorker {worker_id}] Loading model from {model_path}...", flush=True)
+        if verbose:
+            print(f"[MPWorker {worker_id}] Loading model from {model_path}... Memory: {get_memory_usage_mb()}", flush=True)
+        # Load checkpoint and extract config
         checkpoint = torch.load(model_path, map_location="cpu", weights_only=False)
-        print(f"[MPWorker {worker_id}] Checkpoint loaded, memory: {get_memory_usage_mb():.1f} MB", flush=True)
+        if verbose:
+            print(f"[MPWorker {worker_id}] Checkpoint loaded... Memory: {get_memory_usage_mb()}", flush=True)
 
-        # Extract needed data from checkpoint before building model
+        # Create embedder from checkpoint config
         embedder_feature_set = checkpoint["config"].get("embedder_feature_set", "full")
-        model_state_dict = checkpoint["model_state_dict"]
-
-        # Create embedder for this process
-        print(f"[MPWorker {worker_id}] Creating embedder (feature_set={embedder_feature_set})...", flush=True)
         embedder = Embedder(
             format=battle_format,
             feature_set=embedder_feature_set,
             omniscient=False,
         )
-        print(f"[MPWorker {worker_id}] Embedder created, memory: {get_memory_usage_mb():.1f} MB", flush=True)
 
-        # Free checkpoint to save memory (we've extracted what we need)
-        del checkpoint
-        gc.collect()
-        print(f"[MPWorker {worker_id}] After checkpoint cleanup, memory: {get_memory_usage_mb():.1f} MB", flush=True)
-
-        # Build model
-        print(f"[MPWorker {worker_id}] Building model on device={device}...", flush=True)
-        model = FlexibleThreeHeadedModel(
-            input_size=embedder.embedding_size,
-            early_layers=model_config["early_layers"],
-            late_layers=model_config["late_layers"],
-            lstm_layers=model_config.get("lstm_layers", 2),
-            lstm_hidden_size=model_config.get("lstm_hidden_size", 512),
-            dropout=model_config.get("dropout", 0.1),
-            gated_residuals=model_config.get("gated_residuals", False),
-            early_attention_heads=model_config.get("early_attention_heads", 8),
-            late_attention_heads=model_config.get("late_attention_heads", 8),
-            use_grouped_encoder=model_config.get("use_grouped_encoder", False),
-            group_sizes=(
-                embedder.group_embedding_sizes
-                if model_config.get("use_grouped_encoder", False)
-                else None
-            ),
-            grouped_encoder_hidden_dim=model_config.get("grouped_encoder_hidden_dim", 128),
-            grouped_encoder_aggregated_dim=model_config.get("grouped_encoder_aggregated_dim", 1024),
-            pokemon_attention_heads=model_config.get("pokemon_attention_heads", 2),
-            teampreview_head_layers=model_config.get("teampreview_head_layers", []),
-            teampreview_head_dropout=model_config.get("teampreview_head_dropout", 0.1),
-            teampreview_attention_heads=model_config.get("teampreview_attention_heads", 4),
-            turn_head_layers=model_config.get("turn_head_layers", []),
-            num_actions=MDBO.action_space(),
-            num_teampreview_actions=MDBO.teampreview_space(),
-            max_seq_len=model_config.get("max_seq_len", 17),
-        ).to(device)
-        print(f"[MPWorker {worker_id}] Model built and moved to {device}, memory: {get_memory_usage_mb():.1f} MB", flush=True)
-
-        model.load_state_dict(model_state_dict)
-
-        # Clean up state dict now that it's loaded
-        del model_state_dict
-        gc.collect()
+        # Build main model using consolidated builder
+        if verbose:
+            print(f"[MPWorker {worker_id}] Building model on device={device}... Memory: {get_memory_usage_mb()}", flush=True)
+        model = build_model_from_config(
+            model_config, embedder, device, checkpoint["model_state_dict"]
+        )
         model.eval()
-        print(f"[MPWorker {worker_id}] Model weights loaded, memory: {get_memory_usage_mb():.1f} MB", flush=True)
-
-        # Wrap in RNaDAgent
         agent = RNaDAgent(model)
+        del checkpoint  # Free memory
+        if verbose:
+            print(f"[MPWorker {worker_id}] Model built... Memory: {get_memory_usage_mb()}", flush=True)
+
+        # Create BC agent if needed (frozen, never receives weight updates)
+        bc_agent = None
+        if curriculum and curriculum.get("bc_player", 0) > 0 and bc_model_path:
+            if verbose:
+                print(f"[MPWorker {worker_id}] Loading BC model... Memory: {get_memory_usage_mb()}", flush=True)
+            bc_checkpoint = torch.load(bc_model_path, map_location="cpu", weights_only=False)
+            bc_model = build_model_from_config(
+                model_config, embedder, device, bc_checkpoint["model_state_dict"]
+            )
+            bc_model.eval()
+            for param in bc_model.parameters():
+                param.requires_grad = False
+            bc_agent = RNaDAgent(bc_model)
+            del bc_checkpoint
+            if verbose:
+                print(f"[MPWorker {worker_id}] BC model loaded and frozen... Memory: {get_memory_usage_mb()}", flush=True)
 
         # Load team repo
-        print(f"[MPWorker {worker_id}] Loading team repo from {team_pool_path}...", flush=True)
+        if verbose:
+            print(f"[MPWorker {worker_id}] Loading teams from {team_pool_path}... Memory: {get_memory_usage_mb()}", flush=True)
         team_repo = TeamRepo(team_pool_path)
-        print(f"[MPWorker {worker_id}] Team repo loaded, memory: {get_memory_usage_mb():.1f} MB", flush=True)
-
-        print(f"[MPWorker {worker_id}] Setting up players...", flush=True)
-
-        # Create a simple opponent pool that only does self-play
-        # (In multiprocessing mode, we keep it simple - just self-play with own model copy)
 
         # Set up asyncio event loop for this process
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
+        server_config = ServerConfiguration(f"ws://localhost:{server_port}/showdown/websocket", None)  # type: ignore[arg-type]
 
-        server_config = ServerConfiguration(
-            f"ws://localhost:{server_port}/showdown/websocket",
-            None,  # type: ignore[arg-type]
-        )
-
-        # Create local trajectory queue (thread-safe within process)
+        # Create trajectory queue for this worker
         local_traj_queue: queue.Queue = queue.Queue()
 
-        # Create players
-        players = []
-        opponents = []
-        for i in range(num_players):
-            team = team_repo.sample_team(battle_format, subdirectory=team_subdirectory)
-            opponent_team = team_repo.sample_team(battle_format, subdirectory=team_subdirectory)
+        # Use WorkerOpponentFactory to manage all opponent creation and sampling
+        if verbose:
+            print(f"[MPWorker {worker_id}] Creating opponent factory... Memory: {get_memory_usage_mb()}", flush=True)
+        factory = WorkerOpponentFactory(
+            team_repo=team_repo,
+            battle_format=battle_format,
+            team_subdirectory=team_subdirectory,
+            server_config=server_config,
+            main_agent=agent,
+            bc_agent=bc_agent,
+            curriculum=curriculum,
+            embedder=embedder,
+            worker_id=worker_id,
+            run_id=run_id,
+            device=device,
+            batch_size=batch_size,
+            batch_timeout=batch_timeout,
+            max_battle_steps=max_battle_steps,
+        )
 
-            player = BatchInferencePlayer(
-                model=agent,
-                device=device,
-                batch_size=batch_size,
-                account_configuration=AccountConfiguration(f"MP{worker_id}P{i}R{run_id}", None),
-                server_configuration=server_config,
-                trajectory_queue=local_traj_queue,
-                battle_format=battle_format,
-                team=team,
-                worker_id=worker_id,
-                embedder=embedder,  # Share embedder to save memory
-                max_battle_steps=max_battle_steps,
-            )
-            players.append(player)
-
-            # Self-play opponent (uses same model copy - no contention since same process)
-            opponent = BatchInferencePlayer(
-                model=agent,
-                device=device,
-                batch_size=batch_size,
-                account_configuration=AccountConfiguration(f"MP{worker_id}O{i}R{run_id}", None),
-                server_configuration=server_config,
-                trajectory_queue=None,  # Opponent doesn't collect trajectories
-                battle_format=battle_format,
-                team=opponent_team,
-                worker_id=worker_id,
-                embedder=embedder,  # Share embedder to save memory
-                max_battle_steps=max_battle_steps,
-            )
-            opponents.append(opponent)
-            print(f"[MPWorker {worker_id}] Created player pair {i}, memory: {get_memory_usage_mb():.1f} MB", flush=True)
+        # Create player pairs and MaxDamagePlayer opponents via factory
+        num_pairs = num_players // 2
+        players, opponents = factory.create_player_pairs(num_pairs, local_traj_queue)
+        factory.create_max_damage_opponents(num_pairs)
+        if verbose:
+            print(f"[MPWorker {worker_id}] Created {num_pairs} player pairs... Memory: {get_memory_usage_mb()}", flush=True)
 
         # Start inference loops
-        print(f"[MPWorker {worker_id}] Starting inference loops for {len(players)} players and {len(opponents)} opponents...", flush=True)
-        for p in players:
-            p.start_inference_loop()
-        for o in opponents:
-            o.start_inference_loop()
-        print(f"[MPWorker {worker_id}] Inference loops started, memory: {get_memory_usage_mb():.1f} MB", flush=True)
-        print(f"[MPWorker {worker_id}] Beginning battle loop...", flush=True)
+        factory.start_inference_loops()
+        if verbose:
+            print(f"[MPWorker {worker_id}] Inference loops started... Memory: {get_memory_usage_mb()}", flush=True)
 
-        async def run_battles(num_battles_per_pair):
-            # Give inference loops time to start
-            await asyncio.sleep(0.2)
+        async def run_battles(num_battles_per_pair: int):
+            """Main battle loop with team randomization and curriculum-based opponent selection."""
+            await asyncio.sleep(0.2)  # Let inference loops warm up
 
             battle_batch = 0
             last_weight_check = time.time()
@@ -475,36 +296,40 @@ def mp_worker_process(
                 battle_batch += 1
                 start = time.time()
 
-                # Check for weight updates every second
+                # Check for weight updates (from learner process)
                 if time.time() - last_weight_check > 1.0:
                     try:
                         while not weight_queue.empty():
                             new_weights = weight_queue.get_nowait()
                             model.load_state_dict(new_weights)
-                            print(f"[MPWorker {worker_id}] Updated weights")
+                            if verbose:
+                                print(f"[MPWorker {worker_id}] Updated weights")
                     except Exception:
                         pass
                     last_weight_check = time.time()
 
-                # Track memory before battles for leak detection
-                mem_before_battles = get_memory_usage_mb()
+                # IMPORTANT: Randomize ALL teams before each batch for better generalization
+                factory.randomize_all_teams()
 
-                # Run battles
+                # Sample opponent types and configure opponents for this batch
+                batch_opponent_types: List[str] = []
+                for player, opponent in zip(factory.players, factory.opponents):
+                    opp_type = factory.configure_opponent_for_batch(player, opponent)
+                    batch_opponent_types.append(opp_type)
+
+                # Run battles - MaxDamagePlayer pairs use dedicated opponents
                 tasks = []
-                for player, opponent in zip(players, opponents):
-                    tasks.append(player.battle_against(opponent, n_battles=num_battles_per_pair))
+                for i, player in enumerate(factory.players):
+                    if batch_opponent_types[i] == WorkerOpponentFactory.MAX_DAMAGE and factory.max_damage_opponents:
+                        md_opp = factory.max_damage_opponents[i % len(factory.max_damage_opponents)]
+                        tasks.append(player.battle_against(md_opp, n_battles=num_battles_per_pair))
+                    else:
+                        tasks.append(player.battle_against(factory.opponents[i], n_battles=num_battles_per_pair))
                 await asyncio.gather(*tasks)
 
+                # Transfer trajectories to main process
                 total_time = time.time() - start
-                battles_completed = num_players * num_battles_per_pair
-                mem_mb = get_memory_usage_mb()
-
-                # Log memory delta to detect leaks (only if significant growth)
-                mem_delta = mem_mb - mem_before_battles
-                if mem_delta > 500:  # More than 500MB growth in one batch
-                    print(f"[MPWorker {worker_id}] WARNING: Large memory growth in batch {battle_batch}: +{mem_delta:.0f}MB", flush=True)
-
-                # Transfer trajectories from local queue to multiprocessing queue
+                battles_completed = sum(p.n_finished_battles for p in factory.players)
                 transferred = 0
                 while not local_traj_queue.empty():
                     try:
@@ -514,134 +339,20 @@ def mp_worker_process(
                     except Exception:
                         break
 
-                print(f"[MPWorker {worker_id}] Batch {battle_batch}: {battles_completed} battles in {total_time:.2f}s ({battles_completed / total_time:.2f} b/s), mem={mem_mb:.0f}MB | Sent {transferred} trajectories to learner", flush=True)
+                if verbose:
+                    print(f"[MPWorker {worker_id}] Batch {battle_batch}: {battles_completed} battles in {total_time:.2f}s ({battles_completed / total_time:.2f} b/s) | Sent {transferred} trajectories... Memory: {get_memory_usage_mb()}", flush=True)
 
-                # Report memory stats BEFORE cleanup to diagnose leaks
-                if battle_batch % 5 == 0:
-                    num_hidden = sum(len(p.hidden_states) for p in players) + sum(len(o.hidden_states) for o in opponents)
-                    num_traj = sum(len(p.current_trajectories) for p in players)
-                    num_completed = sum(len(p.completed_trajectories) for p in players) + sum(len(o.completed_trajectories) for o in opponents)
-                    num_battles_p = sum(len(p._battles) for p in players)
-                    num_battles_o = sum(len(o._battles) for o in opponents)
-
-                    # === MEMORY LEAK DIAGNOSTIC ===
-                    # Check Battle._observations sizes (suspected leak source)
-                    import sys
-                    total_obs_size = 0
-                    total_obs_count = 0
-                    for p in players + opponents:
-                        for battle in list(p._battles.values()):
-                            if hasattr(battle, '_observations'):
-                                obs_dict = battle._observations
-                                total_obs_count += len(obs_dict)
-                                total_obs_size += sys.getsizeof(obs_dict)
-                                for obs in list(obs_dict.values()):
-                                    total_obs_size += sys.getsizeof(obs)
-                                    # Observation contains dicts - estimate their size
-                                    if hasattr(obs, '__dict__'):
-                                        total_obs_size += sys.getsizeof(obs.__dict__)
-
-                    # Check hidden state tensor sizes
-                    hidden_tensor_size = 0
-                    hidden_tensor_count = 0
-                    for p in players + opponents:
-                        for tag, (h, c) in list(p.hidden_states.items()):
-                            hidden_tensor_count += 1
-                            hidden_tensor_size += h.nelement() * h.element_size()
-                            hidden_tensor_size += c.nelement() * c.element_size()
-
-                    # Check trajectory data sizes
-                    traj_data_size = 0
-                    for p in players:
-                        for tag, traj_list in list(p.current_trajectories.items()):
-                            traj_data_size += sys.getsizeof(traj_list)
-                            for step in traj_list:
-                                if step is not None:
-                                    traj_data_size += sys.getsizeof(step)
-                                    if isinstance(step, dict):
-                                        for v in step.values():
-                                            traj_data_size += sys.getsizeof(v)
-
-                    print(f"[MPWorker {worker_id}] LEAK DIAG: obs={total_obs_size/1024/1024:.2f}MB ({total_obs_count} obs), hidden={hidden_tensor_size/1024/1024:.2f}MB ({hidden_tensor_count} states), traj={traj_data_size/1024/1024:.2f}MB", flush=True)
-                    # === END MEMORY LEAK DIAGNOSTIC ===
-
-                    # Detailed per-player memory diagnostics
-                    for pi, p in enumerate(players):
-                        if len(p.hidden_states) > 10 or len(p.current_trajectories) > 10:
-                            print(f"[MPWorker {worker_id}] Player {pi}: hidden={len(p.hidden_states)}, current_traj={len(p.current_trajectories)}, completed_traj={len(p.completed_trajectories)}, battles={len(p._battles)}", flush=True)
-                    for oi, o in enumerate(opponents):
-                        if len(o.hidden_states) > 10 or len(o.completed_trajectories) > 100:
-                            print(f"[MPWorker {worker_id}] Opponent {oi}: hidden={len(o.hidden_states)}, completed_traj={len(o.completed_trajectories)}, battles={len(o._battles)}", flush=True)
-
-                    print(f"[MPWorker {worker_id}] PRE-cleanup: hidden={num_hidden}, active_traj={num_traj}, completed_traj={num_completed}, battles_p={num_battles_p}, battles_o={num_battles_o}", flush=True)
-
-                # MEMORY CLEANUP: Clear completed battles from poke-env's internal dict
-                # poke-env stores all battles in player._battles which grows unboundedly
-                # This caused OOM after ~40 updates with hundreds of completed battles
-                for player in players:
-                    player.reset_battles()
-                    player.clear_completed_trajectories()
-                    # Also clear hidden states for battles that ended
-                    # (they should be auto-cleaned but belt-and-suspenders)
-                    player.hidden_states.clear()
-                    player.current_trajectories.clear()
-                for opponent in opponents:
-                    opponent.reset_battles()
-                    opponent.clear_completed_trajectories()  # Critical for opponents!
-                    opponent.hidden_states.clear()
-
-                # Force garbage collection every batch and report memory
-                gc.collect()
-                mem_after_gc = get_memory_usage_mb()
-                if battle_batch % 5 == 0:
-                    print(f"[MPWorker {worker_id}] Memory after GC: {mem_after_gc:.0f}MB", flush=True)
-
-                # MEMORY THRESHOLD KILL: If worker exceeds 10GB, something is very wrong
-                # Kill this worker so main process can restart or continue without it
-                MEMORY_LIMIT_MB = 10000  # 10GB
-                if mem_after_gc > MEMORY_LIMIT_MB:
-                    print(f"[MPWorker {worker_id}] CRITICAL: Memory {mem_after_gc:.0f}MB exceeds limit {MEMORY_LIMIT_MB}MB. Terminating worker.", flush=True)
-
-                    # Try to diagnose what's using memory before dying
-                    import sys
-                    try:
-                        # Get top 20 objects by size
-                        all_objects = gc.get_objects()
-                        type_counts: Dict[str, int] = {}
-                        type_sizes: Dict[str, int] = {}
-                        for obj in all_objects:
-                            t = type(obj).__name__
-                            type_counts[t] = type_counts.get(t, 0) + 1
-                            try:
-                                type_sizes[t] = type_sizes.get(t, 0) + sys.getsizeof(obj)
-                            except Exception:
-                                pass
-
-                        print(f"[MPWorker {worker_id}] Top object types by count:", flush=True)
-                        for t, c in sorted(type_counts.items(), key=lambda x: -x[1])[:10]:
-                            print(f"  {t}: {c} objects, ~{type_sizes.get(t, 0) / 1024 / 1024:.1f}MB", flush=True)
-                    except Exception as e:
-                        print(f"[MPWorker {worker_id}] Failed to get memory breakdown: {e}", flush=True)
-
-                    # Signal error and exit
-                    try:
-                        error_queue.put_nowait({
-                            "worker_id": worker_id,
-                            "error": f"Memory limit exceeded: {mem_after_gc:.0f}MB > {MEMORY_LIMIT_MB}MB",
-                            "traceback": ""
-                        })
-                    except Exception:
-                        pass
-                    return  # Exit the async function, which will exit the worker
+                # Clean up battle state for next batch
+                factory.reset_all_battles()
 
         loop.run_until_complete(run_battles(num_battles_per_pair))
-        print(f"[MPWorker {worker_id}] Finished gracefully", flush=True)
+        if verbose:
+            print(f"[MPWorker {worker_id}] Finished gracefully", flush=True)
 
     except Exception as e:
         import traceback
         error_msg = f"[MPWorker {worker_id}] FATAL ERROR: {e}\n{traceback.format_exc()}"
         print(error_msg, flush=True)
-        # Send error to main process for visibility
         try:
             error_queue.put_nowait({"worker_id": worker_id, "error": str(e), "traceback": traceback.format_exc()})
         except Exception:
@@ -650,7 +361,7 @@ def mp_worker_process(
         raise
 
 
-def collate_trajectories(trajectories, device, max_seq_len=17):
+def collate_trajectories(trajectories, device, gamma, gae_lambda, max_seq_len=40):
     """Collate list of trajectories into batched tensors with padding.
 
     Args:
@@ -659,7 +370,29 @@ def collate_trajectories(trajectories, device, max_seq_len=17):
         max_seq_len: Maximum sequence length (matches model's positional embedding size)
                      Trajectories longer than this are truncated (keeping last N steps
                      since later game decisions are typically more impactful).
+
+    Returns:
+        batch_dict: Dict of tensors for training
+        metadata: List of dicts with {"opponent_type": str, "won": bool} for each trajectory
     """
+    # Extract metadata and steps from new trajectory format
+    metadata = []
+    raw_trajectories = []
+    for traj in trajectories:
+        if isinstance(traj, dict) and "steps" in traj:
+            # New format: {"steps": [...], "opponent_type": str, "won": bool}
+            metadata.append({
+                "opponent_type": traj.get("opponent_type", "self_play"),
+                "won": traj.get("won", False),
+            })
+            raw_trajectories.append(traj["steps"])
+        else:
+            # Legacy format: list of steps directly
+            metadata.append({"opponent_type": "self_play", "won": False})
+            raw_trajectories.append(traj)
+
+    trajectories = raw_trajectories
+
     # Truncate long trajectories to max_seq_len
     truncated_trajectories = []
     for traj in trajectories:
@@ -710,14 +443,12 @@ def collate_trajectories(trajectories, device, max_seq_len=17):
         advs = torch.zeros(seq_len)
         rets = torch.zeros(seq_len)
         last_gae_lam = torch.tensor(0.0)
-        gamma = 0.99
-        lam = 0.95
 
         next_val = torch.tensor(0.0)
 
         for t in reversed(range(seq_len)):
             delta = traj_rewards[t] + gamma * next_val - traj_values[t]
-            last_gae_lam = delta + gamma * lam * last_gae_lam
+            last_gae_lam = delta + gamma * gae_lambda * last_gae_lam
             advs[t] = last_gae_lam
             rets[t] = traj_values[t] + last_gae_lam
             next_val = traj_values[t]
@@ -744,7 +475,7 @@ def collate_trajectories(trajectories, device, max_seq_len=17):
         "advantages": advantages.to(device),
         "returns": returns.to(device),
         "padding_mask": padding_mask.to(device),
-    }
+    }, metadata
 
 
 def save_checkpoint(
@@ -755,42 +486,15 @@ def save_checkpoint(
     curriculum: Dict,
     save_dir: str = "data/models",
 ):
-    """Save complete training state for resuming."""
-    os.makedirs(save_dir, exist_ok=True)
-    filepath = os.path.join(save_dir, f"main_model_step_{step}.pt")
-
-    checkpoint = {
-        "model_state_dict": model.model.state_dict(),
-        "optimizer_state_dict": optimizer.state_dict(),
-        "step": step,
-        "curriculum": curriculum,
-        "config": config.to_dict(),
-        "timestamp": datetime.now().isoformat(),
-    }
-
-    torch.save(checkpoint, filepath)
-    print(f"Checkpoint saved to {filepath}")
-    return filepath
+    """Backward-compatible wrapper to rl.checkpoint.save_checkpoint."""
+    return _save_checkpoint(model, optimizer, step, config, curriculum, save_dir)
 
 
 def load_checkpoint(
-    filepath: str, model: RNaDAgent, optimizer, config: RNaDConfig, device: str
-):
-    """Load training state from checkpoint."""
-    if not os.path.exists(filepath):
-        print(f"Checkpoint not found: {filepath}")
-        return 0, {}
-
-    print(f"Resuming from checkpoint: {filepath}")
-    checkpoint = torch.load(filepath, map_location=device)
-
-    model.model.load_state_dict(checkpoint["model_state_dict"])
-    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-    step = checkpoint["step"]
-    curriculum = checkpoint.get("curriculum", {})
-
-    print(f"Resumed from step {step}")
-    return step, curriculum
+    filepath: str, model: RNaDAgent, optimizer, device: str
+) -> Tuple[int, RNaDConfig]:
+    """Backward-compatible wrapper to rl.checkpoint.load_checkpoint."""
+    return _load_checkpoint(filepath, model, optimizer, device)
 
 
 def train_exploiter_subprocess(victim_checkpoint: str, config: RNaDConfig):
@@ -830,118 +534,14 @@ def train_exploiter_subprocess(victim_checkpoint: str, config: RNaDConfig):
     print("\nExploiter training complete!")
 
 
-def launch_showdown_servers(
-    num_servers: int, start_port: int = 8000
-) -> List[subprocess.Popen]:
-    """Launch Showdown servers on consecutive ports.
-
-    Args:
-        num_servers: Number of servers to launch
-        start_port: Starting port number (default 8000)
-
-    Returns:
-        List of subprocess.Popen objects for each server
-    """
-    print(f"\n{'=' * 60}")
-    print(f"LAUNCHING {num_servers} SHOWDOWN SERVERS")
-    print(f"Ports: {start_port}-{start_port + num_servers - 1}")
-    print(f"{'=' * 60}\n")
-
-    # Determine path to pokemon-showdown (relative to repo root)
-    # Script is in src/elitefurretai/rl/train.py, so go up 4 levels to repo root
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    repo_root = os.path.abspath(os.path.join(script_dir, "..", "..", ".."))
-    showdown_dir = os.path.join(repo_root, "..", "pokemon-showdown")
-
-    if not os.path.exists(showdown_dir):
-        raise FileNotFoundError(f"Pokemon Showdown not found at {showdown_dir}")
-
-    server_processes = []
-    for i in range(num_servers):
-        port = start_port + i
-        try:
-            # Launch server with stdout/stderr redirected to suppress logs
-            process = subprocess.Popen(
-                [
-                    "node",
-                    "pokemon-showdown",
-                    "start",
-                    "--no-security",
-                    "--port",
-                    str(port),
-                ],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                cwd=showdown_dir,  # Run from pokemon-showdown directory
-                preexec_fn=os.setsid
-                if os.name != "nt"
-                else None,  # Create process group on Unix
-            )
-            server_processes.append(process)
-            print(f"✓ Launched Showdown server on port {port} (PID: {process.pid})")
-            time.sleep(0.5)  # Small delay between launches
-        except FileNotFoundError:
-            print(f"ERROR: 'node' or 'pokemon-showdown' not found at {showdown_dir}")
-            # Clean up already launched servers
-            shutdown_showdown_servers(server_processes)
-            raise
-        except Exception as e:
-            print(f"ERROR launching server on port {port}: {e}")
-            shutdown_showdown_servers(server_processes)
-            raise
-
-    # Give servers time to fully start
-    print("\nWaiting for servers to initialize...")
-    time.sleep(2)
-    print(f"All {num_servers} servers ready!\n")
-    return server_processes
+def launch_showdown_servers(num_servers: int, start_port: int = 8000) -> List[subprocess.Popen]:
+    """Backward-compatible wrapper to rl.server_manager.launch_showdown_servers."""
+    return _launch_showdown_servers(num_servers, start_port)
 
 
 def shutdown_showdown_servers(server_processes: List[subprocess.Popen]) -> None:
-    """Gracefully shut down all Showdown server processes.
-
-    Args:
-        server_processes: List of subprocess.Popen objects to terminate
-    """
-    if not server_processes:
-        return
-
-    print(f"\n{'=' * 60}")
-    print(f"SHUTTING DOWN {len(server_processes)} SHOWDOWN SERVERS")
-    print(f"{'=' * 60}\n")
-
-    for i, process in enumerate(server_processes):
-        if process.poll() is None:  # Process is still running
-            try:
-                print(
-                    f"Terminating server {i + 1}/{len(server_processes)} (PID: {process.pid})..."
-                )
-                if os.name != "nt":  # Unix
-                    # Kill entire process group to catch child processes
-                    os.killpg(os.getpgid(process.pid), signal.SIGTERM)
-                else:  # Windows
-                    process.terminate()
-
-                # Wait up to 3 seconds for graceful shutdown
-                try:
-                    process.wait(timeout=3)
-                    print(f"✓ Server on PID {process.pid} terminated gracefully")
-                except subprocess.TimeoutExpired:
-                    # Force kill if graceful shutdown fails
-                    print(
-                        f"⚠ Server on PID {process.pid} didn't respond, force killing..."
-                    )
-                    if os.name != "nt":
-                        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
-                    else:
-                        process.kill()
-                    process.wait()
-            except ProcessLookupError:
-                print(f"Server on PID {process.pid} already terminated")
-            except Exception as e:
-                print(f"Error terminating server PID {process.pid}: {e}")
-
-    print("\nAll servers shut down.\n")
+    """Backward-compatible wrapper to rl.server_manager.shutdown_showdown_servers."""
+    _shutdown_showdown_servers(server_processes)
 
 
 def allocate_server_ports(
@@ -951,52 +551,19 @@ def allocate_server_ports(
     max_players_per_server: int,
     showdown_start_port: int,
 ) -> Tuple[List[int], List[int]]:
-    """Distribute workers across servers while respecting per-server player caps."""
-
-    total_players = num_workers * players_per_worker
-    total_capacity = num_showdown_servers * max_players_per_server
-    if total_players > total_capacity:
-        raise ValueError(
-            "Not enough Showdown server capacity. "
-            f"Need {total_players} concurrent players but only have capacity for {total_capacity}. "
-            "Increase num_showdown_servers or max_players_per_server (see OPTIMIZATIONS.md)."
-        )
-
-    server_loads = [0 for _ in range(num_showdown_servers)]
-    worker_ports: List[int] = []
-
-    for _ in range(num_workers):
-        selected_idx: Optional[int] = None
-        for idx in range(num_showdown_servers):
-            projected = server_loads[idx] + players_per_worker
-            if projected <= max_players_per_server:
-                if selected_idx is None or server_loads[idx] < server_loads[selected_idx]:
-                    selected_idx = idx
-
-        if selected_idx is None:
-            raise ValueError(
-                "Unable to allocate worker to a Showdown server without exceeding max_players_per_server. "
-                "Try increasing num_showdown_servers or relaxing the per-server cap."
-            )
-
-        server_loads[selected_idx] += players_per_worker
-        worker_ports.append(showdown_start_port + selected_idx)
-
-    return worker_ports, server_loads
+    """Backward-compatible wrapper to rl.server_manager.allocate_server_ports."""
+    return _allocate_server_ports(
+        num_workers,
+        players_per_worker,
+        num_showdown_servers,
+        max_players_per_server,
+        showdown_start_port,
+    )
 
 
 def main():
     parser = argparse.ArgumentParser(description="RNaD RL Training for Pokemon VGC")
     parser.add_argument("--config", type=str, default=None, help="Path to config YAML")
-    parser.add_argument(
-        "--resume", action="store_true", help="Resume from last checkpoint"
-    )
-    parser.add_argument(
-        "--initialize",
-        type=str,
-        default=None,
-        help="Initialize model weights from checkpoint (starts fresh training)",
-    )
     args = parser.parse_args()
 
     # Set up signal handlers for graceful shutdown (e.g., when killed via nohup)
@@ -1012,20 +579,21 @@ def main():
     signal.signal(signal.SIGINT, signal_handler)
 
     # Load or create config
-    if args.config:
-        config = RNaDConfig.load(args.config)
-        print(f"Loaded config from {args.config}")
-    else:
-        config = RNaDConfig()
-        print("Using default config")
+    config = RNaDConfig.load(args.config)
+    print(f"Loaded config from {args.config}")
 
-    # Save config for this run
-    os.makedirs(config.save_dir, exist_ok=True)
-    config_path = os.path.join(
-        config.save_dir, f"config_{datetime.now().strftime('%Y%m%d_%H%M%S')}.yaml"
-    )
-    config.save(config_path)
-    print(f"Config saved to {config_path}")
+    # Check the config's paths
+    assert os.path.exists(config.bc_teampreview_path)
+    assert os.path.exists(config.bc_action_path)
+    assert os.path.exists(config.bc_win_path)
+    assert os.path.exists(config.base_team_path)
+    if config.team_pool_path:
+        path = os.path.join(config.base_team_path, config.battle_format, config.team_pool_path)
+        assert os.path.exists(path)
+    if config.resume_from:
+        assert os.path.exists(config.resume_from)
+    if config.initialize_path:
+        assert os.path.exists(config.initialize_path)
 
     device = config.device if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
@@ -1043,39 +611,20 @@ def main():
     if config.use_wandb:
         wandb.init(
             project=config.wandb_project,
-            name=config.wandb_run_name
-            or f"rnad_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+            name=config.wandb_run_name or f"rnad_{datetime.now().strftime('%Y-%m-%d|%H:%M:%S')}",
             config=config.to_dict(),
             tags=config.wandb_tags,
         )
-        # Save config as artifact
-        artifact = wandb.Artifact(name="config", type="config")
-        artifact.add_file(config_path)
-        wandb.log_artifact(artifact)
-
-    # Load team repo (required)
-    # TeamRepo expects base_team_path to contain format folders (e.g., data/teams/gen9vgc2023regc/)
-    team_repo = TeamRepo(config.base_team_path)
 
     # Determine team sampling parameters
-    if config.team_pool_path:
-        # Sample only from specific subdirectory within the format
-        team_subdirectory = config.team_pool_path
-        print(
-            f"Loaded team repository from {config.base_team_path} (sampling from {config.battle_format}/{team_subdirectory})"
-        )
-    else:
-        # Sample from all teams in the format
-        team_subdirectory = None
-        print(
-            f"Loaded team repository from {config.base_team_path} (sampling from all {config.battle_format} teams)"
-        )
+    assert isinstance(config.base_team_path, str)
+    team_subdirectory = config.team_pool_path
+    msg = f"{config.battle_format}/{team_subdirectory})" if team_subdirectory else config.battle_format
+    print(f"Loaded team repository from {config.base_team_path} (sampling from {msg})")
 
     # Determine model path for initialization
-    # Priority: config.initialize_path > args.initialize
-    model_init_path = config.initialize_path or args.initialize
-    print(f"Loading main model from {model_init_path}...")
-    base_model = load_model(model_init_path, device)
+    print(f"Loading main model from {config.initialize_path}...")
+    base_model = load_model(config.initialize_path, device, config=config)
     agent = RNaDAgent(base_model)
 
     # Create learner (portfolio or standard)
@@ -1092,6 +641,7 @@ def main():
             ref_models,
             lr=config.lr,
             rnad_alpha=config.rnad_alpha,
+            gradient_clip=config.max_grad_norm,
             device=device,
             gamma=config.gamma,
             clip_range=config.clip_range,
@@ -1121,259 +671,179 @@ def main():
             gradient_clip=config.max_grad_norm,
         )
 
-    # Resume from checkpoint if requested (restore optimizer + step state)
-    # Note: --checkpoint is for model initialization only, not resuming training state
-    start_step = 0
-    start = time.time()
-    curriculum = {}
-    if config.resume_from or args.resume:
-        # Priority: CLI flag --resume > config.resume_from
-        if args.resume:
-            checkpoint_path = os.path.join(
-                config.save_dir,
-                sorted(
-                    [
-                        f
-                        for f in os.listdir(config.save_dir)
-                        if f.startswith("main_model_step_")
-                    ]
-                )[-1],
-            )
-        else:
-            assert isinstance(config.resume_from, str)
-            checkpoint_path = config.resume_from
-        assert isinstance(checkpoint_path, str)
-        start_step, curriculum = load_checkpoint(
-            checkpoint_path, agent, learner.optimizer, config, device
-        )
-
     # Create opponent pool
     print("Initializing opponent pool...")
     opponent_pool = OpponentPool(
         main_model=agent,
         device=device,
         battle_format=config.battle_format,
-        bc_teampreview_path=(
-            config.bc_teampreview_path
-            if os.path.exists(config.bc_teampreview_path)
-            else None
-        ),
-        bc_action_path=(
-            config.bc_action_path if os.path.exists(config.bc_action_path) else None
-        ),
-        bc_win_path=config.bc_win_path if os.path.exists(config.bc_win_path) else None,
+        bc_teampreview_path=config.bc_teampreview_path,
+        bc_action_path=config.bc_action_path,
+        bc_win_path=config.bc_win_path,
         exploiter_registry_path=config.exploiter_registry_path,
         past_models_dir=config.past_models_dir,
         max_past_models=config.max_past_models,
     )
 
-    # Restore curriculum if resuming
-    if curriculum:
-        opponent_pool.curriculum = curriculum
-        print(f"Restored curriculum: {curriculum}")
+    # Resume from checkpoint if requested (restore optimizer + step state + curriculum)
+    start_step = 0
+    start = time.time()
+    if config.resume_from:
+        assert isinstance(config.resume_from, str)
+        start_step, old_config = load_checkpoint(
+            config.resume_from, agent, learner.optimizer, device
+        )
+        if old_config.curriculum:
+            opponent_pool.curriculum = old_config.curriculum
 
     # ==================== START WORKERS ====================
     # Workers generate training data by playing battles against opponent pool
 
+    # Display allocation strategy
+    print("\nAllocation Strategy:")
+    print(f"  Total players: {config.num_players}")
+    print(f"  Workers: {config.num_workers} (each runs {config.players_per_worker} player(s) on {device})")
+    print(f"  Servers: {config.num_servers} (max {config.max_players_per_server} connections each)")
+    print(f"  Total connections: {config.num_players * 2} (player + opponent pairs)")
+
     # Allocate ports for all workers
     worker_ports, server_loads = allocate_server_ports(
         config.num_workers,
-        config.players_per_worker,
+        config.players_per_worker,  # Number of concurrent players each worker runs
         config.num_showdown_servers,
-        getattr(config, "max_players_per_server", config.players_per_worker),
+        config.max_players_per_server,
         config.showdown_start_port,
     )
 
-    # Choose between multiprocessing (Option 1) and threading (Option 2a)
-    if config.use_multiprocessing:
-        # ==================== OPTION 1: MULTIPROCESSING ====================
-        print("\n=== Using TRUE MULTIPROCESSING mode (Option 1) ===")
-        print("Each worker runs in a separate process with its own GIL and model copy.")
-        print(f"  - Learner: {device}")
-        print(f"  - Workers: {device}")
+    # Create multiprocessing queues
+    mp_traj_queue: MPQueue = MPQueue(maxsize=1024)
+    weight_queues: List[MPQueue] = [MPQueue(maxsize=5) for _ in range(config.num_workers)]
+    mp_error_queue: MPQueue = MPQueue(maxsize=100)  # For workers to report errors
+    mp_stop_event: MPEvent = mp.Event()
 
-        # Create multiprocessing queues
-        mp_traj_queue: Optional[MPQueue] = MPQueue(maxsize=1000)
-        weight_queues: List[MPQueue] = [MPQueue(maxsize=5) for _ in range(config.num_workers)]
-        mp_error_queue: Optional[MPQueue] = MPQueue(maxsize=100)  # For workers to report errors
-        mp_stop_event: Optional[MPEvent] = mp.Event()
+    # Get model config for worker processes from checkpoint
+    # TODO: I think this is wrong. sometimes initialize_path is going to be null. Also, we need to handle resume_from?
+    assert isinstance(config.initialize_path, str)
+    checkpoint = torch.load(config.initialize_path, map_location="cpu", weights_only=False)
+    model_config: Dict[str, Any] = checkpoint.get("config", {})
 
-        # Get model config for worker processes
-        model_config = base_model.config if hasattr(base_model, 'config') else {}
-        # If config is not on model, extract from checkpoint
-        checkpoint = torch.load(model_init_path, map_location="cpu", weights_only=False)
-        model_config = checkpoint.get("config", {})
+    processes: List[mp.Process] = []
+    for i, server_port in enumerate(worker_ports):
+        assert mp_traj_queue and mp_error_queue and mp_stop_event
+        p = mp.Process(
+            target=mp_worker_process,
+            args=(
+                i,  # worker_id
+                server_port,
+                config.initialize_path,  # model_path
+                model_config,
+                mp_traj_queue,
+                weight_queues[i],
+                mp_error_queue,  # error reporting queue
+                mp_stop_event,
+                config.battle_format,
+                config.base_team_path,
+                team_subdirectory,
+                config.players_per_worker,  # Number of players this worker should run
+                run_id,
+                device,  # Use same device as learner (GPU has more memory: 32GB vs 24GB CPU RAM)
+                config.batch_size,
+                config.batch_timeout,
+                config.max_battle_steps,
+                config.num_battles_per_pair,
+                config.curriculum,  # Curriculum for opponent sampling
+                config.bc_action_path,  # BC model path for opponent sampling
+            ),
+            daemon=True,
+            name=f"MPWorker-{i}",
+        )
+        p.start()
+        processes.append(p)
+        print(f"✓ Started multiprocessing worker {i} (PID: {p.pid}) on port {server_port}")
 
-        processes: List[mp.Process] = []
-        for i, server_port in enumerate(worker_ports):
-            assert mp_traj_queue is not None
-            assert mp_error_queue is not None
-            assert mp_stop_event is not None
-            p = mp.Process(
-                target=mp_worker_process,
-                args=(
-                    i,  # worker_id
-                    server_port,
-                    model_init_path,  # model_path
-                    model_config,
-                    mp_traj_queue,
-                    weight_queues[i],
-                    mp_error_queue,  # error reporting queue
-                    mp_stop_event,
-                    config.battle_format,
-                    config.base_team_path,
-                    team_subdirectory,
-                    config.players_per_worker,
-                    run_id,
-                    device,  # Use same device as learner (GPU has more memory: 32GB vs 24GB CPU RAM)
-                    config.batch_size,
-                    config.max_battle_steps,
-                    config.num_battles_per_pair,
-                ),
-                daemon=True,
-                name=f"MPWorker-{i}",
-            )
-            p.start()
-            processes.append(p)
-            print(f"✓ Started multiprocessing worker {i} (PID: {p.pid}) on port {server_port}")
-
-        # For main loop, we'll use mp_traj_queue
-        # Threading variables set to None for compatibility
-        threads: List[threading.Thread] = []  # Empty list
-        thread_traj_queue: Optional[queue.Queue] = None  # Will use mp_traj_queue instead
-        thread_stop_event: Optional[threading.Event] = None  # Will use mp_stop_event instead
-
-    else:
-        # ==================== OPTION 2a: THREADING ====================
-        print("\n=== Using THREADING mode with per-worker executors (Option 2a) ===")
-        print("Workers share memory but have separate inference executors to reduce contention.")
-
-        # Create threading queue
-        thread_traj_queue = queue.Queue()
-        thread_stop_event = threading.Event()
-
-        # Multiprocessing variables set to None/empty
-        mp_traj_queue = None
-        mp_error_queue = None
-        mp_stop_event = None
-        weight_queues = []
-        processes = []
-
-        threads = []
-        for i, server_port in enumerate(worker_ports):
-            t = threading.Thread(
-                target=worker_loop,
-                args=(
-                    opponent_pool,
-                    thread_traj_queue,
-                    config.players_per_worker,
-                    i,
-                    server_port,
-                    team_repo,
-                    config.battle_format,
-                    run_id,
-                    thread_stop_event,  # Fixed: was worker_stop_event
-                    team_subdirectory,
-                    config.batch_size,
-                ),
-                daemon=True,  # Daemon threads die when main exits
-                name=f"Worker-{i}",
-            )
-            t.start()
-            threads.append(t)
-            print(f"✓ Started threading worker {i} on port {server_port}")
-
+    # For main loop, we'll use mp_traj_queue
     print(
-        f"\nStarted {config.num_workers} workers with {config.players_per_worker} players each."
+        f"\nStarted {config.num_workers} workers with {config.players_per_worker} player(s) each."
     )
-    if config.num_showdown_servers > 1:
-        print("Server allocation (players per server):")
-        for idx, load in enumerate(server_loads):
-            port = config.showdown_start_port + idx
-            cap = getattr(config, "max_players_per_server", config.players_per_worker)
-            print(f"  - Port {port}: {load}/{cap} players")
-    else:
-        print(f"All workers using single showdown server on port {config.showdown_start_port}")
+    print("Server allocation (players per server):")
+    for idx, load in enumerate(server_loads):
+        port = config.showdown_start_port + idx
+        cap = config.max_players_per_server
+        print(f"  - Port {port}: {load}/{cap} players")
 
     # ==================== MAIN TRAINING LOOP ====================
     # Collect trajectories from workers, batch them, and perform policy updates
     trajectories = []  # Buffer to accumulate trajectories before training
     updates = start_step  # Current training step (may be >0 if resumed from checkpoint)
-    last_exploiter_check = start_step  # Track when we last checked for exploiter training
     total_battles = 0  # Track total number of battles completed across all workers
+
+    # Win rate tracking with rolling window of last 100 battles per opponent type
+    WIN_RATE_WINDOW = 100
+    win_tracking: Dict[str, deque] = {
+        OpponentPool.SELF_PLAY: deque(maxlen=WIN_RATE_WINDOW),
+        OpponentPool.BC_PLAYER: deque(maxlen=WIN_RATE_WINDOW),
+        OpponentPool.EXPLOITERS: deque(maxlen=WIN_RATE_WINDOW),
+        OpponentPool.GHOSTS: deque(maxlen=WIN_RATE_WINDOW),
+        OpponentPool.MAX_DAMAGE: deque(maxlen=WIN_RATE_WINDOW),
+    }
+
+    # Battle length tracking (steps per game) by opponent type
+    battle_length_tracking: Dict[str, deque] = {
+        OpponentPool.SELF_PLAY: deque(maxlen=WIN_RATE_WINDOW),
+        OpponentPool.BC_PLAYER: deque(maxlen=WIN_RATE_WINDOW),
+        OpponentPool.EXPLOITERS: deque(maxlen=WIN_RATE_WINDOW),
+        OpponentPool.GHOSTS: deque(maxlen=WIN_RATE_WINDOW),
+        OpponentPool.MAX_DAMAGE: deque(maxlen=WIN_RATE_WINDOW),
+    }
+
+    # Forfeit tracking
+    forfeit_count = 0
+
+    # Timing breakdown
+    time_collecting_battles = 0.0
+    time_training = 0.0
+    time_broadcasting = 0.0
+    last_update_time = time.time()
 
     try:
         while updates < config.max_updates:
             # Check for shutdown signal (from SIGTERM/SIGINT)
             if shutdown_requested.is_set():
                 print("\nShutdown requested. Signaling workers to stop...")
-                if config.use_multiprocessing and mp_stop_event is not None:
-                    mp_stop_event.set()
-                elif thread_stop_event is not None:
-                    thread_stop_event.set()
+                mp_stop_event.set()
                 break
 
             # Check if workers have died
-            if config.use_multiprocessing:
-                dead_procs = [p for p in processes if not p.is_alive()]
-                if dead_procs:
-                    print(f"\n{'='*60}")
-                    print(f"ERROR: {len(dead_procs)} worker process(es) died:")
-                    for p in dead_procs:
-                        exit_code = p.exitcode
-                        exit_reason = {
-                            None: "still running (race condition?)",
-                            0: "normal exit",
-                            1: "general error",
-                            -9: "SIGKILL (out of memory?)",
-                            -11: "SIGSEGV (segmentation fault)",
-                            -15: "SIGTERM (terminated)",
-                        }.get(exit_code, f"exit code {exit_code}")
-                        print(f"  - {p.name} (PID: {p.pid}): {exit_reason}")
-
-                    # Check error queue for detailed error messages from workers
-                    if mp_error_queue is not None:
-                        print("\nChecking for error reports from workers...")
-                        error_found = False
-                        while True:
-                            try:
-                                error_info = mp_error_queue.get_nowait()
-                                error_found = True
-                                print(f"\n--- Error from Worker {error_info['worker_id']} ---")
-                                print(f"Exception: {error_info['error']}")
-                                print(f"Traceback:\n{error_info['traceback']}")
-                            except Exception:
-                                break
-                        if not error_found:
-                            print("No error reports in queue (worker may have crashed before reporting)")
-
-                    print("\nTraining cannot continue. Saving checkpoint and exiting...")
-                    print(f"{'='*60}\n")
-                    break
-            else:
-                dead_threads = [t for t in threads if not t.is_alive()]
-                if dead_threads:
-                    print(f"\n{'='*60}")
-                    print(f"ERROR: {len(dead_threads)} worker thread(s) died:")
-                    for t in dead_threads:
-                        print(f"  - {t.name}")
-                    print("Training cannot continue. Saving checkpoint and exiting...")
-                    print(f"{'='*60}\n")
-                    break
+            dead_workers: List[mp.Process] = get_dead_workers(processes, mp_error_queue)
+            if len(dead_workers) > 0:
+                print("\nTraining cannot continue due to worker failure. Saving checkpoint and exiting...")
+                print(f"{'='*60}\n")
+                break
 
             # ===== COLLECT TRAJECTORIES FROM WORKERS =====
             # Workers push completed battle trajectories to the queue asynchronously
             # We collect them here until we have enough for a training batch
             try:
-                if config.use_multiprocessing and mp_traj_queue is not None:
-                    traj = mp_traj_queue.get(timeout=1.0)
-                elif thread_traj_queue is not None:
-                    traj = thread_traj_queue.get(timeout=1.0)
-                else:
-                    time.sleep(0.1)
-                    continue
+                collection_start = time.time()
+                traj = mp_traj_queue.get(timeout=1.0)
+                time_collecting_battles += time.time() - collection_start
+
                 trajectories.append(traj)
                 total_battles += 1  # Each trajectory represents one completed battle
+
+                # Track win rate by opponent type (new trajectory format includes metadata)
+                if isinstance(traj, dict) and "opponent_type" in traj:
+                    opp_type = traj["opponent_type"]
+                    won = traj.get("won", False)
+                    battle_len = traj.get("battle_length", 0)
+                    forfeited = traj.get("forfeited", False)
+
+                    if opp_type in win_tracking:
+                        win_tracking[opp_type].append(1.0 if won else 0.0)
+                    if opp_type in battle_length_tracking and battle_len > 0:
+                        battle_length_tracking[opp_type].append(battle_len)
+                    if forfeited:
+                        forfeit_count += 1
             except (queue.Empty, Exception):
                 # No new trajectories yet, continue waiting
                 continue
@@ -1382,172 +852,141 @@ def main():
             # Once we've collected enough trajectories, train the model
             if len(trajectories) >= config.train_batch_size:
                 # Collate trajectories into padded batches (handles variable length sequences)
-                batch = collate_trajectories(trajectories, device)
+                batch, _traj_metadata = collate_trajectories(trajectories, device, config.gamma, config.gae_lambda, max_seq_len=40)
 
                 # Execute one RNaD policy update (PPO + KL regularization vs reference)
+                training_start = time.time()
                 metrics = learner.update(batch)
+                time_training += time.time() - training_start
                 updates += 1
+
+                # Calculate time since last update
+                current_time = time.time()
+                time_per_update = current_time - last_update_time
+                last_update_time = current_time
 
                 # ===== LOG TRAINING METRICS =====
                 if config.use_wandb and updates % config.log_interval == 0:
-                    # Core training metrics from the RNaD update
-                    log_dict = {
-                        "loss": metrics["loss"],
-                        "policy_loss": metrics["policy_loss"],
-                        "value_loss": metrics["value_loss"],
-                        "entropy": metrics["entropy"],
-                        "rnad_loss": metrics["rnad_loss"],
-                        "update_step": updates,
-                        "total_battles": total_battles,
-                    }
+                    metrics['update_step'] = updates
+                    metrics['total_battles'] = total_battles
+                    metrics['battles_per_second'] = total_battles / (time.time() - start)
+                    metrics['time_per_update_seconds'] = time_per_update
 
-                    # Portfolio-specific metrics
-                    if config.use_portfolio_regularization and isinstance(
-                        learner, PortfolioRNaDLearner
-                    ):
-                        log_dict["portfolio_size"] = metrics.get("portfolio_size", 1)
-                        portfolio_stats = learner.get_portfolio_stats()
-                        # Track how often each reference model is selected for regularization
-                        for i, count in enumerate(portfolio_stats["selection_counts"]):
-                            log_dict[f"portfolio/ref_{i}_selections"] = count
-                        # Track average KL divergence from each reference model
-                        for i, avg_kl in enumerate(portfolio_stats["avg_kl_per_ref"]):
-                            log_dict[f"portfolio/ref_{i}_avg_kl"] = avg_kl
+                    # Add win rates by opponent type to metrics
+                    for opp_type, wins in win_tracking.items():
+                        if len(wins) > 0:
+                            metrics[f'win_rate_{opp_type}'] = sum(wins) / len(wins)
 
-                    # Log win rates against different opponent types
-                    # Helps track progress against BC models, past versions, exploiters, etc.
-                    win_rate_stats = opponent_pool.get_win_rate_stats()
-                    for opp_type, win_rate in win_rate_stats.items():
-                        log_dict[f"win_rate/{opp_type}"] = win_rate
+                    # Add average battle lengths by opponent type
+                    for opp_type, lengths in battle_length_tracking.items():
+                        if len(lengths) > 0:
+                            metrics[f'avg_battle_length_{opp_type}'] = sum(lengths) / len(lengths)
 
-                    # Log curriculum weights (how often we sample each opponent type)
-                    for opp_type, weight in opponent_pool.curriculum.items():
-                        log_dict[f"curriculum/{opp_type}"] = weight
+                    # Overall average battle length
+                    all_lengths = [length for lengths in battle_length_tracking.values() for length in lengths]
+                    if all_lengths:
+                        metrics['avg_battle_length_overall'] = sum(all_lengths) / len(all_lengths)
 
-                    wandb.log(log_dict)
+                    # Forfeit rate
+                    if total_battles > 0:
+                        metrics['forfeit_rate'] = forfeit_count * 1. / total_battles
 
-                # Print progress to console periodically
-                if updates % 1 == 0:
-                    print(
-                        f"Update {updates}: Loss={metrics['loss']:.4f}, "
-                        f"Policy={metrics['policy_loss']:.4f}, "
-                        f"Value={metrics['value_loss']:.4f}, "
-                        f"Total Battles={total_battles} in {format_time(time.time() - start)}",
-                        flush=True
-                    )
+                    # Timing breakdown
+                    total_time = time.time() - start
+                    if total_time > 0:
+                        metrics['time_collecting_battles_pct'] = (time_collecting_battles / total_time) * 100
+                        metrics['time_training_pct'] = (time_training / total_time) * 100
+                        metrics['time_broadcasting_pct'] = (time_broadcasting / total_time) * 100
+
+                    # Portfolio-specific metrics (if using portfolio learner)
+                    if isinstance(learner, PortfolioRNaDLearner):
+                        metrics['portfolio_size'] = len(learner.ref_models)
+
+                        # KL divergence per reference (recent average)
+                        for ref_idx, kl_hist in enumerate(learner.portfolio_kl_history):
+                            if len(kl_hist) > 0:
+                                metrics[f'portfolio_kl_ref_{ref_idx}'] = sum(kl_hist[-10:]) / len(kl_hist[-10:])
+
+                        # Reference selection counts
+                        total_selections = sum(learner.portfolio_selection_counts)
+                        if total_selections > 0:
+                            for ref_idx, count in enumerate(learner.portfolio_selection_counts):
+                                metrics[f'portfolio_selection_pct_ref_{ref_idx}'] = (count / total_selections) * 100
+
+                    wandb.log(metrics)
+
+                    # Build win rate string for console output
+                    win_rate_str = " | ".join([
+                        f"{opp_type}: {sum(wins)/len(wins)*100:.1f}%"
+                        for opp_type, wins in win_tracking.items()
+                        if len(wins) > 0
+                    ])
+                    if win_rate_str:
+                        win_rate_str = f" | Win rates: {win_rate_str}"
+
+                    print(f"Update {updates}: Loss={metrics['loss']:.4f}, Policy={metrics['policy_loss']:.4f}, Value={metrics['value_loss']:.4f}, RNaD={metrics['rnad_loss']:.4f}{win_rate_str} | Total Battles={total_battles} in {format_time(time.time() - start)} ({total_battles / (time.time() - start):.2f} b/s)", flush=True)
 
                 # ===== UPDATE REFERENCE MODEL =====
                 # Reference model is used for KL regularization in RNaD
                 # Periodically sync it with current policy to prevent policy collapse
                 if updates % config.ref_update_interval == 0:
                     print(f"[Update {updates}] Updating reference model...")
-                    if config.use_portfolio_regularization and isinstance(
-                        learner, PortfolioRNaDLearner
-                    ):
+                    if isinstance(learner, PortfolioRNaDLearner):
                         learner.update_main_reference()  # Update primary reference in portfolio
-                    else:
-                        assert isinstance(learner, RNaDLearner)
+                    elif isinstance(learner, RNaDLearner):
                         learner.update_ref_model()  # Update single reference model
 
                 # ===== ADD NEW REFERENCE TO PORTFOLIO =====
                 # Portfolio regularization: maintain multiple reference snapshots
                 # Helps prevent cyclic behavior by regularizing against diverse past policies
-                if config.use_portfolio_regularization and (
-                    updates % config.portfolio_add_interval == 0
-                ):
+                if isinstance(learner, PortfolioRNaDLearner) and updates % config.portfolio_add_interval == 0:
                     print(f"[Update {updates}] Adding new reference to portfolio...")
-                    new_ref = RNaDAgent(
-                        copy.deepcopy(agent.model)
-                    )  # Snapshot current policy
-                    if isinstance(learner, PortfolioRNaDLearner):
-                        learner.add_reference_model(new_ref)
-                        portfolio_stats = learner.get_portfolio_stats()
-                        print(f"  Portfolio size: {portfolio_stats['portfolio_size']}")
-                        print(f"  Selection counts: {portfolio_stats['selection_counts']}")
+                    learner.add_reference_model( RNaDAgent(copy.deepcopy(agent.model)))  # Snapshot current policy
 
                 # ===== SAVE CHECKPOINT =====
                 # Periodically save model, optimizer state, and training progress
-                # Allows resuming training if interrupted
                 if updates % config.checkpoint_interval == 0:
-                    print(f"[Update {updates}] Saving checkpoint...")
-                    checkpoint_path = save_checkpoint(
-                        agent,
-                        learner.optimizer,
-                        updates,
-                        config,
-                        opponent_pool.curriculum,
-                        config.save_dir,
-                    )
+                    print(f"[Update {updates}] Saving checkpoint and updating curriculum...")
+                    checkpoint_path = save_checkpoint(agent, learner.optimizer, updates, config, opponent_pool.curriculum, config.save_dir)
 
                     # Add checkpoint to past models pool for opponent diversity
                     # Workers can sample these past versions as opponents
                     opponent_pool.add_past_model(updates, checkpoint_path)
-
-                    if config.use_wandb:
-                        # Upload model to W&B for versioning and easy access
-                        artifact = wandb.Artifact(f"model_step_{updates}", type="model")
-                        artifact.add_file(checkpoint_path)
-                        wandb.log_artifact(artifact)
+                    opponent_pool.update_curriculum(adaptive=config.adaptive_curriculum)
 
                     # ===== BROADCAST WEIGHTS TO WORKERS (MULTIPROCESSING MODE) =====
-                    # In multiprocessing mode, workers have their own model copies
-                    # We need to periodically sync them with the updated main model
-                    if config.use_multiprocessing:
-                        print(f"[Update {updates}] Broadcasting weights to worker processes...")
-                        cpu_weights = {k: v.cpu() for k, v in agent.model.state_dict().items()}
-                        for i, wq in enumerate(weight_queues):
-                            try:
-                                # Clear old weights to avoid queue overflow
-                                while not wq.empty():
-                                    try:
-                                        wq.get_nowait()
-                                    except Exception:
-                                        break
-                                wq.put_nowait(cpu_weights)
-                            except Exception as e:
-                                print(f"  Warning: Failed to broadcast to worker {i}: {e}")
-
-                # ===== UPDATE CURRICULUM (ADAPTIVE OPPONENT SAMPLING) =====
-                # Adjust weights for sampling different opponent types based on win rates
-                # E.g., if we're beating BC players too easily, reduce their sampling weight
-                if updates % config.curriculum_update_interval == 0:
-                    opponent_pool.update_curriculum(adaptive=True)
-                    print(
-                        f"[Update {updates}] Curriculum updated: {opponent_pool.curriculum}"
-                    )
+                    print(f"[Update {updates}] Broadcasting weights to worker processes...")
+                    broadcast_start = time.time()
+                    cpu_weights = {k: v.cpu() for k, v in agent.model.state_dict().items()}
+                    for i, wq in enumerate(weight_queues):
+                        try:
+                            # Clear old weights to avoid queue overflow
+                            while not wq.empty():
+                                try:
+                                    wq.get_nowait()
+                                except Exception:
+                                    break
+                            wq.put_nowait(cpu_weights)
+                        except Exception as e:
+                            print(f"  Warning: Failed to broadcast to worker {i}: {e}")
+                    time_broadcasting += time.time() - broadcast_start
 
                 # ===== TRAIN EXPLOITER (FIND WEAKNESSES) =====
                 # Periodically train a new exploiter agent to beat current policy
                 # Exploiters are added to opponent pool to patch discovered weaknesses
-                if config.train_exploiters and (
-                    updates - last_exploiter_check >= config.exploiter_interval
-                ):
-                    last_exploiter_check = updates
+                if config.train_exploiters and updates % config.exploiter_interval == 0:
 
                     # Save current policy as "victim" for exploiter to train against
-                    victim_path = os.path.join(
-                        config.save_dir, f"victim_step_{updates}.pt"
-                    )
-                    save_checkpoint(
-                        agent,
-                        learner.optimizer,
-                        updates,
-                        config,
-                        opponent_pool.curriculum,
-                        config.save_dir,
-                    )
+                    victim_path = os.path.join(config.save_dir, f"victim_step_{updates}.pt")
+                    save_checkpoint(agent, learner.optimizer, updates, config, opponent_pool.curriculum, config.save_dir)
 
                     # Launch exploiter training in subprocess (runs independently)
                     try:
                         train_exploiter_subprocess(victim_path, config)
 
                         # Reload exploiter registry to include newly trained exploiter
-                        opponent_pool.exploiter_registry = ExploiterRegistry(
-                            config.exploiter_registry_path
-                        )
-                        print(
-                            f"Reloaded exploiter registry: {len(opponent_pool.exploiter_registry.exploiters)} exploiters"
-                        )
+                        opponent_pool.exploiter_registry = ExploiterRegistry(config.exploiter_registry_path)
+                        print(f"Reloaded exploiter registry: {len(opponent_pool.exploiter_registry.exploiters)} exploiters")
                     except Exception as e:
                         print(f"Exploiter training failed: {e}")
 
@@ -1556,60 +995,35 @@ def main():
 
     except KeyboardInterrupt:
         print("\nKeyboardInterrupt detected...")
-        if config.use_multiprocessing and mp_stop_event is not None:
-            mp_stop_event.set()
-        elif thread_stop_event is not None:
-            thread_stop_event.set()
+        mp_stop_event.set()
     finally:
         # ===== GRACEFUL SHUTDOWN =====
         print("\nWaiting for workers to finish (max 5 seconds)...")
 
-        if config.use_multiprocessing:
-            # Signal multiprocessing workers to stop
-            if mp_stop_event is not None:
-                mp_stop_event.set()
+        # Signal multiprocessing workers to stop
+        mp_stop_event.set()
 
-            # Wait for processes to finish
-            for p in processes:
-                p.join(timeout=5.0)
-                if p.is_alive():
-                    print(f"  Worker {p.name} (PID: {p.pid}) still running, terminating...")
-                    p.terminate()
-                    p.join(timeout=1.0)
-        else:
-            # Signal threading workers to stop
-            if thread_stop_event is not None:
-                thread_stop_event.set()
-
-            # Wait for threads to finish
-            for t in threads:
-                t.join(timeout=5.0)
-                if t.is_alive():
-                    print(f"  Worker {t.name} still running, will be terminated.")
+        # Wait for processes to finish
+        for p in processes:
+            p.join(timeout=5.0)
+            if p.is_alive():
+                print(f"  Worker {p.name} (PID: {p.pid}) still running, terminating...")
+                p.terminate()
+                p.join(timeout=1.0)
 
         # Save progress before exiting (handles Ctrl+C, kill, or normal completion)
         print("\nShutting down training...")
 
         # Save final checkpoint so training can be resumed later
-        final_path = save_checkpoint(
-            agent,
-            learner.optimizer,
-            updates,
-            config,
-            opponent_pool.curriculum,
-            config.save_dir,
-        )
+        final_path = save_checkpoint(agent, learner.optimizer, updates, config, opponent_pool.curriculum, config.save_dir)
         print(f"Final model saved to {final_path}")
 
         # Close W&B run properly to ensure all logs are synced
         if config.use_wandb:
             wandb.finish()
 
-        # Option 2a: Clean up worker-specific executors (threading mode)
-        if not config.use_multiprocessing:
-            cleanup_worker_executors()
-
-        # Shutdown Showdown servers
+        # Final cleanup: Shutdown workers and Showdown servers
+        cleanup_worker_executors()
         shutdown_showdown_servers(server_processes)
 
 
@@ -1620,4 +1034,8 @@ if __name__ == "__main__":
 
     # Set sharing strategy for WSL compatibility
     torch.multiprocessing.set_sharing_strategy("file_system")
+
+    # Ignore the specific warning in the specified file
+    warnings.filterwarnings("ignore", message=r'Field')
+
     main()

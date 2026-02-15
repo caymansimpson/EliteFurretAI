@@ -20,12 +20,22 @@ Usage:
     learner = RNaDLearner(agent, ref_agent, lr=config.lr, device="cuda")
 """
 
-from elitefurretai.rl.agent import RNaDAgent
+from elitefurretai.rl.checkpoint import load_checkpoint, save_checkpoint
 from elitefurretai.rl.config import RNaDConfig
-from elitefurretai.rl.learner import RNaDLearner
-from elitefurretai.rl.multiprocess_actor import BatchInferencePlayer
-from elitefurretai.rl.opponent_pool import ExploiterRegistry, OpponentPool
-from elitefurretai.rl.portfolio_learner import PortfolioRNaDLearner
+from elitefurretai.rl.learners import PortfolioRNaDLearner, RNaDLearner
+from elitefurretai.rl.model_builder import build_model_from_config
+from elitefurretai.rl.opponents import ExploiterRegistry, OpponentPool, WorkerOpponentFactory
+from elitefurretai.rl.players import (
+    BatchInferencePlayer,
+    MaxDamagePlayer,
+    RNaDAgent,
+    cleanup_worker_executors,
+)
+from elitefurretai.rl.server_manager import (
+    allocate_server_ports,
+    launch_showdown_servers,
+    shutdown_showdown_servers,
+)
 
 __all__ = [
     # Core training components
@@ -34,8 +44,18 @@ __all__ = [
     "PortfolioRNaDLearner",
     # Workers and infrastructure
     "BatchInferencePlayer",
+    "cleanup_worker_executors",
     "OpponentPool",
     "ExploiterRegistry",
+    "WorkerOpponentFactory",
+    "build_model_from_config",
+    "save_checkpoint",
+    "load_checkpoint",
+    "launch_showdown_servers",
+    "shutdown_showdown_servers",
+    "allocate_server_ports",
+    # Players
+    "MaxDamagePlayer",
     # Configuration
     "RNaDConfig",
 ]
