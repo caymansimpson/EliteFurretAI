@@ -11,6 +11,7 @@
 		}
 	],
 	"settings": {
+		"python.defaultInterpreterPath": "/home/cayman/Repositories/venv/bin/python",
 		"python-envs.defaultEnvManager": "ms-python.python:system",
 		"python.testing.pytestEnabled": true,
 		"python.testing.pytestPath": ""

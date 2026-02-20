@@ -1,0 +1,151 @@
+nohup: ignoring input
+/home/cayman/Repositories/venv/lib/python3.12/site-packages/pydantic/_internal/_generate_schema.py:2249: UnsupportedFieldAttributeWarning: The 'repr' attribute with value False was provided to the `Field()` function, which has no effect in the context it was used. 'repr' is field-specific metadata, and can only be attached to a model field using `Annotated` metadata or by assignment. This may have happened because an `Annotated` type alias using the `type` statement was used, or if the `Field()` function was attached to a single member of a union type.
+  warnings.warn(
+/home/cayman/Repositories/venv/lib/python3.12/site-packages/pydantic/_internal/_generate_schema.py:2249: UnsupportedFieldAttributeWarning: The 'frozen' attribute with value True was provided to the `Field()` function, which has no effect in the context it was used. 'frozen' is field-specific metadata, and can only be attached to a model field using `Annotated` metadata or by assignment. This may have happened because an `Annotated` type alias using the `type` statement was used, or if the `Field()` function was attached to a single member of a union type.
+  warnings.warn(
+wandb: Currently logged in as: caymansimpson to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
+wandb: setting up run j98xttwt
+wandb: Tracking run with wandb version 0.22.2
+wandb: Run data is saved locally in /home/cayman/Repositories/EliteFurretAI/wandb/run-20260219_231546-j98xttwt
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run rnad_2026-02-19|23:15:45
+wandb: ⭐️ View project at https://wandb.ai/caymansimpson/elitefurretai-rnad
+wandb: 🚀 View run at https://wandb.ai/caymansimpson/elitefurretai-rnad/runs/j98xttwt
+Loaded config from src/elitefurretai/rl/configs/easy_test.yaml, using device: cuda... Loading servers
+
+============================================================
+LAUNCHING 4 SHOWDOWN SERVERS
+Ports: 8000-8003
+============================================================
+
+✓ Launched Showdown server on port 8000 (PID: 22410)
+✓ Launched Showdown server on port 8001 (PID: 22447)
+✓ Launched Showdown server on port 8002 (PID: 22484)
+✓ Launched Showdown server on port 8003 (PID: 22506)
+
+Waiting for servers to initialize...
+All 4 servers ready!
+
+✓ Launched external vgc-bench runner 'VGCBENCH_8000' on localhost:8000 (PID: 22656) log=data/logs/vgcbench_runners/runner_VGCBENCH_8000_8000.log
+✓ Launched external vgc-bench runner 'VGCBENCH_8001' on localhost:8001 (PID: 22657) log=data/logs/vgcbench_runners/runner_VGCBENCH_8001_8001.log
+✓ Launched external vgc-bench runner 'VGCBENCH_8002' on localhost:8002 (PID: 22658) log=data/logs/vgcbench_runners/runner_VGCBENCH_8002_8002.log
+✓ Launched external vgc-bench runner 'VGCBENCH_8003' on localhost:8003 (PID: 22659) log=data/logs/vgcbench_runners/runner_VGCBENCH_8003_8003.log
+Initializing model weights from data/models/supervised/dauntless-hill-95.pt...
+Initializing opponent pool...
+[OpponentPool] Pre-loading BC model from data/models/supervised/dauntless-hill-95.pt...
+[OpponentPool] BC model cached (saves ~500MB per BCPlayer instance)
+✓ Started multiprocessing worker 0 (PID: 23064) on port 8000
+✓ Started multiprocessing worker 1 (PID: 23065) on port 8001
+✓ Started multiprocessing worker 2 (PID: 23066) on port 8002
+/home/cayman/Repositories/venv/lib/python3.12/site-packages/pydantic/_internal/_generate_schema.py:2249: UnsupportedFieldAttributeWarning: The 'repr' attribute with value False was provided to the `Field()` function, which has no effect in the context it was used. 'repr' is field-specific metadata, and can only be attached to a model field using `Annotated` metadata or by assignment. This may have happened because an `Annotated` type alias using the `type` statement was used, or if the `Field()` function was attached to a single member of a union type.
+  warnings.warn(
+/home/cayman/Repositories/venv/lib/python3.12/site-packages/pydantic/_internal/_generate_schema.py:2249: UnsupportedFieldAttributeWarning: The 'frozen' attribute with value True was provided to the `Field()` function, which has no effect in the context it was used. 'frozen' is field-specific metadata, and can only be attached to a model field using `Annotated` metadata or by assignment. This may have happened because an `Annotated` type alias using the `type` statement was used, or if the `Field()` function was attached to a single member of a union type.
+  warnings.warn(
+/home/cayman/Repositories/venv/lib/python3.12/site-packages/pydantic/_internal/_generate_schema.py:2249: UnsupportedFieldAttributeWarning: The 'repr' attribute with value False was provided to the `Field()` function, which has no effect in the context it was used. 'repr' is field-specific metadata, and can only be attached to a model field using `Annotated` metadata or by assignment. This may have happened because an `Annotated` type alias using the `type` statement was used, or if the `Field()` function was attached to a single member of a union type.
+  warnings.warn(
+/home/cayman/Repositories/venv/lib/python3.12/site-packages/pydantic/_internal/_generate_schema.py:2249: UnsupportedFieldAttributeWarning: The 'frozen' attribute with value True was provided to the `Field()` function, which has no effect in the context it was used. 'frozen' is field-specific metadata, and can only be attached to a model field using `Annotated` metadata or by assignment. This may have happened because an `Annotated` type alias using the `type` statement was used, or if the `Field()` function was attached to a single member of a union type.
+  warnings.warn(
+/home/cayman/Repositories/venv/lib/python3.12/site-packages/pydantic/_internal/_generate_schema.py:2249: UnsupportedFieldAttributeWarning: The 'repr' attribute with value False was provided to the `Field()` function, which has no effect in the context it was used. 'repr' is field-specific metadata, and can only be attached to a model field using `Annotated` metadata or by assignment. This may have happened because an `Annotated` type alias using the `type` statement was used, or if the `Field()` function was attached to a single member of a union type.
+  warnings.warn(
+/home/cayman/Repositories/venv/lib/python3.12/site-packages/pydantic/_internal/_generate_schema.py:2249: UnsupportedFieldAttributeWarning: The 'frozen' attribute with value True was provided to the `Field()` function, which has no effect in the context it was used. 'frozen' is field-specific metadata, and can only be attached to a model field using `Annotated` metadata or by assignment. This may have happened because an `Annotated` type alias using the `type` statement was used, or if the `Field()` function was attached to a single member of a union type.
+  warnings.warn(
+/home/cayman/Repositories/venv/lib/python3.12/site-packages/pydantic/_internal/_generate_schema.py:2249: UnsupportedFieldAttributeWarning: The 'repr' attribute with value False was provided to the `Field()` function, which has no effect in the context it was used. 'repr' is field-specific metadata, and can only be attached to a model field using `Annotated` metadata or by assignment. This may have happened because an `Annotated` type alias using the `type` statement was used, or if the `Field()` function was attached to a single member of a union type.
+  warnings.warn(
+/home/cayman/Repositories/venv/lib/python3.12/site-packages/pydantic/_internal/_generate_schema.py:2249: UnsupportedFieldAttributeWarning: The 'frozen' attribute with value True was provided to the `Field()` function, which has no effect in the context it was used. 'frozen' is field-specific metadata, and can only be attached to a model field using `Annotated` metadata or by assignment. This may have happened because an `Annotated` type alias using the `type` statement was used, or if the `Field()` function was attached to a single member of a union type.
+  warnings.warn(
+2026-02-19 23:16:32,491 - MP3OPP0R2315 - WARNING - Popup message received: |popup|You tried to send "/choose move reflect, pass" to the room "battle-gen9vgc2024regg-582030" but it failed because you were not in that room.
+2026-02-19 23:16:46,212 - MP3OPP0R2315 - CRITICAL - Unexpected error message: ['', 'error', "[Invalid choice] There's nothing to choose"]
+2026-02-19 23:16:50,749 - MP2OPP0R2315 - WARNING - Popup message received: |popup|You tried to send "/choose move substitute, pass" to the room "battle-gen9vgc2024regg-582046" but it failed because you were not in that room.
+2026-02-19 23:16:52,581 - MP2OPP0R2315 - WARNING - Popup message received: |popup|You tried to send "/choose move substitute, pass" to the room "battle-gen9vgc2024regg-582047" but it failed because you were not in that room.
+2026-02-19 23:16:53,894 - MP3OPP0R2315 - CRITICAL - Unexpected error message: ['', 'error', "[Invalid choice] There's nothing to choose"]
+2026-02-19 23:17:01,473 - MP2OPP0R2315 - WARNING - Popup message received: |popup|You tried to send "/choose move calmmind, pass" to the room "battle-gen9vgc2024regg-582055" but it failed because you were not in that room.
+2026-02-19 23:17:01,484 - MP3OPP0R2315 - WARNING - Popup message received: |popup|You tried to send "/choose move flamecharge 2, move dragoncheer 1" to the room "battle-gen9vgc2024regg-582062" but it failed because you were not in that room.
+2026-02-19 23:17:03,024 - MP3OPP0R2315 - WARNING - Popup message received: |popup|You tried to send "/choose pass, move protect" to the room "battle-gen9vgc2024regg-582063" but it failed because you were not in that room.
+✓ Started multiprocessing worker 3 (PID: 23067) on port 8003
+Server allocation (players per server):
+  - Port 8000: 3/3 players
+  - Port 8001: 3/3 players
+  - Port 8002: 3/3 players
+  - Port 8003: 3/3 players
+Update 1: Loss=0.8757, Policy=0.6889, Value=0.6443, RNaD=0.1542 | Total Battles=256 in 0h 1m 17s (3.31 b/s)
+2026-02-19 23:17:13,732 - MP0OPP0R2315 - WARNING - Popup message received: |popup|You tried to send "/choose move stealthrock, move electroweb" to the room "battle-gen9vgc2024regg-582142" but it failed because you were not in that room.
+2026-02-19 23:17:15,385 - MP0OPP0R2315 - WARNING - Popup message received: |popup|You tried to send "/choose move fissure -1, move spikyshield" to the room "battle-gen9vgc2024regg-582143" but it failed because you were not in that room.
+2026-02-19 23:17:26,735 - MP3OPP0R2315 - WARNING - Popup message received: |popup|You tried to send "/choose move knockoff 2, move uturn -2" to the room "battle-gen9vgc2024regg-582114" but it failed because you were not in that room.
+2026-02-19 23:17:27,174 - MP0OPP0R2315 - WARNING - Popup message received: |popup|You tried to send "/choose pass, move protect" to the room "battle-gen9vgc2024regg-582152" but it failed because you were not in that room.
+2026-02-19 23:17:29,871 - MP0OPP0R2315 - WARNING - Popup message received: |popup|You tried to send "/choose move powerwhip 2, move ruination 1" to the room "battle-gen9vgc2024regg-582154" but it failed because you were not in that room.
+2026-02-19 23:17:31,580 - MP0OPP0R2315 - WARNING - Popup message received: |popup|You tried to send "/choose move thunderclap 2, move stealthrock" to the room "battle-gen9vgc2024regg-582155" but it failed because you were not in that room.
+2026-02-19 23:17:39,058 - MP0OPP0R2315 - WARNING - Popup message received: |popup|You tried to send "/choose switch Ting-Lu, move electroweb" to the room "battle-gen9vgc2024regg-582161" but it failed because you were not in that room.
+2026-02-19 23:17:43,674 - MP0OPP0R2315 - WARNING - Popup message received: |popup|You tried to send "/choose pass, move electroweb" to the room "battle-gen9vgc2024regg-582165" but it failed because you were not in that room.
+2026-02-19 23:17:46,657 - MP0OPP0R2315 - WARNING - Popup message received: |popup|You tried to send "/choose pass, move protect" to the room "battle-gen9vgc2024regg-582167" but it failed because you were not in that room.
+2026-02-19 23:17:51,168 - MP3SELF0R2315 - CRITICAL - Unexpected error message: ['', 'error', "[Invalid choice] There's nothing to choose"]
+2026-02-19 23:17:54,345 - MP1OPP0R2315 - WARNING - Popup message received: |popup|You tried to send "/choose switch Rillaboom, move weatherball -2" to the room "battle-gen9vgc2024regg-582176" but it failed because you were not in that room.
+2026-02-19 23:17:55,094 - MP3SELF0R2315 - CRITICAL - Unexpected error message: ['', 'error', "[Invalid choice] Can't move: You need a switch response"]
+2026-02-19 23:17:55,095 - MP3SELF0R2315 - CRITICAL - Unexpected error message: ['', 'error', "[Invalid choice] Can't move: You need a switch response"]
+2026-02-19 23:17:55,095 - MP3SELF0R2315 - CRITICAL - Unexpected error message: ['', 'error', "[Invalid choice] Can't move: You need a switch response"]
+2026-02-19 23:17:56,386 - MP3OPP0R2315 - WARNING - Popup message received: |popup|You tried to send "/choose move astralbarrage terastallize, move protect" to the room "battle-gen9vgc2024regg-582143" but it failed because you were not in that room.
+2026-02-19 23:17:57,958 - MP1OPP0R2315 - WARNING - Popup message received: |popup|You tried to send "/choose move playrough 2, switch Chien-Pao" to the room "battle-gen9vgc2024regg-582179" but it failed because you were not in that room.
+	 | Win rates: self_play: 31.0% | bc_player: 3.2% | vgc_bench_baseline: 6.0%
+Update 2: Loss=0.5311, Policy=0.4519, Value=0.4036, RNaD=0.2019 | Total Battles=512 in 0h 2m 10s (3.92 b/s)
+2026-02-19 23:18:04,816 - MP3OPP0R2315 - WARNING - Popup message received: |popup|You tried to send "/choose pass, move calmmind" to the room "battle-gen9vgc2024regg-582151" but it failed because you were not in that room.
+2026-02-19 23:18:09,079 - MP1OPP0R2315 - WARNING - Popup message received: |popup|You tried to send "/choose move iciclecrash 2, move protect" to the room "battle-gen9vgc2024regg-582189" but it failed because you were not in that room.
+2026-02-19 23:18:10,162 - MP3OPP0R2315 - CRITICAL - Unexpected error message: ['', 'error', "[Invalid choice] Can't do anything: The game is over"]
+2026-02-19 23:18:10,369 - MP1OPP0R2315 - WARNING - Popup message received: |popup|You tried to send "/choose move dazzlinggleam, pass" to the room "battle-gen9vgc2024regg-582190" but it failed because you were not in that room.
+2026-02-19 23:18:11,729 - MP2OPP0R2315 - WARNING - Popup message received: |popup|You tried to send "/choose pass, move stealthrock" to the room "battle-gen9vgc2024regg-582176" but it failed because you were not in that room.
+2026-02-19 23:18:12,673 - MP1OPP0R2315 - WARNING - Popup message received: |popup|You tried to send "/choose move suckerpunch 2, move protect" to the room "battle-gen9vgc2024regg-582192" but it failed because you were not in that room.
+2026-02-19 23:18:18,301 - MP2OPP0R2315 - CRITICAL - Unexpected error message: ['', 'error', "[Invalid choice] There's nothing to choose"]
+2026-02-19 23:18:35,486 - MP0OPP0R2315 - CRITICAL - Unexpected error message: ['', 'error', "[Invalid choice] Can't do anything: The game is over"]
+	 | Win rates: self_play: 35.0% | bc_player: 3.2% | max_damage: 39.6% | vgc_bench_baseline: 4.0%
+Update 3: Loss=0.5125, Policy=0.4109, Value=0.3316, RNaD=0.4593 | Total Battles=768 in 0h 3m 1s (4.24 b/s)
+2026-02-19 23:18:55,616 - MP2OPP0R2315 - WARNING - Popup message received: |popup|You tried to send "/choose move hornleech 2, move protect" to the room "battle-gen9vgc2024regg-582233" but it failed because you were not in that room.
+2026-02-19 23:18:57,018 - MP2OPP0R2315 - WARNING - Popup message received: |popup|You tried to send "/choose move taunt 2, move makeitrain" to the room "battle-gen9vgc2024regg-582234" but it failed because you were not in that room.
+2026-02-19 23:18:57,665 - MP3MD0R2315 - CRITICAL - Unexpected error message: ['', 'error', "[Invalid choice] There's nothing to choose"]
+2026-02-19 23:18:58,596 - MP2OPP0R2315 - WARNING - Popup message received: |popup|You tried to send "/choose move calmmind, pass" to the room "battle-gen9vgc2024regg-582235" but it failed because you were not in that room.
+2026-02-19 23:19:01,698 - MP0OPP0R2315 - WARNING - Popup message received: |popup|You tried to send "/choose move closecombat 2, move rockslide" to the room "battle-gen9vgc2024regg-582263" but it failed because you were not in that room.
+2026-02-19 23:19:03,755 - MP2OPP0R2315 - WARNING - Popup message received: |popup|You tried to send "/choose move struggle, move tailwind" to the room "battle-gen9vgc2024regg-582239" but it failed because you were not in that room.
+2026-02-19 23:19:05,298 - MP2OPP0R2315 - WARNING - Popup message received: |popup|You tried to send "/choose move protect, move followme" to the room "battle-gen9vgc2024regg-582240" but it failed because you were not in that room.
+2026-02-19 23:19:19,868 - MP2OPP0R2315 - WARNING - Popup message received: |popup|You tried to send "/choose move fakeout 2, move healpulse 1" to the room "battle-gen9vgc2024regg-582254" but it failed because you were not in that room.
+2026-02-19 23:19:26,189 - MP3SELF0R2315 - CRITICAL - Unexpected error message: ['', 'error', "[Invalid choice] Can't choose for Team Preview: You do not have a Pokémon in slot 6"]
+2026-02-19 23:19:26,962 - MP0OPP0R2315 - WARNING - Popup message received: |popup|You tried to send "/choose switch Flutter Mane, pass" to the room "battle-gen9vgc2024regg-582304" but it failed because you were not in that room.
+2026-02-19 23:19:28,296 - MP0OPP0R2315 - WARNING - Popup message received: |popup|You tried to send "/choose move partingshot 2, move terastarstorm 1" to the room "battle-gen9vgc2024regg-582305" but it failed because you were not in that room.
+2026-02-19 23:19:35,314 - MP0OPP0R2315 - WARNING - Popup message received: |popup|You tried to send "/choose move substitute, pass" to the room "battle-gen9vgc2024regg-582313" but it failed because you were not in that room.
+2026-02-19 23:19:38,591 - MP2OPP0R2315 - CRITICAL - Unexpected error message: ['', 'error', "[Invalid choice] There's nothing to choose"]
+2026-02-19 23:19:39,576 - MP2OPP0R2315 - CRITICAL - Unexpected error message: ['', 'error', "[Invalid choice] There's nothing to choose"]
+2026-02-19 23:19:43,946 - MP0OPP0R2315 - WARNING - Popup message received: |popup|You tried to send "/choose pass, move substitute" to the room "battle-gen9vgc2024regg-582324" but it failed because you were not in that room.
+2026-02-19 23:19:47,111 - MP0OPP0R2315 - WARNING - Popup message received: |popup|You tried to send "/choose move protect, move protect" to the room "battle-gen9vgc2024regg-582328" but it failed because you were not in that room.
+2026-02-19 23:19:48,071 - MP2OPP0R2315 - CRITICAL - Unexpected error message: ['', 'error', "[Invalid choice] There's nothing to choose"]
+2026-02-19 23:19:48,141 - MP1OPP0R2315 - WARNING - Popup message received: |popup|You tried to send "/choose move hypervoice, move protect" to the room "battle-gen9vgc2024regg-582363" but it failed because you were not in that room.
+2026-02-19 23:19:48,507 - MP0OPP0R2315 - CRITICAL - Unexpected error message: ['', 'error', "[Invalid choice] There's nothing to choose"]
+	 | Win rates: self_play: 77.0% | bc_player: 28.0% | max_damage: 41.7% | simple_heuristic_baseline: 20.6% | vgc_bench_baseline: 4.0%
+Update 4: Loss=0.4470, Policy=0.4161, Value=0.2764, RNaD=0.2777 | Total Battles=1024 in 0h 4m 1s (4.24 b/s)
+2026-02-19 23:19:57,580 - MP0OPP0R2315 - CRITICAL - Unexpected error message: ['', 'error', "[Invalid choice] Can't do anything: The game is over"]
+2026-02-19 23:20:03,595 - MP0OPP0R2315 - WARNING - Popup message received: |popup|You tried to send "/choose move spikyshield, move wickedblow terastallize 1" to the room "battle-gen9vgc2024regg-582344" but it failed because you were not in that room.
+2026-02-19 23:20:19,424 - MP0OPP0R2315 - WARNING - Popup message received: |popup|You tried to send "/choose move spikyshield, pass" to the room "battle-gen9vgc2024regg-582358" but it failed because you were not in that room.
+2026-02-19 23:20:48,972 - MP1OPP0R2315 - WARNING - Popup message received: |popup|You tried to send "/choose pass, move fakeout -1" to the room "battle-gen9vgc2024regg-582492" but it failed because you were not in that room.
+	 | Win rates: self_play: 65.0% | bc_player: 35.0% | max_damage: 39.3% | simple_heuristic_baseline: 20.6% | vgc_bench_baseline: 4.0%
+Update 5: Loss=0.5180, Policy=0.4284, Value=0.3474, RNaD=0.3823 | Total Battles=1280 in 0h 4m 57s (4.30 b/s)
+2026-02-19 23:20:53,721 - MP1OPP0R2315 - WARNING - Popup message received: |popup|You tried to send "/choose move earthpower terastallize -2, pass" to the room "battle-gen9vgc2024regg-582497" but it failed because you were not in that room.
+2026-02-19 23:21:17,917 - MP1OPP0R2315 - CRITICAL - Unexpected error message: ['', 'error', "[Invalid choice] There's nothing to choose"]
+2026-02-19 23:21:30,381 - MP0OPP0R2315 - WARNING - Popup message received: |popup|You tried to send "/choose pass, move fakeout -1" to the room "battle-gen9vgc2024regg-582492" but it failed because you were not in that room.
+2026-02-19 23:21:31,367 - MP1OPP0R2315 - WARNING - Popup message received: |popup|You tried to send "/choose move struggle, move thunderwave -1" to the room "battle-gen9vgc2024regg-582567" but it failed because you were not in that room.
+2026-02-19 23:21:33,904 - MP2SHP0R2315 - CRITICAL - Unexpected error message: ['', 'error', "[Invalid choice] Can't do anything: It's not your turn"]
+2026-02-19 23:21:34,479 - MP2SHP0R2315 - CRITICAL - Unexpected error message: ['', 'error', "[Invalid choice] Can't do anything: The game is over"]
+2026-02-19 23:21:36,459 - MP0OPP0R2315 - CRITICAL - Unexpected error message: ['', 'error', "[Invalid choice] Can't do anything: The game is over"]
+2026-02-19 23:21:37,120 - MP1OPP0R2315 - WARNING - Popup message received: |popup|You tried to send "/choose move flamethrower 2, switch Grimmsnarl" to the room "battle-gen9vgc2024regg-582572" but it failed because you were not in that room.
+2026-02-19 23:21:37,863 - MP0OPP0R2315 - WARNING - Popup message received: |popup|You tried to send "/choose pass, move wildcharge -2" to the room "battle-gen9vgc2024regg-582500" but it failed because you were not in that room.
+2026-02-19 23:21:43,922 - MP1OPP0R2315 - WARNING - Popup message received: |popup|You tried to send "/choose move struggle, move foulplay 1" to the room "battle-gen9vgc2024regg-582578" but it failed because you were not in that room.
+2026-02-19 23:21:45,385 - MP1OPP0R2315 - WARNING - Popup message received: |popup|You tried to send "/choose pass, move discharge" to the room "battle-gen9vgc2024regg-582579" but it failed because you were not in that room.
+2026-02-19 23:21:53,077 - MP0OPP0R2315 - WARNING - Popup message received: |popup|You tried to send "/choose move trickroom, move wildcharge 1" to the room "battle-gen9vgc2024regg-582516" but it failed because you were not in that room.
+	 | Win rates: self_play: 63.0% | bc_player: 47.0% | max_damage: 39.3% | simple_heuristic_baseline: 20.6% | vgc_bench_baseline: 2.0%
+Update 6: Loss=0.3608, Policy=0.3065, Value=0.2831, RNaD=0.3644 | Total Battles=1536 in 0h 6m 4s (4.22 b/s)
+2026-02-19 23:22:26,109 - MP2OPP0R2315 - WARNING - Popup message received: |popup|You tried to send "/choose pass, move moonlight" to the room "battle-gen9vgc2024regg-582561" but it failed because you were not in that room.
+2026-02-19 23:22:26,707 - MP1OPP0R2315 - WARNING - Popup message received: |popup|You tried to send "/choose move protect, move tailwind" to the room "battle-gen9vgc2024regg-582662" but it failed because you were not in that room.
+2026-02-19 23:22:28,662 - MP1OPP0R2315 - WARNING - Popup message received: |popup|You tried to send "/choose move tailwind, move flareblitz 1" to the room "battle-gen9vgc2024regg-582664" but it failed because you were not in that room.
+2026-02-19 23:22:39,574 - MP1OPP0R2315 - WARNING - Popup message received: |popup|You tried to send "/choose move protect, move snarl" to the room "battle-gen9vgc2024regg-582674" but it failed because you were not in that room.
+2026-02-19 23:22:43,034 - MP1OPP0R2315 - CRITICAL - Unexpected error message: ['', 'error', "[Invalid choice] Can't do anything: The game is over"]
+2026-02-19 23:22:44,496 - MP2SELF0R2315 - CRITICAL - Unexpected error message: ['', 'error', "[Invalid choice] Can't choose for Team Preview: You do not have a Pokémon in slot 5"]
+2026-02-19 23:22:54,874 - MP0OPP0R2315 - WARNING - Popup message received: |popup|You tried to send "/choose move astralbarrage, move knockoff 1" to the room "battle-gen9vgc2024regg-582626" but it failed because you were not in that room.
+2026-02-19 23:22:59,088 - MP0OPP0R2315 - WARNING - Popup message received: |popup|You tried to send "/choose move protect, pass" to the room "battle-gen9vgc2024regg-582630" but it failed because you were not in that room.
+	 | Win rates: self_play: 63.0% | bc_player: 56.0% | max_damage: 43.0% | simple_heuristic_baseline: 42.0% | vgc_bench_baseline: 5.0%
+Update 7: Loss=0.4400, Policy=0.3629, Value=0.3182, RNaD=0.3819 | Total Battles=1792 in 0h 7m 17s (4.10 b/s)
+2026-02-19 23:23:20,574 - MP0OPP0R2315 - WARNING - Popup message received: |popup|You tried to send "/choose move fakeout 2, move originpulse" to the room "battle-gen9vgc2024regg-582680" but it failed because you were not in that room.
+2026-02-19 23:23:27,544 - MP0OPP0R2315 - WARNING - Popup message received: |popup|You tried to send "/choose pass, move protect" to the room "battle-gen9vgc2024regg-582687" but it failed because you were not in that room.

@@ -20,12 +20,10 @@ import subprocess
 import sys
 import threading
 import time
-import warnings
-from collections import deque
 from datetime import datetime
 from multiprocessing import Queue as MPQueue
 from multiprocessing.synchronize import Event as MPEvent
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, TextIO, Tuple, Union
 
 import numpy as np
 import psutil
@@ -34,6 +32,10 @@ from poke_env import ServerConfiguration
 
 import wandb
 from elitefurretai.etl import Embedder, TeamRepo
+from elitefurretai.etl.system_utils import (
+    configure_torch_multiprocessing,
+    suppress_third_party_warnings,
+)
 from elitefurretai.rl.config import RNaDConfig
 from elitefurretai.rl.learners import PortfolioRNaDLearner, RNaDLearner
 from elitefurretai.rl.model_io import (
@@ -42,44 +44,170 @@ from elitefurretai.rl.model_io import (
     save_checkpoint,
 )
 from elitefurretai.rl.opponents import (
-    ExploiterRegistry,
     OpponentPool,
     WorkerOpponentFactory,
 )
 from elitefurretai.rl.players import RNaDAgent, cleanup_worker_executors
 from elitefurretai.rl.server_manager import (
     allocate_server_ports,
+    derive_external_vgcbench_username,
+    launch_external_vgcbench_runners,
     launch_showdown_servers,
+    shutdown_external_vgcbench_runners,
     shutdown_showdown_servers,
 )
-from elitefurretai.supervised import FlexibleThreeHeadedModel, format_time
-
-# Filter out Pydantic field attribute warnings
-warnings.filterwarnings("ignore", category=UserWarning, module="pydantic._internal._generate_schema")
+from elitefurretai.supervised import format_time
+from elitefurretai.supervised.model_archs import FlexibleThreeHeadedModel
 
 
-def load_model(filepath: Optional[str], device: str, config: Optional[RNaDConfig] = None) -> FlexibleThreeHeadedModel:
-    """Load model from checkpoint or create new one.
+def initialize_learner(
+    config: RNaDConfig,
+    agent: RNaDAgent,
+    base_model: FlexibleThreeHeadedModel,
+) -> Union[RNaDLearner, PortfolioRNaDLearner]:
+    """Create either standard or portfolio learner using shared config knobs."""
+    if config.use_portfolio_regularization:
+        ref_model = copy.deepcopy(base_model)
+        ref_agent = RNaDAgent(ref_model)
+        return PortfolioRNaDLearner(
+            agent,
+            [ref_agent],
+            lr=config.lr,
+            rnad_alpha=config.rnad_alpha,
+            gradient_clip=config.max_grad_norm,
+            device=config.device,
+            gamma=config.gamma,
+            clip_range=config.clip_range,
+            ent_coef=config.ent_coef,
+            vf_coef=config.vf_coef,
+            use_mixed_precision=config.use_mixed_precision,
+            max_portfolio_size=config.max_portfolio_size,
+            portfolio_update_strategy=config.portfolio_update_strategy,
+        )
 
-    Uses build_model_from_config for consistent model construction.
-    """
-    if filepath is not None:
-        checkpoint = torch.load(filepath, map_location=device)
-        cfg: Dict[str, Any] = checkpoint["config"]
-        state_dict = checkpoint["model_state_dict"]
-    elif config is not None:
-        cfg = config.to_dict()
-        state_dict = None
-    else:
-        raise ValueError("Either filepath or cfg must be provided.")
-
-    embedder = Embedder(
-        format="gen9vgc2023regc",
-        feature_set=cfg["embedder_feature_set"],
-        omniscient=False,
+    ref_model = copy.deepcopy(base_model)
+    ref_agent = RNaDAgent(ref_model)
+    return RNaDLearner(
+        agent,
+        ref_agent,
+        lr=config.lr,
+        rnad_alpha=config.rnad_alpha,
+        device=config.device,
+        gamma=config.gamma,
+        clip_range=config.clip_range,
+        ent_coef=config.ent_coef,
+        vf_coef=config.vf_coef,
+        use_mixed_precision=config.use_mixed_precision,
+        gradient_clip=config.max_grad_norm,
     )
 
-    return build_model_from_config(cfg, embedder, device, state_dict)
+
+def resolve_worker_model_source(config: RNaDConfig, agent: RNaDAgent) -> str:
+    """Persist a bootstrap checkpoint for worker startup and return its path."""
+    os.makedirs(config.save_dir, exist_ok=True)
+    bootstrap_path = os.path.join(config.save_dir, "worker_bootstrap_initial.pt")
+    torch.save(
+        {
+            "model_state_dict": agent.model.state_dict(),
+            "config": config.to_dict(),
+            "step": 0,
+            "timestamp": datetime.now().isoformat(),
+        },
+        bootstrap_path,
+    )
+    print(f"Saved worker bootstrap checkpoint to {bootstrap_path}")
+    return bootstrap_path
+
+
+def initialize_training_state(
+    config: RNaDConfig,
+) -> Tuple[
+    RNaDAgent,
+    Union[RNaDLearner, PortfolioRNaDLearner],
+    str,
+    Dict[str, Any],
+    int,
+    Optional[Dict[str, float]],
+]:
+    """Initialize model/learner and worker bootstrap state in one place.
+
+    Returns:
+        agent: Main training agent
+        learner: Initialized learner (standard or portfolio)
+        worker_model_path: Checkpoint path workers should bootstrap from
+        worker_model_config: Model config dict for worker model construction
+        start_step: Starting update step (restored for resume)
+        resume_curriculum: Curriculum restored from checkpoint (if any)
+    """
+    cfg = config.to_dict()
+    resume_curriculum: Optional[Dict[str, float]] = None
+    start_step = 0
+
+    if config.resume_from:
+        print(f"Resuming model+optimizer from {config.resume_from}...")
+        embedder = Embedder(
+            format=config.battle_format,
+            feature_set=cfg["embedder_feature_set"],
+            omniscient=False,
+        )
+        base_model = build_model_from_config(cfg, embedder, config.device, None)
+        agent = RNaDAgent(base_model)
+        learner = initialize_learner(config, agent, base_model)
+
+        start_step, old_config = load_checkpoint(
+            config.resume_from, agent, learner.optimizer, config.device
+        )
+        if old_config.curriculum:
+            resume_curriculum = old_config.curriculum
+
+        worker_model_path = config.resume_from
+        worker_model_config = old_config.to_dict()
+    elif config.initialize_path:
+        print(f"Initializing model weights from {config.initialize_path}...")
+        init_checkpoint = torch.load(
+            config.initialize_path,
+            map_location=config.device,
+            weights_only=False,
+        )
+        checkpoint_cfg = init_checkpoint.get("config", cfg)
+        embedder = Embedder(
+            format=config.battle_format,
+            feature_set=checkpoint_cfg.get("embedder_feature_set", cfg["embedder_feature_set"]),
+            omniscient=False,
+        )
+        base_model = build_model_from_config(
+            checkpoint_cfg,
+            embedder,
+            config.device,
+            init_checkpoint["model_state_dict"],
+        )
+        agent = RNaDAgent(base_model)
+        learner = initialize_learner(config, agent, base_model)
+
+        worker_model_path = config.initialize_path
+        worker_model_config = checkpoint_cfg
+    else:
+        print("Initializing fresh model from config...")
+        embedder = Embedder(
+            format=config.battle_format,
+            feature_set=cfg["embedder_feature_set"],
+            omniscient=False,
+        )
+        base_model = build_model_from_config(cfg, embedder, config.device, None)
+        agent = RNaDAgent(base_model)
+        learner = initialize_learner(config, agent, base_model)
+
+        worker_model_path = resolve_worker_model_source(config, agent)
+        worker_model_config = cfg
+
+    return (
+        agent,
+        learner,
+        worker_model_path,
+        worker_model_config,
+        start_step,
+        resume_curriculum,
+    )
 
 
 def get_dead_workers(processes: List[mp.Process], error_queue: MPQueue, verbose: bool = True) -> List[mp.Process]:
@@ -130,18 +258,8 @@ def mp_worker_process(
     weight_queue: MPQueue,
     error_queue: MPQueue,
     stop_event: MPEvent,
-    battle_format: str,
-    team_pool_path: str,
-    team_subdirectory: Optional[str],
-    num_players: int,
     run_id: str,
-    device: str = "cuda",
-    batch_size: int = 16,
-    batch_timeout: float = 0.01,
-    max_battle_steps: int = 40,
-    num_battles_per_pair: int = 20,
-    curriculum: Optional[Dict[str, float]] = None,
-    bc_model_path: Optional[str] = None,
+    config: RNaDConfig,
     verbose: bool = False,
 ):
     """
@@ -162,18 +280,8 @@ def mp_worker_process(
         weight_queue: Multiprocessing queue for receiving weight updates
         error_queue: Multiprocessing queue for reporting errors to main process
         stop_event: Multiprocessing event to signal shutdown
-        battle_format: Pokemon Showdown format string
-        team_pool_path: Base path for team repository
-        team_subdirectory: Subdirectory within format for teams
-        num_players: Number of concurrent battles per worker
         run_id: Unique run identifier
-        device: Device for model inference
-        batch_size: Batch size for inference
-        batch_timeout: Timeout for batching inference requests
-        max_battle_steps: Maximum steps before forfeiting battle
-        num_battles_per_pair: Number of battles to run per player pair per batch
-        curriculum: Dict of opponent type -> sampling probability
-        bc_model_path: Path to BC model for opponent sampling
+        config: Worker/runtime configuration
         verbose: Whether to print detailed logs
     """
     def get_memory_usage_mb():
@@ -188,6 +296,35 @@ def mp_worker_process(
             return f"{mem_bytes / (1024 * 1024 * 1024):.0f}GB"
 
     try:
+        suppress_third_party_warnings(suppress_pydantic_field_warnings=True)
+
+        battle_format = config.battle_format
+        team_pool_path = config.base_team_path
+        team_subdirectory = config.team_pool_path
+        num_players = config.players_per_worker
+        device = config.device
+        batch_size = config.batch_size
+        batch_timeout = config.batch_timeout
+        max_battle_steps = config.max_battle_steps
+        num_battles_per_pair = config.num_battles_per_pair
+        curriculum = config.curriculum
+        bc_model_path = config.bc_action_path
+        exploiter_models_dir = config.exploiter_models_dir
+        max_exploiter_models = config.max_exploiter_models
+        max_loaded_exploiter_models = config.max_loaded_exploiter_models
+        max_past_models = config.max_past_models
+        past_models_dir = config.past_models_dir
+        vgc_bench_checkpoint_path = config.vgc_bench_checkpoint_path
+        external_vgcbench_usernames = config.external_vgcbench_usernames
+        external_vgcbench_startup_wait_s = config.external_vgcbench_startup_wait_s
+        max_loaded_ghost_models = config.max_loaded_ghost_models
+
+        if external_vgcbench_usernames and config.auto_launch_external_vgcbench:
+            external_vgcbench_usernames = [
+                derive_external_vgcbench_username(username, server_port)
+                for username in external_vgcbench_usernames
+            ]
+
         if verbose:
             print(f"[MPWorker {worker_id}] Starting (PID: {os.getpid()})... Initial memory: {get_memory_usage_mb()}", flush=True)
 
@@ -248,7 +385,9 @@ def mp_worker_process(
         # Set up asyncio event loop for this process
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        server_config = ServerConfiguration(f"ws://localhost:{server_port}/showdown/websocket", None)  # type: ignore[arg-type]
+        server_config = ServerConfiguration(
+            f"ws://localhost:{server_port}/showdown/websocket", ""
+        )
 
         # Create trajectory queue for this worker
         local_traj_queue: queue.Queue = queue.Queue()
@@ -271,12 +410,20 @@ def mp_worker_process(
             batch_size=batch_size,
             batch_timeout=batch_timeout,
             max_battle_steps=max_battle_steps,
+            exploiter_models_dir=exploiter_models_dir,
+            max_exploiter_models=max_exploiter_models,
+            max_loaded_exploiter_models=max_loaded_exploiter_models,
+            ghost_models_dir=past_models_dir,
+            max_ghost_models=max_past_models,
+            max_loaded_ghost_models=max_loaded_ghost_models,
+            vgc_bench_checkpoint_path=vgc_bench_checkpoint_path,
+            external_vgcbench_usernames=external_vgcbench_usernames,
+            model_config=model_config,
         )
 
-        # Create player pairs and MaxDamagePlayer opponents via factory
+        # Create all worker-local agents via factory
         num_pairs = num_players // 2
-        players, opponents = factory.create_player_pairs(num_pairs, local_traj_queue)
-        factory.create_max_damage_opponents(num_pairs)
+        factory.create_agents(num_pairs, local_traj_queue)
         if verbose:
             print(f"[MPWorker {worker_id}] Created {num_pairs} player pairs... Memory: {get_memory_usage_mb()}", flush=True)
 
@@ -288,6 +435,8 @@ def mp_worker_process(
         async def run_battles(num_battles_per_pair: int):
             """Main battle loop with team randomization and curriculum-based opponent selection."""
             await asyncio.sleep(0.2)  # Let inference loops warm up
+            if external_vgcbench_usernames:
+                await asyncio.sleep(external_vgcbench_startup_wait_s)
 
             battle_batch = 0
             last_weight_check = time.time()
@@ -308,23 +457,10 @@ def mp_worker_process(
                         pass
                     last_weight_check = time.time()
 
-                # IMPORTANT: Randomize ALL teams before each batch for better generalization
-                factory.randomize_all_teams()
-
-                # Sample opponent types and configure opponents for this batch
-                batch_opponent_types: List[str] = []
-                for player, opponent in zip(factory.players, factory.opponents):
-                    opp_type = factory.configure_opponent_for_batch(player, opponent)
-                    batch_opponent_types.append(opp_type)
-
-                # Run battles - MaxDamagePlayer pairs use dedicated opponents
-                tasks = []
-                for i, player in enumerate(factory.players):
-                    if batch_opponent_types[i] == WorkerOpponentFactory.MAX_DAMAGE and factory.max_damage_opponents:
-                        md_opp = factory.max_damage_opponents[i % len(factory.max_damage_opponents)]
-                        tasks.append(player.battle_against(md_opp, n_battles=num_battles_per_pair))
-                    else:
-                        tasks.append(player.battle_against(factory.opponents[i], n_battles=num_battles_per_pair))
+                # Prepare and execute curriculum-driven battles for this batch
+                tasks, _batch_opponent_types = factory.prepare_batch_tasks(
+                    num_battles_per_pair
+                )
                 await asyncio.gather(*tasks)
 
                 # Transfer trajectories to main process
@@ -499,8 +635,8 @@ def train_exploiter_subprocess(victim_checkpoint: str, config: RNaDConfig):
         str(config.exploiter_min_win_rate),
         "--output-dir",
         (
-            str(config.exploiter_output_dir)
-            if config.exploiter_output_dir
+            str(config.exploiter_models_dir)
+            if config.exploiter_models_dir
             else "data/models/exploiters"
         ),
         "--team-pool",
@@ -517,48 +653,39 @@ def train_exploiter_subprocess(victim_checkpoint: str, config: RNaDConfig):
 
 def main():
     parser = argparse.ArgumentParser(description="RNaD RL Training for Pokemon VGC")
-    parser.add_argument("--config", type=str, default=None, help="Path to config YAML")
+    parser.add_argument("--config", type=str, required=True, help="Path to config YAML")
     args = parser.parse_args()
 
     # Set up signal handlers for graceful shutdown (e.g., when killed via nohup)
     shutdown_requested = threading.Event()
-
     def signal_handler(signum, frame):
-        """Handle SIGTERM and SIGINT for graceful shutdown."""
         sig_name = "SIGTERM" if signum == signal.SIGTERM else "SIGINT"
         print(f"\n{sig_name} received. Initiating graceful shutdown...")
         shutdown_requested.set()
-
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
 
-    # Load or create config
+    # Load config
     config = RNaDConfig.load(args.config)
-    print(f"Loaded config from {args.config}")
-
-    # Check the config's paths
-    assert os.path.exists(config.bc_teampreview_path)
-    assert os.path.exists(config.bc_action_path)
-    assert os.path.exists(config.bc_win_path)
-    assert os.path.exists(config.base_team_path)
-    if config.team_pool_path:
-        path = os.path.join(config.base_team_path, config.battle_format, config.team_pool_path)
-        assert os.path.exists(path)
-    if config.resume_from:
-        assert os.path.exists(config.resume_from)
-    if config.initialize_path:
-        assert os.path.exists(config.initialize_path)
-
-    device = config.device if torch.cuda.is_available() else "cpu"
-    print(f"Using device: {device}")
+    config.verify()
+    print(f"Loaded config from {args.config}, using device: {config.device}... Loading servers")
 
     # Launch Showdown servers
-    server_processes = launch_showdown_servers(
-        config.num_servers, config.showdown_start_port
-    )
+    server_processes = launch_showdown_servers(config.num_servers, config.showdown_start_port)
+
+    # Optionally auto-launch external vgc-bench runners (isolated environment)
+    external_runner_processes: List[subprocess.Popen] = []
+    external_runner_log_files: List[TextIO] = []
+    if config.auto_launch_external_vgcbench:
+        server_ports = [
+            config.showdown_start_port + i for i in range(config.num_servers)
+        ]
+        (
+            external_runner_processes,
+            external_runner_log_files,
+        ) = launch_external_vgcbench_runners(config, server_ports)
 
     # Generate unique run ID to avoid stale state on Showdown server
-    # Use last 4 digits only (HHMM) for compact usernames that survive Showdown's char stripping
     run_id = datetime.now().strftime("%H%M")
 
     # Initialize wandb
@@ -570,96 +697,37 @@ def main():
             tags=config.wandb_tags,
         )
 
-    # Determine team sampling parameters
-    assert isinstance(config.base_team_path, str)
-    team_subdirectory = config.team_pool_path
-    msg = f"{config.battle_format}/{team_subdirectory})" if team_subdirectory else config.battle_format
-    print(f"Loaded team repository from {config.base_team_path} (sampling from {msg})")
-
-    # Determine model path for initialization
-    print(f"Loading main model from {config.initialize_path}...")
-    base_model = load_model(config.initialize_path, device, config=config)
-    agent = RNaDAgent(base_model)
-
-    # Create learner (portfolio or standard)
-    learner: Union[RNaDLearner, PortfolioRNaDLearner]
-    if config.use_portfolio_regularization:
-        print(f"Using Portfolio RNaD with {config.max_portfolio_size} references")
-        # Create initial portfolio with current model
-        ref_base_model = copy.deepcopy(base_model)
-        ref_agent = RNaDAgent(ref_base_model)
-        ref_models = [ref_agent]  # Start with one reference
-
-        learner = PortfolioRNaDLearner(
-            agent,
-            ref_models,
-            lr=config.lr,
-            rnad_alpha=config.rnad_alpha,
-            gradient_clip=config.max_grad_norm,
-            device=device,
-            gamma=config.gamma,
-            clip_range=config.clip_range,
-            ent_coef=config.ent_coef,
-            vf_coef=config.vf_coef,
-            use_mixed_precision=config.use_mixed_precision,
-            max_portfolio_size=config.max_portfolio_size,
-            portfolio_update_strategy=config.portfolio_update_strategy,
-        )
-    else:
-        print("Using standard RNaD with single reference")
-        # Create ref model (deep copy)
-        ref_base_model = copy.deepcopy(base_model)
-        ref_agent = RNaDAgent(ref_base_model)
-
-        learner = RNaDLearner(
-            agent,
-            ref_agent,
-            lr=config.lr,
-            rnad_alpha=config.rnad_alpha,
-            device=device,
-            gamma=config.gamma,
-            clip_range=config.clip_range,
-            ent_coef=config.ent_coef,
-            vf_coef=config.vf_coef,
-            use_mixed_precision=config.use_mixed_precision,
-            gradient_clip=config.max_grad_norm,
-        )
+    # Initialize model and learner given the config (handles fresh start, resume, and weight initialization cases)
+    (
+        agent,
+        learner,
+        worker_model_path,
+        worker_model_config,
+        start_step,
+        resume_curriculum,
+    ) = initialize_training_state(config)
 
     # Create opponent pool
     print("Initializing opponent pool...")
     opponent_pool = OpponentPool(
         main_model=agent,
-        device=device,
+        device=config.device,
         battle_format=config.battle_format,
         bc_teampreview_path=config.bc_teampreview_path,
         bc_action_path=config.bc_action_path,
         bc_win_path=config.bc_win_path,
-        exploiter_registry_path=config.exploiter_registry_path,
+        exploiter_models_dir=config.exploiter_models_dir,
         past_models_dir=config.past_models_dir,
+        vgc_bench_checkpoint_path=config.vgc_bench_checkpoint_path,
         max_past_models=config.max_past_models,
     )
+    if resume_curriculum:
+        opponent_pool.curriculum = resume_curriculum
 
-    # Resume from checkpoint if requested (restore optimizer + step state + curriculum)
-    start_step = 0
     start = time.time()
-    if config.resume_from:
-        assert isinstance(config.resume_from, str)
-        start_step, old_config = load_checkpoint(
-            config.resume_from, agent, learner.optimizer, device
-        )
-        if old_config.curriculum:
-            opponent_pool.curriculum = old_config.curriculum
 
     # ==================== START WORKERS ====================
     # Workers generate training data by playing battles against opponent pool
-
-    # Display allocation strategy
-    print("\nAllocation Strategy:")
-    print(f"  Total players: {config.num_players}")
-    print(f"  Workers: {config.num_workers} (each runs {config.players_per_worker} player(s) on {device})")
-    print(f"  Servers: {config.num_servers} (max {config.max_players_per_server} connections each)")
-    print(f"  Total connections: {config.num_players * 2} (player + opponent pairs)")
-
     # Allocate ports for all workers
     worker_ports, server_loads = allocate_server_ports(
         config.num_workers,
@@ -675,12 +743,7 @@ def main():
     mp_error_queue: MPQueue = MPQueue(maxsize=100)  # For workers to report errors
     mp_stop_event: MPEvent = mp.Event()
 
-    # Get model config for worker processes from checkpoint
-    # TODO: I think this is wrong. sometimes initialize_path is going to be null. Also, we need to handle resume_from?
-    assert isinstance(config.initialize_path, str)
-    checkpoint = torch.load(config.initialize_path, map_location="cpu", weights_only=False)
-    model_config: Dict[str, Any] = checkpoint.get("config", {})
-
+    # Create Processes
     processes: List[mp.Process] = []
     for i, server_port in enumerate(worker_ports):
         assert mp_traj_queue and mp_error_queue and mp_stop_event
@@ -689,24 +752,14 @@ def main():
             args=(
                 i,  # worker_id
                 server_port,
-                config.initialize_path,  # model_path
-                model_config,
+                worker_model_path,  # model_path
+                worker_model_config,
                 mp_traj_queue,
                 weight_queues[i],
                 mp_error_queue,  # error reporting queue
                 mp_stop_event,
-                config.battle_format,
-                config.base_team_path,
-                team_subdirectory,
-                config.players_per_worker,  # Number of players this worker should run
                 run_id,
-                device,  # Use same device as learner (GPU has more memory: 32GB vs 24GB CPU RAM)
-                config.batch_size,
-                config.batch_timeout,
-                config.max_battle_steps,
-                config.num_battles_per_pair,
-                config.curriculum,  # Curriculum for opponent sampling
-                config.bc_action_path,  # BC model path for opponent sampling
+                config,
             ),
             daemon=True,
             name=f"MPWorker-{i}",
@@ -715,10 +768,6 @@ def main():
         processes.append(p)
         print(f"✓ Started multiprocessing worker {i} (PID: {p.pid}) on port {server_port}")
 
-    # For main loop, we'll use mp_traj_queue
-    print(
-        f"\nStarted {config.num_workers} workers with {config.players_per_worker} player(s) each."
-    )
     print("Server allocation (players per server):")
     for idx, load in enumerate(server_loads):
         port = config.showdown_start_port + idx
@@ -730,28 +779,6 @@ def main():
     trajectories = []  # Buffer to accumulate trajectories before training
     updates = start_step  # Current training step (may be >0 if resumed from checkpoint)
     total_battles = 0  # Track total number of battles completed across all workers
-
-    # Win rate tracking with rolling window of last 100 battles per opponent type
-    WIN_RATE_WINDOW = 100
-    win_tracking: Dict[str, deque] = {
-        OpponentPool.SELF_PLAY: deque(maxlen=WIN_RATE_WINDOW),
-        OpponentPool.BC_PLAYER: deque(maxlen=WIN_RATE_WINDOW),
-        OpponentPool.EXPLOITERS: deque(maxlen=WIN_RATE_WINDOW),
-        OpponentPool.GHOSTS: deque(maxlen=WIN_RATE_WINDOW),
-        OpponentPool.MAX_DAMAGE: deque(maxlen=WIN_RATE_WINDOW),
-    }
-
-    # Battle length tracking (steps per game) by opponent type
-    battle_length_tracking: Dict[str, deque] = {
-        OpponentPool.SELF_PLAY: deque(maxlen=WIN_RATE_WINDOW),
-        OpponentPool.BC_PLAYER: deque(maxlen=WIN_RATE_WINDOW),
-        OpponentPool.EXPLOITERS: deque(maxlen=WIN_RATE_WINDOW),
-        OpponentPool.GHOSTS: deque(maxlen=WIN_RATE_WINDOW),
-        OpponentPool.MAX_DAMAGE: deque(maxlen=WIN_RATE_WINDOW),
-    }
-
-    # Forfeit tracking
-    forfeit_count = 0
 
     # Timing breakdown
     time_collecting_battles = 0.0
@@ -791,13 +818,12 @@ def main():
                     won = traj.get("won", False)
                     battle_len = traj.get("battle_length", 0)
                     forfeited = traj.get("forfeited", False)
-
-                    if opp_type in win_tracking:
-                        win_tracking[opp_type].append(1.0 if won else 0.0)
-                    if opp_type in battle_length_tracking and battle_len > 0:
-                        battle_length_tracking[opp_type].append(battle_len)
-                    if forfeited:
-                        forfeit_count += 1
+                    opponent_pool.record_battle_result(
+                        opponent_type=opp_type,
+                        won=won,
+                        battle_length=battle_len,
+                        forfeited=forfeited,
+                    )
             except (queue.Empty, Exception):
                 # No new trajectories yet, continue waiting
                 continue
@@ -806,7 +832,7 @@ def main():
             # Once we've collected enough trajectories, train the model
             if len(trajectories) >= config.train_batch_size:
                 # Collate trajectories into padded batches (handles variable length sequences)
-                batch, _traj_metadata = collate_trajectories(trajectories, device, config.gamma, config.gae_lambda, max_seq_len=40)
+                batch, _ = collate_trajectories(trajectories, config.device, config.gamma, config.gae_lambda, max_seq_len=40)
 
                 # Execute one RNaD policy update (PPO + KL regularization vs reference)
                 training_start = time.time()
@@ -825,25 +851,7 @@ def main():
                     metrics['total_battles'] = total_battles
                     metrics['battles_per_second'] = total_battles / (time.time() - start)
                     metrics['time_per_update_seconds'] = time_per_update
-
-                    # Add win rates by opponent type to metrics
-                    for opp_type, wins in win_tracking.items():
-                        if len(wins) > 0:
-                            metrics[f'win_rate_{opp_type}'] = sum(wins) / len(wins)
-
-                    # Add average battle lengths by opponent type
-                    for opp_type, lengths in battle_length_tracking.items():
-                        if len(lengths) > 0:
-                            metrics[f'avg_battle_length_{opp_type}'] = sum(lengths) / len(lengths)
-
-                    # Overall average battle length
-                    all_lengths = [length for lengths in battle_length_tracking.values() for length in lengths]
-                    if all_lengths:
-                        metrics['avg_battle_length_overall'] = sum(all_lengths) / len(all_lengths)
-
-                    # Forfeit rate
-                    if total_battles > 0:
-                        metrics['forfeit_rate'] = forfeit_count * 1. / total_battles
+                    metrics.update(opponent_pool.get_training_metrics())
 
                     # Timing breakdown
                     total_time = time.time() - start
@@ -870,15 +878,17 @@ def main():
                     wandb.log(metrics)
 
                     # Build win rate string for console output
+                    win_rate_stats = opponent_pool.get_win_rate_stats()
                     win_rate_str = " | ".join([
-                        f"{opp_type}: {sum(wins)/len(wins)*100:.1f}%"
-                        for opp_type, wins in win_tracking.items()
-                        if len(wins) > 0
+                        f"{opp_type}: {wr * 100:.1f}%"
+                        for opp_type, wr in win_rate_stats.items()
+                        if len(opponent_pool.win_rate_tracking.get(opp_type, [])) > 0
                     ])
                     if win_rate_str:
                         win_rate_str = f" | Win rates: {win_rate_str}"
 
-                    print(f"Update {updates}: Loss={metrics['loss']:.4f}, Policy={metrics['policy_loss']:.4f}, Value={metrics['value_loss']:.4f}, RNaD={metrics['rnad_loss']:.4f}{win_rate_str} | Total Battles={total_battles} in {format_time(time.time() - start)} ({total_battles / (time.time() - start):.2f} b/s)", flush=True)
+                    print(f"Update {updates}: Loss={metrics['loss']:.4f}, Policy={metrics['policy_loss']:.4f}, Value={metrics['value_loss']:.4f}, RNaD={metrics['rnad_loss']:.4f} | Total Battles={total_battles} in {format_time(time.time() - start)} ({total_battles / (time.time() - start):.2f} b/s)", flush=True)
+                    print(f"\t{win_rate_str}")
 
                 # ===== UPDATE REFERENCE MODEL =====
                 # Reference model is used for KL regularization in RNaD
@@ -903,9 +913,20 @@ def main():
                     print(f"[Update {updates}] Saving checkpoint and updating curriculum...")
                     checkpoint_path = save_checkpoint(agent, learner.optimizer, updates, config, opponent_pool.curriculum, config.save_dir)
 
+                    ghost_checkpoint_path = checkpoint_path
+                    if os.path.abspath(config.past_models_dir) != os.path.abspath(config.save_dir):
+                        ghost_checkpoint_path = save_checkpoint(
+                            agent,
+                            learner.optimizer,
+                            updates,
+                            config,
+                            opponent_pool.curriculum,
+                            config.past_models_dir,
+                        )
+
                     # Add checkpoint to past models pool for opponent diversity
                     # Workers can sample these past versions as opponents
-                    opponent_pool.add_past_model(updates, checkpoint_path)
+                    opponent_pool.add_past_model(updates, ghost_checkpoint_path)
                     opponent_pool.update_curriculum(adaptive=config.adaptive_curriculum)
 
                     # ===== BROADCAST WEIGHTS TO WORKERS (MULTIPROCESSING MODE) =====
@@ -937,10 +958,6 @@ def main():
                     # Launch exploiter training in subprocess (runs independently)
                     try:
                         train_exploiter_subprocess(victim_path, config)
-
-                        # Reload exploiter registry to include newly trained exploiter
-                        opponent_pool.exploiter_registry = ExploiterRegistry(config.exploiter_registry_path)
-                        print(f"Reloaded exploiter registry: {len(opponent_pool.exploiter_registry.exploiters)} exploiters")
                     except Exception as e:
                         print(f"Exploiter training failed: {e}")
 
@@ -978,6 +995,10 @@ def main():
 
         # Final cleanup: Shutdown workers and Showdown servers
         cleanup_worker_executors()
+        shutdown_external_vgcbench_runners(
+            external_runner_processes,
+            external_runner_log_files,
+        )
         shutdown_showdown_servers(server_processes)
 
 
@@ -986,10 +1007,8 @@ if __name__ == "__main__":
     # Must be done before any CUDA initialization or mp.Process creation
     mp.set_start_method("spawn", force=True)
 
-    # Set sharing strategy for WSL compatibility
-    torch.multiprocessing.set_sharing_strategy("file_system")
-
-    # Ignore the specific warning in the specified file
-    warnings.filterwarnings("ignore", message=r'Field')
+    # Configure platform-specific multiprocessing behavior
+    configure_torch_multiprocessing(use_file_system_sharing=True)
+    suppress_third_party_warnings(suppress_pydantic_field_warnings=True)
 
     main()

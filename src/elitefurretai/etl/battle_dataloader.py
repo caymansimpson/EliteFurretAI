@@ -6,6 +6,10 @@ import torch
 
 from elitefurretai.etl.battle_dataset import OptimizedPreprocessedTrajectoryDataset
 from elitefurretai.etl.embedder import Embedder
+from elitefurretai.etl.system_utils import (
+    configure_torch_multiprocessing,
+    is_windows_or_wsl,
+)
 
 
 def _trajectory_collate_fn(batch: List[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
@@ -119,8 +123,8 @@ class OptimizedBattleDataLoader(torch.utils.data.DataLoader):
     ):
         # Ensure file_system sharing strategy is set for WSL/Windows compatibility
         # This must be done before creating workers
-        if platform.system() == "Windows" or "microsoft" in platform.uname()[2].lower():
-            torch.multiprocessing.set_sharing_strategy("file_system")
+        if is_windows_or_wsl():
+            configure_torch_multiprocessing(use_file_system_sharing=True)
 
         # Build dataset kwargs conditionally, and build dataset with them
         dataset_kwargs: Dict[str, Any] = {"folder_path": folder_path}

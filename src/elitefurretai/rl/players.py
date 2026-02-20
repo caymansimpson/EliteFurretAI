@@ -1,11 +1,16 @@
+import asyncio
 import logging
 import math
 import random
-from typing import Dict, List, Optional, Sequence, Set, Tuple, cast
+from concurrent.futures import ThreadPoolExecutor
+from threading import Lock
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, cast
 
+import numpy as np
 import torch
-from poke_env.battle import DoubleBattle, Pokemon
+from poke_env.battle import AbstractBattle, DoubleBattle, Pokemon
 from poke_env.calc import calculate_damage
+from poke_env.concurrency import POKE_LOOP, create_in_poke_loop
 from poke_env.data import GenData
 from poke_env.player import BattleOrder, DoubleBattleOrder, Player
 from poke_env.player.battle_order import (
@@ -15,13 +20,338 @@ from poke_env.player.battle_order import (
 )
 from poke_env.stats import compute_raw_stats
 
-from elitefurretai.rl.multiprocess_actor import (
-    BatchInferencePlayer,
-    cleanup_worker_executors,
-)
+from elitefurretai.etl import Embedder
+from elitefurretai.etl.encoder import MDBO
+from elitefurretai.rl.fast_action_mask import fast_get_action_mask
 from elitefurretai.supervised.model_archs import FlexibleThreeHeadedModel
 
 logger = logging.getLogger("MaxDamagePlayer")
+
+
+# Registry of worker-specific executors: worker_id -> ThreadPoolExecutor
+_WORKER_EXECUTORS: Dict[int, ThreadPoolExecutor] = {}
+_EXECUTOR_LOCK = Lock()
+
+# Global fallback executor for non-worker contexts (e.g., testing)
+_FALLBACK_EXECUTOR = ThreadPoolExecutor(
+    max_workers=1, thread_name_prefix="fallback_inference"
+)
+
+
+def get_worker_executor(worker_id: Optional[int] = None) -> ThreadPoolExecutor:
+    """Get or create a ThreadPoolExecutor for a specific worker."""
+    if worker_id is None:
+        return _FALLBACK_EXECUTOR
+
+    with _EXECUTOR_LOCK:
+        if worker_id not in _WORKER_EXECUTORS:
+            _WORKER_EXECUTORS[worker_id] = ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix=f"worker{worker_id}_inference",
+            )
+        return _WORKER_EXECUTORS[worker_id]
+
+
+def cleanup_worker_executors() -> None:
+    """Shutdown all worker executors (call at training end)."""
+    with _EXECUTOR_LOCK:
+        for executor in _WORKER_EXECUTORS.values():
+            executor.shutdown(wait=False)
+        _WORKER_EXECUTORS.clear()
+
+
+class BatchInferencePlayer(Player):
+    """High-performance player with async batched inference."""
+
+    def __init__(
+        self,
+        model: "RNaDAgent",
+        device="cpu",
+        batch_size=16,
+        batch_timeout=0.01,
+        probabilistic=True,
+        trajectory_queue=None,
+        accept_open_team_sheet=False,
+        worker_id: Optional[int] = None,
+        embedder: Optional[Embedder] = None,
+        max_battle_steps: int = 40,
+        opponent_type: str = "self_play",
+        **kwargs,
+    ):
+        battle_format = kwargs.get("battle_format", "gen9vgc2023regc")
+
+        self.model = model
+        self.device = device
+        self.batch_size = batch_size
+        self.batch_timeout = batch_timeout
+        self.probabilistic = probabilistic
+        self.trajectory_queue = trajectory_queue
+        self.worker_id = worker_id
+        self.opponent_type = opponent_type
+        self.embedder = (
+            embedder
+            if embedder is not None
+            else Embedder(format=battle_format, feature_set=Embedder.FULL, omniscient=False)
+        )
+        self.queue: asyncio.Queue = create_in_poke_loop(asyncio.Queue)
+        self.hidden_states: Dict[str, Tuple[torch.Tensor, torch.Tensor]] = {}
+        self._inference_task: Optional[asyncio.Task] = None
+        self.current_trajectories: Dict[str, List[Optional[Dict[str, Any]]]] = {}
+        self.completed_trajectories: List[Dict[str, Any]] = []
+        self._discarded_battles: set[str] = set()
+        self.max_battle_steps = max_battle_steps
+
+        super().__init__(accept_open_team_sheet=accept_open_team_sheet, **kwargs)
+
+    def clear_completed_trajectories(self) -> None:
+        self.completed_trajectories.clear()
+
+    async def stop_listening(self):
+        await self.ps_client.stop_listening()
+
+    def start_inference_loop(self) -> None:
+        self._inference_future = asyncio.run_coroutine_threadsafe(
+            self._inference_loop(), POKE_LOOP
+        )
+
+    async def _inference_loop(self):
+        while True:
+            batch: List[Any] = []
+            futures: List[Any] = []
+            battle_tags: List[str] = []
+            is_tps: List[bool] = []
+            masks: List[Any] = []
+            try:
+                item = await self.queue.get()
+                self._add_to_batch(batch, futures, battle_tags, is_tps, masks, item)
+
+                start_time = asyncio.get_event_loop().time()
+                while len(batch) < self.batch_size:
+                    timeout = self.batch_timeout - (
+                        asyncio.get_event_loop().time() - start_time
+                    )
+                    if timeout <= 0:
+                        break
+                    try:
+                        item = await asyncio.wait_for(self.queue.get(), timeout=timeout)
+                        self._add_to_batch(
+                            batch, futures, battle_tags, is_tps, masks, item
+                        )
+                    except asyncio.TimeoutError:
+                        break
+            except asyncio.CancelledError:
+                break
+
+            if batch:
+                await self._run_batch(batch, futures, battle_tags, is_tps, masks)
+
+    def _add_to_batch(self, batch, futures, battle_tags, is_tps, masks, item):
+        batch.append(item[0])
+        futures.append(item[1])
+        battle_tags.append(item[2])
+        is_tps.append(item[3])
+        masks.append(item[4])
+
+    def _gpu_inference_sync(self, states_np, h_cpu, c_cpu):
+        states_tensor = (
+            torch.tensor(states_np, dtype=torch.float32).to(self.device).unsqueeze(1)
+        )
+        hidden = (h_cpu.to(self.device), c_cpu.to(self.device))
+
+        with torch.no_grad():
+            turn_logits, tp_logits, values, next_hidden = self.model(states_tensor, hidden)
+
+        turn_probs = torch.softmax(turn_logits, dim=-1).cpu().numpy()
+        tp_probs = torch.softmax(tp_logits, dim=-1).cpu().numpy()
+        values_np = values.cpu().numpy()
+        h_next_cpu = next_hidden[0].cpu()
+        c_next_cpu = next_hidden[1].cpu()
+
+        return turn_probs, tp_probs, values_np, h_next_cpu, c_next_cpu
+
+    async def _run_batch(self, states, futures, battle_tags, is_tps, masks):
+        states_np = np.array(states)
+
+        h_list = []
+        c_list = []
+        for tag in battle_tags:
+            if tag not in self.hidden_states:
+                h, c = self.model.get_initial_state(1, "cpu")
+                self.hidden_states[tag] = (h, c)
+            h_list.append(self.hidden_states[tag][0])
+            c_list.append(self.hidden_states[tag][1])
+
+        h_batch = torch.cat(h_list, dim=1)
+        c_batch = torch.cat(c_list, dim=1)
+
+        loop = asyncio.get_running_loop()
+        executor = get_worker_executor(self.worker_id)
+        turn_probs, tp_probs, values, h_next_cpu, c_next_cpu = await loop.run_in_executor(
+            executor,
+            self._gpu_inference_sync,
+            states_np,
+            h_batch,
+            c_batch,
+        )
+
+        for i, tag in enumerate(battle_tags):
+            self.hidden_states[tag] = (
+                h_next_cpu[:, i : i + 1, :],
+                c_next_cpu[:, i : i + 1, :],
+            )
+
+        for i, future in enumerate(futures):
+            is_tp = is_tps[i]
+            mask = masks[i]
+
+            if is_tp:
+                probs = tp_probs[i, 0]
+                valid_actions = list(range(len(probs)))
+            else:
+                probs = turn_probs[i, 0]
+                if mask is not None:
+                    probs = probs * mask
+                    if probs.sum() == 0:
+                        probs = mask / mask.sum()
+                    else:
+                        probs = probs / probs.sum()
+                valid_actions = list(range(len(probs)))
+
+            action = (
+                np.random.choice(valid_actions, p=probs)
+                if self.probabilistic
+                else np.argmax(probs)
+            )
+            log_prob = np.log(probs[action] + 1e-10)
+
+            future.set_result(
+                {
+                    "action": action,
+                    "log_prob": log_prob,
+                    "value": values[i, 0],
+                    "probs": probs,
+                }
+            )
+
+    async def _handle_battle_request(
+        self, battle: AbstractBattle, maybe_default_order: bool = False
+    ):
+        if maybe_default_order and random.random() < self.DEFAULT_CHOICE_CHANCE:
+            message = self.choose_default_move().message
+            await self.ps_client.send_message(message, battle.battle_tag)
+            return
+
+        choice = self.choose_move(battle)
+        if asyncio.iscoroutine(choice):
+            choice = await choice
+
+        if isinstance(choice, str):
+            message = choice
+        elif hasattr(choice, "message"):
+            message = choice.message
+        else:
+            message = str(choice)
+
+        if message:
+            await self.ps_client.send_message(message, battle.battle_tag)
+
+    def choose_move(self, battle: AbstractBattle) -> Any:
+        return self._choose_move_async(battle)
+
+    def teampreview(self, battle: AbstractBattle) -> str:
+        raise RuntimeError(
+            "teampreview() should not be called; decisions are routed through choose_move()"
+        )
+
+    async def _choose_move_async(self, battle: AbstractBattle):
+        if not isinstance(battle, DoubleBattle):
+            return DefaultBattleOrder()
+
+        current_steps = len(self.current_trajectories.get(battle.battle_tag, []))
+        if current_steps >= self.max_battle_steps:
+            self._discarded_battles.add(battle.battle_tag)
+            self.current_trajectories.pop(battle.battle_tag, None)
+            self.hidden_states.pop(battle.battle_tag, None)
+            return "/forfeit" if self.trajectory_queue is not None else DefaultBattleOrder()
+
+        try:
+            state = self.embedder.feature_dict_to_vector(self.embedder.embed(battle))
+        except Exception:
+            if battle.teampreview:
+                return "/team 1234"
+            try:
+                return self.choose_random_doubles_move(battle)
+            except Exception:
+                return DefaultBattleOrder()
+        mask = None if battle.teampreview else fast_get_action_mask(battle)
+
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+        await self.queue.put((state, future, battle.battle_tag, battle.teampreview, mask))
+        result = await future
+        action_idx = result["action"]
+
+        if self.trajectory_queue is not None:
+            self.current_trajectories.setdefault(battle.battle_tag, []).append(
+                {
+                    "state": state,
+                    "action": action_idx,
+                    "log_prob": result["log_prob"],
+                    "value": result["value"],
+                    "reward": 0,
+                    "is_teampreview": battle.teampreview,
+                    "mask": mask,
+                }
+            )
+        else:
+            self.current_trajectories.setdefault(battle.battle_tag, []).append(None)
+
+        if battle.teampreview:
+            try:
+                return MDBO.from_int(action_idx, type=MDBO.TEAMPREVIEW).message
+            except (ValueError, AssertionError):
+                return "/team 123456"
+
+        try:
+            action_type = MDBO.FORCE_SWITCH if any(battle.force_switch) else MDBO.TURN
+            mdbo = MDBO.from_int(action_idx, type=action_type)
+            return mdbo.to_double_battle_order(battle)
+        except (ValueError, KeyError, AttributeError, IndexError, AssertionError):
+            return DefaultBattleOrder()
+
+    def _battle_finished_callback(self, battle: AbstractBattle):
+        if battle.battle_tag in self._discarded_battles:
+            self._discarded_battles.discard(battle.battle_tag)
+            self.current_trajectories.pop(battle.battle_tag, None)
+            self.hidden_states.pop(battle.battle_tag, None)
+            return
+
+        if self.trajectory_queue is None:
+            self.current_trajectories.pop(battle.battle_tag, None)
+            self.hidden_states.pop(battle.battle_tag, None)
+            return
+
+        if battle.battle_tag in self.current_trajectories:
+            traj = self.current_trajectories.pop(battle.battle_tag)
+            for t, step in enumerate(traj):
+                if step is None:
+                    continue
+                step_reward = -0.005
+                if t == len(traj) - 1:
+                    step_reward += 1.0 if battle.won else -1.0
+                step["reward"] = step_reward
+
+            filtered_traj = [step for step in traj if step is not None]
+            self.trajectory_queue.put(
+                {
+                    "steps": filtered_traj,
+                    "opponent_type": self.opponent_type,
+                    "won": battle.won,
+                    "battle_length": len(filtered_traj),
+                    "forfeited": False,
+                }
+            )
+            self.hidden_states.pop(battle.battle_tag, None)
 
 
 class RNaDAgent(torch.nn.Module):

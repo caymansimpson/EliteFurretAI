@@ -73,7 +73,7 @@ class Embedder:
             self._knowledge[key] = set(enum)
 
         # Track all relevant game elements for encoding
-        self._knowledge["Pokemon"] = set(GenData.from_gen(format[3]).pokedex.keys())
+        self._knowledge["Pokemon"] = set(GenData.from_gen(int(self._format[3])).pokedex.keys())
         self._knowledge["Effect_VolatileStatus"] = TRACKED_EFFECTS
         self._knowledge["Item"] = TRACKED_ITEMS
         self._knowledge["Target"] = TRACKED_TARGET_TYPES
@@ -1055,7 +1055,7 @@ def compute_stats(mon: Pokemon, type="max") -> Dict[str, int]:
         for k, v in zip(
             stat_types,
             compute_raw_stats(
-                mon.species, [0] * 6, [0] * 6, mon.level, "serious", mon._data
+                mon.species, [0] * 6, [0] * 6, mon.level, "serious", GenData.from_gen(int(mon.gen))
             ),
         ):
             stats[k] = int(0.9 * v) if k != "hp" else v
@@ -1065,7 +1065,7 @@ def compute_stats(mon: Pokemon, type="max") -> Dict[str, int]:
         for k, v in zip(
             stat_types,
             compute_raw_stats(
-                mon.species, [252] * 6, [31] * 6, mon.level, "serious", mon._data
+                mon.species, [252] * 6, [31] * 6, mon.level, "serious", GenData.from_gen(int(mon.gen))
             ),
         ):
             stats[k] = int(1.1 * v) if k != "hp" else v

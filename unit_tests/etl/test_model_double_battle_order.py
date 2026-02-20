@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-from typing import Union
+from typing import Any, List, Union
 
 from poke_env.battle import Move, Pokemon
 from poke_env.player.battle_order import (
@@ -420,7 +420,7 @@ class DummyBattle:
         self.player_role = "p1"
         self.active_pokemon = [None, None]
         self.team = {str(i): i for i in range(6)}
-        self.available_moves = [[], []]
+        self.available_moves: List[List[Any]] = [[], []]
 
     def __getattr__(self, name):
         return None

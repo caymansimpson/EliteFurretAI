@@ -4,7 +4,16 @@ import os
 import signal
 import subprocess
 import time
-from typing import List, Optional, Tuple
+from typing import List, Optional, TextIO, Tuple
+
+from elitefurretai.rl.config import RNaDConfig
+
+
+def derive_external_vgcbench_username(base_username: str, server_port: int) -> str:
+    """Generate a server-scoped external runner username (Showdown max length is 18)."""
+    suffix = f"_{server_port}"
+    max_base_len = max(1, 18 - len(suffix))
+    return f"{base_username[:max_base_len]}{suffix}"
 
 
 def launch_showdown_servers(num_servers: int, start_port: int = 8000) -> List[subprocess.Popen]:
@@ -118,8 +127,121 @@ def allocate_server_ports(
     return worker_ports, server_loads
 
 
+def launch_external_vgcbench_runners(
+    config: RNaDConfig,
+    server_ports: List[int],
+) -> Tuple[List[subprocess.Popen], List[TextIO]]:
+    """Launch external vgc-bench runner processes and return (processes, log files)."""
+    if (
+        not config.auto_launch_external_vgcbench
+        or not config.external_vgcbench_usernames
+        or len(config.external_vgcbench_usernames) == 0
+    ):
+        return [], []
+
+    assert config.external_vgcbench_python_executable is not None
+
+    write_logs_to_files = config.external_vgcbench_log_to_files
+    if write_logs_to_files:
+        os.makedirs(config.external_vgcbench_log_dir, exist_ok=True)
+
+    processes: List[subprocess.Popen] = []
+    log_files: List[TextIO] = []
+
+    append_port_to_username = len(server_ports) > 1
+
+    for port in server_ports:
+        for username in config.external_vgcbench_usernames:
+            actual_username = (
+                derive_external_vgcbench_username(username, port)
+                if append_port_to_username
+                else username
+            )
+            sanitized_username = actual_username.replace("/", "_")
+            log_path = "<disabled>"
+            log_handle: TextIO | int
+            if write_logs_to_files:
+                log_path = os.path.join(
+                    config.external_vgcbench_log_dir,
+                    f"runner_{sanitized_username}_{port}.log",
+                )
+                log_handle = open(log_path, "a", encoding="utf-8")
+                log_files.append(log_handle)
+            else:
+                log_handle = subprocess.DEVNULL
+
+            command = [
+                config.external_vgcbench_python_executable,
+                config.external_vgcbench_runner_script,
+                "--username",
+                actual_username,
+                "--server",
+                f"localhost:{port}",
+                "--battle-format",
+                config.battle_format,
+                "--checkpoint-path",
+                config.vgc_bench_checkpoint_path,
+                "--team-file",
+                config.external_vgcbench_team_file,
+                "--n-challenges",
+                str(config.external_vgcbench_n_challenges),
+                "--wait-for-server-timeout",
+                str(config.external_vgcbench_runner_wait_for_server_timeout),
+            ]
+            if config.external_vgcbench_password:
+                command.extend(["--password", config.external_vgcbench_password])
+            if config.external_vgcbench_accept_open_team_sheet:
+                command.append("--accept-open-team-sheet")
+
+            process = subprocess.Popen(
+                command,
+                stdout=log_handle,
+                stderr=log_handle,
+                start_new_session=True,
+                env={**os.environ, "PYTHONUNBUFFERED": "1"},
+            )
+            processes.append(process)
+            print(
+                "✓ Launched external vgc-bench runner "
+                f"'{actual_username}' on localhost:{port} (PID: {process.pid}) "
+                f"log={log_path}"
+            )
+
+    return processes, log_files
+
+
+def shutdown_external_vgcbench_runners(
+    processes: List[subprocess.Popen],
+    log_files: List[TextIO],
+) -> None:
+    """Terminate external vgc-bench runners and close their log files."""
+    for process in processes:
+        if process.poll() is not None:
+            continue
+
+        try:
+            process.terminate()
+            process.wait(timeout=3)
+        except Exception:
+            try:
+                process.kill()
+                process.wait(timeout=2)
+            except Exception:
+                pass
+
+    for log_handle in log_files:
+        try:
+            log_handle.flush()
+            log_handle.close()
+        except Exception:
+            pass
+
+
 __all__ = [
+    "derive_external_vgcbench_username",
     "launch_showdown_servers",
     "shutdown_showdown_servers",
     "allocate_server_ports",
+    "launch_external_vgcbench_runners",
+    "shutdown_external_vgcbench_runners",
 ]

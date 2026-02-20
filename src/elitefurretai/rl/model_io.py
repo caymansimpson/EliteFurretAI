@@ -14,6 +14,53 @@ from elitefurretai.rl.config import RNaDConfig
 from elitefurretai.rl.players import RNaDAgent
 from elitefurretai.supervised import FlexibleThreeHeadedModel
 
+MODEL_ARCH_CONFIG_KEYS = (
+    "battle_format",
+    "embedder_feature_set",
+    "early_layers",
+    "late_layers",
+    "lstm_layers",
+    "lstm_hidden_size",
+    "dropout",
+    "gated_residuals",
+    "early_attention_heads",
+    "late_attention_heads",
+    "use_grouped_encoder",
+    "grouped_encoder_hidden_dim",
+    "grouped_encoder_aggregated_dim",
+    "pokemon_attention_heads",
+    "teampreview_head_layers",
+    "teampreview_head_dropout",
+    "teampreview_attention_heads",
+    "turn_head_layers",
+    "max_seq_len",
+)
+
+
+def _normalize_config_value(value: Any) -> Any:
+    if isinstance(value, tuple):
+        return list(value)
+    return value
+
+
+def is_checkpoint_compatible_with_model_config(
+    checkpoint_path: str,
+    model_config: Dict[str, Any],
+) -> bool:
+    """Return True when a checkpoint config matches the current model architecture."""
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    checkpoint_config = checkpoint.get("config")
+    if not isinstance(checkpoint_config, dict):
+        return False
+
+    for key in MODEL_ARCH_CONFIG_KEYS:
+        current_value = _normalize_config_value(model_config.get(key))
+        checkpoint_value = _normalize_config_value(checkpoint_config.get(key))
+        if current_value != checkpoint_value:
+            return False
+
+    return True
+
 
 def build_model_from_config(
     model_config: Dict[str, Any],
@@ -75,6 +122,15 @@ def load_model_from_checkpoint(
     return model, embedder, config
 
 
+def load_agent_from_checkpoint(
+    checkpoint_path: str,
+    device: str,
+    embedder: Optional[Embedder] = None,
+) -> RNaDAgent:
+    model, _, _ = load_model_from_checkpoint(checkpoint_path, device, embedder)
+    return RNaDAgent(model)
+
+
 def save_checkpoint(
     model: RNaDAgent,
     optimizer,
@@ -118,6 +174,8 @@ def load_checkpoint(
 __all__ = [
     "build_model_from_config",
     "load_model_from_checkpoint",
+    "load_agent_from_checkpoint",
+    "is_checkpoint_compatible_with_model_config",
     "save_checkpoint",
     "load_checkpoint",
 ]

@@ -9,7 +9,6 @@ import os.path
 import random
 import sys
 import time
-import warnings
 from typing import Any, Dict
 
 import orjson
@@ -17,6 +16,7 @@ import torch
 
 import wandb
 from elitefurretai.etl import MDBO, Embedder, OptimizedBattleDataLoader
+from elitefurretai.etl.system_utils import configure_torch_multiprocessing
 from elitefurretai.supervised.model_archs import FlexibleThreeHeadedModel
 from elitefurretai.supervised.train_utils import (
     analyze,
@@ -580,9 +580,10 @@ def main(train_path, test_path, val_path, config={}):
 
 
 if __name__ == "__main__":
-    # Use file_system sharing to avoid Windows shared memory limits
-    torch.multiprocessing.set_sharing_strategy("file_system")
-    warnings.filterwarnings("ignore", message=".*socket.send.*")
+    configure_torch_multiprocessing(
+        use_file_system_sharing=True,
+        filter_socket_send_warning=True,
+    )
 
     if len(sys.argv) < 2:
         print("Usage: python supervised/train.py <data_directory> <config>")

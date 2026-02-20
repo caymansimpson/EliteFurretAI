@@ -29,7 +29,6 @@ from elitefurretai.rl.model_io import (
     save_checkpoint,
 )
 from elitefurretai.rl.opponents import (
-    ExploiterRegistry,
     OpponentPool,
     WorkerOpponentFactory,
 )
@@ -54,7 +53,6 @@ __all__ = [
     "BatchInferencePlayer",
     "cleanup_worker_executors",
     "OpponentPool",
-    "ExploiterRegistry",
     "WorkerOpponentFactory",
     "build_model_from_config",
     "load_model_from_checkpoint",

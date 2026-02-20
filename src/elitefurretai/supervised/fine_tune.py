@@ -26,6 +26,7 @@ import torch
 import wandb
 from elitefurretai.etl import Embedder, OptimizedBattleDataLoader
 from elitefurretai.etl.encoder import MDBO
+from elitefurretai.etl.system_utils import configure_torch_multiprocessing
 
 # Import the model and training components from the original script
 from elitefurretai.supervised.train import (
@@ -167,7 +168,7 @@ def finetune(
 
     # Set up data loaders
     print("Setting up data loaders...")
-    torch.multiprocessing.set_sharing_strategy("file_system")
+    configure_torch_multiprocessing(use_file_system_sharing=True)
 
     train_loader = OptimizedBattleDataLoader(
         train_path,

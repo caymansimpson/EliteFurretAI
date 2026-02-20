@@ -267,7 +267,7 @@ def test_default_paths_are_strings():
     assert isinstance(config.base_team_path, str)
     assert isinstance(config.save_dir, str)
     assert isinstance(config.past_models_dir, str)
-    assert isinstance(config.exploiter_registry_path, str)
+    assert isinstance(config.exploiter_models_dir, str)
 
 
 def test_team_pool_path_can_be_none():

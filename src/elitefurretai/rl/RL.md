@@ -742,6 +742,30 @@ valid_turn_steps = ~is_teampreview & valid_turn_mask
 | Loss → NaN | Increase `gradient_clip` or disable mixed precision |
 | Showdown timeouts | Reduce actors per server, add more servers |
 
+### External `vgc-bench` Opponents (Fork-Safe)
+
+`vgc-bench` may require a different `poke-env` fork than EliteFurretAI. To avoid import/API conflicts, run `vgc-bench` in a separate environment and challenge it externally.
+
+1. Start external runner (in dedicated env):
+```bash
+source ../venv-vgcbench/bin/activate
+python src/elitefurretai/rl/analyze/vgcbench_external_runner.py \
+    --username VGCBENCHX \
+    --server localhost:8000 \
+    --battle-format gen9vgc2024regg \
+    --checkpoint-path data/models/vgc-bench-sb3-model.zip \
+    --team-file data/teams/gen9vgc2024regg/vgcbench.txt \
+    --n-challenges 100
+```
+
+2. In RL config, set external usernames to bypass in-process vgc-bench player creation:
+```yaml
+external_vgcbench_usernames:
+    - VGCBENCHX
+```
+
+When `external_vgcbench_usernames` is set, worker curriculum entries for `vgc_bench_baseline` use `send_challenges(...)` to those usernames instead of constructing local vgc-bench policy players.
+
 ### torch.compile() Results
 
 Tested on forward pass (5.85ms baseline):

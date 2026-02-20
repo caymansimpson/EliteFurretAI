@@ -1,67 +1,102 @@
-# ===== Training hyperparameters =====
-train_batch_size: 128  # Trajectories to collect before training update (lower = faster iteration)
-max_updates: 100000
-lr: 0.00003
-rnad_alpha: 0.25
-gamma: 0.999
-gae_lambda: 0.95
+# ===== RNaD related =====
 clip_range: 0.2
 ent_coef: 0.02
-vf_coef: 0.5
+gae_lambda: 0.95
+gamma: 1
 max_grad_norm: 0.5
-
-# ===== Opponent Pool (Curriculum --> Portfolio) =====
-curriculum:
-  self_play: 0.25
-  bc_player: 0.4
-  exploiters: 0.0
-  ghosts: 0
-  max_damage: 0.35
-adaptive_curriculum: false
-train_exploiters: false
-exploiter_registry_path: data/models/exploiter_registry.json
+rnad_alpha: 0.25
+vf_coef: 0.5
 use_portfolio_regularization: true
-portfolio_add_interval: 50
 portfolio_update_strategy: recent
-max_portfolio_size: 5
-max_past_models: 5  # TODO: figure out how this is different from max_portfolio_size and if we need both
 
-# ===== Team configurations =====
-battle_format: gen9vgc2023regc
-base_team_path: data/teams  # Where to find teams
-team_pool_path: straightforward  # Assumes there are subdirectories after format directories in base_team_path
-
-# ===== Model paths =====
-# Initialize from supervised learning model (dauntless-hill-95 is the latest)
+# ===== Training related =====
+embedder_feature_set: raw
 initialize_path: data/models/supervised/dauntless-hill-95.pt
-bc_teampreview_path: data/models/supervised/dauntless-hill-95.pt
-bc_action_path: data/models/supervised/dauntless-hill-95.pt
-bc_win_path: data/models/supervised/dauntless-hill-95.pt
 resume_from: null
-
-# ===== Performance configuration =====
-num_players: 12  # Total concurrent battle players
-num_workers: 5  # Worker processes for parallel data collection
-num_servers: 5  # Pokemon Showdown servers (1:1 with workers is optimal)
-num_battles_per_pair: 32  # Battles each worker plays per opponent per loop
-batch_size: 4  # Batch size for inference (kept small for low latency)
-batch_timeout: 0.005  # Max wait time (s) before sending incomplete batch for inference
-use_mixed_precision: true
-max_battle_steps: 30  # Maximum steps per battle before forfeiting (prevents memory explosion from stuck battles)
-
-# ===== Checkpointing =====
-checkpoint_interval: 25 # also updates curriculum and adds to past models
-ref_update_interval: 25
+lr: 0.00001
+max_updates: 100000
 save_dir: data/models/rl
-past_models_dir: data/models/rl/past_versions
+train_batch_size: 256  # Trajectories to collect before training update (lower = faster iteration)
+train_exploiters: false
 
-# ===== Logging =====
+# ===== Architecture related (if not resuming from a checkpoint, or initializing w/ a previous model) =====
+early_layers: [4096, 2048, 2048, 1024]
+late_layers: [2048, 2048, 1024, 1024]
+lstm_layers: 4
+lstm_hidden_size: 512
+dropout: 0
+gated_residuals: false
+early_attention_heads: 16
+late_attention_heads: 32
+use_grouped_encoder: true
+grouped_encoder_hidden_dim: 512
+grouped_encoder_aggregated_dim: 4096
+pokemon_attention_heads: 16
+teampreview_head_layers: [512, 256]
+teampreview_head_dropout: 0
+teampreview_attention_heads: 8
+turn_head_layers: [2048, 1024, 1024, 1024]
+max_seq_len: 40
+
+# ===== Curriculum / Opponent related =====
+battle_format: gen9vgc2024regg
+base_team_path: data/teams  # Where to find teams
+team_pool_path: null
+bc_action_path: data/models/supervised/dauntless-hill-95.pt
+bc_teampreview_path: data/models/supervised/dauntless-hill-95.pt
+bc_win_path: data/models/supervised/dauntless-hill-95.pt
+vgc_bench_checkpoint_path: data/models/vgc-bench-sb3-model.zip
+external_vgcbench_usernames:
+  - VGCBENCH
+external_vgcbench_startup_wait_s: 10.0
+auto_launch_external_vgcbench: true
+external_vgcbench_python_executable: /home/cayman/Repositories/venv-vgcbench/bin/python
+external_vgcbench_runner_script: src/elitefurretai/rl/analyze/vgcbench_external_runner.py
+external_vgcbench_team_file: data/teams/gen9vgc2024regg/vgcbench.txt
+external_vgcbench_log_dir: data/logs/vgcbench_runners
+external_vgcbench_log_to_files: false
+external_vgcbench_password: null
+external_vgcbench_n_challenges: 1000000
+external_vgcbench_runner_wait_for_server_timeout: 180.0
+external_vgcbench_accept_open_team_sheet: false
+curriculum:
+  self_play: 0.3
+  bc_player: 0.1
+  exploiters: 0.0
+  ghosts: 0.1
+  max_damage: 0.1
+  random_baseline: 0
+  max_base_power_baseline: 0
+  simple_heuristic_baseline: 0.1
+  vgc_bench_baseline: 0.3
+adaptive_curriculum: false
+
+portfolio_add_interval: 50
+ref_update_interval: 25
+checkpoint_interval: 25 # also updates curriculum and adds to past models
+
+max_portfolio_size: 5
+max_exploiter_models: 5  # Max exploiter checkpoints tracked by each worker
+max_past_models: 5  # Ghost opponent retention (distinct from learner-side max_portfolio_size)
+max_loaded_exploiter_models: 2  # Max exploiter models cached in memory per worker
+max_loaded_ghost_models: 2  # Max ghost models cached in memory per worker
+past_models_dir: data/models/rl/ghosts_easy_test
+exploiter_models_dir: data/models/rl/exploiters
+
+# ===== Logging related =====
+log_interval: 1
 use_wandb: true
 wandb_project: elitefurretai-rnad
 wandb_run_name: null  # Auto-generated
-log_interval: 1
 
-# ===== Hardware configuration =====
+# ===== Performance / Hardware related =====
+batch_size: 4  # Batch size for inference (kept small for low latency)
+batch_timeout: 0.005  # Max wait time (s) before sending incomplete batch for inference
 device: cuda
+max_battle_steps: 30  # Maximum steps per battle before forfeiting (prevents memory explosion from stuck battles)
+num_battles_per_pair: 32  # Battles each worker plays per opponent per loop
+num_players: 12  # Total concurrent battle players
+num_servers: 4  # Pokemon Showdown servers (1:1 with workers is optimal)
+num_workers: 4  # Worker processes for parallel data collection
 showdown_start_port: 8000
-
+use_mixed_precision: true

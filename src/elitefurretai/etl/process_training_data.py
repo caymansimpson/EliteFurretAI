@@ -18,16 +18,18 @@ issue where 88.6% of team patterns deterministically map to one action.
 
 import argparse
 import os
-import platform
 import random
 import time
-import warnings
 
 import orjson
 import torch
 
 from elitefurretai.etl import MDBO, BattleDataset, Embedder
 from elitefurretai.etl.compress_utils import save_compressed
+from elitefurretai.etl.system_utils import (
+    configure_torch_multiprocessing,
+    is_windows_or_wsl,
+)
 from elitefurretai.supervised.train_utils import format_time
 
 
@@ -401,13 +403,12 @@ if __name__ == "__main__":
     # On Windows, PyTorch's default shared memory strategy can hit limits with large datasets
     # on specifially Windows, that happens with multiprocessing DataLoader
     # See https://pytorch.org/docs/stable/multiprocessing.html#sharing-strategies
-    if (
-        platform.system().lower() == "windows"
-        or "microsoft" in platform.uname()[2].lower()
-    ):
+    if is_windows_or_wsl():
         # Use file_system sharing to avoid Windows shared memory limits
-        torch.multiprocessing.set_sharing_strategy("file_system")
-        warnings.filterwarnings("ignore", message=".*socket.send.*")
+        configure_torch_multiprocessing(
+            use_file_system_sharing=True,
+            filter_socket_send_warning=True,
+        )
         print(
             "Heads Up! Using 'file_system' sharing strategy for PyTorch multiprocessing on Windows"
         )
