@@ -19,6 +19,7 @@ In short: `OpponentPool` is global/curriculum-focused, while
 `WorkerOpponentFactory` is local/worker-loop-focused.
 """
 
+import asyncio
 import importlib
 import importlib.util
 import logging
@@ -231,6 +232,21 @@ class OpponentPool:
         self.total_battles_tracked = 0
         self.total_forfeits_tracked = 0
 
+    def _normalize_curriculum(self, curriculum: Dict[str, float]) -> Dict[str, float]:
+        total = float(sum(curriculum.values()))
+        if total <= 0:
+            return {self.SELF_PLAY: 1.0}
+        return {key: value / total for key, value in curriculum.items()}
+
+    def _opponent_available(self, opponent_type: str) -> bool:
+        if opponent_type == self.BC_PLAYER:
+            return self.bc_player_config is not None
+        if opponent_type == self.EXPLOITERS:
+            return len(self.exploiter_models) > 0
+        if opponent_type == self.GHOSTS:
+            return len(self.past_models) > 0
+        return True
+
     def _ensure_tracking_key(self, opponent_type: str) -> None:
         if opponent_type not in self.win_rate_tracking:
             self.win_rate_tracking[opponent_type] = deque(maxlen=self.tracking_window)
@@ -248,7 +264,7 @@ class OpponentPool:
         from elitefurretai.supervised.model_archs import FlexibleThreeHeadedModel
 
         filepath = self.bc_player_config["teampreview"]
-        print(f"[OpponentPool] Pre-loading BC model from {filepath}...")
+        logger.info("Pre-loading BC model from %s...", filepath)
 
         checkpoint = torch.load(filepath, map_location=self.device)
         config = checkpoint["config"]
@@ -260,21 +276,14 @@ class OpponentPool:
         )
 
         model = FlexibleThreeHeadedModel(
-            input_size=embedder.embedding_size,
+            embedder=embedder,
             early_layers=config["early_layers"],
             late_layers=config["late_layers"],
             lstm_layers=config.get("lstm_layers", 2),
             lstm_hidden_size=config.get("lstm_hidden_size", 512),
             dropout=config.get("dropout", 0.1),
-            gated_residuals=config.get("gated_residuals", False),
             early_attention_heads=config.get("early_attention_heads", 8),
             late_attention_heads=config.get("late_attention_heads", 8),
-            use_grouped_encoder=config.get("use_grouped_encoder", False),
-            group_sizes=(
-                embedder.group_embedding_sizes
-                if config.get("use_grouped_encoder", False)
-                else None
-            ),
             grouped_encoder_hidden_dim=config.get("grouped_encoder_hidden_dim", 128),
             grouped_encoder_aggregated_dim=config.get("grouped_encoder_aggregated_dim", 1024),
             pokemon_attention_heads=config.get("pokemon_attention_heads", 2),
@@ -294,7 +303,7 @@ class OpponentPool:
         self._cached_bc_embedder = embedder
         self._cached_bc_config = config
 
-        print("[OpponentPool] BC model cached (saves ~500MB per BCPlayer instance)")
+        logger.info("BC model cached (saves ~500MB per BCPlayer instance)")
 
     def _list_model_checkpoints(self, directory: str) -> List[str]:
         if not os.path.exists(directory):
@@ -659,39 +668,125 @@ class OpponentPool:
         if self.total_battles_tracked > 0:
             metrics["forfeit_rate"] = self.total_forfeits_tracked / self.total_battles_tracked
 
+        for opp_type, weight in self.curriculum.items():
+            metrics[f"curriculum_weight_{opp_type}"] = float(weight)
+
         return metrics
 
     def update_curriculum(self, adaptive: bool = True):
         """Adapt curriculum weights from recent matchup performance.
 
-        Current heuristic:
-        - If exploiters are too easy, reduce exploiter weight
-        - If BC baseline is too hard, increase BC weight
-        - Renormalize to a valid probability distribution
+        Hybrid strategy:
+        - PFSP score favors opponents near 50/50 win rate (high learning signal)
+        - Weakness score upweights hard opponents where main model underperforms
+        - Availability gating prevents sampling unsupported opponent types
+        - Anchor floors preserve self-play/BC/ghost exposure to reduce forgetting
+        - Bayesian smoothing + sample gating reduce noisy swings under high-variance battles
         """
         if not adaptive:
             return
 
+        # Refresh checkpoint-backed pools before scoring availability.
         self._load_exploiter_models()
-        stats = self.get_win_rate_stats()
-        new_curriculum = self.curriculum.copy()
+        self._load_past_models()
+        base = self.curriculum.copy()
 
-        if (
-            stats.get(self.EXPLOITERS, 0) > 0.70
-            and len(self.exploiter_models) > 0
-        ):
-            new_curriculum[self.EXPLOITERS] = max(0.10, new_curriculum[self.EXPLOITERS] - 0.05)
-            new_curriculum[self.SELF_PLAY] += 0.05
+        # Blend factor between PFSP (learn near decision boundary) and weakness targeting.
+        pfsp_mix = 0.70
+        weakness_mix = 0.30
 
-        if stats.get(self.BC_PLAYER, 0) < 0.40 and self.bc_player_config:
-            new_curriculum[self.BC_PLAYER] = min(0.40, new_curriculum[self.BC_PLAYER] + 0.05)
-            new_curriculum[self.SELF_PLAY] = max(0.20, new_curriculum[self.SELF_PLAY] - 0.05)
+        # Weakness objective: push more games toward opponents where we underperform.
+        target_win_rate = 0.55
 
-        total = sum(new_curriculum.values())
-        for key in new_curriculum:
-            new_curriculum[key] /= total
+        # Numerical floor to avoid exact zeros in intermediate score math.
+        epsilon = 1e-2
 
-        self.curriculum = new_curriculum
+        # Ignore tiny sample windows to avoid adapting to variance noise.
+        min_samples = 40
+
+        # Beta prior parameters for smoothed win-rate estimate.
+        # Equivalent pseudo-counts make small-n win rates less extreme.
+        prior_alpha = 8.0
+        prior_beta = 8.0
+
+        # Step 1: build per-opponent candidate learning scores.
+        candidate_scores: Dict[str, float] = {}
+        for opp_type, base_weight in base.items():
+            # Skip unsupported opponents (e.g., no ghost/exploiter checkpoints loaded).
+            if not self._opponent_available(opp_type):
+                candidate_scores[opp_type] = 0.0
+                continue
+
+            samples = len(self.win_rate_tracking.get(opp_type, []))
+            # With insufficient data, retain prior curriculum preference.
+            if samples < min_samples:
+                candidate_scores[opp_type] = max(base_weight, epsilon)
+                continue
+
+            # Step 1a: Bayesian-smoothed win rate (wins+alpha)/(n+alpha+beta).
+            recent_results = self.win_rate_tracking.get(opp_type, deque())
+            wins = float(sum(recent_results))
+            losses = float(samples) - wins
+            win_rate = (wins + prior_alpha) / (wins + losses + prior_alpha + prior_beta)
+
+            # Step 1b: PFSP favors ~50/50 opponents where policy gradients are most useful.
+            pfsp_score = max(0.0, 1.0 - (2.0 * abs(win_rate - 0.5)))
+
+            # Step 1c: Weakness score increases as win rate drops below target.
+            weakness_score = max(0.0, (target_win_rate - win_rate) / target_win_rate)
+            learning_value = (pfsp_mix * pfsp_score) + (weakness_mix * weakness_score)
+
+            # Step 1d: Mix adaptive signal with base curriculum for stability.
+            candidate_scores[opp_type] = max(
+                epsilon,
+                (0.50 * base_weight) + (0.50 * learning_value),
+            )
+
+        # Keep explicit anchor exposure to avoid forgetting and mode collapse.
+        floors: Dict[str, float] = {}
+        if self._opponent_available(self.SELF_PLAY):
+            floors[self.SELF_PLAY] = 0.20
+        if self._opponent_available(self.BC_PLAYER):
+            floors[self.BC_PLAYER] = 0.10
+        if self._opponent_available(self.GHOSTS):
+            floors[self.GHOSTS] = 0.10
+
+        floor_sum = sum(floors.values())
+        if floor_sum > 0.95:
+            # Keep at least 5% free mass for adaptive allocation to non-anchor types.
+            scale = 0.95 / floor_sum
+            floors = {key: value * scale for key, value in floors.items()}
+            floor_sum = sum(floors.values())
+
+        # Step 2: distribute remaining mass by residual score above anchor floors.
+        remaining_mass = max(0.0, 1.0 - floor_sum)
+        residual_scores: Dict[str, float] = {}
+        for opp_type, score in candidate_scores.items():
+            if not self._opponent_available(opp_type):
+                continue
+            residual_scores[opp_type] = max(epsilon, score - floors.get(opp_type, 0.0))
+
+        residual_total = sum(residual_scores.values())
+        if residual_total <= 0:
+            # Degenerate case fallback: anchor-only curriculum (or pure self-play).
+            new_curriculum = {
+                opp_type: floors.get(opp_type, 0.0)
+                for opp_type in base
+                if self._opponent_available(opp_type)
+            }
+            if self.SELF_PLAY not in new_curriculum:
+                new_curriculum[self.SELF_PLAY] = 1.0
+        else:
+            new_curriculum = {}
+            for opp_type in base:
+                if not self._opponent_available(opp_type):
+                    continue
+                floor = floors.get(opp_type, 0.0)
+                residual = residual_scores.get(opp_type, 0.0) / residual_total
+                new_curriculum[opp_type] = floor + (remaining_mass * residual)
+
+            # Final normalization protects against drift from rounding and availability gating.
+        self.curriculum = self._normalize_curriculum(new_curriculum)
 
 
 class WorkerOpponentFactory:
@@ -784,8 +879,50 @@ class WorkerOpponentFactory:
         self.loaded_ghosts: Dict[str, RNaDAgent] = {}
         self._ghost_cache_order: List[str] = []
         self._batch_count = 0
+        # Rebuild generation increments every time we recreate runtime agents.
+        # Why: Showdown usernames must be unique among currently connected clients,
+        # and stale sockets can briefly outlive a rebuild.
+        self._rebuild_generation = 0
+        # Compact entropy tags for username uniqueness across fast restarts.
+        # Why: run_id alone can still collide in close launches if stale sockets
+        # have not fully disconnected yet.
+        cleaned_run_id = "".join(ch for ch in str(self.run_id) if ch.isalnum()).upper()
+        self._run_tag = (cleaned_run_id[-4:] if cleaned_run_id else "0000")
+        self._factory_tag = f"{random.getrandbits(8):02X}"
         self._load_exploiter_models()
         self._load_past_models()
+
+    def _account_name(self, role: str, idx: int) -> str:
+        """Create compact, rebuild-unique account names.
+
+        Why: the previous naming scheme reused identical usernames during rebuilds,
+        which produced `|nametaken|` errors and prevented worker recovery.
+        """
+        worker_token = f"{self.worker_id % 256:02X}"
+        idx_token = f"{idx % 256:02X}"
+        gen_token = f"{self._rebuild_generation % 256:02X}"
+        return f"M{worker_token}{role}{idx_token}{self._run_tag}{self._factory_tag}{gen_token}"
+
+    def update_curriculum(self, curriculum: Dict[str, float]) -> None:
+        """Update worker-local curriculum and refresh dependent opponent pools."""
+        total = float(sum(curriculum.values()))
+        if total <= 0:
+            self.curriculum = {self.SELF_PLAY: 1.0}
+        else:
+            self.curriculum = {
+                key: float(value) / total
+                for key, value in curriculum.items()
+                if value > 0
+            }
+            if not self.curriculum:
+                self.curriculum = {self.SELF_PLAY: 1.0}
+
+        # Important: do NOT recreate baseline/max-damage opponent clients here.
+        # Why: curriculum updates can happen repeatedly at runtime (including local
+        # vgc-bench disable fallbacks). Recreating players with the same generation
+        # can trigger duplicate login attempts and `|nametaken|` collisions.
+        # Existing baseline pools are kept alive; sampling already follows the new
+        # probabilities in `self.curriculum`.
 
     def _list_model_checkpoints(self, directory: Optional[str]) -> List[str]:
         if not directory or not os.path.exists(directory):
@@ -920,7 +1057,7 @@ class WorkerOpponentFactory:
                 batch_size=self.batch_size,
                 batch_timeout=self.batch_timeout,
                 account_configuration=AccountConfiguration(
-                    f"MP{self.worker_id}SELF{i}R{self.run_id}", None
+                    self._account_name("SF", i), None
                 ),
                 server_configuration=self.server_config,
                 trajectory_queue=local_traj_queue,
@@ -939,7 +1076,7 @@ class WorkerOpponentFactory:
                 batch_size=self.batch_size,
                 batch_timeout=self.batch_timeout,
                 account_configuration=AccountConfiguration(
-                    f"MP{self.worker_id}OPP{i}R{self.run_id}", None
+                    self._account_name("OP", i), None
                 ),
                 server_configuration=self.server_config,
                 trajectory_queue=None,
@@ -977,7 +1114,7 @@ class WorkerOpponentFactory:
                 md_opponent = MaxDamagePlayer(
                     battle_format=self.battle_format,
                     account_configuration=AccountConfiguration(
-                        f"MP{self.worker_id}MD{i}R{self.run_id}", None
+                        self._account_name("MD", i), None
                     ),
                     server_configuration=self.server_config,
                     team=self.sample_team(),
@@ -998,7 +1135,7 @@ class WorkerOpponentFactory:
                     RandomPlayer(
                         battle_format=self.battle_format,
                         account_configuration=AccountConfiguration(
-                            f"MP{self.worker_id}RND{i}R{self.run_id}", None
+                            self._account_name("RD", i), None
                         ),
                         server_configuration=self.server_config,
                         team=self.sample_team(),
@@ -1011,7 +1148,7 @@ class WorkerOpponentFactory:
                     MaxBasePowerPlayer(
                         battle_format=self.battle_format,
                         account_configuration=AccountConfiguration(
-                            f"MP{self.worker_id}MBP{i}R{self.run_id}", None
+                            self._account_name("MB", i), None
                         ),
                         server_configuration=self.server_config,
                         team=self.sample_team(),
@@ -1025,7 +1162,7 @@ class WorkerOpponentFactory:
                     baseline_cls(
                         battle_format=self.battle_format,
                         account_configuration=AccountConfiguration(
-                            f"MP{self.worker_id}SHP{i}R{self.run_id}", None
+                            self._account_name("SH", i), None
                         ),
                         server_configuration=self.server_config,
                         team=self.sample_team(),
@@ -1041,7 +1178,7 @@ class WorkerOpponentFactory:
                     device=self.device,
                     battle_format=self.battle_format,
                     player_config=AccountConfiguration(
-                        f"MP{self.worker_id}VGB{i}R{self.run_id}", None
+                        self._account_name("VG", i), None
                     ),
                     server_config=self.server_config,
                     team=self.sample_team(),
@@ -1207,6 +1344,88 @@ class WorkerOpponentFactory:
     def start_inference_loops(self) -> None:
         for player in self.players + self.opponents:
             player.start_inference_loop()
+
+    def teardown_runtime_agents(self) -> None:
+        """Best-effort teardown of all worker-local players/opponents.
+
+        Why: rebuilds need to disconnect previous websocket clients before creating
+        replacements, otherwise old sessions can still hold usernames.
+        """
+        # Stop inference/listening for batch-inference players first.
+        for player in self.players + self.opponents:
+            try:
+                player.teardown_runtime()
+            except Exception:
+                pass
+
+        # Non-batched baseline players (max damage / heuristics / etc.) may not expose
+        # teardown_runtime; attempt a generic listener stop when available.
+        for participant in (
+            self.max_damage_opponents
+            + self.random_baseline_opponents
+            + self.max_base_power_baseline_opponents
+            + self.simple_heuristic_baseline_opponents
+            + self.vgc_bench_baseline_opponents
+        ):
+            stop_fn = getattr(participant, "stop_listening", None)
+            if stop_fn is None:
+                continue
+            try:
+                maybe_coro = stop_fn()
+                if asyncio.iscoroutine(maybe_coro):
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        # If a loop is already running in this context, schedule and continue.
+                        asyncio.create_task(maybe_coro)
+                    else:
+                        loop.run_until_complete(maybe_coro)
+            except Exception:
+                pass
+
+    @staticmethod
+    def _count_unfinished_for_player(player: Player) -> int:
+        battles = getattr(player, "_battles", {})
+        if not isinstance(battles, dict):
+            return 0
+        return sum(1 for battle in battles.values() if not battle.finished)
+
+    def get_unfinished_battle_summary(self) -> Dict[str, Any]:
+        # This summary powers two things:
+        # 1) first-trigger diagnostics, and
+        # 2) deciding whether we can safely call reset_battles().
+        by_player: Dict[str, int] = {}
+        total = 0
+
+        for player in self.players + self.opponents:
+            count = self._count_unfinished_for_player(player)
+            if count > 0:
+                username = player.username if hasattr(player, "username") else str(player)
+                by_player[username] = count
+                total += count
+
+        return {
+            "total_unfinished": total,
+            "by_player": by_player,
+        }
+
+    def rebuild_runtime_agents(self, local_traj_queue: queue.Queue) -> None:
+        """Rebuild player/opponent runtime state after websocket/battle desync.
+
+        This resets all battle participants to fresh connections instead of trying to
+        forcibly clear active battles.
+        """
+        num_pairs = len(self.players)
+        if num_pairs <= 0:
+            return
+
+        # Explicitly tear down old runtime state before re-creating players.
+        self.teardown_runtime_agents()
+
+        # Bump generation so newly-created players use unique usernames.
+        self._rebuild_generation += 1
+
+        self.create_agents(num_pairs, local_traj_queue)
+        self.start_inference_loops()
 
     def reset_all_battles(self) -> None:
         """Clear per-battle runtime state after a batch completes."""

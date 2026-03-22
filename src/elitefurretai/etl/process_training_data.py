@@ -297,16 +297,16 @@ def parse_args():
         epilog="""
 Examples:
   # Process full trajectories with default 90/5/5 split
-  python process_training_data.py battles.json output_folder --mode trajectories
+  python process_training_data.py data/battles/supervised_battle_files_w_commander.json data/battles/regc_final_v3 --mode trajectories --chunk-size 512
 
   # Process teampreview data with custom 80/10/10 split
-  python process_training_data.py battles.json output_folder --mode teampreview --train-pct 0.8 --test-pct 0.1 --val-pct 0.1
+  python process_training_data.py battles.json data/battles/regc_final_v3 --mode teampreview --train-pct 0.8 --test-pct 0.1 --val-pct 0.1
 
   # Process with custom seed and chunk size
-  python process_training_data.py battles.json output_folder --mode trajectories --seed 42 --chunk-size 512
+  python process_training_data.py battles.json data/battles/regc_final_v3 --mode trajectories --seed 42 --chunk-size 512
 
   # Process with auxiliary objectives and no compression
-  python process_training_data.py battles.json output_folder --mode trajectories --auxiliary-objectives --no-compressed
+  python process_training_data.py battles.json data/battles/regc_final_v3 --mode trajectories --auxiliary-objectives --no-compressed
         """,
     )
 

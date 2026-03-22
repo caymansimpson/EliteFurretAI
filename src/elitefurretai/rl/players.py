@@ -1,10 +1,11 @@
 import asyncio
+import concurrent.futures
 import logging
 import math
 import random
 from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
-from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, cast
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Union, cast
 
 import numpy as np
 import torch
@@ -23,7 +24,10 @@ from poke_env.stats import compute_raw_stats
 from elitefurretai.etl import Embedder
 from elitefurretai.etl.encoder import MDBO
 from elitefurretai.rl.fast_action_mask import fast_get_action_mask
-from elitefurretai.supervised.model_archs import FlexibleThreeHeadedModel
+from elitefurretai.supervised.model_archs import (
+    FlexibleThreeHeadedModel,
+    TransformerThreeHeadedModel,
+)
 
 logger = logging.getLogger("MaxDamagePlayer")
 
@@ -94,12 +98,26 @@ class BatchInferencePlayer(Player):
             else Embedder(format=battle_format, feature_set=Embedder.FULL, omniscient=False)
         )
         self.queue: asyncio.Queue = create_in_poke_loop(asyncio.Queue)
-        self.hidden_states: Dict[str, Tuple[torch.Tensor, torch.Tensor]] = {}
+        self.hidden_states: Dict[str, Any] = {}  # (h,c) for LSTM or context tensor for Transformer
+        self._is_transformer: bool = isinstance(
+            model.model if isinstance(model, RNaDAgent) else model,
+            TransformerThreeHeadedModel,
+        )
         self._inference_task: Optional[asyncio.Task] = None
+        self._inference_future: Optional[concurrent.futures.Future] = None
+        self.temperature: float = 1.0  # Sampling temperature (set by trainer)
+        self.top_p: float = 1.0  # Nucleus sampling threshold (set by trainer)
         self.current_trajectories: Dict[str, List[Optional[Dict[str, Any]]]] = {}
         self.completed_trajectories: List[Dict[str, Any]] = []
         self._discarded_battles: set[str] = set()
+        # Per-battle request generation counter. Incremented on each battle
+        # request handler invocation to suppress stale async sends.
+        self._request_generation: Dict[str, int] = {}
         self.max_battle_steps = max_battle_steps
+        # Timeout for waiting on a batched inference response.
+        # Why: if the inference loop stalls, we prefer fallback behavior over hanging
+        # a battle coroutine indefinitely.
+        self.inference_request_timeout_s = 8.0
 
         super().__init__(accept_open_team_sheet=accept_open_team_sheet, **kwargs)
 
@@ -108,6 +126,45 @@ class BatchInferencePlayer(Player):
 
     async def stop_listening(self):
         await self.ps_client.stop_listening()
+
+    def stop_inference_loop(self, timeout_s: float = 1.0) -> None:
+        """Stop the background inference loop if it is running.
+
+        Why: during worker-side rebuilds, we must stop old loop tasks before creating
+        fresh players, or stale loops can keep references alive and leak pending work.
+        """
+        if self._inference_future is None:
+            return
+
+        # First request cooperative cancellation.
+        self._inference_future.cancel()
+
+        # Then drain completion briefly so the loop has a chance to unwind cleanly.
+        try:
+            self._inference_future.result(timeout=timeout_s)
+        except (asyncio.CancelledError, concurrent.futures.CancelledError):
+            pass
+        except Exception:
+            pass
+        finally:
+            self._inference_future = None
+
+    def teardown_runtime(self, timeout_s: float = 1.5) -> None:
+        """Best-effort teardown of inference + websocket listener state.
+
+        Why: this is the explicit teardown step needed before rebuilding agents.
+        Without it, old clients can remain logged in, causing `|nametaken|` collisions
+        and repeated timeout loops after a desync event.
+        """
+        # Stop inference first so we don't enqueue decisions while disconnecting.
+        self.stop_inference_loop(timeout_s=timeout_s)
+
+        # Ask poke-env to stop websocket listening on this player.
+        try:
+            fut = asyncio.run_coroutine_threadsafe(self.stop_listening(), POKE_LOOP)
+            fut.result(timeout=timeout_s)
+        except Exception:
+            pass
 
     def start_inference_loop(self) -> None:
         self._inference_future = asyncio.run_coroutine_threadsafe(
@@ -152,31 +209,133 @@ class BatchInferencePlayer(Player):
         is_tps.append(item[3])
         masks.append(item[4])
 
-    def _gpu_inference_sync(self, states_np, h_cpu, c_cpu):
+    def _gpu_inference_sync(self, states_np, hidden_cpu):
         states_tensor = (
             torch.tensor(states_np, dtype=torch.float32).to(self.device).unsqueeze(1)
         )
-        hidden = (h_cpu.to(self.device), c_cpu.to(self.device))
+
+        if self._is_transformer:
+            # Transformer: hidden_cpu is context tensor or None
+            hidden = hidden_cpu.to(self.device) if hidden_cpu is not None else None
+        else:
+            # LSTM: hidden_cpu is (h, c)
+            hidden = (hidden_cpu[0].to(self.device), hidden_cpu[1].to(self.device))
 
         with torch.no_grad():
-            turn_logits, tp_logits, values, next_hidden = self.model(states_tensor, hidden)
+            turn_logits, tp_logits, values, _, next_hidden = self.model(states_tensor, hidden)
 
-        turn_probs = torch.softmax(turn_logits, dim=-1).cpu().numpy()
-        tp_probs = torch.softmax(tp_logits, dim=-1).cpu().numpy()
+        # Temperature-scaled probs for action SELECTION (exploration)
+        temp = max(self.temperature, 1e-6)
+        turn_probs = torch.softmax(turn_logits / temp, dim=-1).cpu().numpy()
+        tp_probs = torch.softmax(tp_logits / temp, dim=-1).cpu().numpy()
+
+        # Unscaled (T=1) log-probs for PPO importance ratio computation
+        # Critical: log_probs must come from the policy distribution, not the
+        # temperature-scaled sampling distribution, to avoid biasing PPO ratios.
+        turn_log_probs = torch.log_softmax(turn_logits, dim=-1).cpu().numpy()
+        tp_log_probs = torch.log_softmax(tp_logits, dim=-1).cpu().numpy()
+
         values_np = values.cpu().numpy()
-        h_next_cpu = next_hidden[0].cpu()
-        c_next_cpu = next_hidden[1].cpu()
 
-        return turn_probs, tp_probs, values_np, h_next_cpu, c_next_cpu
+        if self._is_transformer:
+            # next_hidden is context tensor (batch, T, H)
+            next_hidden_cpu = next_hidden.cpu()
+        else:
+            # next_hidden is (h, c)
+            next_hidden_cpu = (next_hidden[0].cpu(), next_hidden[1].cpu())
+
+        return turn_probs, tp_probs, turn_log_probs, tp_log_probs, values_np, next_hidden_cpu
 
     async def _run_batch(self, states, futures, battle_tags, is_tps, masks):
         states_np = np.array(states)
 
+        if self._is_transformer:
+            # Transformer: hidden is a context tensor per battle, or None.
+            # We need to handle variable-length contexts.  For simplicity,
+            # we set hidden to None for each battle (the model handles it)
+            # and store per-battle contexts separately.  For batched inference
+            # we process each battle individually since contexts may differ in length.
+            # TODO: pad contexts for true batched Transformer inference.
+            all_results: List[Dict[str, Any]] = []
+            for i, tag in enumerate(battle_tags):
+                single_state = states_np[i : i + 1]
+                ctx = self.hidden_states.get(tag, None)
+                loop = asyncio.get_running_loop()
+                executor = get_worker_executor(self.worker_id)
+                (
+                    turn_probs,
+                    tp_probs,
+                    turn_log_probs,
+                    tp_log_probs,
+                    values,
+                    next_ctx,
+                ) = await loop.run_in_executor(
+                    executor,
+                    self._gpu_inference_sync,
+                    single_state,
+                    ctx,
+                )
+                self.hidden_states[tag] = next_ctx
+                all_results.append({
+                    "turn_probs": turn_probs[0, 0],
+                    "tp_probs": tp_probs[0, 0],
+                    "turn_log_probs": turn_log_probs[0, 0],
+                    "tp_log_probs": tp_log_probs[0, 0],
+                    "value": values[0, 0],
+                })
+
+            for i, future in enumerate(futures):
+                is_tp = is_tps[i]
+                mask = masks[i]
+                r = all_results[i]
+
+                if is_tp:
+                    probs = r["tp_probs"]
+                    unscaled_log_probs = r["tp_log_probs"]
+                    valid_actions = list(range(len(probs)))
+                else:
+                    probs = r["turn_probs"]
+                    unscaled_log_probs = r["turn_log_probs"]
+                    if mask is not None:
+                        probs = probs * mask
+                        if probs.sum() == 0:
+                            probs = mask / mask.sum()
+                        else:
+                            probs = probs / probs.sum()
+
+                        if self.top_p < 1.0:
+                            sorted_idx = np.argsort(-probs)
+                            cum = np.cumsum(probs[sorted_idx])
+                            cutoff = np.searchsorted(cum, self.top_p) + 1
+                            keep = sorted_idx[:cutoff]
+                            filtered = np.zeros_like(probs)
+                            filtered[keep] = probs[keep]
+                            probs = filtered / filtered.sum()
+
+                    valid_actions = list(range(len(probs)))
+
+                action = (
+                    np.random.choice(valid_actions, p=probs)
+                    if self.probabilistic
+                    else np.argmax(probs)
+                )
+                log_prob = float(unscaled_log_probs[action])
+                future.set_result({
+                    "action": action,
+                    "log_prob": log_prob,
+                    "value": r["value"],
+                    "probs": probs,
+                })
+            return
+
+        # ---- LSTM path (original batched inference) ----
         h_list = []
         c_list = []
         for tag in battle_tags:
             if tag not in self.hidden_states:
-                h, c = self.model.get_initial_state(1, "cpu")
+                init_state = self.model.get_initial_state(1, "cpu")
+                assert init_state is not None  # LSTM always returns (h, c)
+                h, c = init_state
                 self.hidden_states[tag] = (h, c)
             h_list.append(self.hidden_states[tag][0])
             c_list.append(self.hidden_states[tag][1])
@@ -186,14 +345,21 @@ class BatchInferencePlayer(Player):
 
         loop = asyncio.get_running_loop()
         executor = get_worker_executor(self.worker_id)
-        turn_probs, tp_probs, values, h_next_cpu, c_next_cpu = await loop.run_in_executor(
+        (
+            turn_probs,
+            tp_probs,
+            turn_log_probs,
+            tp_log_probs,
+            values,
+            next_hidden_cpu,
+        ) = await loop.run_in_executor(
             executor,
             self._gpu_inference_sync,
             states_np,
-            h_batch,
-            c_batch,
+            (h_batch, c_batch),
         )
 
+        h_next_cpu, c_next_cpu = next_hidden_cpu
         for i, tag in enumerate(battle_tags):
             self.hidden_states[tag] = (
                 h_next_cpu[:, i : i + 1, :],
@@ -206,15 +372,31 @@ class BatchInferencePlayer(Player):
 
             if is_tp:
                 probs = tp_probs[i, 0]
+                unscaled_log_probs = tp_log_probs[i, 0]
                 valid_actions = list(range(len(probs)))
             else:
                 probs = turn_probs[i, 0]
+                unscaled_log_probs = turn_log_probs[i, 0]
                 if mask is not None:
                     probs = probs * mask
                     if probs.sum() == 0:
                         probs = mask / mask.sum()
                     else:
                         probs = probs / probs.sum()
+
+                    # Top-p (nucleus) filtering: zero out the tail of the
+                    # temperature-scaled sampling distribution so that only
+                    # the smallest set of actions whose cumulative probability
+                    # exceeds top_p are kept.
+                    if self.top_p < 1.0:
+                        sorted_idx = np.argsort(-probs)
+                        cum = np.cumsum(probs[sorted_idx])
+                        cutoff = np.searchsorted(cum, self.top_p) + 1
+                        keep = sorted_idx[:cutoff]
+                        filtered = np.zeros_like(probs)
+                        filtered[keep] = probs[keep]
+                        probs = filtered / filtered.sum()
+
                 valid_actions = list(range(len(probs)))
 
             action = (
@@ -222,7 +404,12 @@ class BatchInferencePlayer(Player):
                 if self.probabilistic
                 else np.argmax(probs)
             )
-            log_prob = np.log(probs[action] + 1e-10)
+
+            # Use the UNSCALED (T=1) log-prob for PPO importance ratios.
+            # The temperature-scaled probs only determine which action is
+            # *selected*, but the policy gradient must use the true policy
+            # distribution to avoid biased ratio estimates.
+            log_prob = float(unscaled_log_probs[action])
 
             future.set_result(
                 {
@@ -236,14 +423,42 @@ class BatchInferencePlayer(Player):
     async def _handle_battle_request(
         self, battle: AbstractBattle, maybe_default_order: bool = False
     ):
-        if maybe_default_order and random.random() < self.DEFAULT_CHOICE_CHANCE:
-            message = self.choose_default_move().message
-            await self.ps_client.send_message(message, battle.battle_tag)
+
+        # Defensive guard: do not attempt to send orders for battles that are already
+        # marked finished locally.
+        if getattr(battle, "finished", False):
             return
 
-        choice = self.choose_move(battle)
-        if asyncio.iscoroutine(choice):
-            choice = await choice
+        request_generation = self._request_generation.get(battle.battle_tag, 0) + 1
+        self._request_generation[battle.battle_tag] = request_generation
+
+        if maybe_default_order and random.random() < self.DEFAULT_CHOICE_CHANCE:
+            message = self.choose_default_move().message
+            try:
+                await self.ps_client.send_message(message, battle.battle_tag)
+            except Exception as exc:
+                logger.warning(
+                    "DEFAULT_SEND_FAILURE "
+                    f"tag={battle.battle_tag} turn={getattr(battle, 'turn', '?')} "
+                    f"message={message} err={repr(exc)}"
+                )
+                self.current_trajectories.pop(battle.battle_tag, None)
+                self.hidden_states.pop(battle.battle_tag, None)
+            return
+
+        choice = await self._choose_move_async(
+            battle,
+            request_generation=request_generation,
+        )
+
+        # Drop if a newer request superseded this one while inference/order
+        # computation was in flight.
+        if self._request_generation.get(battle.battle_tag, -1) != request_generation:
+            return
+
+        # Drop if battle finished before send.
+        if getattr(battle, "finished", False):
+            return
 
         if isinstance(choice, str):
             message = choice
@@ -252,8 +467,56 @@ class BatchInferencePlayer(Player):
         else:
             message = str(choice)
 
+        # Root-cause guardrail #1: TODO fix
+        # If battle requires a forced switch but the chosen message is a move command,
+        # rewrite to default order to avoid guaranteed invalid-choice errors.
+        if (
+            isinstance(battle, DoubleBattle)
+            and any(battle.force_switch)
+            and isinstance(message, str)
+            and message.startswith("/choose move")
+        ):
+            message = self.choose_default_move().message
+
+        # Root-cause guardrail #2:
+        # If no active slot can tera, strip accidental tera directive from message.
+        if (
+            isinstance(battle, DoubleBattle)
+            and isinstance(message, str)
+            and "terastallize" in message
+            and hasattr(battle, "can_tera")
+            and not any(getattr(battle, "can_tera", []))
+        ):
+            message = message.replace(" terastallize", "")
+
         if message:
-            await self.ps_client.send_message(message, battle.battle_tag)
+            try:
+                await self.ps_client.send_message(message, battle.battle_tag)
+            except Exception as exc:
+                # Rich context to diagnose first trigger root causes:
+                # - which battle tag failed
+                # - what message we attempted
+                # - legal move/switch context where available
+                active_names = []
+                legal_move_names = []
+                legal_switch_names = []
+                if isinstance(battle, DoubleBattle):
+                    active_names = [p.species for p in battle.active_pokemon if p is not None]
+                    for moves in battle.available_moves:
+                        legal_move_names.append([m.id for m in moves])
+                    for switches in battle.available_switches:
+                        legal_switch_names.append([p.species for p in switches])
+
+                logger.warning(
+                    "SEND_FAILURE "
+                    f"tag={battle.battle_tag} turn={getattr(battle, 'turn', '?')} "
+                    f"teampreview={getattr(battle, 'teampreview', False)} "
+                    f"force_switch={getattr(battle, 'force_switch', None)} "
+                    f"message={message} active={active_names} legal_moves={legal_move_names} "
+                    f"legal_switches={legal_switch_names} err={repr(exc)}"
+                )
+                self.current_trajectories.pop(battle.battle_tag, None)
+                self.hidden_states.pop(battle.battle_tag, None)
 
     def choose_move(self, battle: AbstractBattle) -> Any:
         return self._choose_move_async(battle)
@@ -263,7 +526,11 @@ class BatchInferencePlayer(Player):
             "teampreview() should not be called; decisions are routed through choose_move()"
         )
 
-    async def _choose_move_async(self, battle: AbstractBattle):
+    async def _choose_move_async(
+        self,
+        battle: AbstractBattle,
+        request_generation: Optional[int] = None,
+    ):
         if not isinstance(battle, DoubleBattle):
             return DefaultBattleOrder()
 
@@ -285,11 +552,77 @@ class BatchInferencePlayer(Player):
                 return DefaultBattleOrder()
         mask = None if battle.teampreview else fast_get_action_mask(battle)
 
+        # Snapshot request-time battle state so we can detect stale inference outputs.
+        request_turn = getattr(battle, "turn", -1)
+        request_teampreview = battle.teampreview
+        request_force_switch = (
+            tuple(bool(x) for x in battle.force_switch)
+            if isinstance(battle, DoubleBattle)
+            else tuple()
+        )
+
         loop = asyncio.get_running_loop()
         future = loop.create_future()
         await self.queue.put((state, future, battle.battle_tag, battle.teampreview, mask))
-        result = await future
+        try:
+            result = await asyncio.wait_for(future, timeout=self.inference_request_timeout_s)
+        except asyncio.TimeoutError:
+            logger.debug(
+                "INFERENCE_TIMEOUT tag=%s turn=%s teampreview=%s queue_size=%s",
+                battle.battle_tag, getattr(battle, 'turn', '?'),
+                battle.teampreview,
+                self.queue.qsize() if hasattr(self.queue, 'qsize') else '?',
+            )
+            self.current_trajectories.pop(battle.battle_tag, None)
+            self.hidden_states.pop(battle.battle_tag, None)
+            return DefaultBattleOrder()
+
+        # Request-generation guard: if a newer request is already active for this
+        # battle tag, drop this stale result before decoding/sending.
+        if request_generation is not None:
+            latest_generation = self._request_generation.get(battle.battle_tag, -1)
+            if latest_generation != request_generation:
+                logger.debug(
+                    "STALE_REQUEST_GENERATION_DROP tag=%s request_gen=%d latest_gen=%d",
+                    battle.battle_tag, request_generation, latest_generation,
+                )
+                self.current_trajectories.pop(battle.battle_tag, None)
+                self.hidden_states.pop(battle.battle_tag, None)
+                return DefaultBattleOrder()
+
         action_idx = result["action"]
+
+        # Root-cause guardrail #3:
+        # If battle state changed while waiting on batched inference, discard this
+        # decision instead of sending a potentially invalid/stale command.
+        current_turn = getattr(battle, "turn", -1)
+        current_teampreview = battle.teampreview
+        current_force_switch = (
+            tuple(bool(x) for x in battle.force_switch)
+            if isinstance(battle, DoubleBattle)
+            else tuple()
+        )
+        if (
+            current_turn != request_turn
+            or current_teampreview != request_teampreview
+            or current_force_switch != request_force_switch
+        ):
+            logger.debug(
+                "STALE_INFERENCE_DROP tag=%s turn=%d->%d tp=%s->%s fs=%s->%s",
+                battle.battle_tag, request_turn, current_turn,
+                request_teampreview, current_teampreview,
+                request_force_switch, current_force_switch,
+            )
+            self.current_trajectories.pop(battle.battle_tag, None)
+            self.hidden_states.pop(battle.battle_tag, None)
+            return DefaultBattleOrder()
+
+        if mask is not None and action_idx < len(mask) and mask[action_idx] == 0:
+            logger.warning(
+                "MASK_MISMATCH tag=%s turn=%s action_idx=%d mask_value=%s",
+                battle.battle_tag, getattr(battle, 'turn', '?'),
+                action_idx, mask[action_idx],
+            )
 
         if self.trajectory_queue is not None:
             self.current_trajectories.setdefault(battle.battle_tag, []).append(
@@ -301,6 +634,9 @@ class BatchInferencePlayer(Player):
                     "reward": 0,
                     "is_teampreview": battle.teampreview,
                     "mask": mask,
+                    "opponent_fainted": sum(
+                        1 for m in battle.opponent_team.values() if m.fainted
+                    ),
                 }
             )
         else:
@@ -320,6 +656,8 @@ class BatchInferencePlayer(Player):
             return DefaultBattleOrder()
 
     def _battle_finished_callback(self, battle: AbstractBattle):
+        self._request_generation.pop(battle.battle_tag, None)
+
         if battle.battle_tag in self._discarded_battles:
             self._discarded_battles.discard(battle.battle_tag)
             self.current_trajectories.pop(battle.battle_tag, None)
@@ -339,6 +677,14 @@ class BatchInferencePlayer(Player):
                 step_reward = -0.005
                 if t == len(traj) - 1:
                     step_reward += 1.0 if battle.won else -1.0
+                # KO reward: +0.05 for each opponent pokemon KO'd this step
+                prev_fainted = 0
+                prev_step = traj[t - 1] if t > 0 else None
+                if prev_step is not None:
+                    prev_fainted = prev_step["opponent_fainted"]
+                ko_delta = step["opponent_fainted"] - prev_fainted
+                if ko_delta > 0:
+                    step_reward += 0.05 * ko_delta
                 step["reward"] = step_reward
 
             filtered_traj = [step for step in traj if step is not None]
@@ -356,35 +702,43 @@ class BatchInferencePlayer(Player):
 
 class RNaDAgent(torch.nn.Module):
     """
-    RL Agent wrapper around FlexibleThreeHeadedModel.
+    RL Agent wrapper around FlexibleThreeHeadedModel or TransformerThreeHeadedModel.
     Handles hidden states and value function transformation.
     """
 
-    def __init__(self, model: FlexibleThreeHeadedModel):
+    def __init__(self, model: Union[FlexibleThreeHeadedModel, TransformerThreeHeadedModel]):
         super().__init__()
         self.model = model
+        self._is_transformer = isinstance(model, TransformerThreeHeadedModel)
 
-    def get_initial_state(self, batch_size, device):
+    def get_initial_state(self, batch_size: int, device: str):
+        if self._is_transformer:
+            # Transformer has no initial hidden state — context starts as None.
+            # Return a sentinel None that players.py checks.
+            return None
+        assert isinstance(self.model, FlexibleThreeHeadedModel)
         num_directions = 2
+        num_layers: int = self.model.lstm.num_layers
+        hidden_size: int = self.model.lstm_hidden_size
         h = torch.zeros(
-            self.model.lstm.num_layers * num_directions,
+            num_layers * num_directions,
             batch_size,
-            self.model.lstm_hidden_size,
+            hidden_size,
             device=device,
         )
         c = torch.zeros(
-            self.model.lstm.num_layers * num_directions,
+            num_layers * num_directions,
             batch_size,
-            self.model.lstm_hidden_size,
+            hidden_size,
             device=device,
         )
         return (h, c)
 
     def forward(self, x, hidden_state=None, mask=None):
-        turn_logits, tp_logits, value, next_hidden = self.model.forward_with_hidden(
-            x, hidden_state, mask
+        turn_logits, tp_logits, value, win_dist_logits, next_hidden = (
+            self.model.forward_with_hidden(x, hidden_state, mask)
         )
-        return turn_logits, tp_logits, value, next_hidden
+        return turn_logits, tp_logits, value, win_dist_logits, next_hidden
 
 
 class MaxDamagePlayer(Player):

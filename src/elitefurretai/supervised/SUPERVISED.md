@@ -57,8 +57,10 @@ await player.battle_against(opponent, n_battles=1)
 ### `model_archs.py`
 **Purpose**: Defines the neural network architectures.
 
-**Key Class**: `FlexibleThreeHeadedModel`
-This is the state-of-the-art architecture for the project.
+**Key Classes**:
+
+#### `FlexibleThreeHeadedModel`
+This is the primary architecture for the project, using a bidirectional LSTM backbone.
 *   **Design Choice (Grouped Encoder)**: Instead of a flat input vector, features are split into semantic groups (Player Mon 1-6, Opponent Mon 1-6, Global State). Each group is encoded separately. This allows the model to learn "Pokemon" representations that are invariant to slot position.
 *   **Design Choice (Cross-Attention)**: After encoding, an attention mechanism allows Pokemon to "look at" each other. This explicitly models synergy (teammate-teammate attention) and matchups (player-opponent attention).
 *   **Design Choice (Three Heads)**:
@@ -74,13 +76,33 @@ This is the state-of-the-art architecture for the project.
             *   Ways to pick 2 leads from 6: $\binom{6}{2} = 15$
             *   Ways to pick 2 back from remaining 4: $\binom{4}{2} = 6$
             *   Total combinations: $15 \times 6 = 90$.
-    3.  **Win Head**: Predicts "Win Advantage" (scalar).
-        *   **Why not just Win/Loss?** Pokemon is highly stochastic. A player might make perfect moves but lose due to a 5% miss chance. Predicting raw Win/Loss would add noise to the training.
-        *   **Ensemble Advantage**: The target is a weighted ensemble of:
-            *   **Current Position**: Heuristic evaluation of the board (HP, type matchups, speed control).
-            *   **Near-Future**: Evaluation of the state up to 3 turns later.
-            *   **Final Outcome**: Who actually won (-1 or 1).
-        *   **Dynamic Weighting**: Early in the game, the target relies more on the heuristic evaluation. As the game progresses ($t \to T$), the weight shifts quadratically towards the actual Final Outcome. This smooths out RNG-based losses while still grounding the model in reality.
+    3.  **Win Head (Distributional)**: Predicts win probability via C51 distributional head.
+        *   **C51 Distribution**: Instead of a scalar in [-1, 1], outputs logits over 51 bins spanning [-1, 1]. The expected value is computed as `(softmax(logits) * support).sum(-1)`.
+        *   **Two-hot encoding**: Target values are encoded as soft distributions via `twohot_encode()` — interpolating between the two nearest bin centers.
+        *   **Why distributional?** Captures the full return distribution (win/loss is bimodal). Provides richer gradients than scalar MSE. Stabilizes RL training significantly.
+        *   **Forward return change**: `forward()` returns 4 values: `(turn_logits, tp_logits, win_values, win_dist_logits)`. `forward_with_hidden()` returns 5: adds hidden state.
+
+#### `NumberBankEncoder`
+Replaces raw float inputs for selected numerical features with learned embedding lookups.
+*   **Feature types**: HP% → `hp_bank` (100 bins), stats → `stat_bank` (600 bins), base power → `power_bank` (250 bins)
+*   **How it works**: Features are identified by pattern matching on `Embedder.feature_names`. Each matched feature is discretized into buckets and replaced with a learned embedding vector.
+*   **Integration**: Applied inside `GroupedFeatureEncoder` — the Embedder output format is unchanged
+*   **Config**: Gated by `use_number_banks` (disabled by default)
+
+#### `TransformerThreeHeadedModel`
+Alternative backbone that replaces the bidirectional LSTM with a TransformerEncoder and decision tokens.
+*   **Decision tokens**: Three learned parameter vectors `[ACTOR]`, `[CRITIC]`, `[FIELD]` are prepended to the sequence. ACTOR token output feeds the turn head, CRITIC feeds the value head.
+*   **Positional encoding**: Sinusoidal (supports variable-length sequences at inference)
+*   **Causal mask**: Past turns can only attend to themselves and prior turns. Decision tokens can attend to everything.
+*   **Hidden state**: Instead of LSTM `(h, c)`, uses a growing context tensor of past encoded features. Each turn appends to the context.
+*   **Config**: Gated by `use_transformer` (disabled by default). Key params: `transformer_layers`, `transformer_heads`, `transformer_ff_dim`
+*   **Same three heads**: Identical turn/teampreview/win head structure as `FlexibleThreeHeadedModel`
+
+#### `GroupedFeatureEncoder`
+Encodes features by semantic groups with optional number bank integration and cross-attention for Pokemon synergies.
+
+#### `SinusoidalPositionalEncoding`
+Standard sinusoidal positional encoding for the Transformer backbone. Supports variable-length sequences up to `max_len`.
 
 ### `three_headed_transformer.py`
 **Purpose**: The main training loop for the transformer model.

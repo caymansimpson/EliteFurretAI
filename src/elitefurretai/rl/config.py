@@ -1,6 +1,7 @@
+import math
 import os
 from dataclasses import asdict, dataclass, field
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import yaml
 
@@ -37,6 +38,94 @@ class RNaDConfig:
     )
     vf_coef: float = (
         0.5  # Value function loss coefficient (weight of value loss in total loss)
+    )
+
+    # ===== Exploration related =====
+    temperature_start: float = (
+        1.5  # Initial sampling temperature (higher = more exploration)
+    )
+    temperature_end: float = (
+        0.5  # Final sampling temperature after annealing
+    )
+    temperature_anneal_steps: int = (
+        50000  # Linear anneal from start→end over this many training updates
+    )
+    ent_coef_end: float = (
+        0.001  # Anneal ent_coef from ent_coef→ent_coef_end alongside temperature
+    )
+    top_p: float = (
+        0.95  # Nucleus sampling threshold (1.0 = disabled)
+    )
+
+    # ===== Optimizer related =====
+    optimizer: Dict[str, Any] = field(
+        default_factory=lambda: {
+            "type": "adamw",
+            "weight_decay": 1e-4,
+            "warmup_steps": 1000,
+            "schedule": "cosine",
+            "param_groups": {
+                "backbone": {
+                    "lr": 1e-4,
+                    "weight_decay": 1e-4,
+                },
+                "heads": {
+                    "lr": 3e-4,
+                    "weight_decay": 0.0,
+                },
+            },
+        }
+    )  # Optimizer configuration dict. Keys: type (adam/adamw), weight_decay, warmup_steps, schedule (constant/cosine/linear), param_groups (backbone/heads with per-group lr and weight_decay)
+
+    # ===== Distributional Value Head =====
+    num_value_bins: int = (
+        51  # Number of bins in C51 distributional value head
+    )
+    value_min: float = (
+        -1.0  # Minimum value support for distributional head
+    )
+    value_max: float = (
+        1.0  # Maximum value support for distributional head
+    )
+
+    # ===== Number Bank Embeddings =====
+    use_number_banks: bool = (
+        False  # Use learned embeddings for numerical features instead of raw floats
+    )
+    number_bank_embedding_dim: int = (
+        16  # Embedding dimension per numerical feature bucket
+    )
+    number_bank_hp_bins: int = (
+        100  # Bins for HP%/fraction features (0.0 → 1.0)
+    )
+    number_bank_stat_bins: int = (
+        600  # Bins for stat values (0 → ~600)
+    )
+    number_bank_power_bins: int = (
+        250  # Bins for move base power (0 → ~250)
+    )
+
+    # ===== Transformer Architecture =====
+    use_transformer: bool = (
+        False  # Use Transformer backbone instead of LSTM
+    )
+    transformer_layers: int = (
+        6  # Number of TransformerEncoder layers
+    )
+    transformer_heads: int = (
+        16  # Number of attention heads in Transformer
+    )
+    transformer_ff_dim: int = (
+        2048  # Feedforward dimension in Transformer layers
+    )
+    transformer_dropout: float = (
+        0.1  # Dropout rate in Transformer layers
+    )
+    use_decision_tokens: bool = (
+        True  # Use [ACTOR], [CRITIC], [FIELD] decision tokens
+    )
+    use_causal_mask: bool = (
+        True  # Causal attention mask for RL autoregressive inference
     )
 
     # ===== Performance / Hardware related =====
@@ -173,7 +262,6 @@ class RNaDConfig:
     dropout: float = 0.15
     early_attention_heads: int = 16
     early_layers: List[int] = field(default_factory=lambda: [4096, 2048, 2048, 1024])
-    gated_residuals: bool = False
     grouped_encoder_aggregated_dim: int = 4096
     grouped_encoder_hidden_dim: int = 512
     late_attention_heads: int = 32
@@ -186,7 +274,6 @@ class RNaDConfig:
     teampreview_head_dropout: float = 0.3
     teampreview_head_layers: List[int] = field(default_factory=lambda: [512, 256])
     turn_head_layers: List[int] = field(default_factory=lambda: [2048, 1024, 1024, 1024])
-    use_grouped_encoder: bool = True
 
     def __post_init__(self):
         if self.max_portfolio_size <= 0:
@@ -199,6 +286,47 @@ class RNaDConfig:
             raise ValueError("max_loaded_exploiter_models must be > 0")
         if self.max_loaded_ghost_models <= 0:
             raise ValueError("max_loaded_ghost_models must be > 0")
+        # Ensure optimizer dict has required keys with defaults
+        _opt_defaults = {
+            "type": "adamw",
+            "weight_decay": 1e-4,
+            "warmup_steps": 1000,
+            "schedule": "cosine",
+            "param_groups": {
+                "backbone": {"lr": self.lr, "weight_decay": 1e-4},
+                "heads": {"lr": self.lr * 3, "weight_decay": 0.0},
+            },
+        }
+        for k, v in _opt_defaults.items():
+            self.optimizer.setdefault(k, v)
+        if "param_groups" not in self.optimizer or not self.optimizer["param_groups"]:
+            self.optimizer["param_groups"] = _opt_defaults["param_groups"]
+
+    def temperature_at_step(self, step: int) -> float:
+        """Compute linearly annealed temperature at a given training step."""
+        progress = min(step / max(self.temperature_anneal_steps, 1), 1.0)
+        return self.temperature_start + progress * (self.temperature_end - self.temperature_start)
+
+    def ent_coef_at_step(self, step: int) -> float:
+        """Compute linearly annealed entropy coefficient at a given training step."""
+        progress = min(step / max(self.temperature_anneal_steps, 1), 1.0)
+        return self.ent_coef + progress * (self.ent_coef_end - self.ent_coef)
+
+    def lr_lambda(self, step: int) -> float:
+        """Compute LR multiplier for scheduler at a given step."""
+        warmup = self.optimizer.get("warmup_steps", 0)
+        schedule = self.optimizer.get("schedule", "constant")
+        total = self.max_updates
+
+        if step < warmup:
+            return step / max(warmup, 1)
+        if schedule == "cosine":
+            progress = (step - warmup) / max(total - warmup, 1)
+            return 0.5 * (1 + math.cos(math.pi * progress))
+        elif schedule == "linear":
+            progress = (step - warmup) / max(total - warmup, 1)
+            return max(1.0 - progress, 0.0)
+        return 1.0  # constant
 
     def save(self, filepath: str):
         """Save config to YAML file."""

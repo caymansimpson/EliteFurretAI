@@ -216,9 +216,7 @@ class BattleDataset(Dataset):
 
             # Convert training data into embedding and state into a label
             states[i] = torch.tensor(
-                self.embedder.feature_dict_to_vector(  # type: ignore
-                    self.embedder.embed(iter.battle)  # type: ignore[arg-type]
-                )
+                self.embedder.embed_to_vector(iter.battle)  # type: ignore[arg-type]
             )
             actions[i] = action_idx
             masks[i] = 1

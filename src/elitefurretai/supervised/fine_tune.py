@@ -20,17 +20,20 @@ import os
 import time
 from typing import Optional
 
-import orjson
 import torch
+import yaml
 
 import wandb
-from elitefurretai.etl import Embedder, OptimizedBattleDataLoader
+from elitefurretai.etl import (
+    Embedder,
+    OptimizedBattleDataLoader,
+)
 from elitefurretai.etl.encoder import MDBO
 from elitefurretai.etl.system_utils import configure_torch_multiprocessing
 
 # Import the model and training components from the original script
+from elitefurretai.supervised.model_archs import FlexibleThreeHeadedModel
 from elitefurretai.supervised.train import (
-    FlexibleThreeHeadedModel,
     train_epoch,
 )
 from elitefurretai.supervised.train_utils import evaluate, format_time
@@ -58,26 +61,23 @@ def load_model_and_config(model_path: str, device: str):
     config = checkpoint["config"]
     print(f"Loaded config with {len(config)} parameters")
 
-    # Create embedder (same as in training)
+    # Create embedder from config (with defaults for older checkpoints)
     embedder = Embedder(
-        format="gen9vgc2023regc", feature_set=Embedder.FULL, omniscient=False
+        format=config.get("battle_format", "gen9vgc2023regc"),
+        feature_set=config.get("embedder_feature_set", Embedder.FULL),
+        omniscient=False,
     )
 
-    # Create model with same architecture
+    # Create model with same architecture (with defaults for new params missing from old checkpoints)
     model = FlexibleThreeHeadedModel(
-        input_size=embedder.embedding_size,
+        embedder=embedder,
         early_layers=config["early_layers"],
         late_layers=config["late_layers"],
         lstm_layers=config["lstm_layers"],
         lstm_hidden_size=config["lstm_hidden_size"],
         dropout=config["dropout"],
-        gated_residuals=config["gated_residuals"],
         early_attention_heads=config["early_attention_heads"],
         late_attention_heads=config["late_attention_heads"],
-        use_grouped_encoder=config["use_grouped_encoder"],
-        group_sizes=(
-            embedder.group_embedding_sizes if config["use_grouped_encoder"] else None
-        ),
         grouped_encoder_hidden_dim=config["grouped_encoder_hidden_dim"],
         grouped_encoder_aggregated_dim=config["grouped_encoder_aggregated_dim"],
         pokemon_attention_heads=config["pokemon_attention_heads"],
@@ -87,11 +87,18 @@ def load_model_and_config(model_path: str, device: str):
         teampreview_head_dropout=config["teampreview_head_dropout"],
         teampreview_attention_heads=config["teampreview_attention_heads"],
         turn_head_layers=config["turn_head_layers"],
-        max_seq_len=17,
+        max_seq_len=config.get("max_seq_len", 40),
+        num_value_bins=config.get("num_value_bins", 51),
+        value_min=config.get("value_min", -1.0),
+        value_max=config.get("value_max", 1.0),
     ).to(device)
 
-    # Load the state dict
-    model.load_state_dict(checkpoint["model_state_dict"])
+    # Load the state dict (strict=False to handle old checkpoints missing new params like distributional head)
+    missing, unexpected = model.load_state_dict(checkpoint["model_state_dict"], strict=False)
+    if missing:
+        print(f"Warning: Missing keys (will use random init): {missing}")
+    if unexpected:
+        print(f"Warning: Unexpected keys (ignored): {unexpected}")
     print("Model weights loaded successfully")
 
     num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -118,7 +125,7 @@ def finetune(
         model_path: Path to saved model checkpoint
         wandb_run_name: Custom name for wandb run (optional)
         num_epochs: Number of additional epochs to train (default: 10)
-        config_override_path: Optional path to JSON config file to override loaded config
+        config_override_path: Optional path to YAML config file to override loaded config
     """
     # Determine device
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -130,8 +137,8 @@ def finetune(
     # Override config with new values if provided
     if config_override_path:
         print(f"\nLoading config overrides from {config_override_path}...")
-        with open(config_override_path, "rb") as f:
-            config_override = orjson.loads(f.read())
+        with open(config_override_path, "r") as f:
+            config_override = yaml.safe_load(f) or {}
 
         for key, value in config_override.items():
             config[key] = value
@@ -348,17 +355,17 @@ if __name__ == "__main__":
         epilog="""
 Examples:
   # Fine-tune with original config
-  python finetune_three_headed_transformer.py \\
-      data/battles/regc_trajectory \\
-      data/models/my_model.pt \\
+  python fine_tune.py \\
+      data/battles/regc_final_v2 \\
+      data/models/supervised/my_model.pt \\
       my_model_finetuned
 
   # Fine-tune with modified hyperparameters
-  python finetune_three_headed_transformer.py \\
-      data/battles/regc_trajectory \\
-      data/models/my_model.pt \\
+  python fine_tune.py \\
+      data/battles/regc_final_v2 \\
+      data/models/supervised/my_model.pt \\
       my_model_with_lower_lr \\
-      --config-override config_override.cfg
+      --config-override configs/finetune.yaml
         """,
     )
 
@@ -375,7 +382,7 @@ Examples:
         "--config-override",
         type=str,
         default=None,
-        help="Optional path to JSON config file to override loaded model config",
+        help="Optional path to YAML config file to override loaded model config",
     )
 
     args = parser.parse_args()

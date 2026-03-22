@@ -12,14 +12,17 @@ Enhanced RNaD training with:
 import argparse
 import asyncio
 import copy
+import logging
 import multiprocessing as mp
 import os
 import queue
+import random
 import signal
 import subprocess
 import sys
 import threading
 import time
+from collections import deque
 from datetime import datetime
 from multiprocessing import Queue as MPQueue
 from multiprocessing.synchronize import Event as MPEvent
@@ -59,6 +62,8 @@ from elitefurretai.rl.server_manager import (
 from elitefurretai.supervised import format_time
 from elitefurretai.supervised.model_archs import FlexibleThreeHeadedModel
 
+logger = logging.getLogger(__name__)
+
 
 def initialize_learner(
     config: RNaDConfig,
@@ -72,17 +77,7 @@ def initialize_learner(
         return PortfolioRNaDLearner(
             agent,
             [ref_agent],
-            lr=config.lr,
-            rnad_alpha=config.rnad_alpha,
-            gradient_clip=config.max_grad_norm,
-            device=config.device,
-            gamma=config.gamma,
-            clip_range=config.clip_range,
-            ent_coef=config.ent_coef,
-            vf_coef=config.vf_coef,
-            use_mixed_precision=config.use_mixed_precision,
-            max_portfolio_size=config.max_portfolio_size,
-            portfolio_update_strategy=config.portfolio_update_strategy,
+            config=config,
         )
 
     ref_model = copy.deepcopy(base_model)
@@ -90,15 +85,7 @@ def initialize_learner(
     return RNaDLearner(
         agent,
         ref_agent,
-        lr=config.lr,
-        rnad_alpha=config.rnad_alpha,
-        device=config.device,
-        gamma=config.gamma,
-        clip_range=config.clip_range,
-        ent_coef=config.ent_coef,
-        vf_coef=config.vf_coef,
-        use_mixed_precision=config.use_mixed_precision,
-        gradient_clip=config.max_grad_norm,
+        config=config,
     )
 
 
@@ -115,7 +102,7 @@ def resolve_worker_model_source(config: RNaDConfig, agent: RNaDAgent) -> str:
         },
         bootstrap_path,
     )
-    print(f"Saved worker bootstrap checkpoint to {bootstrap_path}")
+    logger.info("Saved worker bootstrap checkpoint to %s", bootstrap_path)
     return bootstrap_path
 
 
@@ -144,7 +131,7 @@ def initialize_training_state(
     start_step = 0
 
     if config.resume_from:
-        print(f"Resuming model+optimizer from {config.resume_from}...")
+        logger.info("Resuming model+optimizer from %s...", config.resume_from)
         embedder = Embedder(
             format=config.battle_format,
             feature_set=cfg["embedder_feature_set"],
@@ -163,7 +150,7 @@ def initialize_training_state(
         worker_model_path = config.resume_from
         worker_model_config = old_config.to_dict()
     elif config.initialize_path:
-        print(f"Initializing model weights from {config.initialize_path}...")
+        logger.info("Initializing model weights from %s...", config.initialize_path)
         init_checkpoint = torch.load(
             config.initialize_path,
             map_location=config.device,
@@ -187,7 +174,7 @@ def initialize_training_state(
         worker_model_path = config.initialize_path
         worker_model_config = checkpoint_cfg
     else:
-        print("Initializing fresh model from config...")
+        logger.info("Initializing fresh model from config...")
         embedder = Embedder(
             format=config.battle_format,
             feature_set=cfg["embedder_feature_set"],
@@ -214,8 +201,8 @@ def get_dead_workers(processes: List[mp.Process], error_queue: MPQueue, verbose:
     dead_procs = [p for p in processes if not p.is_alive()]
 
     if verbose and len(dead_procs) > 0:
-        print(f"\n{'='*60}")
-        print(f"ERROR: {len(dead_procs)} worker process(es) died:")
+        logger.error("="*60)
+        logger.error("%d worker process(es) died:", len(dead_procs))
         for p in dead_procs:
             exit_code = p.exitcode
             exit_reason = {
@@ -226,25 +213,24 @@ def get_dead_workers(processes: List[mp.Process], error_queue: MPQueue, verbose:
                 -11: "SIGSEGV (segmentation fault)",
                 -15: "SIGTERM (terminated)",
             }.get(exit_code, f"exit code {exit_code}")
-            print(f"  - {p.name} (PID: {p.pid}): {exit_reason}")
+            logger.error("  - %s (PID: %s): %s", p.name, p.pid, exit_reason)
 
         # Check error queue for detailed error messages from workers
-        print("\nChecking for error reports from workers...")
+        logger.error("Checking for error reports from workers...")
         error_found = False
         while True:
             try:
                 error_info = error_queue.get_nowait()
                 error_found = True
-                print(f"\n--- Error from Worker {error_info['worker_id']} ---")
-                print(f"Exception: {error_info['error']}")
-                print(f"Traceback:\n{error_info['traceback']}")
+                logger.error("Error from Worker %s: %s", error_info['worker_id'], error_info['error'])
+                logger.error("Traceback:\n%s", error_info['traceback'])
             except Exception:
                 break
         if not error_found:
-            print("No error reports in queue (worker may have crashed before reporting)")
+            logger.error("No error reports in queue (worker may have crashed before reporting)")
 
-        print("\nTraining cannot continue. Saving checkpoint and exiting...")
-        print(f"{'='*60}\n")
+        logger.error("Training cannot continue. Saving checkpoint and exiting...")
+        logger.error("="*60)
 
     return dead_procs
 
@@ -302,7 +288,11 @@ def mp_worker_process(
         team_pool_path = config.base_team_path
         team_subdirectory = config.team_pool_path
         num_players = config.players_per_worker
-        device = config.device
+        # Root fix for worker CUDA OOM:
+        # Actor workers should run inference on CPU (IMPALA-style CPU actors), while
+        # the learner remains on GPU. Using config.device for every worker duplicates
+        # model allocation across processes and can exhaust VRAM during startup.
+        device = "cpu"
         batch_size = config.batch_size
         batch_timeout = config.batch_timeout
         max_battle_steps = config.max_battle_steps
@@ -326,7 +316,7 @@ def mp_worker_process(
             ]
 
         if verbose:
-            print(f"[MPWorker {worker_id}] Starting (PID: {os.getpid()})... Initial memory: {get_memory_usage_mb()}", flush=True)
+            logger.debug("[MPWorker %d] Starting (PID: %d)... Initial memory: %s", worker_id, os.getpid(), get_memory_usage_mb())
 
         # Set thread count to avoid contention within process
         torch.set_num_threads(2)
@@ -334,11 +324,11 @@ def mp_worker_process(
         # IMPORTANT: Load model to CPU first, then move to device
         # This avoids CUDA re-initialization issues with forked processes
         if verbose:
-            print(f"[MPWorker {worker_id}] Loading model from {model_path}... Memory: {get_memory_usage_mb()}", flush=True)
+            logger.debug("[MPWorker %d] Loading model from %s... Memory: %s", worker_id, model_path, get_memory_usage_mb())
         # Load checkpoint and extract config
         checkpoint = torch.load(model_path, map_location="cpu", weights_only=False)
         if verbose:
-            print(f"[MPWorker {worker_id}] Checkpoint loaded... Memory: {get_memory_usage_mb()}", flush=True)
+            logger.debug("[MPWorker %d] Checkpoint loaded... Memory: %s", worker_id, get_memory_usage_mb())
 
         # Create embedder from checkpoint config
         embedder_feature_set = checkpoint["config"].get("embedder_feature_set", "full")
@@ -350,7 +340,7 @@ def mp_worker_process(
 
         # Build main model using consolidated builder
         if verbose:
-            print(f"[MPWorker {worker_id}] Building model on device={device}... Memory: {get_memory_usage_mb()}", flush=True)
+            logger.debug("[MPWorker %d] Building model on device=%s... Memory: %s", worker_id, device, get_memory_usage_mb())
         model = build_model_from_config(
             model_config, embedder, device, checkpoint["model_state_dict"]
         )
@@ -358,13 +348,13 @@ def mp_worker_process(
         agent = RNaDAgent(model)
         del checkpoint  # Free memory
         if verbose:
-            print(f"[MPWorker {worker_id}] Model built... Memory: {get_memory_usage_mb()}", flush=True)
+            logger.debug("[MPWorker %d] Model built... Memory: %s", worker_id, get_memory_usage_mb())
 
         # Create BC agent if needed (frozen, never receives weight updates)
         bc_agent = None
         if curriculum and curriculum.get("bc_player", 0) > 0 and bc_model_path:
             if verbose:
-                print(f"[MPWorker {worker_id}] Loading BC model... Memory: {get_memory_usage_mb()}", flush=True)
+                logger.debug("[MPWorker %d] Loading BC model... Memory: %s", worker_id, get_memory_usage_mb())
             bc_checkpoint = torch.load(bc_model_path, map_location="cpu", weights_only=False)
             bc_model = build_model_from_config(
                 model_config, embedder, device, bc_checkpoint["model_state_dict"]
@@ -375,11 +365,11 @@ def mp_worker_process(
             bc_agent = RNaDAgent(bc_model)
             del bc_checkpoint
             if verbose:
-                print(f"[MPWorker {worker_id}] BC model loaded and frozen... Memory: {get_memory_usage_mb()}", flush=True)
+                logger.debug("[MPWorker %d] BC model loaded and frozen... Memory: %s", worker_id, get_memory_usage_mb())
 
         # Load team repo
         if verbose:
-            print(f"[MPWorker {worker_id}] Loading teams from {team_pool_path}... Memory: {get_memory_usage_mb()}", flush=True)
+            logger.debug("[MPWorker %d] Loading teams from %s... Memory: %s", worker_id, team_pool_path, get_memory_usage_mb())
         team_repo = TeamRepo(team_pool_path)
 
         # Set up asyncio event loop for this process
@@ -394,7 +384,7 @@ def mp_worker_process(
 
         # Use WorkerOpponentFactory to manage all opponent creation and sampling
         if verbose:
-            print(f"[MPWorker {worker_id}] Creating opponent factory... Memory: {get_memory_usage_mb()}", flush=True)
+            logger.debug("[MPWorker %d] Creating opponent factory... Memory: %s", worker_id, get_memory_usage_mb())
         factory = WorkerOpponentFactory(
             team_repo=team_repo,
             battle_format=battle_format,
@@ -425,12 +415,12 @@ def mp_worker_process(
         num_pairs = num_players // 2
         factory.create_agents(num_pairs, local_traj_queue)
         if verbose:
-            print(f"[MPWorker {worker_id}] Created {num_pairs} player pairs... Memory: {get_memory_usage_mb()}", flush=True)
+            logger.debug("[MPWorker %d] Created %d player pairs... Memory: %s", worker_id, num_pairs, get_memory_usage_mb())
 
         # Start inference loops
         factory.start_inference_loops()
         if verbose:
-            print(f"[MPWorker {worker_id}] Inference loops started... Memory: {get_memory_usage_mb()}", flush=True)
+            logger.debug("[MPWorker %d] Inference loops started... Memory: %s", worker_id, get_memory_usage_mb())
 
         async def run_battles(num_battles_per_pair: int):
             """Main battle loop with team randomization and curriculum-based opponent selection."""
@@ -438,8 +428,29 @@ def mp_worker_process(
             if external_vgcbench_usernames:
                 await asyncio.sleep(external_vgcbench_startup_wait_s)
 
+
             battle_batch = 0
             last_weight_check = time.time()
+            consecutive_vgcbench_timeouts = 0
+            vgcbench_disabled_locally = False # switch to config
+            # Hard failover: if workers keep sampling battles but produce no trajectories,
+            # abort this worker instead of hanging indefinitely for hours.
+            consecutive_zero_completion_batches = 0
+            zero_completion_failover_threshold = 5
+
+            # Rolling windows for slowdown diagnostics before hard failures occur.
+            batch_duration_window: deque[float] = deque(maxlen=50)
+            timeout_window: deque[int] = deque(maxlen=50)
+            zero_completion_window: deque[int] = deque(maxlen=50)
+            battles_per_task = max(1, min(4, num_battles_per_pair))
+
+            # Guardrail: prevent a single stuck challenge/battle coroutine from deadlocking
+            # the entire worker forever. The timeout is deliberately generous to avoid
+            # penalizing slow but healthy batches.
+            batch_task_timeout_s = min(
+                600.0,
+                max(120.0, float(battles_per_task * max(6, max_battle_steps // 2))),
+            )
 
             while not stop_event.is_set():
                 battle_batch += 1
@@ -449,46 +460,192 @@ def mp_worker_process(
                 if time.time() - last_weight_check > 1.0:
                     try:
                         while not weight_queue.empty():
-                            new_weights = weight_queue.get_nowait()
-                            model.load_state_dict(new_weights)
+                            incoming_payload = weight_queue.get_nowait()
+                            if isinstance(incoming_payload, dict) and "weights" in incoming_payload:
+                                model.load_state_dict(incoming_payload["weights"])
+                                new_curriculum = incoming_payload.get("curriculum")
+                                if isinstance(new_curriculum, dict):
+                                    factory.update_curriculum(new_curriculum)
+                                # Apply exploration params to training players
+                                new_temp = incoming_payload.get("temperature")
+                                new_top_p = incoming_payload.get("top_p")
+                                if new_temp is not None or new_top_p is not None:
+                                    for p in factory.players:
+                                        if new_temp is not None:
+                                            p.temperature = new_temp
+                                        if new_top_p is not None:
+                                            p.top_p = new_top_p
+                            else:
+                                model.load_state_dict(incoming_payload)
                             if verbose:
-                                print(f"[MPWorker {worker_id}] Updated weights")
+                                logger.debug("[MPWorker %d] Updated weights", worker_id)
                     except Exception:
                         pass
                     last_weight_check = time.time()
 
                 # Prepare and execute curriculum-driven battles for this batch
                 tasks, _batch_opponent_types = factory.prepare_batch_tasks(
-                    num_battles_per_pair
+                    battles_per_task
                 )
-                await asyncio.gather(*tasks)
+                sampled_counts: Dict[str, int] = {}
+                for opp_type in _batch_opponent_types:
+                    sampled_counts[opp_type] = sampled_counts.get(opp_type, 0) + 1
+
+                pending_tasks: Dict[asyncio.Task[Any], str] = {}
+                done_tasks: set[asyncio.Task[Any]] = set()
+                unfinished_tasks: set[asyncio.Task[Any]] = set()
+                timeout_counts: Dict[str, int] = {}
+                if tasks:
+                    # We create explicit asyncio.Tasks so each task can be inspected,
+                    # canceled, and attributed to its sampled opponent type.
+                    running_tasks = [asyncio.create_task(task) for task in tasks]
+                    for i, running_task in enumerate(running_tasks):
+                        opp_type = (
+                            _batch_opponent_types[i]
+                            if i < len(_batch_opponent_types)
+                            else "unknown"
+                        )
+                        pending_tasks[running_task] = opp_type
+
+                    done_tasks, unfinished_tasks = await asyncio.wait(
+                        running_tasks,
+                        timeout=batch_task_timeout_s,
+                        return_when=asyncio.ALL_COMPLETED,
+                    )
+
+                    # Consume finished task exceptions to avoid "Task exception was never retrieved"
+                    # warnings from asyncio.
+                    for done_task in done_tasks:
+                        try:
+                            _ = done_task.exception()
+                        except asyncio.CancelledError:
+                            pass
+
+                    had_timeout = len(unfinished_tasks) > 0
+                    timed_out_types: List[str] = []
+                    if had_timeout:
+                        # Cancel unfinished tasks so this batch can unwind and either recover
+                        # or intentionally fail fast.
+                        for unfinished_task in unfinished_tasks:
+                            timed_out_types.append(
+                                pending_tasks.get(unfinished_task, "unknown")
+                            )
+                            unfinished_task.cancel()
+
+                        # Drain cancellations so in-flight challenge coroutines finish
+                        # unwinding before we start the next batch.
+                        await asyncio.gather(*unfinished_tasks, return_exceptions=True)
+                else:
+                    had_timeout = False
+                    timed_out_types = []
+
+                if had_timeout:
+                    for opp_type in timed_out_types:
+                        timeout_counts[opp_type] = timeout_counts.get(opp_type, 0) + 1
+
+                    if factory.VGC_BENCH_BASELINE in timeout_counts:
+                        consecutive_vgcbench_timeouts += 1
+                    else:
+                        consecutive_vgcbench_timeouts = 0
+
+                else:
+                    consecutive_vgcbench_timeouts = 0
+
+                if (
+                    not vgcbench_disabled_locally
+                    and external_vgcbench_usernames
+                    and consecutive_vgcbench_timeouts >= 2
+                ):
+                    # Root-cause fallback: if external challenge battles repeatedly hang,
+                    # remove that opponent type locally so training keeps making progress.
+                    updated_curriculum = dict(factory.curriculum)
+                    if updated_curriculum.get(factory.VGC_BENCH_BASELINE, 0.0) > 0.0:
+                        updated_curriculum[factory.VGC_BENCH_BASELINE] = 0.0
+                        factory.update_curriculum(updated_curriculum)
+                        vgcbench_disabled_locally = True
 
                 # Transfer trajectories to main process
                 total_time = time.time() - start
                 battles_completed = sum(p.n_finished_battles for p in factory.players)
                 transferred = 0
+                completed_counts: Dict[str, int] = {}
                 while not local_traj_queue.empty():
                     try:
                         traj = local_traj_queue.get_nowait()
+                        if isinstance(traj, dict):
+                            opp_type = traj.get("opponent_type", "unknown")
+                            completed_counts[opp_type] = (
+                                completed_counts.get(opp_type, 0) + 1
+                            )
+                        else:
+                            completed_counts["legacy"] = (
+                                completed_counts.get("legacy", 0) + 1
+                            )
                         traj_queue.put(traj)
                         transferred += 1
                     except Exception:
                         break
 
                 if verbose:
-                    print(f"[MPWorker {worker_id}] Batch {battle_batch}: {battles_completed} battles in {total_time:.2f}s ({battles_completed / total_time:.2f} b/s) | Sent {transferred} trajectories... Memory: {get_memory_usage_mb()}", flush=True)
+                    logger.debug(
+                        "[MPWorker %d] Batch %d: %d battles in %.2fs (%.2f b/s) | Sent %d trajectories... Memory: %s",
+                        worker_id, battle_batch, battles_completed, total_time,
+                        battles_completed / total_time if total_time > 0 else 0,
+                        transferred, get_memory_usage_mb(),
+                    )
+
+                # Diagnostic + hard failover tracking:
+                # if we sampled at least one task but produced zero trajectories, increment
+                # a streak counter. A prolonged streak means the worker is no longer making
+                # learning progress and should fail fast.
+                if sampled_counts and not completed_counts:
+                    consecutive_zero_completion_batches += 1
+                else:
+                    consecutive_zero_completion_batches = 0
+
+                # Batch timing telemetry:
+                # - mean wall time over recent batches (slowness signal)
+                # - timeout ratio and zero-completion ratio (quality signal)
+                batch_duration_s = time.time() - start
+                batch_duration_window.append(batch_duration_s)
+                timeout_window.append(1 if had_timeout else 0)
+                zero_completion_window.append(1 if (sampled_counts and not completed_counts) else 0)
+
+                if consecutive_zero_completion_batches >= zero_completion_failover_threshold:
+                    # Hard failover: crash this worker deliberately so the main process can
+                    # checkpoint and exit instead of silently stalling forever.
+                    raise RuntimeError(
+                        "Worker entered sustained zero-completion state "
+                        f"({consecutive_zero_completion_batches} consecutive batches)."
+                    )
 
                 # Clean up battle state for next batch
+                if had_timeout:
+                    # Root-cause recovery: canceled challenge coroutines can leave lingering
+                    # challenge/session state even when no unfinished battle is currently tracked.
+                    # Rebuild runtime agents immediately to guarantee a clean websocket/challenge state.
+                    factory.rebuild_runtime_agents(local_traj_queue)
+                    await asyncio.sleep(0.2)
+                    continue
+
+                unfinished_summary = factory.get_unfinished_battle_summary()
+                if unfinished_summary["total_unfinished"] > 0:
+                    # Rebuild path (previously added): we intentionally rebuild instead of
+                    # calling reset_battles() while battles are still active.
+                    factory.rebuild_runtime_agents(local_traj_queue)
+                    await asyncio.sleep(0.2)
+                    continue
+
                 factory.reset_all_battles()
 
         loop.run_until_complete(run_battles(num_battles_per_pair))
         if verbose:
-            print(f"[MPWorker {worker_id}] Finished gracefully", flush=True)
+            logger.debug("[MPWorker %d] Finished gracefully", worker_id)
 
     except Exception as e:
         import traceback
         error_msg = f"[MPWorker {worker_id}] FATAL ERROR: {e}\n{traceback.format_exc()}"
-        print(error_msg, flush=True)
+        logger.error(error_msg)
         try:
             error_queue.put_nowait({"worker_id": worker_id, "error": str(e), "traceback": traceback.format_exc()})
         except Exception:
@@ -616,10 +773,7 @@ def collate_trajectories(trajectories, device, gamma, gae_lambda, max_seq_len=40
 
 def train_exploiter_subprocess(victim_checkpoint: str, config: RNaDConfig):
     """Launch exploiter training as subprocess."""
-    print(f"\n{'=' * 60}")
-    print("EXPLOITER TRAINING TRIGGERED")
-    print(f"Victim: {victim_checkpoint}")
-    print(f"{'=' * 60}\n")
+    logger.info("EXPLOITER TRAINING TRIGGERED - Victim: %s", victim_checkpoint)
 
     # Launch exploiter_train.py as subprocess
     cmd = [
@@ -648,7 +802,7 @@ def train_exploiter_subprocess(victim_checkpoint: str, config: RNaDConfig):
     ]
 
     subprocess.run(cmd, check=True)
-    print("\nExploiter training complete!")
+    logger.info("Exploiter training complete")
 
 
 def main():
@@ -660,7 +814,7 @@ def main():
     shutdown_requested = threading.Event()
     def signal_handler(signum, frame):
         sig_name = "SIGTERM" if signum == signal.SIGTERM else "SIGINT"
-        print(f"\n{sig_name} received. Initiating graceful shutdown...")
+        logger.info("%s received. Initiating graceful shutdown...", sig_name)
         shutdown_requested.set()
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
@@ -668,7 +822,7 @@ def main():
     # Load config
     config = RNaDConfig.load(args.config)
     config.verify()
-    print(f"Loaded config from {args.config}, using device: {config.device}... Loading servers")
+    logger.info("Loaded config from %s, using device: %s... Loading servers", args.config, config.device)
 
     # Launch Showdown servers
     server_processes = launch_showdown_servers(config.num_servers, config.showdown_start_port)
@@ -685,8 +839,12 @@ def main():
             external_runner_log_files,
         ) = launch_external_vgcbench_runners(config, server_ports)
 
-    # Generate unique run ID to avoid stale state on Showdown server
-    run_id = datetime.now().strftime("%H%M")
+    # Generate unique run ID to avoid stale-account collisions on Showdown server.
+    # Include date + high-resolution random bits so rapid restarts don't reuse IDs.
+    run_id = (
+        f"{datetime.now().strftime('%m%d%H%M%S')}"
+        f"{random.getrandbits(16):04x}"
+    )
 
     # Initialize wandb
     if config.use_wandb:
@@ -708,7 +866,7 @@ def main():
     ) = initialize_training_state(config)
 
     # Create opponent pool
-    print("Initializing opponent pool...")
+    logger.info("Initializing opponent pool...")
     opponent_pool = OpponentPool(
         main_model=agent,
         device=config.device,
@@ -766,13 +924,13 @@ def main():
         )
         p.start()
         processes.append(p)
-        print(f"✓ Started multiprocessing worker {i} (PID: {p.pid}) on port {server_port}")
+        logger.info("Started multiprocessing worker %d (PID: %s) on port %d", i, p.pid, server_port)
 
-    print("Server allocation (players per server):")
+    logger.info("Server allocation (players per server):")
     for idx, load in enumerate(server_loads):
         port = config.showdown_start_port + idx
         cap = config.max_players_per_server
-        print(f"  - Port {port}: {load}/{cap} players")
+        logger.info("  Port %d: %d/%d players", port, load, cap)
 
     # ==================== MAIN TRAINING LOOP ====================
     # Collect trajectories from workers, batch them, and perform policy updates
@@ -790,15 +948,14 @@ def main():
         while updates < config.max_updates:
             # Check for shutdown signal (from SIGTERM/SIGINT)
             if shutdown_requested.is_set():
-                print("\nShutdown requested. Signaling workers to stop...")
+                logger.info("Shutdown requested. Signaling workers to stop...")
                 mp_stop_event.set()
                 break
 
             # Check if workers have died
             dead_workers: List[mp.Process] = get_dead_workers(processes, mp_error_queue)
             if len(dead_workers) > 0:
-                print("\nTraining cannot continue due to worker failure. Saving checkpoint and exiting...")
-                print(f"{'='*60}\n")
+                logger.error("Training cannot continue due to worker failure. Saving checkpoint and exiting...")
                 break
 
             # ===== COLLECT TRAJECTORIES FROM WORKERS =====
@@ -813,6 +970,9 @@ def main():
                 total_battles += 1  # Each trajectory represents one completed battle
 
                 # Track win rate by opponent type (new trajectory format includes metadata)
+                # These rolling results are consumed by OpponentPool.update_curriculum().
+                # Design note: keep per-battle logging lightweight here; smoothing/noise handling
+                # lives inside the opponent pool adaptation step.
                 if isinstance(traj, dict) and "opponent_type" in traj:
                     opp_type = traj["opponent_type"]
                     won = traj.get("won", False)
@@ -851,6 +1011,7 @@ def main():
                     metrics['total_battles'] = total_battles
                     metrics['battles_per_second'] = total_battles / (time.time() - start)
                     metrics['time_per_update_seconds'] = time_per_update
+                    metrics['temperature'] = config.temperature_at_step(updates)
                     metrics.update(opponent_pool.get_training_metrics())
 
                     # Timing breakdown
@@ -887,14 +1048,21 @@ def main():
                     if win_rate_str:
                         win_rate_str = f" | Win rates: {win_rate_str}"
 
-                    print(f"Update {updates}: Loss={metrics['loss']:.4f}, Policy={metrics['policy_loss']:.4f}, Value={metrics['value_loss']:.4f}, RNaD={metrics['rnad_loss']:.4f} | Total Battles={total_battles} in {format_time(time.time() - start)} ({total_battles / (time.time() - start):.2f} b/s)", flush=True)
-                    print(f"\t{win_rate_str}")
+                    logger.info(
+                        "Update %d: Loss=%.4f, Policy=%.4f, Value=%.4f, RNaD=%.4f | "
+                        "Total Battles=%d in %s (%.2f b/s)%s",
+                        updates, metrics['loss'], metrics['policy_loss'],
+                        metrics['value_loss'], metrics['rnad_loss'],
+                        total_battles, format_time(time.time() - start),
+                        total_battles / (time.time() - start),
+                        win_rate_str,
+                    )
 
                 # ===== UPDATE REFERENCE MODEL =====
                 # Reference model is used for KL regularization in RNaD
                 # Periodically sync it with current policy to prevent policy collapse
                 if updates % config.ref_update_interval == 0:
-                    print(f"[Update {updates}] Updating reference model...")
+                    logger.info("[Update %d] Updating reference model...", updates)
                     if isinstance(learner, PortfolioRNaDLearner):
                         learner.update_main_reference()  # Update primary reference in portfolio
                     elif isinstance(learner, RNaDLearner):
@@ -904,13 +1072,13 @@ def main():
                 # Portfolio regularization: maintain multiple reference snapshots
                 # Helps prevent cyclic behavior by regularizing against diverse past policies
                 if isinstance(learner, PortfolioRNaDLearner) and updates % config.portfolio_add_interval == 0:
-                    print(f"[Update {updates}] Adding new reference to portfolio...")
+                    logger.info("[Update %d] Adding new reference to portfolio...", updates)
                     learner.add_reference_model( RNaDAgent(copy.deepcopy(agent.model)))  # Snapshot current policy
 
                 # ===== SAVE CHECKPOINT =====
                 # Periodically save model, optimizer state, and training progress
                 if updates % config.checkpoint_interval == 0:
-                    print(f"[Update {updates}] Saving checkpoint and updating curriculum...")
+                    logger.info("[Update %d] Saving checkpoint and updating curriculum...", updates)
                     checkpoint_path = save_checkpoint(agent, learner.optimizer, updates, config, opponent_pool.curriculum, config.save_dir)
 
                     ghost_checkpoint_path = checkpoint_path
@@ -927,23 +1095,37 @@ def main():
                     # Add checkpoint to past models pool for opponent diversity
                     # Workers can sample these past versions as opponents
                     opponent_pool.add_past_model(updates, ghost_checkpoint_path)
+
+                    # Recompute curriculum in the learner/main process only.
+                    # Algorithm details (PFSP + weakness targeting + Bayesian smoothing + sample gating)
+                    # are centralized in OpponentPool to keep workers stateless and cheap.
                     opponent_pool.update_curriculum(adaptive=config.adaptive_curriculum)
 
                     # ===== BROADCAST WEIGHTS TO WORKERS (MULTIPROCESSING MODE) =====
-                    print(f"[Update {updates}] Broadcasting weights to worker processes...")
+                    # One payload updates both policy params and opponent mix so all workers
+                    # move to the same training distribution at the same synchronization point.
+                    logger.info("[Update %d] Broadcasting weights to worker processes...", updates)
                     broadcast_start = time.time()
                     cpu_weights = {k: v.cpu() for k, v in agent.model.state_dict().items()}
+                    update_payload = {
+                        "weights": cpu_weights,
+                        "curriculum": opponent_pool.curriculum.copy(),
+                        "temperature": config.temperature_at_step(updates),
+                        "top_p": config.top_p,
+                    }
                     for i, wq in enumerate(weight_queues):
                         try:
                             # Clear old weights to avoid queue overflow
+                            # Keep-at-most-latest semantics prevents workers from replaying stale
+                            # curriculum/weight snapshots when learner is faster than consumers.
                             while not wq.empty():
                                 try:
                                     wq.get_nowait()
                                 except Exception:
                                     break
-                            wq.put_nowait(cpu_weights)
+                            wq.put_nowait(update_payload)
                         except Exception as e:
-                            print(f"  Warning: Failed to broadcast to worker {i}: {e}")
+                            logger.warning("Failed to broadcast to worker %d: %s", i, e)
                     time_broadcasting += time.time() - broadcast_start
 
                 # ===== TRAIN EXPLOITER (FIND WEAKNESSES) =====
@@ -959,17 +1141,17 @@ def main():
                     try:
                         train_exploiter_subprocess(victim_path, config)
                     except Exception as e:
-                        print(f"Exploiter training failed: {e}")
+                        logger.warning("Exploiter training failed: %s", e)
 
                 # Clear trajectory buffer after successful update
                 trajectories = []
 
     except KeyboardInterrupt:
-        print("\nKeyboardInterrupt detected...")
+        logger.info("KeyboardInterrupt detected...")
         mp_stop_event.set()
     finally:
         # ===== GRACEFUL SHUTDOWN =====
-        print("\nWaiting for workers to finish (max 5 seconds)...")
+        logger.info("Waiting for workers to finish (max 5 seconds)...")
 
         # Signal multiprocessing workers to stop
         mp_stop_event.set()
@@ -978,16 +1160,16 @@ def main():
         for p in processes:
             p.join(timeout=5.0)
             if p.is_alive():
-                print(f"  Worker {p.name} (PID: {p.pid}) still running, terminating...")
+                logger.warning("Worker %s (PID: %s) still running, terminating...", p.name, p.pid)
                 p.terminate()
                 p.join(timeout=1.0)
 
         # Save progress before exiting (handles Ctrl+C, kill, or normal completion)
-        print("\nShutting down training...")
+        logger.info("Shutting down training...")
 
         # Save final checkpoint so training can be resumed later
         final_path = save_checkpoint(agent, learner.optimizer, updates, config, opponent_pool.curriculum, config.save_dir)
-        print(f"Final model saved to {final_path}")
+        logger.info("Final model saved to %s", final_path)
 
         # Close W&B run properly to ensure all logs are synced
         if config.use_wandb:
@@ -1010,5 +1192,12 @@ if __name__ == "__main__":
     # Configure platform-specific multiprocessing behavior
     configure_torch_multiprocessing(use_file_system_sharing=True)
     suppress_third_party_warnings(suppress_pydantic_field_warnings=True)
+
+    # Configure root logger so our logger.info() calls are visible
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
 
     main()

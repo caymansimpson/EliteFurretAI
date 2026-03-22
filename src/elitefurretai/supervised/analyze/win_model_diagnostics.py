@@ -25,7 +25,10 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from elitefurretai.etl import Embedder, OptimizedBattleDataLoader
+from elitefurretai.etl import (
+    Embedder,
+    OptimizedBattleDataLoader,
+)
 from elitefurretai.supervised.model_archs import FlexibleThreeHeadedModel
 
 
@@ -588,26 +591,17 @@ def load_model_from_checkpoint(
 
     # Create embedder to get input size and group sizes
     embedder = Embedder(format="gen9vgc2023regc", feature_set="full", omniscient=False)
-    input_size = embedder.embedding_size
-    group_sizes = (
-        embedder.group_embedding_sizes
-        if config.get("use_grouped_encoder", False)
-        else None
-    )
 
     # Reconstruct model
     model = FlexibleThreeHeadedModel(
-        input_size=input_size,
+        embedder=embedder,
         early_layers=config["early_layers"],
         late_layers=config["late_layers"],
         lstm_layers=config["lstm_layers"],
         lstm_hidden_size=config["lstm_hidden_size"],
         dropout=config["dropout"],
-        gated_residuals=config.get("gated_residuals", False),
         early_attention_heads=config.get("early_attention_heads", 8),
         late_attention_heads=config.get("late_attention_heads", 8),
-        use_grouped_encoder=config.get("use_grouped_encoder", False),
-        group_sizes=group_sizes,
         grouped_encoder_hidden_dim=config.get("grouped_encoder_hidden_dim", 128),
         grouped_encoder_aggregated_dim=config.get("grouped_encoder_aggregated_dim", 1024),
         pokemon_attention_heads=config.get("pokemon_attention_heads", 2),

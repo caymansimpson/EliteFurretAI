@@ -95,12 +95,12 @@ class MockFlexibleThreeHeadedModel(nn.Module):
         # Output heads
         turn_logits = self.turn_head(lstm_out)
         tp_logits = self.tp_head(lstm_out)
-        value = self.value_head(lstm_out).squeeze(-1)  # (batch, seq)
+        win_dist_logits = self.value_head(lstm_out)  # (batch, seq, 1) used as distributional logits
 
-        # Apply tanh to value to bound in [-1, 1]
-        value = torch.tanh(value)
+        # Compute scalar value via distributional expectation (mock: just use tanh of mean)
+        value = torch.tanh(win_dist_logits.squeeze(-1))  # (batch, seq)
 
-        return turn_logits, tp_logits, value, next_hidden
+        return turn_logits, tp_logits, value, win_dist_logits, next_hidden
 
 
 class MockRNaDAgent(nn.Module):
@@ -137,7 +137,10 @@ class MockRNaDAgent(nn.Module):
         """
         Forward pass matching RNaDAgent interface.
         """
-        return self.model.forward_with_hidden(x, hidden_state, mask)
+        turn_logits, tp_logits, value, win_dist_logits, next_hidden = (
+            self.model.forward_with_hidden(x, hidden_state, mask)
+        )
+        return turn_logits, tp_logits, value, win_dist_logits, next_hidden
 
 
 # =============================================================================
@@ -226,7 +229,7 @@ def test_agent_forward_pass(mock_agent):
     x = torch.randn(batch_size, seq_len, input_dim)
     hidden = mock_agent.get_initial_state(batch_size, "cpu")
 
-    turn_logits, tp_logits, value, next_hidden = mock_agent(x, hidden)
+    turn_logits, tp_logits, value, win_dist_logits, next_hidden = mock_agent(x, hidden)
 
     assert turn_logits.shape == (batch_size, seq_len, 2025)
     assert tp_logits.shape == (batch_size, seq_len, 90)
@@ -281,7 +284,7 @@ def test_agent_value_bounded(mock_agent):
     x = torch.randn(4, 3, 100)
     hidden = mock_agent.get_initial_state(4, "cpu")
 
-    _, _, value, _ = mock_agent(x, hidden)
+    _, _, value, _, _ = mock_agent(x, hidden)
 
     assert value.min() >= -1.0
     assert value.max() <= 1.0
@@ -302,11 +305,11 @@ def test_agent_sequential_forward(mock_agent):
 
     # Process first step
     x1 = torch.randn(batch_size, 1, input_dim)
-    _, _, _, hidden1 = mock_agent(x1, hidden)
+    _, _, _, _, hidden1 = mock_agent(x1, hidden)
 
     # Process second step with hidden from first
     x2 = torch.randn(batch_size, 1, input_dim)
-    _, _, _, hidden2 = mock_agent(x2, hidden1)
+    _, _, _, _, hidden2 = mock_agent(x2, hidden1)
 
     # Hidden states should change between steps
     h0, c0 = hidden
@@ -580,7 +583,7 @@ def test_hidden_state_detach_between_updates():
     x = torch.randn(1, 1, 100, requires_grad=True)
     hidden = (torch.zeros(2, 1, 32), torch.zeros(2, 1, 32))
 
-    _, _, _, next_hidden = model.forward_with_hidden(x, hidden)
+    _, _, _, _, next_hidden = model.forward_with_hidden(x, hidden)
 
     # Next hidden has gradients connected to input
     h, c = next_hidden

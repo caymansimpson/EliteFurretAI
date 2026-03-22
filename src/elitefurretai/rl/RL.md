@@ -70,10 +70,12 @@ This document is the **comprehensive, one-stop guide** to EliteFurretAI's reinfo
 - **OS**: Linux via WSL2
 
 ### Model Specifications
-- **Model**: `FlexibleThreeHeadedModel` with FULL embedder
-- **Parameters**: 138.8M
-- **Weights Size**: 529 MB
+- **Model**: `FlexibleThreeHeadedModel` (LSTM backbone) or `TransformerThreeHeadedModel` (Transformer backbone) with FULL embedder
+- **Parameters**: ~138.8M (LSTM variant)
+- **Weights Size**: ~529 MB
 - **Embedding Dimensions**: 9,223
+- **Value Head**: C51 distributional (51 bins over [-1, 1]) — richer gradients than scalar MSE
+- **Action Space**: 2,025 turn actions + 90 teampreview actions
 
 ### Critical WSL2 Notes
 ```python
@@ -210,19 +212,21 @@ Our design is inspired by DeepMind's Ataraxos (superhuman Stratego AI):
 
 ### `agent.py`: The RL-Compatible Agent Wrapper
 
-**Purpose**: Wraps the BC-trained `FlexibleThreeHeadedModel` for step-by-step RL inference.
+**Purpose**: Wraps the BC-trained `FlexibleThreeHeadedModel` or `TransformerThreeHeadedModel` for step-by-step RL inference.
 
-The BC model expects full trajectories, but RL requires one decision at a time. `RNaDAgent` manages the LSTM hidden state between turns:
+The BC model expects full trajectories, but RL requires one decision at a time. `RNaDAgent` manages hidden state between turns:
+- **LSTM variant**: Manages `(h, c)` hidden state tuple
+- **Transformer variant**: Manages a growing context tensor (previous turns' encoded features); returns `None` for initial state
 
 ```python
-def forward(self, x, hidden):
-    """Single forward pass for current turn."""
-    turn_features = x["turn_features"].unsqueeze(1)  # Add time dim
-    turn_logits, tp_logits, value, next_hidden = self.model.forward_for_rl(
-        turn_features, x["teampreview_features"], x["is_teampreview"],
-        hidden, x["action_mask"]
-    )
-    return turn_logits, tp_logits, value, next_hidden
+class RNaDAgent(torch.nn.Module):
+    def __init__(self, model: Union[FlexibleThreeHeadedModel, TransformerThreeHeadedModel]):
+        self._is_transformer = isinstance(model, TransformerThreeHeadedModel)
+    
+    def get_initial_state(self, batch_size, device):
+        if self._is_transformer:
+            return None  # Context starts empty
+        return (h_zeros, c_zeros)  # LSTM hidden state
 ```
 
 ### `learner.py`: The Standard RNaD Learner
@@ -230,8 +234,10 @@ def forward(self, x, hidden):
 **Purpose**: Heart of training. Holds `main_model` (learning) and `ref_model` (frozen anchor).
 
 - Pulls trajectories from queue
-- Computes RNaD loss
-- Updates `main_model` via backpropagation
+- Computes RNaD loss (PPO policy + distributional value + entropy + KL)
+- Uses **C51 distributional value loss** (cross-entropy against two-hot encoded targets) instead of scalar MSE
+- Updates `main_model` via backpropagation with **topology-aware optimizer** (AdamW with separate param groups for backbone vs heads)
+- Applies **LR scheduler** (linear warmup + cosine/linear decay)
 - Periodically copies weights to `ref_model`
 - Broadcasts updated weights to actors
 
@@ -288,7 +294,13 @@ The coordinator class that:
 
 **Purpose**: `RNaDConfig` dataclass holding all hyperparameters.
 
-Centralizes all tunable parameters in YAML files for reproducibility.
+Centralizes all tunable parameters in YAML files for reproducibility. Includes:
+
+- **Exploration**: `temperature_start/end`, `temperature_anneal_steps`, `top_p`, `ent_coef_end`
+- **Optimizer**: `optimizer` dict with `type` (adam/adamw), `weight_decay`, `lr_backbone`, `lr_heads`, `lr_warmup_steps`, `lr_schedule`
+- **Distributional Value**: `num_value_bins`, `value_min`, `value_max`
+- **Number Banks**: `use_number_banks`, `number_bank_embedding_dim`, `number_bank_hp/stat/power_bins`
+- **Transformer**: `use_transformer`, `transformer_layers/heads/ff_dim/dropout`, `use_decision_tokens`, `use_causal_mask`
 
 ### `fast_action_mask.py`: Optimized Action Masking
 
@@ -816,22 +828,66 @@ Tested on forward pass (5.85ms baseline):
 2. **Multi-Format Training**: Single agent across Reg C, D, E, F
 3. **Team Generation**: Generate novel teams instead of sampling
 4. **Native Battle Engine**: Port Showdown to Python/Rust to eliminate WebSocket overhead
+5. **Transformer Evaluation**: Benchmark `TransformerThreeHeadedModel` vs LSTM backbone on full training runs
+6. **Number Bank Tuning**: Optimize bin counts and embedding dimensions for production training
+7. **Batched Transformer Inference**: Pad variable-length contexts for true batched inference in actors (currently sequential per-battle)
 
 ### Files in This Module
 
 | File | Purpose |
 |------|---------|
-| `agent.py` | RNaDAgent wrapper for step-by-step RL |
-| `learner.py` | RNaDLearner with PPO + KL regularization |
+| `agent.py` | RNaDAgent wrapper for step-by-step RL (supports LSTM + Transformer) |
+| `learner.py` | RNaDLearner with PPO + KL regularization + distributional value |
 | `multiprocess_actor.py` | IMPALA-style multiprocessing actors and trainer |
-| `config.py` | RNaDConfig dataclass |
+| `config.py` | RNaDConfig dataclass (exploration, optimizer, architecture flags) |
 | `fast_action_mask.py` | Optimized action mask generation |
+| `model_io.py` | Model construction, checkpoint save/load, config key management |
 | `opponent_pool.py` | Opponent sampling (self, BC, exploiters) |
 | `portfolio_learner.py` | Portfolio regularization extension |
+| `players.py` | BatchInferencePlayer with LSTM/Transformer hidden state management |
 | `train.py` | Main training coordinator |
 | `exploiter_train.py` | Exploiter training subprocess |
 | `launch_servers.py` | Multi-server Showdown launcher |
 | `evaluate.py` | Model evaluation utilities |
+
+---
+
+## ps-ppo-Inspired Improvements (February 2026)
+
+Five architectural and training improvements inspired by the ps-ppo project have been implemented. All are gated by config flags. See [IMPLEMENTATION_PLAN.md](../../../docs/IMPLEMENTATION_PLAN.md) for the full design rationale.
+
+### 1. Temperature Annealing & Top-p Sampling
+- **What**: Temperature-scaled softmax for exploration control + nucleus sampling to filter low-probability actions
+- **Config**: `temperature_start=1.5`, `temperature_end=0.5`, `temperature_anneal_steps=50000`, `top_p=0.95`
+- **Key detail**: Log-probs for PPO ratios are computed at T=1 (unscaled) to avoid biasing importance weights
+- **Entropy coefficient** also anneals via `ent_coef_end`
+
+### 2. Topology-Aware Optimizer
+- **What**: AdamW with separate learning rates and weight decay for backbone vs heads; LR scheduler with warmup + cosine/linear decay
+- **Config**: `optimizer` dict with `type`, `weight_decay`, `lr_backbone`, `lr_heads`, `lr_warmup_steps`, `lr_schedule`
+- **Purpose**: Prevents value head under-training (common PPO failure mode) and regularizes large backbone layers
+
+### 3. Distributional Value Head (C51)
+- **What**: 51-bin categorical distribution over [-1, 1] replaces scalar Tanh value head
+- **Config**: `num_value_bins=51`, `value_min=-1.0`, `value_max=1.0`
+- **Loss**: Cross-entropy against two-hot encoded targets (via `twohot_encode()`)
+- **Model output change**: `forward()` returns 4 values, `forward_with_hidden()` returns 5 (extra: `win_dist_logits`)
+- **Actor impact**: None — actors use the scalar expected value (3rd return element), computed as `(softmax(logits) * support).sum(-1)`
+
+### 4. Number Bank Embeddings
+- **What**: Learned embedding lookup for numerical features (HP%, stats, base power) instead of raw floats
+- **Config**: `use_number_banks=false` (disabled by default), `number_bank_embedding_dim=16`, `number_bank_hp/stat/power_bins`
+- **Design**: Discretization + embedding happens inside `GroupedFeatureEncoder` via `NumberBankEncoder` — the Embedder output format is unchanged
+- **Feature identification**: Pattern matching on `Embedder.feature_names` (HP_PATTERNS, STAT_PATTERNS, POWER_PATTERNS)
+- **Requires**: Fresh training when enabled (changes model input dimensions)
+
+### 5. Transformer Architecture
+- **What**: `TransformerThreeHeadedModel` replaces LSTM backbone with TransformerEncoder + decision tokens
+- **Config**: `use_transformer=false` (disabled by default), `transformer_layers=6`, `transformer_heads=16`, `transformer_ff_dim=2048`, `use_decision_tokens=true`, `use_causal_mask=true`
+- **Decision tokens**: Learned [ACTOR], [CRITIC], [FIELD] vectors prepended to the sequence; ACTOR → turn head, CRITIC → value head
+- **Hidden state**: Context tensor (growing sequence of past encoded features) instead of LSTM `(h, c)`. Each turn appends to context.
+- **Inference**: Per-battle sequential inference in actors (contexts differ in length across battles). LSTM batched path preserved.
+- **Requires**: Fresh training when enabled
 
 ---
 

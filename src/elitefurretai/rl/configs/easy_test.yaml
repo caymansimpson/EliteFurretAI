@@ -1,6 +1,7 @@
 # ===== RNaD related =====
 clip_range: 0.2
 ent_coef: 0.02
+ent_coef_end: 0.001
 gae_lambda: 0.95
 gamma: 1
 max_grad_norm: 0.5
@@ -9,11 +10,51 @@ vf_coef: 0.5
 use_portfolio_regularization: true
 portfolio_update_strategy: recent
 
+# ===== Exploration =====
+temperature_start: 1.5
+temperature_end: 0.5
+temperature_anneal_steps: 50000
+top_p: 0.95
+
+# ===== Distributional Value Head =====
+num_value_bins: 51
+value_min: -1.0
+value_max: 1.0
+
+# ===== Number Bank Embeddings =====
+use_number_banks: false
+number_bank_hp_bins: 100
+number_bank_stat_bins: 600
+number_bank_power_bins: 250
+number_bank_embedding_dim: 16
+
+# ===== Transformer Architecture =====
+use_transformer: false
+transformer_layers: 6
+transformer_heads: 16
+transformer_ff_dim: 2048
+transformer_dropout: 0.1
+use_decision_tokens: true
+use_causal_mask: true
+
+# ===== Optimizer =====
+optimizer:
+  type: adamw
+  weight_decay: 0.0001
+  warmup_steps: 1000
+  schedule: cosine
+  param_groups:
+    backbone:
+      lr: 0.00001
+      weight_decay: 0.0001
+    heads:
+      lr: 0.00003
+      weight_decay: 0.0
+
 # ===== Training related =====
-embedder_feature_set: raw
+embedder_feature_set: full
 initialize_path: data/models/supervised/dauntless-hill-95.pt
 resume_from: null
-lr: 0.00001
 max_updates: 100000
 save_dir: data/models/rl
 train_batch_size: 256  # Trajectories to collect before training update (lower = faster iteration)
@@ -25,10 +66,8 @@ late_layers: [2048, 2048, 1024, 1024]
 lstm_layers: 4
 lstm_hidden_size: 512
 dropout: 0
-gated_residuals: false
 early_attention_heads: 16
 late_attention_heads: 32
-use_grouped_encoder: true
 grouped_encoder_hidden_dim: 512
 grouped_encoder_aggregated_dim: 4096
 pokemon_attention_heads: 16

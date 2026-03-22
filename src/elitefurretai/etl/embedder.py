@@ -33,6 +33,7 @@ from poke_env.battle import (
 )
 from poke_env.calc import calculate_damage
 from poke_env.data import GenData
+from poke_env.data.normalize import to_id_str
 from poke_env.stats import compute_raw_stats
 
 from elitefurretai.inference.battle_inference import BattleInference
@@ -58,6 +59,8 @@ class Embedder:
         self._knowledge: Dict[str, Any] = {}
         self._format: str = format
         self._omniscient: bool = omniscient
+        self._ability_to_id: Dict[str, int] = build_ability_to_id(self._format)
+        self._num_abilities: int = len(self._ability_to_id) + 1
 
         assert feature_set in [self.SIMPLE, self.RAW, self.FULL]
         self._feature_set: str = feature_set
@@ -81,7 +84,13 @@ class Embedder:
         self._knowledge["SideCondition"] = TRACKED_SIDE_CONDITIONS
         self._knowledge["Weather"] = TRACKED_WEATHERS
         self._knowledge["Field"] = TRACKED_FIELDS
-        self._knowledge["Ability"] = TRACKED_ABILITIES
+        self._knowledge["Ability"] = set(self._ability_to_id.keys())
+
+        # Species and move ID mappings for entity ID encoding
+        self._species_to_id: Dict[str, int] = build_species_to_id(self._format)
+        self._num_species: int = len(self._species_to_id) + 1
+        self._move_to_id: Dict[str, int] = build_move_to_id(self._format)
+        self._num_moves: int = len(self._move_to_id) + 1
 
         # Cache for static move features (move.id -> features dict without prefix)
         # This dramatically speeds up embedding since move features are mostly static
@@ -101,7 +110,10 @@ class Embedder:
         self._feature_engineered_embedding_size = len(
             self.generate_feature_engineered_features(dummy_battle)
         )
-        self._feature_names = sorted(list(self.embed(dummy_battle).keys()))
+        self._transition_embedding_size = len(
+            self.generate_transition_features(dummy_battle)
+        )
+        self._feature_names = self._compute_grouped_feature_names(dummy_battle)
 
     @staticmethod
     def _prep(string) -> str:
@@ -109,6 +121,53 @@ class Embedder:
         Utility to convert enum names to lowercase strings for consistent encoding.
         """
         return string.lower().replace("_", " ")
+
+    def _compute_grouped_feature_names(
+        self, battle: DoubleBattle
+    ) -> List[str]:
+        """Compute feature names in group order with sorting within each group.
+
+        This preserves semantic group boundaries so that model architectures
+        (e.g. GroupedFeatureEncoder) that split the flat vector by
+        ``group_embedding_sizes`` receive coherent feature groups.
+
+        Order: MON:0-5, OPP_MON:0-5, battle state, [engineered, transition].
+        Within each group, feature names are sorted alphabetically for
+        deterministic ordering.
+
+        For the SIMPLE feature set (which doesn't use group_embedding_sizes),
+        falls back to sorted order of the simplified features.
+        """
+        # SIMPLE doesn't use groups; just sort its filtered features
+        if self._feature_set == self.SIMPLE:
+            return sorted(self.embed(battle).keys())
+
+        grouped_names: List[str] = []
+
+        # Player Pokemon 0-5
+        for i in range(6):
+            group = self.generate_pokemon_features(None, battle, f"MON:{i}:")
+            grouped_names.extend(sorted(group.keys()))
+
+        # Opponent Pokemon 0-5
+        for i in range(6):
+            group = self.generate_opponent_pokemon_features(
+                None, battle, prefix=f"OPP_MON:{i}:"
+            )
+            grouped_names.extend(sorted(group.keys()))
+
+        # Battle state
+        group = self.generate_battle_features(battle)
+        grouped_names.extend(sorted(group.keys()))
+
+        # Feature engineered + transition (FULL only)
+        if self._feature_set == self.FULL:
+            group = self.generate_feature_engineered_features(battle)
+            grouped_names.extend(sorted(group.keys()))
+            group = self.generate_transition_features(battle)
+            grouped_names.extend(sorted(group.keys()))
+
+        return grouped_names
 
     def _generate_dummy_battle(self) -> DoubleBattle:
         """
@@ -164,6 +223,13 @@ class Embedder:
         return self._feature_engineered_embedding_size
 
     @property
+    def transition_embedding_size(self) -> int:
+        """
+        Returns the embedding size for transition features.
+        """
+        return self._transition_embedding_size
+
+    @property
     def group_embedding_sizes(self) -> List[int]:
         """
         Returns the sizes of feature groups for advanced model architectures.
@@ -179,6 +245,7 @@ class Embedder:
         )
         if self.feature_set == self.FULL:
             group_sizes += [self._feature_engineered_embedding_size]
+            group_sizes += [self._transition_embedding_size]
         return group_sizes
 
     @property
@@ -209,15 +276,54 @@ class Embedder:
         """
         return self._omniscient
 
+    @property
+    def ability_to_id(self) -> Dict[str, int]:
+        """Returns the format-specific ability ID mapping (0 reserved for unknown)."""
+        return self._ability_to_id
+
+    @property
+    def num_abilities(self) -> int:
+        """Returns the ability vocabulary size including unknown token (index 0)."""
+        return self._num_abilities
+
+    @property
+    def species_to_id(self) -> Dict[str, int]:
+        """Returns the format-specific species ID mapping (0 reserved for unknown)."""
+        return self._species_to_id
+
+    @property
+    def num_species(self) -> int:
+        """Returns the species vocabulary size including unknown token (index 0)."""
+        return self._num_species
+
+    @property
+    def move_to_id(self) -> Dict[str, int]:
+        """Returns the format-specific move ID mapping (0 reserved for unknown)."""
+        return self._move_to_id
+
+    @property
+    def num_moves(self) -> int:
+        """Returns the move vocabulary size including unknown token (index 0)."""
+        return self._num_moves
+
+    @property
+    def num_items(self) -> int:
+        """Returns the item vocabulary size including unknown token (index 0)."""
+        return len(TRACKED_ITEMS) + 1
+
     def feature_dict_to_vector(self, features: Dict[str, Any]) -> List[float]:
         """
         Converts a feature dictionary returned by this class into a vector that
-        can be used as input into a network. Features are sorted for consistency.
+        can be used as input into a network. Expects a full embedding dict from
+        ``embed()`` and uses the cached group-preserving feature order for
+        consistency with ``group_embedding_sizes``.
         """
-        vec = []
-        for key in sorted(features.keys()):
-            vec.append(float(features[key]))
-        return vec
+        if set(features.keys()) != set(self._feature_names):
+            raise ValueError(
+                "feature_dict_to_vector expects the full embedding output from embed(); "
+                "for partial feature dicts, convert explicitly by sorting keys"
+            )
+        return [float(features[key]) for key in self._feature_names]
 
     def embed_to_vector(
         self, battle: DoubleBattle, bi: Optional["BattleInference"] = None
@@ -262,23 +368,25 @@ class Embedder:
 
         features: Dict[str, float] = {}
 
-        # Look at their type matchup against me
-        for i, mon in enumerate(fill_with_none(battle.teampreview_team, 6)):
-            for j, opp_mon in enumerate(
-                fill_with_none(battle.teampreview_opponent_team, 6)
-            ):
-                if mon is None or opp_mon is None:
-                    features["TYPE_MATCHUP:OPP_MON:" + str(j) + ":MON:" + str(i)] = -1
-                else:
-                    multiplier = max(
-                        opp_type.damage_multiplier(
-                            *mon.types, type_chart=GenData.from_gen(9).type_chart
-                        )
-                        for opp_type in opp_mon.types
-                    )
-                    features["TYPE_MATCHUP:OPP_MON:" + str(j) + ":MON:" + str(i)] = (
-                        multiplier
-                    )
+        # PRUNED: TYPE_MATCHUP — redundant with EST_DAMAGE_* which incorporates
+        # type effectiveness + STAB + stats + items
+        # # Look at their type matchup against me
+        # for i, mon in enumerate(fill_with_none(battle.teampreview_team, 6)):
+        #     for j, opp_mon in enumerate(
+        #         fill_with_none(battle.teampreview_opponent_team, 6)
+        #     ):
+        #         if mon is None or opp_mon is None:
+        #             features["TYPE_MATCHUP:OPP_MON:" + str(j) + ":MON:" + str(i)] = -1
+        #         else:
+        #             multiplier = max(
+        #                 opp_type.damage_multiplier(
+        #                     *mon.types, type_chart=GenData.from_gen(9).type_chart
+        #                 )
+        #                 for opp_type in opp_mon.types
+        #             )
+        #             features["TYPE_MATCHUP:OPP_MON:" + str(j) + ":MON:" + str(i)] = (
+        #                 multiplier
+        #             )
 
         # Calculate total state
         num_fainted, hp_left, total_hp, num_status, num_revealed = 0, 0, 0, 0, 0
@@ -505,6 +613,9 @@ class Embedder:
         emb[prefix + "current_pp"] = min(move.current_pp, 5)
         emb[prefix + "used"] = int(move.current_pp < move.max_pp)
 
+        # Entity ID for move (integer index into nn.Embedding)
+        emb[prefix + "move_id"] = self._move_to_id.get(move.id, 0)
+
         return emb
 
     def _generate_null_move_features(self, prefix: str = "") -> Dict[str, float]:
@@ -530,25 +641,27 @@ class Embedder:
             if ptype not in [PokemonType.THREE_QUESTION_MARKS, PokemonType.STELLAR]:
                 emb[prefix + "TYPE:" + ptype.name] = -1
 
-        # OHE Side Conditions
-        for sc in self._knowledge["SideCondition"]:
-            emb[prefix + "SC:" + sc.name] = -1
-
-        # OHE Fields
-        for field in self._knowledge["Field"]:
-            emb[prefix + "FIELD:" + field.name] = -1
-
-        # OHE Weathers
-        for weather in self._knowledge["Weather"]:
-            emb[prefix + "WEATHER:" + weather.name] = -1
+        # PRUNED: Move SC, FIELD, WEATHER, EFFECT OHE — captured by move_id EntityID
+        # # OHE Side Conditions
+        # for sc in self._knowledge["SideCondition"]:
+        #     emb[prefix + "SC:" + sc.name] = -1
+        #
+        # # OHE Fields
+        # for field in self._knowledge["Field"]:
+        #     emb[prefix + "FIELD:" + field.name] = -1
+        #
+        # # OHE Weathers
+        # for weather in self._knowledge["Weather"]:
+        #     emb[prefix + "WEATHER:" + weather.name] = -1
 
         # OHE Targeting Types
         for t in self._knowledge["Target"]:
             emb[prefix + "TARGET:" + t.name] = -1
 
-        # OHE Volatility Statuses
-        for vs in self._knowledge["Effect_VolatileStatus"]:
-            emb[prefix + "EFFECT:" + vs.name] = -1
+        # PRUNED: Move EFFECT (volatile status) OHE — captured by move_id EntityID
+        # # OHE Volatility Statuses
+        # for vs in self._knowledge["Effect_VolatileStatus"]:
+        #     emb[prefix + "EFFECT:" + vs.name] = -1
 
         # OHE Statuses
         for status in self._knowledge["Status"]:
@@ -559,6 +672,9 @@ class Embedder:
         for stat in ["atk", "def", "spa", "spd", "spe"]:
             emb[prefix + "BOOST:" + stat] = -1
             emb[prefix + "SELFBOOST:" + stat] = -1
+
+        # Entity ID for move
+        emb[prefix + "move_id"] = -1
 
         return emb
 
@@ -601,26 +717,27 @@ class Embedder:
             if ptype not in [PokemonType.THREE_QUESTION_MARKS, PokemonType.STELLAR]:
                 emb["TYPE:" + ptype.name] = int(ptype == move_type)
 
-        # OHE Side Conditions
-        side_condition = move.side_condition
-        for sc in self._knowledge["SideCondition"]:
-            emb["SC:" + sc.name] = int(side_condition == sc)
-
-        # OHE Fields
-        terrain = move.terrain
-        pseudo_weather = move.pseudo_weather
-        for field in self._knowledge["Field"]:
-            val = -1
-            if terrain:
-                val = int(terrain == field)
-            elif pseudo_weather:
-                val = int(Field.from_showdown_message(move.entry["name"]) == field)
-            emb["FIELD:" + field.name] = val
-
-        # OHE Weathers
-        move_weather = move.weather
-        for weather in self._knowledge["Weather"]:
-            emb["WEATHER:" + weather.name] = int(move_weather == weather)
+        # PRUNED: Move SC, FIELD, WEATHER OHE — captured by move_id EntityID
+        # # OHE Side Conditions
+        # side_condition = move.side_condition
+        # for sc in self._knowledge["SideCondition"]:
+        #     emb["SC:" + sc.name] = int(side_condition == sc)
+        #
+        # # OHE Fields
+        # terrain = move.terrain
+        # pseudo_weather = move.pseudo_weather
+        # for field in self._knowledge["Field"]:
+        #     val = -1
+        #     if terrain:
+        #         val = int(terrain == field)
+        #     elif pseudo_weather:
+        #         val = int(Field.from_showdown_message(move.entry["name"]) == field)
+        #     emb["FIELD:" + field.name] = val
+        #
+        # # OHE Weathers
+        # move_weather = move.weather
+        # for weather in self._knowledge["Weather"]:
+        #     emb["WEATHER:" + weather.name] = int(move_weather == weather)
 
         # OHE Targeting Types
         deduced_target = move.deduced_target
@@ -648,15 +765,16 @@ class Embedder:
                     for stat, val in info["self"]["boosts"].items():
                         secondary_self_boosts[stat] = val
 
-        # OHE Volatility Statuses
-        volatile_status = move.volatile_status
-        for vs in self._knowledge["Effect_VolatileStatus"]:
-            val = 0
-            if vs == volatile_status:
-                val = 1
-            elif self._prep(vs.name) in secondary_volatile:
-                val = 1
-            emb["EFFECT:" + vs.name] = val
+        # PRUNED: Move EFFECT (volatile status) OHE — captured by move_id EntityID
+        # # OHE Volatility Statuses
+        # volatile_status = move.volatile_status
+        # for vs in self._knowledge["Effect_VolatileStatus"]:
+        #     val = 0
+        #     if vs == volatile_status:
+        #         val = 1
+        #     elif self._prep(vs.name) in secondary_volatile:
+        #         val = 1
+        #     emb["EFFECT:" + vs.name] = val
 
         # OHE Statuses
         move_status = move.status
@@ -723,17 +841,23 @@ class Embedder:
                 available = 1 if move in available_moves else 0
             emb[move_prefix + "available"] = available
 
-        # OHE abilities
-        for ability in self._knowledge["Ability"]:
-            emb[prefix + "ABILITY:" + ability] = int(mon.ability == ability) if mon else -1
+        # Entity ID for ability (integer index into nn.Embedding)
+        emb[prefix + "ability_id"] = (
+            self._ability_to_id.get(mon.ability, 0) if mon and mon.ability else -1
+        )
 
-        # OHE items
-        for item in self._knowledge["Item"]:
-            emb[prefix + "ITEM:" + item] = int(mon.item == item) if mon else -1
+        # Entity ID for item (integer index into nn.Embedding)
+        emb[prefix + "item_id"] = ITEM_TO_ID.get(mon.item, 0) if mon and mon.item else -1
+
+        # Entity ID for species (integer index into nn.Embedding)
+        emb[prefix + "species_id"] = (
+            self._species_to_id.get(mon.species, 0) if mon else -1
+        )
 
         # Add various relevant fields for mons
         emb[prefix + "current_hp_fraction"] = mon.current_hp_fraction if mon else -1
-        emb[prefix + "level"] = mon.level if mon else -1
+        # PRUNED: level is always 50 in VGC — zero information
+        # emb[prefix + "level"] = mon.level if mon else -1
         emb[prefix + "weight"] = mon.weight if mon else -1
         emb[prefix + "is_terastallized"] = mon.is_terastallized if mon else -1
 
@@ -744,9 +868,13 @@ class Embedder:
                 val = mon.stats[stat]  # type:ignore
             emb[prefix + "STAT:" + stat] = val if val is not None else -1
 
-        # Add boosts; don't add evasion
+        # One-hot encode boosts; don't add evasion
         for stat in ["accuracy", "atk", "def", "spa", "spd", "spe"]:
-            emb[prefix + "BOOST:" + stat] = mon.boosts[stat] if mon else -1
+            boost_val = mon.boosts[stat] if mon else None
+            for b in BOOST_RANGE:
+                emb[prefix + f"BOOST:{stat}:{b}"] = (
+                    -1 if boost_val is None else int(boost_val == b)
+                )
 
         # OHE status
         for status in self._knowledge["Status"]:
@@ -844,32 +972,34 @@ class Embedder:
             move_prefix = prefix + "MOVE:" + str(i) + ":"
             emb.update(self.generate_move_features(move, move_prefix))
 
-        # OHE abilities (and/or possibile abilities if we have them)
-        for ability in self._knowledge["Ability"]:
-            val = 0
-            if not mon:
-                val = -1
-            elif mon.ability:
-                val = int(mon.ability == ability)
-            else:
-                val = int(ability in mon.possible_abilities)
+        # Entity ID for ability (integer index into nn.Embedding)
+        # For opponent, use known ability if available; otherwise 0 (unknown)
+        if not mon:
+            emb[prefix + "ability_id"] = -1
+        elif mon.ability:
+            emb[prefix + "ability_id"] = self._ability_to_id.get(mon.ability, 0)
+        else:
+            emb[prefix + "ability_id"] = 0  # Unknown ability
 
-            emb[prefix + "ABILITY:" + ability] = val
+        # Entity ID for item (integer index into nn.Embedding)
+        if not mon:
+            emb[prefix + "item_id"] = -1
+        elif mon.item:
+            emb[prefix + "item_id"] = ITEM_TO_ID.get(mon.item, 0)
+        elif inference_flags and inference_flags.get("item"):
+            emb[prefix + "item_id"] = ITEM_TO_ID.get(inference_flags["item"], 0)
+        else:
+            emb[prefix + "item_id"] = 0  # Unknown item
 
-        # OHE items (and look into battle inference)
-        for item in self._knowledge["Item"]:
-            val = 0
-            if not mon:
-                val = -1
-            elif mon.item:
-                val = int(item == mon.item)
-            elif inference_flags and inference_flags["item"]:
-                val = int(item == inference_flags["item"])
-            emb[prefix + "ITEM:" + item] = val
+        # Entity ID for species (integer index into nn.Embedding)
+        emb[prefix + "species_id"] = (
+            self._species_to_id.get(mon.species, 0) if mon else -1
+        )
 
         # Add several other fields
         emb[prefix + "current_hp_fraction"] = mon.current_hp_fraction if mon else -1
-        emb[prefix + "level"] = mon.level if mon else -1
+        # PRUNED: level is always 50 in VGC — zero information
+        # emb[prefix + "level"] = mon.level if mon else -1
         emb[prefix + "weight"] = mon.weight if mon else -1
         emb[prefix + "is_terastallized"] = int(mon.is_terastallized) if mon else -1
 
@@ -903,9 +1033,13 @@ class Embedder:
                     maxstat if mon and maxstat is not None else -1
                 )
 
-        # Add boosts; don't add evasion
+        # One-hot encode boosts; don't add evasion
         for stat in ["accuracy", "atk", "def", "spa", "spd", "spe"]:
-            emb[prefix + "BOOST:" + stat] = mon.boosts[stat] if mon else -1
+            boost_val = mon.boosts[stat] if mon else None
+            for b in BOOST_RANGE:
+                emb[prefix + f"BOOST:{stat}:{b}"] = (
+                    -1 if boost_val is None else int(boost_val == b)
+                )
 
         # OHE status
         for status in self._knowledge["Status"]:
@@ -960,6 +1094,16 @@ class Embedder:
         for field in self._knowledge["Field"]:
             emb["FIELD:" + field.name] = int(field in battle.fields)
 
+        # Add field duration features (normalized remaining turns)
+        for field in self._knowledge["Field"]:
+            duration = FIELD_DURATIONS.get(field, 5)
+            if field in battle.fields:
+                set_turn = battle.fields[field]
+                remaining = max(0, duration - (battle.turn - set_turn))
+                emb["FIELD:" + field.name + ":remaining"] = remaining / duration
+            else:
+                emb["FIELD:" + field.name + ":remaining"] = 0
+
         # Add Side Conditions
         for sc in self._knowledge["SideCondition"]:
             emb["SIDE_CONDITION:" + sc.name] = int(sc in battle.side_conditions)
@@ -969,9 +1113,36 @@ class Embedder:
                 sc in battle.opponent_side_conditions
             )
 
+        # Add side condition duration features for duration-based (non-stackable) conditions
+        for sc in SIDE_CONDITION_DURATIONS:
+            duration = SIDE_CONDITION_DURATIONS[sc]
+            # Player's side
+            if sc in battle.side_conditions:
+                set_turn = battle.side_conditions[sc]
+                remaining = max(0, duration - (battle.turn - set_turn))
+                emb["SIDE_CONDITION:" + sc.name + ":remaining"] = remaining / duration
+            else:
+                emb["SIDE_CONDITION:" + sc.name + ":remaining"] = 0
+            # Opponent's side
+            if sc in battle.opponent_side_conditions:
+                set_turn = battle.opponent_side_conditions[sc]
+                remaining = max(0, duration - (battle.turn - set_turn))
+                emb["OPP_SIDE_CONDITION:" + sc.name + ":remaining"] = remaining / duration
+            else:
+                emb["OPP_SIDE_CONDITION:" + sc.name + ":remaining"] = 0
+
         # Add Weathers
         for weather in self._knowledge["Weather"]:
             emb["WEATHER:" + weather.name] = int(weather in battle.weather)
+
+        # Add weather duration features
+        for weather in self._knowledge["Weather"]:
+            if weather in battle.weather:
+                set_turn = battle.weather[weather]
+                remaining = max(0, WEATHER_DURATION - (battle.turn - set_turn))
+                emb["WEATHER:" + weather.name + ":remaining"] = remaining / WEATHER_DURATION
+            else:
+                emb["WEATHER:" + weather.name + ":remaining"] = 0
 
         # Add Formats
         for frmt in self._knowledge["Format"]:
@@ -1038,8 +1209,171 @@ class Embedder:
             emb = self._simplify_features(emb)
         elif self._feature_set == self.FULL:
             emb.update(self.generate_feature_engineered_features(battle, bi))
+            emb.update(self.generate_transition_features(battle))
 
         return emb
+
+    def _ident_to_slot(self, ident: str, battle: DoubleBattle) -> Optional[str]:
+        """Map a Showdown identifier like 'p1a: Incineroar' to a slot prefix string.
+
+        Returns one of "MY:0:", "MY:1:", "OPP:0:", "OPP:1:" or None if unrecognized.
+        """
+        if len(ident) < 3:
+            return None
+        player = ident[:2]  # "p1" or "p2"
+        slot_letter = ident[2]  # "a" or "b"
+        slot_idx = 0 if slot_letter == "a" else 1
+
+        if player == battle.player_role:
+            return f"MY:{slot_idx}:"
+        elif player == battle.opponent_role:
+            return f"OPP:{slot_idx}:"
+        return None
+
+    def generate_transition_features(
+        self, battle: DoubleBattle
+    ) -> Dict[str, float]:
+        """Extract features describing what happened during the previous turn.
+
+        Parses ``battle.observations[prev_turn].events`` to produce per-slot features
+        (move, switch, protect, crit, super-effective, resisted, miss, fail) and global
+        features (move order, faints).  All values default to -1 when no data is available
+        (teampreview, turn 0/1, or missing observations).
+        """
+        features: Dict[str, float] = {}
+
+        # Initialise every feature to -1 (unknown / not applicable)
+        slots = ["MY:0:", "MY:1:", "OPP:0:", "OPP:1:"]
+        per_slot_feats = [
+            "used_move", "used_switch", "used_protect",
+            "was_crit", "hit_super_effective", "hit_resisted",
+            "move_missed", "move_failed",
+        ]
+        for slot in slots:
+            for feat in per_slot_feats:
+                features[f"TRANSITION:{slot}{feat}"] = -1
+
+        features["TRANSITION:my_slot0_moved_first"] = -1
+        features["TRANSITION:my_slot1_moved_first"] = -1
+        features["TRANSITION:any_faint_last_turn"] = -1
+        features["TRANSITION:my_faint_last_turn"] = -1
+        features["TRANSITION:opp_faint_last_turn"] = -1
+
+        # Need a previous turn with observations to extract anything
+        prev_turn = battle.turn - 1
+        if (
+            prev_turn < 1
+            or battle.player_role is None
+            or not hasattr(battle, "observations")
+            or prev_turn not in battle.observations
+        ):
+            return features
+
+        observation = battle.observations[prev_turn]
+        events = observation.events
+
+        # Zero out the counters that will be incremented
+        features["TRANSITION:my_faint_last_turn"] = 0
+        features["TRANSITION:opp_faint_last_turn"] = 0
+        features["TRANSITION:any_faint_last_turn"] = 0
+
+        # Zero out all per-slot features (we now have data to fill them)
+        for slot in slots:
+            for feat in per_slot_feats:
+                features[f"TRANSITION:{slot}{feat}"] = 0
+
+        # Track move order: record (order_index, slot_prefix) for each move event
+        move_events_order: List[str] = []  # slot prefixes in order of execution
+        last_attacker_slot: Optional[str] = None
+
+        for event in events:
+            if len(event) < 2:
+                continue
+            msg_type = event[1]
+
+            if msg_type == "move":
+                mon_ident = event[2]
+                slot = self._ident_to_slot(mon_ident, battle)
+                if slot is not None:
+                    features[f"TRANSITION:{slot}used_move"] = 1
+                    last_attacker_slot = slot
+
+                    # Check for protect-type moves
+                    if len(event) > 3:
+                        move_name = event[3].lower().replace(" ", "").replace("-", "")
+                        if move_name in PROTECT_MOVES:
+                            features[f"TRANSITION:{slot}used_protect"] = 1
+
+                    move_events_order.append(slot)
+
+            elif msg_type == "switch":
+                mon_ident = event[2]
+                slot = self._ident_to_slot(mon_ident, battle)
+                if slot is not None:
+                    features[f"TRANSITION:{slot}used_switch"] = 1
+
+            elif msg_type == "-crit":
+                # -crit refers to the target, but we attribute it to the attacker
+                if last_attacker_slot is not None:
+                    features[f"TRANSITION:{last_attacker_slot}was_crit"] = 1
+
+            elif msg_type == "-supereffective":
+                if last_attacker_slot is not None:
+                    features[f"TRANSITION:{last_attacker_slot}hit_super_effective"] = 1
+
+            elif msg_type == "-resisted":
+                if last_attacker_slot is not None:
+                    features[f"TRANSITION:{last_attacker_slot}hit_resisted"] = 1
+
+            elif msg_type == "-miss":
+                # -miss event: event[2] is the attacker
+                if len(event) > 2:
+                    attacker_slot = self._ident_to_slot(event[2], battle)
+                    if attacker_slot is not None:
+                        features[f"TRANSITION:{attacker_slot}move_missed"] = 1
+
+            elif msg_type == "-fail":
+                # -fail can reference the mon whose move failed (event[2])
+                if len(event) > 2:
+                    fail_slot = self._ident_to_slot(event[2], battle)
+                    if fail_slot is not None:
+                        features[f"TRANSITION:{fail_slot}move_failed"] = 1
+
+            elif msg_type == "faint":
+                fainted_slot = self._ident_to_slot(event[2], battle)
+                features["TRANSITION:any_faint_last_turn"] = 1
+                if fainted_slot is not None and fainted_slot.startswith("MY:"):
+                    features["TRANSITION:my_faint_last_turn"] += 1
+                elif fainted_slot is not None and fainted_slot.startswith("OPP:"):
+                    features["TRANSITION:opp_faint_last_turn"] += 1
+
+        # Determine move order: did each of my slots move before any opponent?
+        my_slots_seen: Dict[str, int] = {}
+        opp_first_move_idx: Optional[int] = None
+        for idx, slot in enumerate(move_events_order):
+            if slot.startswith("OPP:") and opp_first_move_idx is None:
+                opp_first_move_idx = idx
+            if slot.startswith("MY:") and slot not in my_slots_seen:
+                my_slots_seen[slot] = idx
+
+        if "MY:0:" in my_slots_seen:
+            if opp_first_move_idx is not None:
+                features["TRANSITION:my_slot0_moved_first"] = int(
+                    my_slots_seen["MY:0:"] < opp_first_move_idx
+                )
+            else:
+                # No opponent moved (both fainted or switched)
+                features["TRANSITION:my_slot0_moved_first"] = 1
+
+        if "MY:1:" in my_slots_seen:
+            if opp_first_move_idx is not None:
+                features["TRANSITION:my_slot1_moved_first"] = int(
+                    my_slots_seen["MY:1:"] < opp_first_move_idx
+                )
+            else:
+                features["TRANSITION:my_slot1_moved_first"] = 1
+
+        return features
 
 
 def fill_with_none(to_fill: List[Any], n: int) -> List[Any | None]:
@@ -1169,91 +1503,6 @@ TRACKED_SIDE_CONDITIONS = {
     SideCondition.WIDE_GUARD,
 }
 
-# 99.5% of tracked abilities
-TRACKED_ABILITIES = {
-    "drizzle",
-    "clearbody",
-    "steamengine",
-    "chlorophyll",
-    "commander",
-    "innerfocus",
-    "shadowtag",
-    "sandrush",
-    "mirrorarmor",
-    "lightningrod",
-    "competitive",
-    "effectspore",
-    "powerspot",
-    "unaware",
-    "sturdy",
-    "slushrush",
-    "electricsurge",
-    "intimidate",
-    "owntempo",
-    "waterabsorb",
-    "moldbreaker",
-    "cursedbody",
-    "costar",
-    "sapsipper",
-    "toxicdebris",
-    "swiftswim",
-    "guts",
-    "zerotohero",
-    "windrider",
-    "wellbakedbody",
-    "beadsofruin",
-    "vitalspirit",
-    "overgrow",
-    "disguise",
-    "tabletsofruin",
-    "moxie",
-    "voltabsorb",
-    "sharpness",
-    "dazzling",
-    "thickfat",
-    "electromorphosis",
-    "defiant",
-    "multiscale",
-    "corrosion",
-    "pixilate",
-    "naturalcure",
-    "protosynthesis",
-    "goodasgold",
-    "flamebody",
-    "sandveil",
-    "oblivious",
-    "galewings",
-    "thermalexchange",
-    "swordofruin",
-    "speedboost",
-    "regenerator",
-    "stormdrain",
-    "vesselofruin",
-    "roughskin",
-    "flashfire",
-    "magicbounce",
-    "sandstream",
-    "armortail",
-    "protean",
-    "waterveil",
-    "weakarmor",
-    "drought",
-    "psychicsurge",
-    "purifyingsalt",
-    "prankster",
-    "unburden",
-    "snowwarning",
-    "technician",
-    "quarkdrive",
-    "eartheater",
-    "queenlymajesty",
-    "telepathy",
-    "levitate",
-    "hugepower",
-    "friendguard",
-    "moody",
-}
-
 TRACKED_ITEMS = {
     "focussash",
     "assaultvest",
@@ -1318,3 +1567,91 @@ TRACKED_FIELDS = {
 }
 
 TRACKED_WEATHERS = {Weather.SUNNYDAY, Weather.SANDSTORM, Weather.RAINDANCE, Weather.SNOW}
+
+# Duration constants for weather/field/side condition remaining-turn encoding
+WEATHER_DURATION = 5
+FIELD_DURATIONS = {
+    Field.TRICK_ROOM: 5,
+    Field.GRASSY_TERRAIN: 5,
+    Field.ELECTRIC_TERRAIN: 5,
+    Field.MISTY_TERRAIN: 5,
+    Field.PSYCHIC_TERRAIN: 5,
+    Field.GRAVITY: 5,
+}
+SIDE_CONDITION_DURATIONS = {
+    SideCondition.TAILWIND: 4,
+    SideCondition.REFLECT: 5,
+    SideCondition.LIGHT_SCREEN: 5,
+    SideCondition.AURORA_VEIL: 5,
+}
+
+# Protect-type moves for transition feature detection (lowered, no spaces/hyphens)
+PROTECT_MOVES = {
+    "protect",
+    "detect",
+    "banefulbunker",
+    "kingsshield",
+    "spikyshield",
+    "obstruct",
+    "silktrap",
+    "burningbulwark",
+    "wideguard",
+    "quickguard",
+    "matblock",
+    "endure",
+}
+
+# Boost range for one-hot encoding: -6 to +6 inclusive = 13 bins
+BOOST_RANGE = list(range(-6, 7))
+
+# Entity ID mappings: 0 = unknown/unseen, 1-N = known entities
+# Sorted for deterministic ordering
+ITEM_TO_ID = {item: i + 1 for i, item in enumerate(sorted(TRACKED_ITEMS))}
+
+
+def build_ability_to_id(format_str: str) -> Dict[str, int]:
+    """Build ability ID mapping from poke-env GenData for the given format.
+
+    IDs are 1-indexed; 0 is reserved for unknown/unseen abilities.
+    """
+    pokedex = GenData.from_gen(int(format_str[3])).pokedex
+    abilities: set[str] = set()
+
+    for entry in pokedex.values():
+        for ability in entry.get("abilities", {}).values():
+            if ability:
+                abilities.add(to_id_str(str(ability)))
+
+    return {ability: i + 1 for i, ability in enumerate(sorted(abilities))}
+
+
+def build_species_to_id(format_str: str) -> Dict[str, int]:
+    """Build species ID mapping from poke-env GenData for the given format.
+
+    IDs are 1-indexed; 0 is reserved for unknown/unseen species.
+    """
+    pokedex = GenData.from_gen(int(format_str[3])).pokedex
+    species = sorted(pokedex.keys())
+    return {s: i + 1 for i, s in enumerate(species)}
+
+
+def build_move_to_id(format_str: str) -> Dict[str, int]:
+    """Build move ID mapping from poke-env GenData for the given format.
+
+    IDs are 1-indexed; 0 is reserved for unknown/unseen moves.
+    """
+    movedex = GenData.from_gen(int(format_str[3])).moves
+    moves = sorted(movedex.keys())
+    return {m: i + 1 for i, m in enumerate(moves)}
+
+
+DEFAULT_FORMAT = "gen9vgc2023regc"
+ABILITY_TO_ID = build_ability_to_id(DEFAULT_FORMAT)
+SPECIES_TO_ID = build_species_to_id(DEFAULT_FORMAT)
+MOVE_TO_ID = build_move_to_id(DEFAULT_FORMAT)
+
+# Vocabulary sizes (including the 0 = unknown token)
+NUM_ABILITIES = len(ABILITY_TO_ID) + 1  # +1 for unknown (index 0)
+NUM_ITEMS = len(TRACKED_ITEMS) + 1  # +1 for unknown (index 0)
+NUM_SPECIES = len(SPECIES_TO_ID) + 1  # +1 for unknown (index 0)
+NUM_MOVES = len(MOVE_TO_ID) + 1  # +1 for unknown (index 0)

@@ -7,7 +7,9 @@ Ultimately, this project is just a collection of extensions built on top of poke
 Right now, much of this work is built to support offline supervised learning. The general workflow is:
 - Take battle logs stored in [pkmn's showdown log format](https://github.com/pkmn/stats/blob/main/anon/src/testdata/anon.json) and store them in a `BattleData` object
 - Use `BattleIterator` to convert `BattleData` into a poke-env `DoubleBattle` object, and recreate the battle object by iterating through the logs
-- Use `BattleDataset` to generate state representations (from `Embedder`) with action/win labels (from `ModelDoubleBttleOrder`) by leveraging `BattleIterator` to go through the battle turn by turn
+- Use `BattleDataset` to generate state representations (from `Embedder`) with action/win labels (from `MDBO`) by leveraging `BattleIterator` to go through the battle turn by turn
+- Train BC model using `supervised/train.py`
+- Train RL model using `rl.train.py` 
 
 ## Table of Contents
 - `./data` contains all the data to run and train EliteFurretAI. Note that you will have to generate/port your own.
@@ -15,10 +17,7 @@ Right now, much of this work is built to support offline supervised learning. Th
 - `./examples` working examples that will help you jumpstart working with EliteFurretAI
 - `src` all major code
     - `inference` contains classes that infer information from the battle state (e.g. choice scarf if you move provably faster than you can)
-    - `model_utils` data-related classes that help process and train models
-    - `scripts` the manual scripts I've run that I made while developing EliteFurretAI. They're sorted into ones that (a) analyze data, (b) fuzz test these tools, (c) scrape/serialize pokepastes, (d) prepare/sanitize data and (e) train models
-    - `utils` are general utility functions to help with EliteFurretAI (e.g. team and `BattleOrder` validators)
+    - `etl` contains data-related classes that help process and train models
+    - `supervised` contains everything you need to train a prediction model on VGC
+    - `rl` contains everything you need to train a RL bot on VGC
 - `unit_tests` contains all my unit tests in pytest
-
-## Examples
-Note that there are several examples in the `./examples`  on how to run battles and train models via pytorch or sklearn -- I would recommend you check those out first. You should be able to run them with `python3 examples/example_multitask_dnn.py path/to/battle/file.json` where `path/to/battle/file.json` is a path to a json that contains the list of filenames (which contain battle logs) that you want to train on.

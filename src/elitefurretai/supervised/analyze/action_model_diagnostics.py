@@ -20,7 +20,11 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from elitefurretai.etl import MDBO, Embedder, OptimizedBattleDataLoader
+from elitefurretai.etl import (
+    MDBO,
+    Embedder,
+    OptimizedBattleDataLoader,
+)
 from elitefurretai.supervised.model_archs import FlexibleThreeHeadedModel
 
 
@@ -386,19 +390,14 @@ def main(model_path: str, data_path: str, max_batches: Optional[int] = 100):
 
     # Initialize model
     model = FlexibleThreeHeadedModel(
-        input_size=embedder.embedding_size,
+        embedder=embedder,
         early_layers=config["early_layers"],
         late_layers=config["late_layers"],
         lstm_layers=config["lstm_layers"],
         lstm_hidden_size=config["lstm_hidden_size"],
         dropout=0.0,  # No dropout for evaluation
-        gated_residuals=config["gated_residuals"],
         early_attention_heads=config["early_attention_heads"],
         late_attention_heads=config["late_attention_heads"],
-        use_grouped_encoder=config["use_grouped_encoder"],
-        group_sizes=(
-            embedder.group_embedding_sizes if config["use_grouped_encoder"] else None
-        ),
         grouped_encoder_hidden_dim=config["grouped_encoder_hidden_dim"],
         grouped_encoder_aggregated_dim=config["grouped_encoder_aggregated_dim"],
         pokemon_attention_heads=config["pokemon_attention_heads"],

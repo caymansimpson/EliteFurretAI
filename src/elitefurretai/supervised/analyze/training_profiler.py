@@ -798,17 +798,14 @@ def main(data_path):
 
     # Use a simplified config for profiling (similar to three_headed_transformer.py)
     model = FlexibleThreeHeadedModel(
-        input_size=embedder.embedding_size,
+        embedder=embedder,
         early_layers=[1024, 512],
         late_layers=[512, 256],
         lstm_layers=2,
         lstm_hidden_size=256,
         dropout=0.1,
-        gated_residuals=False,
         early_attention_heads=4,
         late_attention_heads=4,
-        use_grouped_encoder=False,
-        group_sizes=None,
         teampreview_head_layers=[256],
         teampreview_head_dropout=0.1,
         teampreview_attention_heads=4,

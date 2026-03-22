@@ -1,0 +1,72 @@
+# ===== Training =====
+learning_rate: 3.0e-5
+optimizer: AdamW
+num_epochs: 10
+embedder_feature_set: full
+battle_format: gen9vgc2023regc
+
+# ===== DataLoader =====
+worker_batch_size: 64
+num_workers: 6
+prefetch_factor: 4
+files_per_worker: 4
+persistent_workers: true
+
+# ===== Regularization =====
+batch_size: 128
+dropout: 0.1
+weight_decay: 0.001
+max_grad_norm: 1.0
+teampreview_head_dropout: 0
+
+# ===== Loss Weights =====
+teampreview_loss_weight: 0
+turn_loss_weight: 1.0
+win_loss_weight: 0
+keep_force_switch: false
+entropy_weight: 0.0
+
+# ===== Loss Function =====
+turn_loss_type: topk
+train_topk_k: 5
+focal_gamma: 3.0
+focal_alpha: 0.25
+label_smoothing: 0.1
+
+# ===== Action Type Weighting =====
+use_action_type_weighting: true
+move_loss_weight: 5.0
+switch_loss_weight: 1.0
+both_loss_weight: 3.0
+
+# ===== Architecture - Backbone =====
+max_seq_len: 40
+grouped_encoder_hidden_dim: 512
+grouped_encoder_aggregated_dim: 4096
+pokemon_attention_heads: 16
+early_layers: [2048, 1024, 1024]
+
+# ===== Architecture - Transformer =====
+transformer_layers: 6
+transformer_heads: 16
+transformer_ff_dim: 2048
+transformer_dropout: 0.1
+use_decision_tokens: true
+use_causal_mask: true
+late_layers: [2048, 2048, 1024, 1024]
+
+# ===== Architecture - Teampreview Head =====
+teampreview_head_layers: []
+teampreview_attention_heads: 0
+
+# ===== Architecture - Turn Action Head =====
+turn_head_layers: [1024, 512, 512]
+
+# ===== Distributional Value Head (C51) =====
+num_value_bins: 51
+value_min: -1.0
+value_max: 1.0
+
+# ===== Other =====
+save_path: data/models/supervised/
+seed: 21

@@ -174,6 +174,16 @@ class TeamRepo:
                     with open(item_path, "r") as f:
                         team_string = f.read()
 
+                    if self._is_vgc_format(format_name):
+                        pokemon_count = self._count_pokemon_entries(team_string)
+                        if pokemon_count != 6:
+                            if self._verbose:
+                                print(
+                                    f"  Skipping malformed VGC team {item_path}: "
+                                    f"expected 6 Pokémon, got {pokemon_count}"
+                                )
+                            continue
+
                     # Use relative path from format directory as team name for uniqueness
                     # e.g., "rental_teams/team1" instead of just "team1"
                     team_name = os.path.relpath(item_path, format_dir)
@@ -186,6 +196,25 @@ class TeamRepo:
                 except Exception as e:
                     if self._verbose:
                         print(f"  Error loading {item_path}: {e}")
+
+    @staticmethod
+    def _is_vgc_format(format_name: str) -> bool:
+        return "vgc" in format_name.lower()
+
+    @staticmethod
+    def _count_pokemon_entries(team_string: str) -> int:
+        normalized = team_string.replace("\r\n", "\n")
+
+        ability_count = sum(
+            1
+            for line in normalized.split("\n")
+            if line.strip().startswith("Ability:")
+        )
+        if ability_count > 0:
+            return ability_count
+
+        blocks = [block for block in normalized.split("\n\n") if block.strip()]
+        return len(blocks)
 
     @staticmethod
     @contextmanager

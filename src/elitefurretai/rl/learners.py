@@ -11,8 +11,59 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.distributions import Categorical
+from torch.optim.lr_scheduler import LambdaLR
 
+from elitefurretai.rl.config import RNaDConfig
 from elitefurretai.rl.players import RNaDAgent
+from elitefurretai.supervised.model_archs import twohot_encode
+
+
+def _build_optimizer(
+    model: nn.Module,
+    config: RNaDConfig,
+) -> optim.Optimizer:
+    """Build optimizer with topology-aware parameter groups from config."""
+    opt_cfg = config.optimizer
+    param_groups_cfg = opt_cfg.get("param_groups", {})
+
+    head_keywords = [
+        "turn_action_head", "teampreview_head", "win_head",
+        "turn_ff_stack", "teampreview_ff_stack",
+    ]
+
+    head_params = []
+    backbone_params = []
+    for name, param in model.named_parameters():
+        if any(h in name for h in head_keywords):
+            head_params.append(param)
+        else:
+            backbone_params.append(param)
+
+    backbone_cfg = param_groups_cfg.get("backbone", {})
+    heads_cfg = param_groups_cfg.get("heads", {})
+
+    param_groups = [
+        {
+            "params": backbone_params,
+            "lr": backbone_cfg.get("lr", config.lr),
+            "weight_decay": backbone_cfg.get("weight_decay", opt_cfg.get("weight_decay", 1e-4)),
+        },
+        {
+            "params": head_params,
+            "lr": heads_cfg.get("lr", config.lr * 3),
+            "weight_decay": heads_cfg.get("weight_decay", 0.0),
+        },
+    ]
+
+    if opt_cfg.get("type", "adamw") == "adamw":
+        return optim.AdamW(param_groups)
+    else:
+        return optim.Adam(param_groups)
+
+
+def _build_scheduler(optimizer: optim.Optimizer, config: RNaDConfig) -> LambdaLR:
+    """Build LR scheduler with warmup + decay from config."""
+    return LambdaLR(optimizer, lr_lambda=lambda step: config.lr_lambda(step))
 
 
 class RNaDLearner:
@@ -20,29 +71,31 @@ class RNaDLearner:
         self,
         model: RNaDAgent,
         ref_model: RNaDAgent,
-        lr: float = 1e-4,
-        gamma: float = 0.99,
-        clip_range: float = 0.2,
-        ent_coef: float = 0.01,
-        vf_coef: float = 0.5,
-        rnad_alpha: float = 0.1,
-        device: str = "cuda" if torch.cuda.is_available() else "cpu",
-        use_mixed_precision: bool = True,
-        gradient_clip: float = 0.5,
+        config: RNaDConfig,
+        # device: str = "cuda" if torch.cuda.is_available() else "cpu",
     ):
         self.model = model.to(device)
         self.ref_model = ref_model.to(device)
-        self.optimizer = optim.Adam(self.model.parameters(), lr=lr)
-        self.gamma = gamma
-        self.clip_range = clip_range
-        self.ent_coef = ent_coef
-        self.vf_coef = vf_coef
-        self.rnad_alpha = rnad_alpha
+        self.config = config
+        self.optimizer = _build_optimizer(self.model, config)
+        self.scheduler = _build_scheduler(self.optimizer, config)
+        self.gamma = config.gamma
+        self.clip_range = config.clip_range
+        self.ent_coef = config.ent_coef
+        self.vf_coef = config.vf_coef
+        self.rnad_alpha = config.rnad_alpha
         self.device = device
-        self.use_mixed_precision = use_mixed_precision
-        self.gradient_clip = gradient_clip
+        self.use_mixed_precision = config.use_mixed_precision
+        self.gradient_clip = config.max_grad_norm
+        self._step = 0
 
-        self.scaler = torch.amp.GradScaler(device=device) if use_mixed_precision else None  # type: ignore
+        # Distributional value head support
+        self.num_value_bins = config.num_value_bins
+        self.value_support = torch.linspace(
+            config.value_min, config.value_max, config.num_value_bins
+        ).to(device)
+
+        self.scaler = torch.amp.GradScaler(device=device) if self.use_mixed_precision else None  # type: ignore
 
         for param in self.ref_model.parameters():
             param.requires_grad = False
@@ -51,6 +104,9 @@ class RNaDLearner:
         self.ref_model.load_state_dict(self.model.state_dict())
 
     def update(self, batch: Dict[str, torch.Tensor]) -> Dict[str, float]:
+        self._step += 1
+        ent_coef = self.config.ent_coef_at_step(self._step)
+
         states = batch["states"].to(self.device)
         actions = batch["actions"].to(self.device)
         old_log_probs = batch["log_probs"].to(self.device)
@@ -65,8 +121,11 @@ class RNaDLearner:
         if action_masks is not None:
             action_masks = action_masks.to(self.device)
 
+        is_transformer = getattr(self.model, "_is_transformer", False)
         initial_hidden = batch.get("initial_hidden", None)
-        if initial_hidden is None:
+        if is_transformer:
+            initial_hidden_state = None
+        elif initial_hidden is None:
             initial_hidden_state = self.model.get_initial_state(
                 states.shape[0], self.device
             )
@@ -77,10 +136,10 @@ class RNaDLearner:
             )
 
         with torch.amp.autocast(device_type=self.device, enabled=self.use_mixed_precision):  # type: ignore
-            turn_logits, tp_logits, values, _ = self.model(states, initial_hidden_state)
+            turn_logits, tp_logits, values, win_dist_logits, _ = self.model(states, initial_hidden_state)
 
         with torch.no_grad():
-            ref_turn_logits, ref_tp_logits, _, _ = self.ref_model(
+            ref_turn_logits, ref_tp_logits, _, _, _ = self.ref_model(
                 states, initial_hidden_state
             )
 
@@ -163,20 +222,23 @@ class RNaDLearner:
             total_policy_loss += -torch.min(surr1, surr2).mean().item()
             total_entropy_loss += curr_dist.entropy().mean()
 
-        value_error = (flat_values - flat_returns) ** 2
+        # Distributional value loss (C51 cross-entropy with two-hot targets)
+        flat_dist_logits = win_dist_logits.reshape(-1, self.num_value_bins)
+        targets = twohot_encode(flat_returns, self.value_support)
+        log_probs_dist = torch.log_softmax(flat_dist_logits, dim=-1)
+        per_step_value_loss = -(targets * log_probs_dist).sum(dim=-1)
         if padding_mask is not None:
             value_loss = (
-                0.5
-                * (value_error * flat_padding_mask.float()).sum()
+                (per_step_value_loss * flat_padding_mask.float()).sum()
                 / flat_padding_mask.sum().clamp(min=1.0)
             )
         else:
-            value_loss = 0.5 * value_error.mean()
+            value_loss = per_step_value_loss.mean()
 
         loss = (
             total_policy_loss
             + self.vf_coef * value_loss
-            - self.ent_coef * total_entropy_loss
+            - ent_coef * total_entropy_loss
             + self.rnad_alpha * total_rnad_loss
         )
 
@@ -203,6 +265,8 @@ class RNaDLearner:
             ).item()
             self.optimizer.step()
 
+        self.scheduler.step()
+
         return {
             "loss": loss.item(),
             "policy_loss": (
@@ -223,6 +287,9 @@ class RNaDLearner:
             ),
             "grad_norm_before_clip": grad_norm_before,
             "grad_norm_after_clip": grad_norm_after,
+            "lr_backbone": self.optimizer.param_groups[0]["lr"],
+            "lr_heads": self.optimizer.param_groups[1]["lr"],
+            "ent_coef": ent_coef,
         }
 
 
@@ -231,35 +298,35 @@ class PortfolioRNaDLearner:
         self,
         model: RNaDAgent,
         ref_models: List[RNaDAgent],
-        lr: float = 1e-4,
-        gamma: float = 0.99,
-        clip_range: float = 0.2,
-        ent_coef: float = 0.01,
-        vf_coef: float = 0.5,
-        rnad_alpha: float = 0.1,
-        gradient_clip: float = 0.5,
-        device: str = "cuda" if torch.cuda.is_available() else "cpu",
-        use_mixed_precision: bool = True,
-        max_portfolio_size: int = 5,
-        portfolio_update_strategy: str = "diverse",
+        config: RNaDConfig,
+        # device: str = "cuda" if torch.cuda.is_available() else "cpu",
     ):
         self.model = model.to(device)
         self.ref_models = [ref.to(device) for ref in ref_models]
-        self.optimizer = optim.Adam(self.model.parameters(), lr=lr)
-        self.gamma = gamma
-        self.clip_range = clip_range
-        self.ent_coef = ent_coef
-        self.vf_coef = vf_coef
-        self.rnad_alpha = rnad_alpha
-        self.gradient_clip = gradient_clip
+        self.config = config
+        self.optimizer = _build_optimizer(self.model, config)
+        self.scheduler = _build_scheduler(self.optimizer, config)
+        self.gamma = config.gamma
+        self.clip_range = config.clip_range
+        self.ent_coef = config.ent_coef
+        self.vf_coef = config.vf_coef
+        self.rnad_alpha = config.rnad_alpha
+        self.gradient_clip = config.max_grad_norm
         self.device = device
-        self.use_mixed_precision = use_mixed_precision
-        self.max_portfolio_size = max_portfolio_size
-        self.portfolio_update_strategy = portfolio_update_strategy
+        self.use_mixed_precision = config.use_mixed_precision
+        self.max_portfolio_size = config.max_portfolio_size
+        self.portfolio_update_strategy = config.portfolio_update_strategy
+        self._step = 0
+
+        # Distributional value head support
+        self.num_value_bins = config.num_value_bins
+        self.value_support = torch.linspace(
+            config.value_min, config.value_max, config.num_value_bins
+        ).to(device)
 
         self.scaler = (
             torch.amp.GradScaler(device=self.device)  # type: ignore[attr-defined]
-            if use_mixed_precision
+            if self.use_mixed_precision
             else None
         )
 
@@ -334,6 +401,9 @@ class PortfolioRNaDLearner:
         return min_kl if min_kl is not None else torch.tensor(0.0, device=self.device)
 
     def update(self, batch: Dict[str, torch.Tensor]) -> Dict[str, Any]:
+        self._step += 1
+        ent_coef = self.config.ent_coef_at_step(self._step)
+
         states = batch["states"].to(self.device)
         actions = batch["actions"].to(self.device)
         old_log_probs = batch["log_probs"].to(self.device)
@@ -351,7 +421,10 @@ class PortfolioRNaDLearner:
             )
 
         initial_hidden = batch.get("initial_hidden", None)
-        if initial_hidden is None:
+        is_transformer = getattr(self.model, "_is_transformer", False)
+        if is_transformer:
+            initial_hidden_state = None
+        elif initial_hidden is None:
             initial_hidden_state = self.model.get_initial_state(
                 states.shape[0], self.device
             )
@@ -362,12 +435,12 @@ class PortfolioRNaDLearner:
             )
 
         with torch.amp.autocast(device_type=self.device, enabled=self.use_mixed_precision):  # type: ignore
-            turn_logits, tp_logits, values, _ = self.model(states, initial_hidden_state)
+            turn_logits, tp_logits, values, win_dist_logits, _ = self.model(states, initial_hidden_state)
 
             ref_outputs = []
             for ref_model in self.ref_models:
                 with torch.no_grad():
-                    ref_turn, ref_tp, _, _ = ref_model(states, initial_hidden_state)
+                    ref_turn, ref_tp, _, _, _ = ref_model(states, initial_hidden_state)
                     ref_outputs.append((ref_turn, ref_tp))
 
             flat_actions = actions.reshape(-1)
@@ -375,7 +448,6 @@ class PortfolioRNaDLearner:
             flat_advantages = advantages.reshape(-1)
             flat_returns = returns.reshape(-1)
             flat_is_tp = is_teampreview.reshape(-1).bool()
-            flat_values = values.reshape(-1)
             flat_padding_mask = padding_mask.reshape(-1).bool()
 
             policy_loss_tp = torch.tensor(0.0, device=self.device)
@@ -439,11 +511,14 @@ class PortfolioRNaDLearner:
                 entropy_turn = curr_dist.entropy().mean()
 
             if flat_padding_mask.any():
-                valid_indices = torch.nonzero(flat_padding_mask, as_tuple=False).squeeze(
-                    -1
-                )
-                value_loss = nn.MSELoss()(
-                    flat_values[valid_indices], flat_returns[valid_indices]
+                # Distributional value loss (C51 cross-entropy with two-hot targets)
+                flat_dist_logits = win_dist_logits.reshape(-1, self.num_value_bins)
+                targets = twohot_encode(flat_returns, self.value_support)
+                log_probs_dist = torch.log_softmax(flat_dist_logits, dim=-1)
+                per_step_value_loss = -(targets * log_probs_dist).sum(dim=-1)
+                value_loss = (
+                    (per_step_value_loss * flat_padding_mask.float()).sum()
+                    / flat_padding_mask.sum().clamp(min=1.0)
                 )
 
             policy_loss = policy_loss_tp + policy_loss_turn
@@ -453,7 +528,7 @@ class PortfolioRNaDLearner:
             total_loss = (
                 policy_loss
                 + self.vf_coef * value_loss
-                - self.ent_coef * entropy_loss
+                - ent_coef * entropy_loss
                 + self.rnad_alpha * rnad_loss
             )
 
@@ -483,6 +558,8 @@ class PortfolioRNaDLearner:
             ).item()
             self.optimizer.step()
 
+        self.scheduler.step()
+
         return {
             "loss": total_loss.item(),
             "policy_loss": policy_loss.item(),
@@ -493,6 +570,9 @@ class PortfolioRNaDLearner:
             "grad_norm_after_clip": grad_norm_after,
             "portfolio_size": len(self.ref_models),
             "portfolio_selections": dict(enumerate(self.portfolio_selection_counts)),
+            "lr_backbone": self.optimizer.param_groups[0]["lr"],
+            "lr_heads": self.optimizer.param_groups[1]["lr"],
+            "ent_coef": ent_coef,
         }
 
     def get_portfolio_stats(self) -> Dict[str, Any]:

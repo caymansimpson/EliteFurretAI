@@ -2,6 +2,7 @@ import re
 from typing import Any, Dict, List, Optional
 
 from poke_env.battle import AbstractBattle, Effect, MoveCategory, Pokemon, PokemonGender
+from poke_env.data import GenData
 from poke_env.data.normalize import to_id_str
 
 from elitefurretai.etl.battle_data import BattleData
@@ -639,7 +640,7 @@ class BattleIterator:
         elif mon.gender == PokemonGender.FEMALE:
             gender = "F"
 
-        details = f"{mon._data.pokedex[mon.species]['name']}, L{mon.level}"
+        details = f"{GenData.from_gen(mon.gen).pokedex[mon.species]['name']}, L{mon.level}"
         if gender is not None:
             details += f", {gender}"
 

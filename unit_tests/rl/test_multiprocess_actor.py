@@ -65,12 +65,13 @@ def mock_model():
             batch_size, seq_len, MDBO.teampreview_space(), device=device
         )
         values = torch.zeros(batch_size, seq_len, device=device)
+        win_dist_logits = torch.zeros(batch_size, seq_len, 51, device=device)
 
         # Return same hidden state (no update)
         next_h = hidden[0]
         next_c = hidden[1]
 
-        return turn_logits, tp_logits, values, (next_h, next_c)
+        return turn_logits, tp_logits, values, win_dist_logits, (next_h, next_c)
 
     model.side_effect = mock_forward
     model.forward = mock_forward

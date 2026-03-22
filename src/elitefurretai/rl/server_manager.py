@@ -4,7 +4,7 @@ import os
 import signal
 import subprocess
 import time
-from typing import List, Optional, TextIO, Tuple
+from typing import List, Optional, TextIO, Tuple, Union
 
 from elitefurretai.rl.config import RNaDConfig
 
@@ -159,7 +159,7 @@ def launch_external_vgcbench_runners(
             )
             sanitized_username = actual_username.replace("/", "_")
             log_path = "<disabled>"
-            log_handle: TextIO | int
+            log_handle: Union[TextIO, int]
             if write_logs_to_files:
                 log_path = os.path.join(
                     config.external_vgcbench_log_dir,

@@ -5,7 +5,7 @@ Includes model construction utilities and checkpoint load/save helpers.
 
 import os
 from datetime import datetime
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, Union
 
 import torch
 
@@ -13,6 +13,7 @@ from elitefurretai.etl import MDBO, Embedder
 from elitefurretai.rl.config import RNaDConfig
 from elitefurretai.rl.players import RNaDAgent
 from elitefurretai.supervised import FlexibleThreeHeadedModel
+from elitefurretai.supervised.model_archs import TransformerThreeHeadedModel
 
 MODEL_ARCH_CONFIG_KEYS = (
     "battle_format",
@@ -22,10 +23,8 @@ MODEL_ARCH_CONFIG_KEYS = (
     "lstm_layers",
     "lstm_hidden_size",
     "dropout",
-    "gated_residuals",
     "early_attention_heads",
     "late_attention_heads",
-    "use_grouped_encoder",
     "grouped_encoder_hidden_dim",
     "grouped_encoder_aggregated_dim",
     "pokemon_attention_heads",
@@ -34,6 +33,21 @@ MODEL_ARCH_CONFIG_KEYS = (
     "teampreview_attention_heads",
     "turn_head_layers",
     "max_seq_len",
+    "num_value_bins",
+    "value_min",
+    "value_max",
+    "number_bank_hp_bins",
+    "number_bank_stat_bins",
+    "number_bank_power_bins",
+    "number_bank_embedding_dim",
+    # Transformer
+    "use_transformer",
+    "transformer_layers",
+    "transformer_heads",
+    "transformer_ff_dim",
+    "transformer_dropout",
+    "use_decision_tokens",
+    "use_causal_mask",
 )
 
 
@@ -67,23 +81,15 @@ def build_model_from_config(
     embedder: Embedder,
     device: str,
     state_dict: Optional[Dict[str, Any]] = None,
-) -> FlexibleThreeHeadedModel:
-    model = FlexibleThreeHeadedModel(
-        input_size=embedder.embedding_size,
+) -> Union[FlexibleThreeHeadedModel, TransformerThreeHeadedModel]:
+    use_transformer = model_config.get("use_transformer", False)
+
+    # Shared kwargs for both model classes
+    common_kwargs: Dict[str, Any] = dict(
+        embedder=embedder,
         early_layers=model_config["early_layers"],
         late_layers=model_config["late_layers"],
-        lstm_layers=model_config.get("lstm_layers", 2),
-        lstm_hidden_size=model_config.get("lstm_hidden_size", 512),
         dropout=model_config.get("dropout", 0.1),
-        gated_residuals=model_config.get("gated_residuals", False),
-        early_attention_heads=model_config.get("early_attention_heads", 8),
-        late_attention_heads=model_config.get("late_attention_heads", 8),
-        use_grouped_encoder=model_config.get("use_grouped_encoder", False),
-        group_sizes=(
-            embedder.group_embedding_sizes
-            if model_config.get("use_grouped_encoder", False)
-            else None
-        ),
         grouped_encoder_hidden_dim=model_config.get("grouped_encoder_hidden_dim", 128),
         grouped_encoder_aggregated_dim=model_config.get("grouped_encoder_aggregated_dim", 1024),
         pokemon_attention_heads=model_config.get("pokemon_attention_heads", 2),
@@ -94,7 +100,49 @@ def build_model_from_config(
         num_actions=MDBO.action_space(),
         num_teampreview_actions=MDBO.teampreview_space(),
         max_seq_len=model_config.get("max_seq_len", 17),
-    ).to(device)
+        num_value_bins=model_config.get("num_value_bins", 51),
+        value_min=model_config.get("value_min", -1.0),
+        value_max=model_config.get("value_max", 1.0),
+        # Grouped feature expansion hyperparameters
+        number_bank_hp_bins=model_config.get("number_bank_hp_bins", 100),
+        number_bank_stat_bins=model_config.get("number_bank_stat_bins", 600),
+        number_bank_power_bins=model_config.get("number_bank_power_bins", 250),
+        number_bank_embedding_dim=model_config.get("number_bank_embedding_dim", 16),
+        number_bank_damage_bins=model_config.get("number_bank_damage_bins", 600),
+        number_bank_damage_embed_dim=model_config.get("number_bank_damage_embed_dim", 4),
+        number_bank_turn_bins=model_config.get("number_bank_turn_bins", 40),
+        number_bank_turn_embed_dim=model_config.get("number_bank_turn_embed_dim", 16),
+        number_bank_rating_bins=model_config.get("number_bank_rating_bins", 100),
+        number_bank_rating_embed_dim=model_config.get("number_bank_rating_embed_dim", 16),
+        ability_embed_dim=model_config.get("ability_embed_dim", 16),
+        item_embed_dim=model_config.get("item_embed_dim", 16),
+        species_embed_dim=model_config.get("species_embed_dim", 32),
+        move_embed_dim=model_config.get("move_embed_dim", 16),
+    )
+
+    if use_transformer:
+        model: Union[FlexibleThreeHeadedModel, TransformerThreeHeadedModel] = TransformerThreeHeadedModel(
+            **common_kwargs,
+            transformer_layers=model_config.get("transformer_layers", 6),
+            transformer_heads=model_config.get("transformer_heads", 16),
+            transformer_ff_dim=model_config.get("transformer_ff_dim", 2048),
+            transformer_dropout=model_config.get("transformer_dropout", 0.1),
+            use_decision_tokens=model_config.get("use_decision_tokens", True),
+            use_causal_mask=model_config.get("use_causal_mask", True),
+            # Pass LSTM params for config compat (unused internally)
+            lstm_layers=model_config.get("lstm_layers", 2),
+            lstm_hidden_size=model_config.get("lstm_hidden_size", 512),
+            early_attention_heads=model_config.get("early_attention_heads", 8),
+            late_attention_heads=model_config.get("late_attention_heads", 8),
+        ).to(device)
+    else:
+        model = FlexibleThreeHeadedModel(
+            **common_kwargs,
+            lstm_layers=model_config.get("lstm_layers", 2),
+            lstm_hidden_size=model_config.get("lstm_hidden_size", 512),
+            early_attention_heads=model_config.get("early_attention_heads", 8),
+            late_attention_heads=model_config.get("late_attention_heads", 8),
+        ).to(device)
 
     if state_dict:
         model.load_state_dict(state_dict)
@@ -106,7 +154,7 @@ def load_model_from_checkpoint(
     checkpoint_path: str,
     device: str,
     embedder: Optional[Embedder] = None,
-) -> Tuple[FlexibleThreeHeadedModel, Embedder, Dict[str, Any]]:
+) -> Tuple[Union[FlexibleThreeHeadedModel, TransformerThreeHeadedModel], Embedder, Dict[str, Any]]:
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     config = checkpoint["config"]
     state_dict = checkpoint["model_state_dict"]

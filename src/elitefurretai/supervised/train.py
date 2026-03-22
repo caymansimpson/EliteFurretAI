@@ -4,20 +4,24 @@ This script trains a supervised model for teampreview, turn action, and win pred
 you can build a model to try to play like humans.
 """
 
+import argparse
 import gc
 import os.path
 import random
-import sys
 import time
 from typing import Any, Dict
 
-import orjson
 import torch
+import yaml
 
 import wandb
-from elitefurretai.etl import MDBO, Embedder, OptimizedBattleDataLoader
+from elitefurretai.etl import (
+    MDBO,
+    Embedder,
+    OptimizedBattleDataLoader,
+)
 from elitefurretai.etl.system_utils import configure_torch_multiprocessing
-from elitefurretai.supervised.model_archs import FlexibleThreeHeadedModel
+from elitefurretai.supervised.model_archs import TransformerThreeHeadedModel
 from elitefurretai.supervised.train_utils import (
     analyze,
     evaluate,
@@ -64,8 +68,8 @@ def train_epoch(
 
         autocast = torch.amp.autocast if config["device"] == "cuda" else torch.autocast  # type: ignore
         with autocast(config["device"]):
-            # Forward pass - returns three outputs
-            turn_action_logits, teampreview_logits, win_logits = model(states, masks)
+            # Forward pass - returns four outputs (distributional value head)
+            turn_action_logits, teampreview_logits, win_logits, _ = model(states, masks)
 
             # Determine which samples are teampreview vs turn decisions
             teampreview_mask = states[:, :, config["teampreview_idx"]] == 1  # (batch, seq)
@@ -318,23 +322,31 @@ def main(train_path, test_path, val_path, config={}):
         "focal_gamma": 2.0,  # Focal loss focusing parameter (higher = more focus on hard examples)
         "focal_alpha": 0.25,  # Focal loss weighting parameter
         # Architecture - Backbone
-        "gated_residuals": False,
-        "use_grouped_encoder": True,
         "grouped_encoder_hidden_dim": 512,
         "grouped_encoder_aggregated_dim": 4096,
         "pokemon_attention_heads": 8,
         "early_layers": [4096, 4096, 2048, 2048, 1024],
-        "early_attention_heads": 8,
-        # Win/Action Head Architecture
-        "lstm_layers": 3,
-        "lstm_hidden_size": 1024,
+        # Architecture - Transformer
+        "transformer_layers": 6,
+        "transformer_heads": 16,
+        "transformer_ff_dim": 2048,
+        "transformer_dropout": 0.1,
+        "use_decision_tokens": True,
+        "use_causal_mask": True,
         "late_layers": [2048, 1024, 1024, 512],
-        "late_attention_heads": 16,
         # Architecture - Teampreview Head
         "teampreview_head_layers": [512, 256],
         "teampreview_attention_heads": 8,
         # Architecture - Turn Action Head
         "turn_head_layers": [512, 512, 512],
+        # Distributional Value Head (C51)
+        "num_value_bins": 51,
+        "value_min": -1.0,
+        "value_max": 1.0,
+        # Feature set and format (saved in checkpoint for RL compatibility)
+        "embedder_feature_set": "full",
+        "battle_format": "gen9vgc2023regc",
+        "max_seq_len": 40,
         # Other
         "device": (
             "cuda"
@@ -352,6 +364,30 @@ def main(train_path, test_path, val_path, config={}):
         if k not in config:
             config[k] = v
 
+    # Coerce numeric types that YAML may parse as strings (e.g. 3e-5)
+    _float_keys = {
+        "learning_rate", "dropout", "weight_decay", "max_grad_norm",
+        "teampreview_head_dropout", "entropy_weight", "focal_gamma",
+        "focal_alpha", "label_smoothing", "value_min", "value_max",
+        "transformer_dropout",
+    }
+    _int_keys = {
+        "batch_size", "worker_batch_size", "num_workers", "prefetch_factor",
+        "files_per_worker", "num_epochs", "seed", "lstm_layers",
+        "lstm_hidden_size", "num_value_bins", "max_seq_len",
+        "early_attention_heads", "late_attention_heads",
+        "pokemon_attention_heads", "teampreview_attention_heads",
+        "grouped_encoder_hidden_dim", "grouped_encoder_aggregated_dim",
+        "train_topk_k", "transformer_layers", "transformer_heads",
+        "transformer_ff_dim",
+    }
+    for k in _float_keys:
+        if k in config:
+            config[k] = float(config[k])
+    for k in _int_keys:
+        if k in config:
+            config[k] = int(config[k])
+
     config["accumulation_steps"] = int(config["batch_size"] // config["worker_batch_size"])
     print(f"Starting training with config: {config}")
     initialize(config)
@@ -359,7 +395,7 @@ def main(train_path, test_path, val_path, config={}):
     # Initialize Embedder and find indices of special features; these will be used
     # for weighting training and analyzing model performance
     embedder = Embedder(
-        format="gen9vgc2023regc",
+        format=config["battle_format"],
         feature_set=config["embedder_feature_set"],
         omniscient=False,
     )
@@ -401,20 +437,11 @@ def main(train_path, test_path, val_path, config={}):
     )
 
     # Initialize model with flexible architecture
-    model = FlexibleThreeHeadedModel(
-        input_size=embedder.embedding_size,
+    model = TransformerThreeHeadedModel(
+        embedder=embedder,
         early_layers=config["early_layers"],
         late_layers=config["late_layers"],
-        lstm_layers=config["lstm_layers"],
-        lstm_hidden_size=config["lstm_hidden_size"],
         dropout=config["dropout"],
-        gated_residuals=config["gated_residuals"],
-        early_attention_heads=config["early_attention_heads"],
-        late_attention_heads=config["late_attention_heads"],
-        use_grouped_encoder=config["use_grouped_encoder"],
-        group_sizes=(
-            embedder.group_embedding_sizes if config["use_grouped_encoder"] else None
-        ),
         grouped_encoder_hidden_dim=config["grouped_encoder_hidden_dim"],
         grouped_encoder_aggregated_dim=config["grouped_encoder_aggregated_dim"],
         pokemon_attention_heads=config["pokemon_attention_heads"],
@@ -425,6 +452,15 @@ def main(train_path, test_path, val_path, config={}):
         teampreview_attention_heads=config["teampreview_attention_heads"],
         turn_head_layers=config["turn_head_layers"],
         max_seq_len=config["max_seq_len"],
+        num_value_bins=config["num_value_bins"],
+        value_min=config["value_min"],
+        value_max=config["value_max"],
+        transformer_layers=config.get("transformer_layers", 6),
+        transformer_heads=config.get("transformer_heads", 16),
+        transformer_ff_dim=config.get("transformer_ff_dim", 2048),
+        transformer_dropout=config.get("transformer_dropout", 0.1),
+        use_decision_tokens=config.get("use_decision_tokens", True),
+        use_causal_mask=config.get("use_causal_mask", True),
     ).to(config["device"])
     wandb.watch(model, log="all", log_freq=1000)
 
@@ -585,21 +621,30 @@ if __name__ == "__main__":
         filter_socket_send_warning=True,
     )
 
-    if len(sys.argv) < 2:
-        print("Usage: python supervised/train.py <data_directory> <config>")
-        sys.exit(1)
-    elif len(sys.argv) == 2:
-        main(
-            os.path.join(sys.argv[1], "train"),
-            os.path.join(sys.argv[1], "test"),
-            os.path.join(sys.argv[1], "val"),
-        )
-    elif len(sys.argv) == 3:
-        with open(sys.argv[2], "rb") as f:
-            cfg = orjson.loads(f.read())
-        main(
-            os.path.join(sys.argv[1], "train"),
-            os.path.join(sys.argv[1], "test"),
-            os.path.join(sys.argv[1], "val"),
-            cfg,
-        )
+    parser = argparse.ArgumentParser(
+        description="Train a supervised BC model for teampreview, turn action, and win prediction."
+    )
+    parser.add_argument(
+        "data_directory",
+        type=str,
+        help="Path to data directory containing train/, test/, and val/ subdirectories",
+    )
+    parser.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help="Path to YAML config file (overrides defaults)",
+    )
+    args = parser.parse_args()
+
+    cfg: Dict[str, Any] = {}
+    if args.config:
+        with open(args.config, "r") as f:
+            cfg = yaml.safe_load(f) or {}
+
+    main(
+        os.path.join(args.data_directory, "train"),
+        os.path.join(args.data_directory, "test"),
+        os.path.join(args.data_directory, "val"),
+        cfg,
+    )

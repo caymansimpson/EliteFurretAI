@@ -36,7 +36,7 @@ def mock_model():
     model = MagicMock(spec=FlexibleThreeHeadedModel)
     model.max_seq_len = 17
 
-    # Mock forward pass - returns (turn_logits, tp_logits, win_value)
+    # Mock forward pass - returns (turn_logits, tp_logits, win_value, win_dist_logits)
     def mock_forward(x, mask=None):
         batch_size = x.shape[0]
         seq_len = x.shape[1]
@@ -44,7 +44,8 @@ def mock_model():
         turn_logits = torch.randn(batch_size, seq_len, MDBO.action_space())
         tp_logits = torch.randn(batch_size, seq_len, MDBO.teampreview_space())
         win_value = torch.zeros(batch_size, seq_len)  # Neutral win prediction
-        return turn_logits, tp_logits, win_value
+        win_dist_logits = torch.zeros(batch_size, seq_len, 51)
+        return turn_logits, tp_logits, win_value, win_dist_logits
 
     model.__call__ = mock_forward  # type: ignore[method-assign]
     model.eval = MagicMock()
@@ -62,10 +63,8 @@ def mock_config():
         "lstm_layers": 2,
         "lstm_hidden_size": 256,
         "dropout": 0.1,
-        "gated_residuals": False,
         "early_attention_heads": 4,
         "late_attention_heads": 4,
-        "use_grouped_encoder": False,
     }
 
 
@@ -228,6 +227,7 @@ def test_predict_advantage_with_trajectory():
                 torch.randn(batch, seq, 2025),  # turn_logits
                 torch.randn(batch, seq, 90),  # tp_logits
                 torch.full((batch, seq), 0.5),  # win_value
+                torch.zeros(batch, seq, 51),  # win_dist_logits
             )
 
         mock_model.side_effect = mock_forward

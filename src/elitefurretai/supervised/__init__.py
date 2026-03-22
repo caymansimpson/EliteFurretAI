@@ -11,11 +11,11 @@ Models:
 Training:
     - train_utils: Training loop helpers, evaluation metrics, loss functions
 
-Configs:
-    - action_improved.cfg: Optimized action prediction config
-    - win.cfg: Win prediction focused config
-    - teampreview.cfg: Teampreview-only config
-    - fine_tune.cfg: Fine-tuning configuration
+Configs (YAML):
+    - action.yaml: Action-only prediction config (raw features)
+    - all_in_one_full.yaml: Full all-in-one config (dauntless-hill-95)
+    - win.yaml: Win prediction focused config
+    - finetune.yaml: Fine-tuning configuration
 """
 
 # Models
@@ -25,9 +25,10 @@ from elitefurretai.supervised.behavior_clone_player import BCPlayer
 from elitefurretai.supervised.model_archs import (
     DNN,
     FlexibleThreeHeadedModel,
-    GatedResidualBlock,
     GroupedFeatureEncoder,
+    NumberBankEncoder,
     ResidualBlock,
+    TransformerThreeHeadedModel,
     init_linear_layer,
 )
 
@@ -46,10 +47,11 @@ __all__ = [
     # Model architectures
     "init_linear_layer",
     "ResidualBlock",
-    "GatedResidualBlock",
     "GroupedFeatureEncoder",
+    "NumberBankEncoder",
     "DNN",
     "FlexibleThreeHeadedModel",
+    "TransformerThreeHeadedModel",
     # Training utilities
     "evaluate",
     "analyze",

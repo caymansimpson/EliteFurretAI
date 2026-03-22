@@ -1,11 +1,20 @@
 # -*- coding: utf-8 -*-
 from logging import Logger
 
+import pytest
 from poke_env.battle import DoubleBattle, Move, Pokemon, PokemonType
 from poke_env.data import GenData
 from poke_env.teambuilder.constant_teambuilder import ConstantTeambuilder
 
 from elitefurretai.etl import BattleData, BattleIterator, Embedder
+from elitefurretai.etl.embedder import (
+    ABILITY_TO_ID,
+    ITEM_TO_ID,
+    MOVE_TO_ID,
+    NUM_MOVES,
+    NUM_SPECIES,
+    SPECIES_TO_ID,
+)
 
 
 def move_generator(gen=9):
@@ -27,11 +36,9 @@ def test_embed_move():
     assert all(map(lambda x: none_move[x] == -1, none_move))
 
     # Test that every move has the same length
-    len_none_move = len(embedder.feature_dict_to_vector(none_move))
+    len_none_move = len(none_move)
     for move in move_generator():
-        featurized_move = tuple(
-            embedder.feature_dict_to_vector(embedder.generate_move_features(move))
-        )
+        featurized_move = tuple(embedder.generate_move_features(move).values())
         assert len(featurized_move) == len_none_move
 
     # Test each implemented feature is working properly
@@ -80,18 +87,8 @@ def test_embed_move():
     assert emb["TYPE:FIGHTING"] == 0
     assert emb["TYPE:DRAGON"] == 0
     assert emb["TYPE:ROCK"] == 0
-    assert emb["SC:LIGHT_SCREEN"] == 0
-    assert emb["SC:QUICK_GUARD"] == 0
-    assert emb["SC:AURORA_VEIL"] == 0
-    assert emb["SC:SAFEGUARD"] == 0
-    assert emb["SC:STEALTH_ROCK"] == 0
-    assert emb["SC:STICKY_WEB"] == 0
-    assert emb["SC:REFLECT"] == 0
-    assert emb["SC:TOXIC_SPIKES"] == 0
-    assert emb["SC:WIDE_GUARD"] == 0
-    assert emb["SC:TAILWIND"] == 1
-    assert emb["SC:MIST"] == 0
-    assert emb["SC:SPIKES"] == 0
+    # Move-level SC OHE was pruned; SC is now only at battle-state level
+    assert "SC:TAILWIND" not in emb
     assert emb["TARGET:ALL"] == 0
     assert emb["TARGET:SELF"] == 0
     assert emb["TARGET:ALL_ADJACENT_FOES"] == 0
@@ -103,14 +100,9 @@ def test_embed_move():
     assert emb["TARGET:ALLY_SIDE"] == 1
 
     emb = embedder.generate_move_features(Move("yawn", gen=9))
-    assert emb["EFFECT:SUBSTITUTE"] == 0
-    assert emb["EFFECT:PROTECT"] == 0
-    assert emb["EFFECT:HELPING_HAND"] == 0
-    assert emb["EFFECT:TAUNT"] == 0
-    assert emb["EFFECT:ENCORE"] == 0
-    assert emb["EFFECT:YAWN"] == 1
-    assert emb["EFFECT:FOLLOW_ME"] == 0
-    assert emb["EFFECT:FLINCH"] == 0
+    # Yawn doesn't directly cause a status - it just causes drowsiness
+    assert emb["STATUS:FRZ"] == 0
+    assert emb["STATUS:BRN"] == 0
 
     emb = embedder.generate_move_features(Move("spore", gen=9))
     assert emb["STATUS:FRZ"] == 0
@@ -148,11 +140,9 @@ def test_generate_pokemon_features():
             assert none_mon[feature] == -1
 
     # Test that every mon has the same length
-    none_mon_len = len(embedder.feature_dict_to_vector(none_mon))
+    none_mon_len = len(none_mon)
     for mon in mon_generator():
-        featurized_mon = embedder.feature_dict_to_vector(
-            embedder.generate_pokemon_features(mon, dummy_battle)
-        )
+        featurized_mon = embedder.generate_pokemon_features(mon, dummy_battle)
         assert len(featurized_mon) == none_mon_len
 
     tb_furret = ConstantTeambuilder(
@@ -180,16 +170,11 @@ def test_generate_pokemon_features():
     assert any(map(lambda x: x.startswith("MOVE:2:"), emb))
     assert any(map(lambda x: x.startswith("MOVE:3:"), emb))
 
-    # We don't record runaway, which is Furret's ability here
-    for key in emb:
-        if key.startswith("ABILITY:"):
-            assert emb[key] == 0
+    # Furret's ability is "runaway" and should be present in Gen 9 mapping
+    assert emb["ability_id"] == ABILITY_TO_ID["runaway"]
 
-    assert emb["ITEM:lightclay"] == 0
-    assert emb["ITEM:leftovers"] == 1
-    assert emb["ITEM:lifeorb"] == 0
+    assert emb["item_id"] == ITEM_TO_ID["leftovers"]
     assert emb["current_hp_fraction"] == 0.13125
-    assert emb["level"] == 50
     assert emb["weight"] == 32.5
     assert emb["is_terastallized"] == 0
     assert emb["STAT:hp"] == 160
@@ -198,11 +183,15 @@ def test_generate_pokemon_features():
     assert emb["STAT:spa"] == 66
     assert emb["STAT:spd"] == 67
     assert emb["STAT:spe"] == 156
-    assert emb["BOOST:accuracy"] == 0
-    assert emb["BOOST:atk"] == 0
-    assert emb["BOOST:spa"] == 0
-    assert emb["BOOST:spd"] == 0
-    assert emb["BOOST:spe"] == 2
+    # One-hot boost encoding: Furret has +2 spe, everything else at 0
+    assert emb["BOOST:accuracy:0"] == 1
+    assert emb["BOOST:accuracy:1"] == 0
+    assert emb["BOOST:atk:0"] == 1
+    assert emb["BOOST:spa:0"] == 1
+    assert emb["BOOST:spd:0"] == 1
+    assert emb["BOOST:spe:0"] == 0
+    assert emb["BOOST:spe:2"] == 1
+    assert emb["BOOST:spe:1"] == 0
     assert emb["STATUS: BRN"] == 0
     assert emb["STATUS: TOX"] == 0
     assert emb["STATUS: SLP"] == 1
@@ -237,11 +226,9 @@ def test_generate_opponent_pokemon_features(vgc_battle_p1_logs):
             assert none_mon[feature] == -1
 
     # Test that every mon has the same length
-    none_mon_len = len(embedder.feature_dict_to_vector(none_mon))
+    none_mon_len = len(none_mon)
     for mon in mon_generator():
-        featurized_mon = embedder.feature_dict_to_vector(
-            embedder.generate_opponent_pokemon_features(mon, dummy_battle)
-        )
+        featurized_mon = embedder.generate_opponent_pokemon_features(mon, dummy_battle)
         assert len(featurized_mon) == none_mon_len
 
     # Generate battle
@@ -265,17 +252,13 @@ def test_generate_opponent_pokemon_features(vgc_battle_p1_logs):
     assert emb["MOVE:1:TYPE:ICE"] == 1
     assert emb["MOVE:2:max_hits"] == -1  # Dont know it
     assert emb["MOVE:1:current_pp"] == 5
-    assert emb["ABILITY:thermalexchange"] == 0
-    assert emb["ABILITY:moody"] == 1
+    assert emb["ability_id"] == ABILITY_TO_ID["moody"]
 
     # We don't know Smeargle's item
-    for key in emb:
-        if key.startswith("ITEM:"):
-            assert emb[key] == 0
+    assert emb["item_id"] == 0  # Unknown item
 
     # Fainted
     assert emb["current_hp_fraction"] == 0
-    assert emb["level"] == 50
     assert emb["weight"] == 58
     assert emb["is_terastallized"] == 0
 
@@ -292,12 +275,13 @@ def test_generate_opponent_pokemon_features(vgc_battle_p1_logs):
     assert emb["STAT_MAX:spd"] == 106
     assert emb["STAT_MIN:spe"] == 72
     assert emb["STAT_MAX:spe"] == 139
-    assert emb["BOOST:accuracy"] == 0
-    assert emb["BOOST:atk"] == 0
-    assert emb["BOOST:def"] == 0
-    assert emb["BOOST:spa"] == 0
-    assert emb["BOOST:spd"] == 0
-    assert emb["BOOST:spe"] == 0
+    # One-hot boost encoding: Smeargle has all boosts at 0
+    assert emb["BOOST:accuracy:0"] == 1
+    assert emb["BOOST:atk:0"] == 1
+    assert emb["BOOST:def:0"] == 1
+    assert emb["BOOST:spa:0"] == 1
+    assert emb["BOOST:spd:0"] == 1
+    assert emb["BOOST:spe:0"] == 1
     assert emb["STATUS: FNT"] == 1
     assert emb["STATUS: PSN"] == 0
     assert emb["STATUS: BRN"] == 0
@@ -327,6 +311,17 @@ def test_generate_opponent_pokemon_features(vgc_battle_p1_logs):
     assert emb["TERA_TYPE:PSYCHIC"] == 1
     assert emb["TYPE:ROCK"] == 0
     assert emb["TYPE:PSYCHIC"] == 1
+
+
+def test_feature_dict_to_vector_requires_full_embed():
+    embedder = Embedder()
+    dummy_battle = DoubleBattle("tag", "elitefurretai", None, gen=9)  # type: ignore
+    dummy_battle._format = embedder.format
+    dummy_battle.player_role = "p1"
+
+    partial = embedder.generate_move_features(None)
+    with pytest.raises(ValueError):
+        embedder.feature_dict_to_vector(partial)
 
 
 def test_embed_turn(vgc_json_anon):
@@ -380,9 +375,8 @@ def test_embed_turn(vgc_json_anon):
     assert emb["OPP_NUM_STATUSED"] == 0
     assert emb["NUM_OPP_MONS_REVEALED"] == 2
 
-    assert emb["TYPE_MATCHUP:OPP_MON:0:MON:0"] == 1
-    assert emb["TYPE_MATCHUP:OPP_MON:1:MON:0"] == 1
-    assert emb["TYPE_MATCHUP:OPP_MON:2:MON:0"] == 2
+    # TYPE_MATCHUP features were pruned (redundant with EST_DAMAGE)
+    assert "TYPE_MATCHUP:OPP_MON:0:MON:0" not in emb
 
     assert emb["EST_DAMAGE_MIN:MON:2:OPP_MON:2:MOVE:0"] == 22
     assert emb["KO:MON:2:OPP_MON:2:MOVE:0"] == 0
@@ -456,3 +450,150 @@ def test_omniscience(vgc_json_anon):
     assert e1.opponent_pokemon_embedding_size == e2.opponent_pokemon_embedding_size
     assert e1.embedding_size == e2.embedding_size
     assert e1.group_embedding_sizes == e2.group_embedding_sizes
+
+
+def test_species_id_feature():
+    """Test that species_id is correctly added to pokemon features."""
+    embedder = Embedder()
+    dummy_battle = DoubleBattle("tag", "elitefurretai", None, gen=9)  # type: ignore
+    dummy_battle._format = embedder.format
+    dummy_battle.player_role = "p1"
+
+    # furret should have a valid species_id
+    assert "furret" in SPECIES_TO_ID
+    furret = Pokemon(gen=9, species="furret")
+    emb = embedder.generate_pokemon_features(furret, dummy_battle)
+    assert "species_id" in emb
+    assert emb["species_id"] == SPECIES_TO_ID["furret"]
+
+    # Unknown/null pokemon should get -1 sentinel
+    null_emb = embedder.generate_pokemon_features(None, dummy_battle)
+    assert null_emb["species_id"] == -1
+
+
+def test_move_id_feature():
+    """Test that move_id is correctly added to move features."""
+    embedder = Embedder()
+
+    # Known moves should get valid IDs
+    assert "icywind" in MOVE_TO_ID
+    emb = embedder.generate_move_features(Move("icywind", gen=9))
+    assert "move_id" in emb
+    assert emb["move_id"] == MOVE_TO_ID["icywind"]
+
+    # Null move should get -1 sentinel
+    null_emb = embedder.generate_move_features(None)
+    assert null_emb["move_id"] == -1
+
+
+def test_species_to_id_mapping():
+    """Test that SPECIES_TO_ID covers Gen 9 Pokemon."""
+    assert len(SPECIES_TO_ID) > 100  # Sanity check
+    assert NUM_SPECIES == len(SPECIES_TO_ID) + 1  # +1 for unknown at index 0
+
+    # Spot-check common species
+    assert "furret" in SPECIES_TO_ID
+    assert "pikachu" in SPECIES_TO_ID
+    assert "incineroar" in SPECIES_TO_ID
+
+    # All IDs should be positive (0 reserved for unknown)
+    for species, sid in SPECIES_TO_ID.items():
+        assert sid > 0, f"Species {species} has non-positive ID {sid}"
+
+
+def test_move_to_id_mapping():
+    """Test that MOVE_TO_ID covers Gen 9 moves."""
+    assert len(MOVE_TO_ID) > 100  # Sanity check
+    assert NUM_MOVES == len(MOVE_TO_ID) + 1  # +1 for unknown at index 0
+
+    # Spot-check common moves
+    assert "protect" in MOVE_TO_ID
+    assert "earthquake" in MOVE_TO_ID
+    assert "icywind" in MOVE_TO_ID
+
+    # All IDs should be positive
+    for move, mid in MOVE_TO_ID.items():
+        assert mid > 0, f"Move {move} has non-positive ID {mid}"
+
+
+def test_pruned_features_absent():
+    """Verify that pruned features are no longer in embeddings."""
+    embedder = Embedder()
+    dummy_battle = DoubleBattle("tag", "elitefurretai", None, gen=9)  # type: ignore
+    dummy_battle._format = embedder.format
+    dummy_battle.player_role = "p1"
+
+    # Move-level SC, FIELD, WEATHER, EFFECT OHE should be pruned
+    emb = embedder.generate_move_features(Move("tailwind", gen=9))
+    for key in emb:
+        assert not key.startswith("SC:"), f"SC OHE should be pruned: {key}"
+        assert not key.startswith("FIELD:"), f"FIELD OHE should be pruned: {key}"
+        assert not key.startswith("WEATHER:"), f"WEATHER OHE should be pruned: {key}"
+        assert not key.startswith("EFFECT:"), f"EFFECT OHE should be pruned: {key}"
+
+    # Level should be pruned from pokemon features
+    furret = Pokemon(gen=9, species="furret")
+    pemb = embedder.generate_pokemon_features(furret, dummy_battle)
+    assert "level" not in pemb
+
+
+def test_feature_consistency_across_feature_sets():
+    """Verify that species_id and move_id exist in all feature sets."""
+    for feature_set in ["raw", "full"]:
+        embedder = Embedder(feature_set=feature_set)
+        dummy_battle = DoubleBattle("tag", "elitefurretai", None, gen=9)  # type: ignore
+        dummy_battle._format = embedder.format
+        dummy_battle.player_role = "p1"
+
+        furret = Pokemon(gen=9, species="furret")
+        pemb = embedder.generate_pokemon_features(furret, dummy_battle)
+        assert "species_id" in pemb, f"species_id missing in {feature_set}"
+
+        memb = embedder.generate_move_features(Move("protect", gen=9))
+        assert "move_id" in memb, f"move_id missing in {feature_set}"
+
+
+def test_embedding_size_consistency():
+    """Verify embedding sizes are self-consistent after feature changes."""
+    for feature_set in ["raw", "full"]:
+        embedder = Embedder(feature_set=feature_set)
+        # Total embedding should equal sum of group sizes
+        assert embedder.embedding_size == sum(embedder.group_embedding_sizes)
+
+
+def test_dry_run_battle_embedding(vgc_json_anon):
+    """Dry-run through a full battle replay, embedding every decision point.
+
+    Verifies that species_id, move_id, and other features are consistent
+    throughout the whole battle, and that no features are missing or extra.
+    """
+    embedder = Embedder(feature_set="full")
+    bd = BattleData.from_showdown_json(vgc_json_anon)
+    iterator = BattleIterator(bd, perspective="p1")
+
+    expected_size = embedder.embedding_size
+    decision_count = 0
+
+    while iterator.next_input():
+        emb = embedder.embed(iterator.battle)  # type: ignore
+        vec = embedder.feature_dict_to_vector(emb)
+
+        # Vector size should match embedding_size every decision point
+        assert len(vec) == expected_size, (
+            f"Decision {decision_count}: vector size {len(vec)} != expected {expected_size}"
+        )
+
+        # All species_id features should be valid (not NaN)
+        for key, val in emb.items():
+            if "species_id" in key:
+                assert val == -1 or (isinstance(val, (int, float)) and val >= 0), (
+                    f"Decision {decision_count}: invalid species_id value {val} for {key}"
+                )
+            if "move_id" in key:
+                assert val == -1 or (isinstance(val, (int, float)) and val >= 0), (
+                    f"Decision {decision_count}: invalid move_id value {val} for {key}"
+                )
+
+        decision_count += 1
+
+    assert decision_count > 0, "Battle should have at least one decision point"

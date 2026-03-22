@@ -1,10 +1,11 @@
+import argparse
 import os.path
 import random
-import sys
 import time
 from typing import Any, Dict
 
 import torch
+import yaml
 
 import wandb
 from elitefurretai.etl import Embedder, PreprocessedBattleDataset
@@ -102,9 +103,9 @@ def train_epoch(model, dataloader, prev_steps, optimizer, config):
     return running_action_loss / num_batches, steps
 
 
-def main(train_path, test_path, val_path):
+def main(train_path, test_path, val_path, config={}):
     print("Starting!")
-    config: Dict[str, Any] = {
+    default_config: Dict[str, Any] = {
         "device": (
             "mps"
             if torch.backends.mps.is_available()
@@ -122,6 +123,12 @@ def main(train_path, test_path, val_path):
         "seed": 21,
         "notes": "forewarn with Esmaller funnel and lower dropout",
     }
+
+    # Update defaults with any overrides from config
+    for k, v in default_config.items():
+        if k not in config:
+            config[k] = v
+
     wandb.init(project="elitefurretai-forewarn", config=config)
     wandb.save(__file__)
 
@@ -276,4 +283,30 @@ def main(train_path, test_path, val_path):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1], sys.argv[2], sys.argv[3])
+    parser = argparse.ArgumentParser(
+        description="Train a non-trajectory (DNN) supervised model."
+    )
+    parser.add_argument(
+        "data_directory",
+        type=str,
+        help="Path to data directory containing train/, test/, and val/ subdirectories",
+    )
+    parser.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help="Path to YAML config file (overrides defaults)",
+    )
+    args = parser.parse_args()
+
+    cfg: Dict[str, Any] = {}
+    if args.config:
+        with open(args.config, "r") as f:
+            cfg = yaml.safe_load(f) or {}
+
+    main(
+        os.path.join(args.data_directory, "train"),
+        os.path.join(args.data_directory, "test"),
+        os.path.join(args.data_directory, "val"),
+        cfg,
+    )

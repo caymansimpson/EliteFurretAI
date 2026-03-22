@@ -16,7 +16,9 @@ Note: Tests use small models for speed. Uses CPU for compatibility.
 import pytest
 import torch
 
+from elitefurretai.etl.embedder import Embedder
 from elitefurretai.etl.encoder import MDBO
+from elitefurretai.rl.config import RNaDConfig
 from elitefurretai.rl.learners import RNaDLearner
 from elitefurretai.rl.players import RNaDAgent
 from elitefurretai.supervised.model_archs import FlexibleThreeHeadedModel
@@ -27,10 +29,16 @@ from elitefurretai.supervised.model_archs import FlexibleThreeHeadedModel
 
 
 @pytest.fixture
-def small_model():
+def simple_embedder():
+    """Create a simple Embedder for testing."""
+    return Embedder(feature_set="simple")
+
+
+@pytest.fixture
+def small_model(simple_embedder):
     """Create a small FlexibleThreeHeadedModel for testing."""
     return FlexibleThreeHeadedModel(
-        input_size=64,
+        embedder=simple_embedder,
         early_layers=[32, 16],
         late_layers=[32, 16],
         lstm_layers=1,
@@ -49,11 +57,11 @@ def agent(small_model):
 
 
 @pytest.fixture
-def ref_agent(small_model):
+def ref_agent(small_model, simple_embedder):
     """Create reference RNaDAgent from small model."""
     # Create a separate instance with same architecture
     ref_model = FlexibleThreeHeadedModel(
-        input_size=64,
+        embedder=simple_embedder,
         early_layers=[32, 16],
         late_layers=[32, 16],
         lstm_layers=1,
@@ -69,9 +77,7 @@ def ref_agent(small_model):
 @pytest.fixture
 def learner(agent, ref_agent):
     """Create RNaDLearner for testing."""
-    return RNaDLearner(
-        model=agent,
-        ref_model=ref_agent,
+    config = RNaDConfig(
         lr=1e-4,
         gamma=0.99,
         clip_range=0.2,
@@ -79,13 +85,29 @@ def learner(agent, ref_agent):
         vf_coef=0.5,
         rnad_alpha=0.1,
         device="cpu",
-        use_mixed_precision=False,  # CPU doesn't support mixed precision well
-        gradient_clip=0.5,
+        use_mixed_precision=False,
+        max_grad_norm=0.5,
+        optimizer={
+            "type": "adamw",
+            "weight_decay": 1e-4,
+            "warmup_steps": 0,
+            "schedule": "constant",
+            "param_groups": {
+                "backbone": {"lr": 1e-4, "weight_decay": 1e-4},
+                "heads": {"lr": 3e-4, "weight_decay": 0.0},
+            },
+        },
+    )
+    return RNaDLearner(
+        model=agent,
+        ref_model=ref_agent,
+        config=config,
+        device="cpu",
     )
 
 
 @pytest.fixture
-def sample_batch():
+def sample_batch(simple_embedder):
     """
     Create sample batch for training.
 
@@ -93,7 +115,7 @@ def sample_batch():
     """
     batch_size = 4
     seq_len = 5
-    state_dim = 64
+    state_dim = simple_embedder.embedding_size
 
     # Random states
     states = torch.randn(batch_size, seq_len, state_dim)
@@ -161,11 +183,11 @@ def test_learner_initialization(learner):
 
 def test_learner_creates_optimizer(learner):
     """
-    Test that learner creates Adam optimizer.
+    Test that learner creates optimizer.
 
-    Expected: Optimizer is torch.optim.Adam instance.
+    Expected: Optimizer is torch.optim.AdamW or Adam instance.
     """
-    assert isinstance(learner.optimizer, torch.optim.Adam)
+    assert isinstance(learner.optimizer, (torch.optim.Adam, torch.optim.AdamW))
 
 
 def test_ref_model_frozen(learner):
@@ -439,7 +461,7 @@ def test_gradient_clipping_applied(learner, sample_batch):
 # =============================================================================
 
 
-def test_rnad_agent_forward(agent):
+def test_rnad_agent_forward(agent, simple_embedder):
     """
     Test RNaDAgent forward pass.
 
@@ -448,10 +470,10 @@ def test_rnad_agent_forward(agent):
     batch_size = 4
     seq_len = 5
 
-    x = torch.randn(batch_size, seq_len, 64)
+    x = torch.randn(batch_size, seq_len, simple_embedder.embedding_size)
     hidden = agent.get_initial_state(batch_size, "cpu")
 
-    turn_logits, tp_logits, value, next_hidden = agent(x, hidden)
+    turn_logits, tp_logits, value, win_dist_logits, next_hidden = agent(x, hidden)
 
     assert turn_logits.shape == (batch_size, seq_len, MDBO.action_space())
     assert tp_logits.shape == (batch_size, seq_len, MDBO.teampreview_space())
@@ -478,16 +500,16 @@ def test_rnad_agent_initial_state_shape(agent):
     assert c.shape == (num_layers * num_directions, batch_size, hidden_size)
 
 
-def test_rnad_agent_value_range(agent):
+def test_rnad_agent_value_range(agent, simple_embedder):
     """
     Test that RNaDAgent value output is in [-1, 1].
 
     Expected: Value uses tanh activation.
     """
-    x = torch.randn(4, 5, 64)
+    x = torch.randn(4, 5, simple_embedder.embedding_size)
     hidden = agent.get_initial_state(4, "cpu")
 
-    _, _, value, _ = agent(x, hidden)
+    _, _, value, _, _ = agent(x, hidden)
 
     assert value.min() >= -1.0
     assert value.max() <= 1.0

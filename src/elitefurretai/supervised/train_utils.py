@@ -392,9 +392,9 @@ def evaluate(
             teampreview_logits
         ) = None
         if has_teampreview_head:
-            # Three-headed model: (turn_action_logits, teampreview_logits, win_logits)
+            # Three-headed model: (turn_action_logits, teampreview_logits, win_logits, win_dist_logits)
             if has_action_head and has_win_head:
-                action_logits, teampreview_logits, win_logits = model(states, masks)
+                action_logits, teampreview_logits, win_logits, _ = model(states, masks)
             else:
                 raise ValueError(
                     "Three-headed model requires has_action_head and has_win_head"
@@ -851,8 +851,8 @@ def analyze(
             switch_logits
         ) = None
         if has_teampreview_head:
-            # Three-headed model: turn actions, teampreview, win
-            action_logits, teampreview_logits, win_logits = model(states, masks)
+            # Three-headed model: turn actions, teampreview, win (+ distributional)
+            action_logits, teampreview_logits, win_logits, _ = model(states, masks)
             move_order_logits = ko_logits = switch_logits = None
         elif (
             has_win_head

@@ -215,21 +215,14 @@ class BCPlayer(Player):
         if self._verbose:
             print("  Building model architecture...")
         model = FlexibleThreeHeadedModel(
-            input_size=embedder.embedding_size,
+            embedder=embedder,
             early_layers=config["early_layers"],
             late_layers=config["late_layers"],
             lstm_layers=config.get("lstm_layers", 2),
             lstm_hidden_size=config.get("lstm_hidden_size", 512),
             dropout=config.get("dropout", 0.1),
-            gated_residuals=config.get("gated_residuals", False),
             early_attention_heads=config.get("early_attention_heads", 8),
             late_attention_heads=config.get("late_attention_heads", 8),
-            use_grouped_encoder=config.get("use_grouped_encoder", False),
-            group_sizes=(
-                embedder.group_embedding_sizes
-                if config.get("use_grouped_encoder", False)
-                else None
-            ),
             grouped_encoder_hidden_dim=config.get("grouped_encoder_hidden_dim", 128),
             grouped_encoder_aggregated_dim=config.get(
                 "grouped_encoder_aggregated_dim", 1024
@@ -293,7 +286,7 @@ class BCPlayer(Player):
         self.win_model.eval()
         with torch.no_grad():
             # Forward pass through win model
-            _, _, win_logits = self.win_model(traj)
+            _, _, win_logits, _ = self.win_model(traj)
 
             if win_logits.dim() == 2:
                 # Remove batch dimension if present
@@ -375,7 +368,7 @@ class BCPlayer(Player):
         model.eval()
         with torch.no_grad():
             # Forward pass: get logits for all steps in the trajectory
-            turn_action_logits, teampreview_logits, win_logits = model(traj)
+            turn_action_logits, teampreview_logits, win_logits, _ = model(traj)
 
             if turn_action_logits.dim() == 3:
                 # Remove batch dimension if present
