@@ -72,7 +72,7 @@ class RNaDLearner:
         model: RNaDAgent,
         ref_model: RNaDAgent,
         config: RNaDConfig,
-        # device: str = "cuda" if torch.cuda.is_available() else "cpu",
+        device: str = "cuda" if torch.cuda.is_available() else "cpu",
     ):
         self.model = model.to(device)
         self.ref_model = ref_model.to(device)
@@ -299,7 +299,7 @@ class PortfolioRNaDLearner:
         model: RNaDAgent,
         ref_models: List[RNaDAgent],
         config: RNaDConfig,
-        # device: str = "cuda" if torch.cuda.is_available() else "cpu",
+        device: str = "cuda" if torch.cuda.is_available() else "cpu",
     ):
         self.model = model.to(device)
         self.ref_models = [ref.to(device) for ref in ref_models]

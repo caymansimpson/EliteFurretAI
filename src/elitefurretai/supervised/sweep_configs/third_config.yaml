@@ -1,0 +1,135 @@
+# ===========================================================================
+# third_config.yaml — Final exploitation sweep based on second sweep results
+# ===========================================================================
+#
+# Context from detached-TP A/B/C test:
+#   Best test action metrics: fine-wave-73 / ab_test_b
+#   - Turn3=0.627, Move3=0.545, TP Top3=0.699, WinCorr=0.395
+#   - Config: sw=1.0, drop=0.20, wd=1.44e-4
+#   This suggests switch downweighting is not the right center once TP is detached.
+#
+# Key learnings consolidated:
+#   1. 15 epochs → massive +35% Turn3 improvement over 8 epochs
+#   2. switch_loss_weight should be centered around 1.0, not 0.7, with detached TP
+#      and active TP loss. The older downweighting effect did not transfer cleanly.
+#   3. dropout 0.17-0.20 still looks useful; 0.20 is now the safer center.
+#   4. weight_decay around 1.4e-4 looked strongest in the A/B/C test.
+#   5. win_loss_weight=0.35 remains a good anchor.
+#   6. TL=7 confirmed as optimal.
+#   7. lr=5.44e-5 remains well-centered.
+#
+# This sweep:
+#   - 20 epochs with cosine LR (exploitation, no early termination)
+#   - Narrow ranges around proven optimal values
+#   - 7 runs via Bayesian optimization (no hyperband killing)
+#   - TP head enabled with detached gradients (tp_loss=1.0)
+#   - Varies: sw_w, dropout, win_w, weight_decay
+#   - Fixes: lr=5.44e-5, TL=7, mv_w=1.0, arch, cosine LR
+#
+# Budget: 7 runs × 20 epochs × ~5 min/epoch ≈ 12 hours
+# ===========================================================================
+
+sweep:
+  method: bayes
+  metric:
+    name: "Test Turn Top3"
+    goal: maximize
+  parameters:
+    # =================================================================
+    # CORE VARIABLES — narrow exploitation ranges
+    # =================================================================
+
+    # 0.35 was best but test neighbors
+    win_loss_weight:
+      values: [0.30, 0.35, 0.40]
+
+    # generous=9.86e-5, youthful=1.44e-4; narrow between them
+    weight_decay:
+      min: 7.0e-5
+      max: 2.0e-4
+      distribution: log_uniform_values
+
+    # =================================================================
+    # FIXED — resolved from sweeps 1+2+AB_test
+    # =================================================================
+
+    turn_loss_type:
+      value: topk
+    train_topk_k:
+      value: 2025
+    batch_size:
+      value: 128
+    entropy_weight:
+      value: 0.0
+    teampreview_loss_weight:
+      value: 1.0
+    teampreview_head_dropout:
+      value: 0.15
+    move_loss_weight:
+      value: 1.0
+    switch_loss_weight:
+      value: 1.0
+    learning_rate:
+      value: 5.44e-5
+    transformer_layers:
+      value: 7
+    late_layers_variant:
+      value: medium
+    turn_head_layers_variant:
+      value: medium
+    teampreview_head_layers_variant:
+      value: standard
+    teampreview_attention_heads:
+      value: 2
+
+# ---- Architecture variant mappings ----
+variants:
+  late_layers:
+    medium: [1024, 1024]
+
+  turn_head_layers:
+    medium: [1024, 512, 512]
+
+  teampreview_head_layers:
+    standard: [512, 256]
+
+
+# ---- Fixed parameters ----
+fixed:
+  num_epochs: 20
+  lr_schedule: cosine
+  # DataLoader
+  worker_batch_size: 128
+  num_workers: 2
+  prefetch_factor: 2
+  files_per_worker: 2
+  persistent_workers: true
+  # Training stability
+  max_grad_norm: 1.0
+  optimizer: AdamW
+  # Feature encoding
+  embedder_feature_set: full
+  battle_format: gen9vgc2023regc
+  max_seq_len: 40
+  # Encoder architecture
+  grouped_encoder_hidden_dim: 512
+  grouped_encoder_aggregated_dim: 4096
+  pokemon_attention_heads: 16
+  early_layers: [2048, 1024, 1024]
+  # Transformer settings
+  transformer_heads: 16
+  transformer_ff_dim: 2048
+  transformer_dropout: 0.1
+  use_decision_tokens: true
+  use_causal_mask: true
+  # Turn loss
+  turn_loss_weight: 1.0
+  keep_force_switch: false
+  focal_alpha: 0.25
+  # Value head (C51)
+  num_value_bins: 51
+  value_min: -1.0
+  value_max: 1.0
+  # Other
+  save_path: "data/models/supervised/"
+  seed: 21

@@ -14,4 +14,4 @@ wandb/
 .github/copilot-instructions.md
 nohup.out
 EliteFurretAI.code-workspace
-.gitattributes
+.gitattributesdata/logs/

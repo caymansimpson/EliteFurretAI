@@ -1,5 +1,5 @@
 # Getting Started
-For coding n00bs like me, here is a [step-by-step guide](https://docs.google.com/document/d/1QlrOuvNUQYl4ZLsBvRUHDqjQ9ibm61Nq4lrAJfjQjpE/edit?tab=t.0#heading=h.zawc9657hsqc) for how to get EliteFurretAI up and running on your local machine. It also includes details on how to contribute if you would like.
+For coding n00bs like me, here is a [step-by-step guide](https://docs.google.com/document/d/1QlrOuvNUQYl4ZLsBvRUHDqjQ9ibm61Nq4lrAJfjQjpE/edit?tab=t.0#heading=h.zawc9657hsqc) for how to get EliteFurretAI up and running on your local machine. It also includes details on how to contribute if you would like; I wouldn't recommend it though since I don't build with backwards compatibility in mind.
 
 ## General workflow and Setup
 Ultimately, this project is just a collection of extensions built on top of poke-env to facilitate supervised and RL-based laerning; it isn't completely stable so I would recommend you either fork or reach out to me if you would like to build off of it.

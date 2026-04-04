@@ -9,7 +9,7 @@ import gc
 import os.path
 import random
 import time
-from typing import Any, Dict
+from typing import Any, Dict, cast
 
 import torch
 import yaml
@@ -107,13 +107,32 @@ def train_epoch(
                 flat_turn_wins = wins[turn_valid_mask]
                 flat_turn_win_logits = win_logits[turn_valid_mask]
 
+                # Compute per-sample weights for move/switch action-type weighting.
+                # Per-slot action indices: 0-39 are moves, 40-43 are switches, 44 is pass.
+                move_w = config.get("move_loss_weight", 1.0)
+                switch_w = config.get("switch_loss_weight", 1.0)
+                if move_w != 1.0 or switch_w != 1.0:
+                    slot1 = flat_turn_actions // 45
+                    slot2 = flat_turn_actions % 45
+                    has_switch = (
+                        ((slot1 >= 40) & (slot1 <= 43))
+                        | ((slot2 >= 40) & (slot2 <= 43))
+                    )
+                    sample_weights = torch.where(
+                        has_switch,
+                        torch.tensor(switch_w, device=states.device),
+                        torch.tensor(move_w, device=states.device),
+                    )
+                else:
+                    sample_weights = None
+
                 # Choose loss function based on config
                 loss_type = config.get("turn_loss_type", "topk")
                 if loss_type == "focal":
                     turn_loss = focal_topk_cross_entropy_loss(
                         flat_turn_logits,
                         flat_turn_actions,
-                        weights=None,
+                        weights=sample_weights,
                         k=config.get("train_topk_k", 2025),
                         gamma=config.get("focal_gamma", 2.0),
                         alpha=config.get("focal_alpha", 0.25),
@@ -123,7 +142,7 @@ def train_epoch(
                     turn_loss = topk_cross_entropy_loss(
                         flat_turn_logits,
                         flat_turn_actions,
-                        weights=None,
+                        weights=sample_weights,
                         k=config.get("train_topk_k", 3),
                     )
 
@@ -149,13 +168,23 @@ def train_epoch(
                 flat_tp_wins = wins[teampreview_valid_mask]
                 flat_tp_win_logits = win_logits[teampreview_valid_mask]
 
-                # Note: teampreview actions should already be in [0, 90) range
-                teampreview_loss = torch.nn.functional.cross_entropy(
-                    flat_tp_logits, flat_tp_actions
-                )
-                teampreview_win_loss = torch.nn.functional.mse_loss(
-                    flat_tp_win_logits, flat_tp_wins.float()
-                )
+                # Filter out TP samples with turn-space encoded actions (data issue)
+                tp_valid = flat_tp_actions < MDBO.teampreview_space()
+                if tp_valid.any():
+                    flat_tp_logits = flat_tp_logits[tp_valid]
+                    flat_tp_actions = flat_tp_actions[tp_valid]
+                    flat_tp_wins = flat_tp_wins[tp_valid]
+                    flat_tp_win_logits = flat_tp_win_logits[tp_valid]
+
+                    teampreview_loss = torch.nn.functional.cross_entropy(
+                        flat_tp_logits, flat_tp_actions
+                    )
+                    teampreview_win_loss = torch.nn.functional.mse_loss(
+                        flat_tp_win_logits, flat_tp_wins.float()
+                    )
+                else:
+                    teampreview_loss = torch.tensor(0.0, device=states.device)
+                    teampreview_win_loss = torch.tensor(0.0, device=states.device)
             else:
                 teampreview_loss = torch.tensor(0.0, device=states.device)
                 teampreview_win_loss = torch.tensor(0.0, device=states.device)
@@ -182,11 +211,15 @@ def train_epoch(
             # Scale loss by accumulation steps to maintain gradient magnitude
             loss = loss / accumulation_steps
 
-        # Backpropagation with mixed precision
-        if scaler is not None:
-            scaler.scale(loss).backward()
+        # Backpropagation with mixed precision (skip if loss has no grad)
+        if loss.requires_grad:
+            if scaler is not None:
+                scaler.scale(loss).backward()
+            else:
+                loss.backward()
         else:
-            loss.backward()
+            # No valid samples in batch — nothing to backprop
+            continue
 
         accumulation_counter += 1
 
@@ -291,13 +324,13 @@ def initialize(config):
     random.seed(int(config["seed"]))
 
 
-def main(train_path, test_path, val_path, config={}):
+def main(train_path, test_path, val_path, config={}, save_best=False):
     print("Starting!")
     default_config: Dict[str, Any] = {
-        # Training config to optimize speed
-        "worker_batch_size": 64,
-        "num_workers": 7,
-        "prefetch_factor": 8,
+        # Training config to optimize speed (see SUPERVISED.md DataLoader Performance)
+        "worker_batch_size": 128,
+        "num_workers": 3,
+        "prefetch_factor": 2,
         "files_per_worker": 3,
         "persistent_workers": True,
         # Basic Training Params
@@ -414,6 +447,7 @@ def main(train_path, test_path, val_path, config={}):
     train_loader = OptimizedBattleDataLoader(
         train_path,
         embedder=embedder,
+        batch_size=config["worker_batch_size"],
         num_workers=config["num_workers"],
         prefetch_factor=config["prefetch_factor"],
         files_per_worker=config["files_per_worker"],
@@ -437,7 +471,7 @@ def main(train_path, test_path, val_path, config={}):
     )
 
     # Initialize model with flexible architecture
-    model = TransformerThreeHeadedModel(
+    raw_model = TransformerThreeHeadedModel(
         embedder=embedder,
         early_layers=config["early_layers"],
         late_layers=config["late_layers"],
@@ -462,6 +496,18 @@ def main(train_path, test_path, val_path, config={}):
         use_decision_tokens=config.get("use_decision_tokens", True),
         use_causal_mask=config.get("use_causal_mask", True),
     ).to(config["device"])
+    model = cast(torch.nn.Module, raw_model)
+
+    # Auto-detect model class for RL checkpoint compatibility before compile wraps it
+    config["use_transformer"] = isinstance(model, TransformerThreeHeadedModel)
+
+    # torch.compile fuses GPU kernels for ~15-30% speedup on GPU-bound training.
+    # First batch is slow (compilation), but all subsequent batches are faster.
+    # With 30min epochs, this saves ~5-9 min/epoch.
+    if config["device"] == "cuda":
+        compiled_model = torch.compile(model)
+        model = cast(torch.nn.Module, compiled_model)
+
     wandb.watch(model, log="all", log_freq=1000)
 
     # Count Parameters
@@ -483,9 +529,16 @@ def main(train_path, test_path, val_path, config={}):
         betas=(0.9, 0.999),
     )
 
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode="min", factor=0.5, patience=2
-    )
+    scheduler: Any
+    scheduler_type = config.get("lr_schedule", "plateau")
+    if scheduler_type == "cosine":
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=config["num_epochs"], eta_min=1e-6
+        )
+    else:
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode="min", factor=0.5, patience=2
+        )
 
     # Mixed precision scaler (CUDA only)
     scaler = torch.amp.GradScaler("cuda") if config["device"] == "cuda" else None  # type: ignore
@@ -494,6 +547,7 @@ def main(train_path, test_path, val_path, config={}):
 
     # Training loop
     start, steps = time.time(), 0
+    best_test_loss = float("inf")
     for epoch in range(config["num_epochs"]):
         train_metrics = train_epoch(model, train_loader, steps, optimizer, config, scaler)
 
@@ -556,16 +610,20 @@ def main(train_path, test_path, val_path, config={}):
         print(f"=> Time thus far: {time_taken} // ETA: {time_left}")
         print()
 
-        scheduler.step(
-            float(
-                metrics["win_mse"] * config["win_loss_weight"]
-                + metrics.get("teampreview_top3_loss", 0)
-                * config["teampreview_loss_weight"]
-                + metrics.get("turn_top3_loss", 0) * config["turn_loss_weight"]
-            )
-        )
+        if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+            scheduler.step(test_loss)
+        else:
+            scheduler.step()
 
-    # Save model with config embedded
+        # Save best checkpoint if requested
+        if save_best and test_loss < best_test_loss:
+            best_test_loss = test_loss
+            best_save_dict = {"model_state_dict": model.state_dict(), "config": config}
+            best_path = os.path.join(config["save_path"], f"{wandb.run.name}_best.pt")  # type: ignore
+            torch.save(best_save_dict, best_path)
+            print(f"New best model saved to {best_path} (test_loss={test_loss:.4f})")
+
+    # Save final model with config embedded
     save_dict = {"model_state_dict": model.state_dict(), "config": config}
     save_path = os.path.join(config["save_path"], f"{wandb.run.name}.pt")  # type: ignore
     torch.save(save_dict, save_path)
@@ -635,6 +693,11 @@ if __name__ == "__main__":
         default=None,
         help="Path to YAML config file (overrides defaults)",
     )
+    parser.add_argument(
+        "--save-best",
+        action="store_true",
+        help="Save the best model checkpoint (lowest test loss) during training",
+    )
     args = parser.parse_args()
 
     cfg: Dict[str, Any] = {}
@@ -647,4 +710,5 @@ if __name__ == "__main__":
         os.path.join(args.data_directory, "test"),
         os.path.join(args.data_directory, "val"),
         cfg,
+        save_best=args.save_best,
     )

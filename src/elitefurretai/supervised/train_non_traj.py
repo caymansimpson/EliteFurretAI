@@ -1,3 +1,7 @@
+""" This file is just to train a non-trajectory model -- eg given a state, predict the next action,
+without any RNN or temporal component. This is mostly for benchmarking and ablation purposes to see
+how much the trajectory modeling is actually helping.
+"""
 import argparse
 import os.path
 import random

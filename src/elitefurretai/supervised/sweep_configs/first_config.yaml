@@ -1,0 +1,285 @@
+# ===========================================================================
+# first_config.yaml — Initial Bayesian sweep (40 runs, sweep 8ltntdzf)
+# ===========================================================================
+#
+# Goals:
+#   - Turn Top-3 accuracy >= 66.7%
+#   - Teampreview Top-1 accuracy >= 80% (on out-of-distribution formats)
+#
+# Key problems from prior training:
+#   1. Models default to predicting switches over move+target combos. The 2025-
+#      action space is dominated by switch predictions which are "easier" to learn.
+#   2. Teampreview predictions are easily memorized (99.7% test accuracy) and
+#      won't generalize to new formats or unseen team matchups.
+#
+# This sweep targeted both problems by sweeping over loss functions,
+# regularization, architecture, and multi-task weights. Each parameter includes
+# a hypothesis for why testing it matters.
+#
+# Budget analysis:
+#   - 8 epochs/run × ~5 min/epoch = ~40 min/run
+#   - 35 runs × 40 min = ~23 hours (overnight + next morning)
+#   - Hyperband kills underperforming runs after 3 epochs, freeing budget
+#     for more promising configs → effective throughput ~40-50 configs tested
+#
+# The sweep optimizes for test-set Turn Top-3 accuracy, which is the harder
+# target (current baseline ~43.5%, goal 66.7%). Teampreview generalization is
+# pursued through architectural choices (dropout, head size) tracked as
+# secondary metrics.
+# ===========================================================================
+
+# ---- W&B sweep configuration ----
+sweep:
+  method: bayes
+  metric:
+    name: "Test Turn Top3"
+    goal: maximize
+  early_terminate:
+    type: hyperband
+    min_iter: 3
+    eta: 2
+  parameters:
+    # =================================================================
+    # LOSS FUNCTION (most impactful for switch-bias problem)
+    # =================================================================
+    #
+    # H1: Loss type — topk only trains on samples where the ground-truth
+    # label is already in the model's top-k predictions. This means the
+    # model gets ZERO gradient when it's wrong, which is most of the time
+    # early in training. Focal loss computes loss on ALL samples but
+    # aggressively downweights easy ones (like switches) via the (1-p_t)^γ
+    # factor. Hypothesis: focal loss will force gradient signal for the
+    # harder move+target combos instead of reinforcing easy switch preds.
+    turn_loss_type:
+      values: ["topk", "focal"]
+
+    # H2: TopK k value — k=3 is extremely restrictive: the model only
+    # learns when the correct action is already in its top 3, giving zero
+    # gradient on the ~56% of samples where it's wrong. k=2025 reduces to
+    # standard cross-entropy over all actions. Higher k provides gradient
+    # signal even when the model is wrong, which should help learn rare
+    # but critical move+target combos. However, very high k may dilute
+    # useful signal with noise from improbable actions.
+    train_topk_k:
+      values: [3, 5, 10, 2025]
+
+    # H3: Focal gamma — controls how aggressively easy examples are
+    # downweighted. Since switch predictions are disproportionately "easy"
+    # (model is confident and correct), gamma=3-5 should redirect training
+    # capacity toward harder move+target predictions. gamma=0 reduces to
+    # standard CE; gamma=5 nearly ignores any sample where model prob > 0.5.
+    # Only affects focal loss runs; harmlessly ignored for topk.
+    focal_gamma:
+      min: 1.0
+      max: 5.0
+
+    # H4: Label smoothing — prevents the model from becoming overconfident.
+    # When the model is 95% sure it's a switch, smoothing redistributes
+    # probability mass to move alternatives, maintaining gradient signal
+    # that keeps move representations alive in the network. This is the
+    # standard technique for preventing "confident but wrong" predictions.
+    # Only affects focal loss runs; harmlessly ignored for topk.
+    label_smoothing:
+      min: 0.0
+      max: 0.15
+
+    # =================================================================
+    # REGULARIZATION (prevent switch-collapse, encourage exploration)
+    # =================================================================
+    #
+    # H5: Entropy regularization — directly penalizes peaked (low-entropy)
+    # action distributions via -H(π) bonus. This is the most direct lever
+    # against the switch-collapse problem: the model pays a cost for
+    # putting all probability on switches, incentivizing it to maintain
+    # probability mass on move+target alternatives. Too high and the model
+    # becomes uniformly random; too low and switch-collapse persists.
+    entropy_weight:
+      values: [0.0, 0.005, 0.01, 0.03]
+
+    # H6: Dropout — higher dropout prevents the model from relying on
+    # easy-to-extract features (e.g., low HP fraction → switch, empty
+    # move slots → switch) that create a shortcut for switch predictions.
+    # Forces the model to build distributed representations that capture
+    # the nuance of when to use moves vs switches.
+    dropout:
+      min: 0.05
+      max: 0.2
+
+    # H7: Weight decay — L2 regularization that controls parameter
+    # magnitude. Too high starves the model's capacity for learning the
+    # complex action space; too low allows overfitting to switch-heavy
+    # patterns. Log-uniform explores across orders of magnitude.
+    weight_decay:
+      min: 1.0e-5
+      max: 1.0e-3
+      distribution: log_uniform_values
+
+    # =================================================================
+    # LEARNING RATE (critical for convergence in 8 epochs)
+    # =================================================================
+    #
+    # H8: Learning rate — with only 8 epochs to evaluate each config, we
+    # need the right LR to converge. Too low → the model barely moves from
+    # initialization (defaulting to easy predictions). Too high → unstable
+    # training, gradient explosions, and loss of early progress. The
+    # optimal LR depends heavily on the loss function (focal vs topk)
+    # and architecture, so sweeping is essential.
+    learning_rate:
+      min: 5.0e-6
+      max: 2.0e-4
+      distribution: log_uniform_values
+
+    # H9: Batch size — larger batch sizes provide a more stable gradient
+    # estimate, which is critical for training stability in the 2025-action
+    # space. Without careful tuning, smaller batches may lead to noisy
+    # gradients that reinforce switch-collapse patterns. However, too large
+    # a batch size may reduce the number of updates and lead to underfitting
+    # within the 8-epoch budget. Testing a range of batch sizes helps find
+    # the sweet spot for stable learning.
+    batch_size:
+      values: [128, 256, 512]
+
+    # =================================================================
+    # ARCHITECTURE (capacity for 2025-action space)
+    # =================================================================
+    #
+    # H10: Transformer depth — more layers = more capacity for sequential
+    # game reasoning (contextualizing the current position from history).
+    # Deeper transformers should better understand WHEN to use moves vs
+    # switches based on game phase, board position, and opponent patterns.
+    # But too deep may overfit or be hard to train in 8 epochs.
+    transformer_layers:
+      min: 3
+      max: 8
+      distribution: int_uniform
+
+    # H11: Late layer architecture — these layers process transformer
+    # output before the action heads. Deeper/wider late layers give more
+    # capacity to map contextual representations into the complex 2025-
+    # action space. This is where the model must discriminate between
+    # "Protect slot 1 + Flamethrower slot 2 targeting opponent A" vs
+    # "Switch slot 1 + Flamethrower slot 2 targeting opponent B".
+    late_layers_variant:
+      values: ["medium", "large", "xlarge"]
+
+    # H12: Turn head architecture — the final layers specific to turn
+    # action prediction. A deeper turn head with more capacity dedicated
+    # to action selection should better separate similar move+target
+    # combos. Separate from late_layers to test whether capacity is
+    # better placed in the shared backbone vs the action-specific head.
+    turn_head_layers_variant:
+      values: ["small", "medium", "large"]
+
+    # =================================================================
+    # TEAMPREVIEW (force generalization over memorization)
+    # =================================================================
+    #
+    # H13: Teampreview dropout — the teampreview head achieves 99.7%
+    # test accuracy on RegC data, indicating memorization of specific
+    # team-to-picks mappings rather than learning generalizable patterns
+    # like "bring Fire counter vs Steel-heavy teams." Heavy dropout
+    # (0.3-0.6) should force the head to learn robust features that
+    # transfer to unseen team matchups and new formats.
+    teampreview_head_dropout:
+      min: 0.0
+      max: 0.6
+
+    # H14: Teampreview head size — smaller heads have less memorization
+    # capacity. With no hidden layers (variant "none"), the head projects
+    # directly from the backbone embedding, forcing it to use the shared
+    # representation rather than learning format-specific team mappings.
+    teampreview_head_layers_variant:
+      values: ["none", "small", "medium"]
+
+    # H15: Teampreview attention — self-attention over team members could
+    # learn cross-pokemon synergy/counter relationships (e.g., "if they
+    # have Incineroar, bring a Water-type") that generalize to new teams.
+    # But attention adds parameters that might also aid memorization.
+    # Testing 0 (no attention) vs 4/8 heads to find the right balance.
+    teampreview_attention_heads:
+      values: [0, 4, 8]
+
+    # =================================================================
+    # MULTI-TASK LOSS WEIGHTS (head balance)
+    # =================================================================
+    #
+    # H16: Teampreview loss weight — too high and the shared backbone
+    # optimizes for memorizing team matchups at the expense of turn
+    # action quality. Too low and the teampreview head undertrains.
+    # A small weight lets the head learn from backbone features without
+    # dominating gradient signals. Zero weight means the head receives
+    # no direct training signal (only indirect through shared backbone).
+    teampreview_loss_weight:
+      min: 0.0
+      max: 0.1
+
+    # H17: Win loss weight — the auxiliary win-prediction head forces the
+    # backbone to learn game-state quality and outcome prediction, which
+    # should help the action head distinguish positions where switching is
+    # correct (losing, need to preserve resources) vs where attacking wins
+    # (favorable matchup, damage advantage). Hypothesis: moderate win loss
+    # improves action predictions by providing a richer training signal.
+    win_loss_weight:
+      min: 0.0
+      max: 0.4
+
+
+# ---- Architecture variant mappings ----
+# W&B can't natively sweep over list-valued parameters, so we encode them
+# as named variants and decode in the training function.
+variants:
+  late_layers:
+    medium: [1024, 1024]
+    large: [2048, 1024, 1024]
+    xlarge: [2048, 2048, 1024, 1024]
+
+  turn_head_layers:
+    small: [512, 512]
+    medium: [1024, 512, 512]
+    large: [1024, 1024, 512]
+
+  teampreview_head_layers:
+    none: []
+    small: [256]
+    medium: [512, 256]
+
+
+# ---- Fixed parameters — not worth sweeping (stable from prior experiments) ----
+fixed:
+  num_epochs: 8
+  # DataLoader settings — tuned for 24GB WSL2 RAM
+  worker_batch_size: 128
+  num_workers: 2
+  prefetch_factor: 2
+  files_per_worker: 2
+  persistent_workers: true
+  # Training stability
+  max_grad_norm: 1.0
+  optimizer: AdamW
+  # Feature encoding
+  embedder_feature_set: full
+  battle_format: gen9vgc2023regc
+  max_seq_len: 40
+  # Encoder architecture
+  grouped_encoder_hidden_dim: 512
+  grouped_encoder_aggregated_dim: 4096
+  pokemon_attention_heads: 16
+  early_layers: [2048, 1024, 1024]
+  # Transformer settings
+  transformer_heads: 16
+  transformer_ff_dim: 2048
+  transformer_dropout: 0.1
+  use_decision_tokens: true
+  use_causal_mask: true
+  # Turn loss
+  turn_loss_weight: 1.0
+  keep_force_switch: false
+  # Focal alpha
+  focal_alpha: 0.25
+  # Value head (C51)
+  num_value_bins: 51
+  value_min: -1.0
+  value_max: 1.0
+  # Other
+  save_path: "data/models/supervised/"
+  seed: 21

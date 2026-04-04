@@ -47,18 +47,20 @@ Ultimately, we think that Search-based will be the quickest way to get to peak h
 There is quite a lot of complexity in the above, and we encourage you to check out [the doc linked above](https://docs.google.com/document/d/14menCHw8z06KJWZ5F_K-MjgWVo_b7PESR7RlG-em4ic/edit#heading=h.p6dz1cv0mnpx) to learn more.
 
 ### What I've Done
-Currently, I've built a [supervised deep learning model](./src/elitefurretai/supervised/SUPERVISED.md) that predicts a human's action with the following accuracy (~135M parameters):
-> NOTE: These are outdated results. TODO: update based on improved architecture
-*   **Top 1/3/5 Teampreview Accuracy**:  79%/95%/99%
-*   **Top 1/3/5/10 Move Accuracy**: 26%/40%/48%
-*   **Win Correlation**: 0.726
+Currently, I've built a [supervised deep learning model](./src/elitefurretai/supervised/SUPERVISED.md) (`TransformerThreeHeadedModel`, ~125M parameters) that predicts a human's action:
 
-*Takeaway*: This model is a single well-rounded model that balances all tasks. It doesn't overfit on teampreview and slightly underperforms against models that are trained on a single objective.
+*   **Overall Top-1/3/5 Action Accuracy**: 41% / 61% / 69%
+*   **Move Top-1/3/5**: 26% / 51% / 62%
+*   **Switch Top-1**: 99%
+*   **Top-1/3/5 Teampreview Accuracy**: 54% / 82% / 99%
+*   **Win Correlation**: 0.82
+
+*Takeaway*: The transformer-based unified model coordinates joint turn actions (65% BOTH Top-3) while maintaining near-perfect switching fundamentals (99% Top-1). The distributional C51 value head provides reliable win probability estimates (0.82 correlation). The teampreview head is detached from the shared encoder to prevent harmful gradient interference.
 
 **Primary Learnings**:
-*   **Teampreview**: The dataset has little strategic variation; analysis shows that for a given team composition, 88.6% of the time, a player will choose the same teampreview choice. This means our model is just creating a look-up table. The model is overfit, but it is also the nature of this dataset.
-*   **Action**: Predicting the *exact* move a human makes is difficult due to playstyle variety and "rock-paper-scissors" scenarios. Additionally, models will bias towards learning "easy" actions (switching) intsead of harder actions like moves/targets. Search information would help with these predictions greatly, but isn't currently supported.
-*   **Advantage**: Win predictions are highly variable and depend on the game archetypes. A large and diverse training dataset is necessary here, and predicting advantage over win probability is better due to the stochasticity of Pokemon.
+*   **Teampreview**: With the TP head detached from the shared encoder, TP accuracy is lower than earlier overfit models but the backbone produces better action/value representations. There is limited strategic variation in the dataset; for a given team composition, 88.6% of the time a player makes the same teampreview choice.
+*   **Action**: Predicting the *exact* move a human makes is difficult due to playstyle variety and simultaneous decision-making. Models bias towards learning "easy" actions (switching) instead of harder actions like moves/targets. The BOTH action type (coordinating two Pokemon) at 65% Top-3 shows the model has learned meaningful joint action reasoning.
+*   **Advantage**: The distributional C51 value head outperforms scalar regression. Predicting advantage over raw win probability is better due to the stochasticity of Pokemon.
 
 ### Where I'm now
 I'm in the beginning phases of RL -- for now, I'm taking the following approach:

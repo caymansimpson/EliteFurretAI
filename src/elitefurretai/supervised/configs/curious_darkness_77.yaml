@@ -1,0 +1,74 @@
+# curious-darkness-77: BC handoff model for Stage II RL
+# wandb run: curious-darkness-77 (elitefurretai-hydreigon project)
+# Best checkpoint saved at epoch 18 of 30 (test_loss=4.0522)
+# Model: TransformerThreeHeadedModel (~125M parameters)
+# Training script: src/elitefurretai/supervised/train.py
+# Data: data/battles/regc_final_v4/ (Gen9 VGC Reg C, ~450K filtered battles, ELO >1500)
+
+# Architecture
+use_transformer: true
+transformer_layers: 7
+transformer_heads: 16
+transformer_ff_dim: 2048
+transformer_dropout: 0.1
+use_causal_mask: true
+use_decision_tokens: true
+grouped_encoder_aggregated_dim: 4096
+grouped_encoder_hidden_dim: 512
+pokemon_attention_heads: 16
+early_layers: [2048, 1024, 1024]
+late_layers: [1024, 1024]
+turn_head_layers: [1024, 512, 512]
+teampreview_head_layers: [512, 256]
+teampreview_head_dropout: 0.15
+teampreview_attention_heads: 2
+
+# Training
+num_epochs: 30
+batch_size: 128
+learning_rate: 5.44e-05
+optimizer: AdamW
+weight_decay: 0.000144
+lr_schedule: ReduceLROnPlateau
+max_grad_norm: 1.0
+dropout: 0.2
+accumulation_steps: 1
+seed: 21
+
+# Loss weights
+turn_loss_weight: 1.0
+move_loss_weight: 1.0
+switch_loss_weight: 1.0
+teampreview_loss_weight: 1.0
+win_loss_weight: 0.35
+turn_loss_type: topk
+train_topk_k: 2025
+entropy_weight: 0.0
+focal_alpha: 0.25
+focal_gamma: 2.0
+
+# Value head
+num_value_bins: 51
+value_min: -1.0
+value_max: 1.0
+
+# Data
+embedder_feature_set: full
+battle_format: gen9vgc2023regc
+max_seq_len: 40
+keep_force_switch: false
+teampreview_idx: 5030
+
+# Force switch action indices (used for masking)
+force_switch_indices: [409, 827, 1245, 1663, 2081, 2499]
+
+# DataLoader
+num_workers: 3
+files_per_worker: 3
+prefetch_factor: 2
+worker_batch_size: 128
+persistent_workers: true
+
+# Hardware
+device: cuda
+save_path: data/models/supervised/

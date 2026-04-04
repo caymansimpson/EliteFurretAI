@@ -1,0 +1,205 @@
+# ===========================================================================
+# second_config.yaml — Refined sweep based on first_config.yaml results
+# ===========================================================================
+#
+# Context from first sweep (8ltntdzf, 40 runs):
+#   Best run: dark-sweep-15 — Test Turn Top3 = 0.519
+#     Config: topk + k=2025 (standard CE), lr=5.93e-5, batch_size=128,
+#     win_loss_weight=0.195, dropout=0.169, tp_loss_weight≈0,
+#     late_layers=medium, turn_head=medium, 5 transformer layers.
+#     Action breakdown: MOVE Top3=38.4%, SWITCH Top3=97.3%.
+#
+# Key learnings from first sweep:
+#   1. train_topk_k is the single most important parameter (importance=0.235).
+#      k=2025 (standard CE) vastly outperformed small k values. Small k
+#      starved the model of gradient signal on incorrect predictions.
+#   2. Focal loss consistently underperformed topk CE — every focal-based run
+#      scored below the topk median. The extra complexity hurt.
+#   3. entropy_weight hurt performance (negative correlation). The action
+#      space is already too uniform; entropy bonus pushed further toward
+#      randomness instead of precision.
+#   4. teampreview_loss_weight had strong negative impact (-0.178). Near-zero
+#      values freed backbone capacity for turn prediction.
+#   5. batch_size=128 dominated — more gradient updates per epoch outweighed
+#      slightly noisier estimates.
+#   6. SWITCH predictions are 2.5x easier than MOVE predictions (97.3% vs
+#      38.4% Top3). This is the core problem: the model defaults to
+#      predicting switches, starving move+target combos of capacity.
+#   7. Optimal LR range was 3e-5 to 1.2e-4 — the top 5 runs all fell there.
+#   8. win_loss_weight around 0.15-0.25 helped — forces the backbone to learn
+#      state quality, indirectly aiding action prediction.
+#   9. Architecture: 5-6 transformer layers with medium late/turn head
+#      layers hit the sweet spot. Deeper architectures didn't help in 8 epochs.
+#  10. More epochs needed: dark-sweep-15 was still improving at epoch 8.
+#      Extended training should push Top3 higher.
+#
+# Hypotheses for this sweep:
+#   H1: move_loss_weight > 1.0 will upweight move+target gradient signal,
+#       improving MOVE Top3 without sacrificing overall Top3.
+#   H2: switch_loss_weight < 1.0 will let the model spend less capacity on
+#       already-easy switch predictions.
+#   H3: 15 epochs will allow convergence — dark-sweep-15 hadn't plateaued.
+#   H4: Narrow LR/dropout ranges around dark-sweep-15's optimal values will
+#       yield more consistent top-tier results.
+#   H5: win_loss_weight in [0.15, 0.35] — extending slightly beyond dark-sweep-15
+#       to test if more win signal helps move prediction via state quality.
+#   H6: Testing 5-7 transformer layers to confirm the sweet spot.
+#
+# Budget:
+#   - 15 epochs/run × ~5 min/epoch = ~75 min/run
+#   - 15 runs × 75 min = ~19 hours
+#   - Hyperband kills poor runs after 4 epochs, salvaging budget
+# ===========================================================================
+
+sweep:
+  method: bayes
+  metric:
+    name: "Test Turn Top3"
+    goal: maximize
+  early_terminate:
+    type: hyperband
+    min_iter: 4
+    eta: 2
+  parameters:
+    # =================================================================
+    # FIXED FROM FIRST SWEEP (resolved — no need to re-sweep)
+    # =================================================================
+
+    # topk with k=2025 = standard CE. Won decisively with importance=0.235.
+    # Focal loss underperformed every time — eliminated.
+    turn_loss_type:
+      value: topk
+    train_topk_k:
+      value: 2025
+
+    # batch_size=128 won in first sweep (more updates/epoch > stability).
+    batch_size:
+      value: 128
+
+    # entropy_weight had negative correlation with performance — fixed at 0.
+    entropy_weight:
+      value: 0.0
+
+    # teampreview_loss_weight had strong negative impact — fix at 0.
+    # The backbone is better off not being pulled toward TP memorization.
+    teampreview_loss_weight:
+      value: 0.0
+
+    # TP head config — largely irrelevant with 0 weight, but use values
+    # from dark-sweep-15 for consistency.
+    teampreview_head_dropout:
+      value: 0.15
+    teampreview_head_layers_variant:
+      value: none
+    teampreview_attention_heads:
+      value: 0
+
+    # =================================================================
+    # NEW: ACTION-TYPE LOSS WEIGHTING (core hypothesis of this sweep)
+    # =================================================================
+    #
+    # The model's MOVE:SWITCH Top3 ratio is 0.39 — switches are 2.5x
+    # easier to predict. By upweighting move samples in the loss, we
+    # force more gradient signal toward the harder move+target combos.
+    #
+    # move_loss_weight > 1.0 increases gradient from move-only samples.
+    # switch_loss_weight < 1.0 reduces gradient from easy switch samples.
+    # Default (1.0, 1.0) = no weighting (baseline comparison).
+    move_loss_weight:
+      values: [1.0, 1.3, 1.6, 2.0]
+
+    switch_loss_weight:
+      values: [0.5, 0.7, 1.0]
+
+    # =================================================================
+    # NARROWED RANGES (exploit dark-sweep-15's sweet spot)
+    # =================================================================
+
+    # dark-sweep-15: lr=5.93e-5. Top 5 runs: 3e-5 to 1.2e-4.
+    learning_rate:
+      min: 3.0e-5
+      max: 1.2e-4
+      distribution: log_uniform_values
+
+    # dark-sweep-15: dropout=0.169. Narrow around it.
+    dropout:
+      values: [0.12, 0.15, 0.17, 0.20]
+
+    # dark-sweep-15: win_loss_weight=0.195. Test moderate expansion.
+    win_loss_weight:
+      values: [0.15, 0.25, 0.35]
+
+    # dark-sweep-15: weight_decay=5.8e-5. Narrow log-uniform range.
+    weight_decay:
+      min: 3.0e-5
+      max: 3.0e-4
+      distribution: log_uniform_values
+
+    # =================================================================
+    # ARCHITECTURE (narrow around proven sweet spot)
+    # =================================================================
+
+    # dark-sweep-15 had 5 layers. Test 5-7 to see if slightly deeper helps
+    # with more epochs available.
+    transformer_layers:
+      values: [5, 6, 7]
+
+    # dark-sweep-15 used medium for both. Keep these fixed to reduce
+    # search space and focus budget on the action-type weighting hypothesis.
+    late_layers_variant:
+      value: medium
+    turn_head_layers_variant:
+      value: medium
+
+
+# ---- Architecture variant mappings ----
+variants:
+  late_layers:
+    medium: [1024, 1024]
+
+  turn_head_layers:
+    medium: [1024, 512, 512]
+
+  teampreview_head_layers:
+    none: []
+
+
+# ---- Fixed parameters ----
+fixed:
+  num_epochs: 15
+  # DataLoader
+  worker_batch_size: 128
+  num_workers: 2
+  prefetch_factor: 2
+  files_per_worker: 2
+  persistent_workers: true
+  # Training stability
+  max_grad_norm: 1.0
+  optimizer: AdamW
+  # Feature encoding
+  embedder_feature_set: full
+  battle_format: gen9vgc2023regc
+  max_seq_len: 40
+  # Encoder architecture
+  grouped_encoder_hidden_dim: 512
+  grouped_encoder_aggregated_dim: 4096
+  pokemon_attention_heads: 16
+  early_layers: [2048, 1024, 1024]
+  # Transformer settings
+  transformer_heads: 16
+  transformer_ff_dim: 2048
+  transformer_dropout: 0.1
+  use_decision_tokens: true
+  use_causal_mask: true
+  # Turn loss
+  turn_loss_weight: 1.0
+  keep_force_switch: false
+  # Focal alpha (unused with topk, but required by config schema)
+  focal_alpha: 0.25
+  # Value head (C51)
+  num_value_bins: 51
+  value_min: -1.0
+  value_max: 1.0
+  # Other
+  save_path: "data/models/supervised/"
+  seed: 21

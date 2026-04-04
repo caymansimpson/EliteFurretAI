@@ -14,7 +14,7 @@ Analyzes:
 import json
 import sys
 from collections import Counter, defaultdict
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Union
 
 import numpy as np
 import torch
@@ -25,7 +25,10 @@ from elitefurretai.etl import (
     Embedder,
     OptimizedBattleDataLoader,
 )
-from elitefurretai.supervised.model_archs import FlexibleThreeHeadedModel
+from elitefurretai.supervised.model_archs import (
+    FlexibleThreeHeadedModel,
+    TransformerThreeHeadedModel,
+)
 
 
 class ActionDiagnostics:
@@ -105,8 +108,12 @@ class ActionDiagnostics:
         padding_mask = batch["masks"].to(self.device)
 
         with torch.no_grad():
-            # Get predictions
-            turn_logits, teampreview_logits, win_logits = self.model(states, padding_mask)
+            # Get predictions (handle both 3-return and 4-return models)
+            outputs = self.model(states, padding_mask)
+            if len(outputs) == 4:
+                turn_logits, teampreview_logits, win_logits, _ = outputs
+            else:
+                turn_logits, teampreview_logits, win_logits = outputs
 
             # Apply action masking
             turn_logits_masked = turn_logits.clone()
@@ -388,29 +395,64 @@ def main(model_path: str, data_path: str, max_batches: Optional[int] = 100):
         "force_switch_indices": [feature_names[f"MON:{j}:force_switch"] for j in range(6)],
     }
 
-    # Initialize model
-    model = FlexibleThreeHeadedModel(
-        embedder=embedder,
-        early_layers=config["early_layers"],
-        late_layers=config["late_layers"],
-        lstm_layers=config["lstm_layers"],
-        lstm_hidden_size=config["lstm_hidden_size"],
-        dropout=0.0,  # No dropout for evaluation
-        early_attention_heads=config["early_attention_heads"],
-        late_attention_heads=config["late_attention_heads"],
-        grouped_encoder_hidden_dim=config["grouped_encoder_hidden_dim"],
-        grouped_encoder_aggregated_dim=config["grouped_encoder_aggregated_dim"],
-        pokemon_attention_heads=config["pokemon_attention_heads"],
-        num_actions=MDBO.action_space(),
-        num_teampreview_actions=MDBO.teampreview_space(),
-        teampreview_head_layers=config["teampreview_head_layers"],
-        teampreview_head_dropout=0.0,
-        teampreview_attention_heads=config["teampreview_attention_heads"],
-        turn_head_layers=config["turn_head_layers"],
-        max_seq_len=config["max_seq_len"],
-    ).to(device)
+    # Initialize model (detect architecture from config)
+    state_dict = checkpoint["model_state_dict"]
+    # Strip _orig_mod. prefix from torch.compile'd checkpoints
+    stripped_state_dict = {}
+    for k, v in state_dict.items():
+        new_key = k.replace("_orig_mod.", "") if k.startswith("_orig_mod.") else k
+        stripped_state_dict[new_key] = v
 
-    model.load_state_dict(checkpoint["model_state_dict"])
+    model: Union[FlexibleThreeHeadedModel, TransformerThreeHeadedModel]
+    if config.get("use_transformer", False):
+        model = TransformerThreeHeadedModel(
+            embedder=embedder,
+            early_layers=config["early_layers"],
+            late_layers=config["late_layers"],
+            dropout=0.0,  # No dropout for evaluation
+            grouped_encoder_hidden_dim=config["grouped_encoder_hidden_dim"],
+            grouped_encoder_aggregated_dim=config["grouped_encoder_aggregated_dim"],
+            pokemon_attention_heads=config["pokemon_attention_heads"],
+            num_actions=MDBO.action_space(),
+            num_teampreview_actions=MDBO.teampreview_space(),
+            teampreview_head_layers=config["teampreview_head_layers"],
+            teampreview_head_dropout=0.0,
+            teampreview_attention_heads=config["teampreview_attention_heads"],
+            turn_head_layers=config["turn_head_layers"],
+            max_seq_len=config["max_seq_len"],
+            num_value_bins=config.get("num_value_bins", 51),
+            value_min=config.get("value_min", -1.0),
+            value_max=config.get("value_max", 1.0),
+            transformer_layers=config.get("transformer_layers", 6),
+            transformer_heads=config.get("transformer_heads", 16),
+            transformer_ff_dim=config.get("transformer_ff_dim", 2048),
+            transformer_dropout=0.0,
+            use_decision_tokens=config.get("use_decision_tokens", True),
+            use_causal_mask=config.get("use_causal_mask", True),
+        ).to(device)
+    else:
+        model = FlexibleThreeHeadedModel(
+            embedder=embedder,
+            early_layers=config["early_layers"],
+            late_layers=config["late_layers"],
+            lstm_layers=config["lstm_layers"],
+            lstm_hidden_size=config["lstm_hidden_size"],
+            dropout=0.0,  # No dropout for evaluation
+            early_attention_heads=config["early_attention_heads"],
+            late_attention_heads=config["late_attention_heads"],
+            grouped_encoder_hidden_dim=config["grouped_encoder_hidden_dim"],
+            grouped_encoder_aggregated_dim=config["grouped_encoder_aggregated_dim"],
+            pokemon_attention_heads=config["pokemon_attention_heads"],
+            num_actions=MDBO.action_space(),
+            num_teampreview_actions=MDBO.teampreview_space(),
+            teampreview_head_layers=config["teampreview_head_layers"],
+            teampreview_head_dropout=0.0,
+            teampreview_attention_heads=config["teampreview_attention_heads"],
+            turn_head_layers=config["turn_head_layers"],
+            max_seq_len=config["max_seq_len"],
+        ).to(device)
+
+    model.load_state_dict(stripped_state_dict)
     model.eval()
 
     print("Model loaded successfully")

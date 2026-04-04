@@ -1622,10 +1622,12 @@ class TransformerThreeHeadedModel(torch.nn.Module):
         if self.use_causal_mask and total_len > n_dt:
             # Turns portion: causal among themselves
             turn_len = total_len - n_dt
-            causal = torch.triu(
-                torch.ones(turn_len, turn_len, device=device), diagonal=1
+            # Use triu on a -inf-filled matrix so the lower triangle is set to 0
+            # by triu (NOT via multiplication, since 0 * -inf = NaN).
+            mask[n_dt:, n_dt:] = torch.triu(
+                torch.full((turn_len, turn_len), float("-inf"), device=device),
+                diagonal=1,
             )
-            mask[n_dt:, n_dt:] = causal * float("-inf")
 
         return mask
 
@@ -1647,8 +1649,9 @@ class TransformerThreeHeadedModel(torch.nn.Module):
         batch_size, seq_len, _ = x.shape
         encoded = self._encode_features(x)  # (B, S, H)
 
-        # Teampreview head (pre-backbone)
-        tp_feat = self.teampreview_ff_stack(encoded)
+        # Teampreview head (pre-backbone, detached to stop gradient flow to encoder)
+        tp_detached = encoded.detach()
+        tp_feat = self.teampreview_ff_stack(tp_detached)
         if self.teampreview_attn is not None:
             attn_mask = ~mask.bool() if mask is not None else None
             tp_ao, _ = self.teampreview_attn(tp_feat, tp_feat, tp_feat, key_padding_mask=attn_mask)
@@ -1689,7 +1692,11 @@ class TransformerThreeHeadedModel(torch.nn.Module):
                 src_key_padding_mask = pad_mask
 
         # Transformer
-        t_out = self.transformer(full_seq, mask=attn_mask, src_key_padding_mask=src_key_padding_mask)
+        t_out = self.transformer(
+            full_seq,
+            mask=attn_mask,
+            src_key_padding_mask=src_key_padding_mask,
+        )
 
         # Extract outputs
         if self.use_decision_tokens:
@@ -1741,8 +1748,9 @@ class TransformerThreeHeadedModel(torch.nn.Module):
         batch_size = x.size(0)
         encoded = self._encode_features(x)  # (B, 1, H)
 
-        # Teampreview head (pre-backbone)
-        tp_feat = self.teampreview_ff_stack(encoded)
+        # Teampreview head (pre-backbone, detached to stop gradient flow to encoder)
+        tp_detached = encoded.detach()
+        tp_feat = self.teampreview_ff_stack(tp_detached)
         if self.teampreview_attn is not None:
             tp_ao, _ = self.teampreview_attn(tp_feat, tp_feat, tp_feat)
             tp_feat = self.teampreview_ln(tp_feat + tp_ao)  # type: ignore
