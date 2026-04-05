@@ -136,12 +136,19 @@ class RNaDLearner:
             )
 
         with torch.amp.autocast(device_type=self.device, enabled=self.use_mixed_precision):  # type: ignore
-            turn_logits, tp_logits, values, win_dist_logits, _ = self.model(states, initial_hidden_state)
+            if is_transformer:
+                # Transformer: call raw model.forward() for full trajectory
+                turn_logits, tp_logits, values, win_dist_logits = self.model.model.forward(states)
+            else:
+                turn_logits, tp_logits, values, win_dist_logits, _ = self.model(states, initial_hidden_state)
 
         with torch.no_grad():
-            ref_turn_logits, ref_tp_logits, _, _, _ = self.ref_model(
-                states, initial_hidden_state
-            )
+            if is_transformer:
+                ref_turn_logits, ref_tp_logits, _, _ = self.ref_model.model.forward(states)
+            else:
+                ref_turn_logits, ref_tp_logits, _, _, _ = self.ref_model(
+                    states, initial_hidden_state
+                )
 
         flat_actions = actions.reshape(-1)
         flat_old_log_probs = old_log_probs.reshape(-1)
@@ -414,6 +421,10 @@ class PortfolioRNaDLearner:
             "padding_mask", torch.ones_like(actions, dtype=torch.bool)
         ).to(self.device)
 
+        action_masks = batch.get("masks", None)
+        if action_masks is not None:
+            action_masks = action_masks.to(self.device)
+
         valid_advantages = advantages[padding_mask]
         if len(valid_advantages) > 1:
             advantages = (advantages - valid_advantages.mean()) / (
@@ -435,12 +446,19 @@ class PortfolioRNaDLearner:
             )
 
         with torch.amp.autocast(device_type=self.device, enabled=self.use_mixed_precision):  # type: ignore
-            turn_logits, tp_logits, values, win_dist_logits, _ = self.model(states, initial_hidden_state)
+            if is_transformer:
+                # Transformer: call raw model.forward() for full trajectory
+                turn_logits, tp_logits, values, win_dist_logits = self.model.model.forward(states)
+            else:
+                turn_logits, tp_logits, values, win_dist_logits, _ = self.model(states, initial_hidden_state)
 
             ref_outputs = []
             for ref_model in self.ref_models:
                 with torch.no_grad():
-                    ref_turn, ref_tp, _, _, _ = ref_model(states, initial_hidden_state)
+                    if is_transformer:
+                        ref_turn, ref_tp, _, _ = ref_model.model.forward(states)
+                    else:
+                        ref_turn, ref_tp, _, _, _ = ref_model(states, initial_hidden_state)
                     ref_outputs.append((ref_turn, ref_tp))
 
             flat_actions = actions.reshape(-1)
@@ -489,12 +507,25 @@ class PortfolioRNaDLearner:
                 curr_turn_logits = turn_logits.reshape(-1, turn_logits.shape[-1])[
                     turn_indices
                 ]
-                curr_dist = Categorical(logits=curr_turn_logits)
 
                 ref_turn_logits_list = [
                     ref_turn.reshape(-1, ref_turn.shape[-1])[turn_indices]
                     for ref_turn, _ in ref_outputs
                 ]
+
+                # Apply action masks to prevent all-inf logits
+                if action_masks is not None:
+                    flat_masks = action_masks.reshape(-1, action_masks.shape[-1])
+                    curr_masks = flat_masks[turn_indices]
+                    curr_turn_logits = curr_turn_logits.masked_fill(
+                        ~curr_masks.bool(), float("-inf")
+                    )
+                    ref_turn_logits_list = [
+                        ref_logits.masked_fill(~curr_masks.bool(), float("-inf"))
+                        for ref_logits in ref_turn_logits_list
+                    ]
+
+                curr_dist = Categorical(logits=curr_turn_logits)
                 rnad_loss_turn = self._compute_portfolio_kl(
                     curr_dist, ref_turn_logits_list
                 )

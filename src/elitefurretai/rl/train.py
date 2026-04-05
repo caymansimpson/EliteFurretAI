@@ -12,6 +12,7 @@ Enhanced RNaD training with:
 import argparse
 import asyncio
 import copy
+import gc
 import logging
 import multiprocessing as mp
 import os
@@ -172,7 +173,7 @@ def initialize_training_state(
         learner = initialize_learner(config, agent, base_model)
 
         worker_model_path = config.initialize_path
-        worker_model_config = checkpoint_cfg
+        worker_model_config = config.to_dict()
     else:
         logger.info("Initializing fresh model from config...")
         embedder = Embedder(
@@ -287,6 +288,7 @@ def mp_worker_process(
         battle_format = config.battle_format
         team_pool_path = config.base_team_path
         team_subdirectory = config.team_pool_path
+        agent_team_path = config.agent_team_path
         num_players = config.players_per_worker
         # Root fix for worker CUDA OOM:
         # Actor workers should run inference on CPU (IMPALA-style CPU actors), while
@@ -409,6 +411,7 @@ def mp_worker_process(
             vgc_bench_checkpoint_path=vgc_bench_checkpoint_path,
             external_vgcbench_usernames=external_vgcbench_usernames,
             model_config=model_config,
+            agent_team_path=agent_team_path,
         )
 
         # Create all worker-local agents via factory
@@ -710,6 +713,17 @@ def collate_trajectories(trajectories, device, gamma, gae_lambda, max_seq_len=40
     is_tp = torch.zeros(batch_size, max_len, dtype=torch.bool)
     padding_mask = torch.zeros(batch_size, max_len, dtype=torch.bool)
 
+    # Determine turn action mask dimension from first non-TP step
+    mask_dim = 0
+    for traj in trajectories:
+        for step in traj:
+            if not step["is_teampreview"] and step.get("mask") is not None:
+                mask_dim = len(step["mask"])
+                break
+        if mask_dim > 0:
+            break
+    masks = torch.ones(batch_size, max_len, mask_dim) if mask_dim > 0 else None
+
     processed_advantages = []
     processed_returns = []
 
@@ -731,6 +745,12 @@ def collate_trajectories(trajectories, device, gamma, gae_lambda, max_seq_len=40
         values[i, :seq_len] = traj_values
         is_tp[i, :seq_len] = traj_is_tp
         padding_mask[i, :seq_len] = 1
+
+        # Collate action masks for turn steps
+        if masks is not None:
+            for t, step in enumerate(traj):
+                if step.get("mask") is not None and not step["is_teampreview"]:
+                    masks[i, t] = torch.tensor(step["mask"], dtype=torch.float32)
 
         # Compute GAE
         advs = torch.zeros(seq_len)
@@ -758,7 +778,7 @@ def collate_trajectories(trajectories, device, gamma, gae_lambda, max_seq_len=40
         advantages[i, :seq_len] = processed_advantages[i]
         returns[i, :seq_len] = processed_returns[i]
 
-    return {
+    result = {
         "states": states.to(device),
         "actions": actions.to(device),
         "rewards": rewards.to(device),
@@ -768,7 +788,10 @@ def collate_trajectories(trajectories, device, gamma, gae_lambda, max_seq_len=40
         "advantages": advantages.to(device),
         "returns": returns.to(device),
         "padding_mask": padding_mask.to(device),
-    }, metadata
+    }
+    if masks is not None:
+        result["masks"] = masks.to(device)
+    return result, metadata
 
 
 def train_exploiter_subprocess(victim_checkpoint: str, config: RNaDConfig):
@@ -878,6 +901,7 @@ def main():
         past_models_dir=config.past_models_dir,
         vgc_bench_checkpoint_path=config.vgc_bench_checkpoint_path,
         max_past_models=config.max_past_models,
+        curriculum=config.curriculum,
     )
     if resume_curriculum:
         opponent_pool.curriculum = resume_curriculum
@@ -1021,6 +1045,14 @@ def main():
                         metrics['time_training_pct'] = (time_training / total_time) * 100
                         metrics['time_broadcasting_pct'] = (time_broadcasting / total_time) * 100
 
+                    # Memory monitoring (detect leaks / approaching OOM)
+                    proc = psutil.Process()
+                    metrics['mem_rss_gb'] = proc.memory_info().rss / (1024 ** 3)
+                    metrics['mem_system_used_pct'] = psutil.virtual_memory().percent
+                    if torch.cuda.is_available():
+                        metrics['gpu_mem_allocated_gb'] = torch.cuda.memory_allocated() / (1024 ** 3)
+                        metrics['gpu_mem_reserved_gb'] = torch.cuda.memory_reserved() / (1024 ** 3)
+
                     # Portfolio-specific metrics (if using portfolio learner)
                     if isinstance(learner, PortfolioRNaDLearner):
                         metrics['portfolio_size'] = len(learner.ref_models)
@@ -1145,6 +1177,12 @@ def main():
 
                 # Clear trajectory buffer after successful update
                 trajectories = []
+
+                # Periodic memory cleanup to prevent gradual OOM
+                if updates % 5 == 0:
+                    gc.collect()
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
 
     except KeyboardInterrupt:
         logger.info("KeyboardInterrupt detected...")

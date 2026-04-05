@@ -259,9 +259,8 @@ class OpponentPool:
         if not self.bc_player_config:
             return
 
-        # TODO fix lazy loading
         from elitefurretai.etl.embedder import Embedder
-        from elitefurretai.supervised.model_archs import FlexibleThreeHeadedModel
+        from elitefurretai.rl.model_io import build_model_from_config
 
         filepath = self.bc_player_config["teampreview"]
         logger.info("Pre-loading BC model from %s...", filepath)
@@ -270,33 +269,14 @@ class OpponentPool:
         config = checkpoint["config"]
 
         embedder = Embedder(
-            format="gen9vgc2023regc",
+            format=self.battle_format,
             feature_set=config.get("embedder_feature_set", "raw"),
             omniscient=False,
         )
 
-        model = FlexibleThreeHeadedModel(
-            embedder=embedder,
-            early_layers=config["early_layers"],
-            late_layers=config["late_layers"],
-            lstm_layers=config.get("lstm_layers", 2),
-            lstm_hidden_size=config.get("lstm_hidden_size", 512),
-            dropout=config.get("dropout", 0.1),
-            early_attention_heads=config.get("early_attention_heads", 8),
-            late_attention_heads=config.get("late_attention_heads", 8),
-            grouped_encoder_hidden_dim=config.get("grouped_encoder_hidden_dim", 128),
-            grouped_encoder_aggregated_dim=config.get("grouped_encoder_aggregated_dim", 1024),
-            pokemon_attention_heads=config.get("pokemon_attention_heads", 2),
-            teampreview_head_layers=config.get("teampreview_head_layers", []),
-            teampreview_head_dropout=config.get("teampreview_head_dropout", 0.1),
-            teampreview_attention_heads=config.get("teampreview_attention_heads", 4),
-            turn_head_layers=config.get("turn_head_layers", []),
-            num_actions=2025,
-            num_teampreview_actions=90,
-            max_seq_len=config.get("max_seq_len", 17),
-        ).to(self.device)
-
-        model.load_state_dict(checkpoint["model_state_dict"])
+        model = build_model_from_config(
+            config, embedder, self.device, checkpoint["model_state_dict"]
+        )
         model.eval()
 
         self._cached_bc_model = model
@@ -836,6 +816,7 @@ class WorkerOpponentFactory:
         vgc_bench_checkpoint_path: Optional[str] = None,
         external_vgcbench_usernames: Optional[List[str]] = None,
         model_config: Optional[Dict[str, Any]] = None,
+        agent_team_path: Optional[str] = None,
     ):
         self.team_repo = team_repo
         self.battle_format = battle_format
@@ -859,6 +840,24 @@ class WorkerOpponentFactory:
         self.max_loaded_ghost_models = max_loaded_ghost_models
         self.vgc_bench_checkpoint_path = vgc_bench_checkpoint_path
         self.model_config = model_config
+        self.agent_team_path = agent_team_path
+        self._agent_team_string: Optional[str] = None
+        self._agent_team_strings: Optional[List[str]] = None
+        if agent_team_path:
+            if os.path.isdir(agent_team_path):
+                self._agent_team_strings = []
+                for fname in sorted(os.listdir(agent_team_path)):
+                    if fname.endswith(".txt"):
+                        with open(os.path.join(agent_team_path, fname)) as f:
+                            self._agent_team_strings.append(f.read())
+                logger.info(
+                    "Loaded %d agent teams from directory %s",
+                    len(self._agent_team_strings),
+                    agent_team_path,
+                )
+            else:
+                with open(agent_team_path) as f:
+                    self._agent_team_string = f.read()
         self.external_vgcbench_usernames = [
             username.strip()
             for username in (external_vgcbench_usernames or [])
@@ -1037,6 +1036,18 @@ class WorkerOpponentFactory:
             subdirectory=self.team_subdirectory,
         )
 
+    def get_agent_team(self) -> str:
+        """Return the agent's team, shuffled. Uses fixed team if agent_team_path is set.
+
+        If agent_team_path was a directory, samples randomly from all loaded teams.
+        """
+        if self._agent_team_strings is not None:
+            team = random.choice(self._agent_team_strings)
+            return self.team_repo._shuffle_team_order(team)
+        if self._agent_team_string is not None:
+            return self.team_repo._shuffle_team_order(self._agent_team_string)
+        return self.sample_team()
+
     def create_player_pairs(
         self,
         num_pairs: int,
@@ -1062,7 +1073,7 @@ class WorkerOpponentFactory:
                 server_configuration=self.server_config,
                 trajectory_queue=local_traj_queue,
                 battle_format=self.battle_format,
-                team=self.sample_team(),
+                team=self.get_agent_team(),
                 worker_id=self.worker_id,
                 embedder=self.embedder,
                 max_battle_steps=self.max_battle_steps,
@@ -1319,9 +1330,13 @@ class WorkerOpponentFactory:
         return tasks, batch_opponent_types
 
     def randomize_all_teams(self) -> None:
-        """Resample teams for all participants before the next batch."""
+        """Resample teams for all participants before the next batch.
+
+        Players use the fixed agent team if agent_team_path is set,
+        otherwise sample randomly. Opponents always sample randomly.
+        """
         for player in self.players:
-            player._team = ConstantTeambuilder(self.sample_team())
+            player._team = ConstantTeambuilder(self.get_agent_team())
 
         for opponent in self.opponents:
             opponent._team = ConstantTeambuilder(self.sample_team())

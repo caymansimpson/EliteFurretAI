@@ -209,6 +209,12 @@ class RNaDConfig:
     team_pool_path: Optional[str] = (
         None  # Optional subdirectory within format (e.g., "easy") to restrict team sampling. If None, samples from all teams in format
     )
+    agent_team_path: Optional[str] = (
+        None  # Path to a team file or directory for the training agent.
+        # If a file, the agent always uses that team.
+        # If a directory, the agent samples randomly from .txt files in it.
+        # If None, the agent samples random teams from the pool like opponents.
+    )
     use_random_teams: bool = (
         True  # Whether to sample random teams from pool for each battle (vs fixed team)
     )
@@ -400,6 +406,17 @@ class RNaDConfig:
             assert os.path.exists(
                 full_team_pool_path
             ), f"Team pool path not found: {full_team_pool_path}"
+        if self.agent_team_path:
+            assert os.path.exists(
+                self.agent_team_path
+            ), f"Agent team path not found: {self.agent_team_path}"
+            if os.path.isdir(self.agent_team_path):
+                team_files = [
+                    f for f in os.listdir(self.agent_team_path) if f.endswith(".txt")
+                ]
+                assert (
+                    len(team_files) > 0
+                ), f"No .txt team files found in agent_team_path directory: {self.agent_team_path}"
         if self.resume_from:
             assert os.path.exists(
                 self.resume_from

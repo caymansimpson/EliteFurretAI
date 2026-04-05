@@ -129,11 +129,6 @@ def build_model_from_config(
             transformer_dropout=model_config.get("transformer_dropout", 0.1),
             use_decision_tokens=model_config.get("use_decision_tokens", True),
             use_causal_mask=model_config.get("use_causal_mask", True),
-            # Pass LSTM params for config compat (unused internally)
-            lstm_layers=model_config.get("lstm_layers", 2),
-            lstm_hidden_size=model_config.get("lstm_hidden_size", 512),
-            early_attention_heads=model_config.get("early_attention_heads", 8),
-            late_attention_heads=model_config.get("late_attention_heads", 8),
         ).to(device)
     else:
         model = FlexibleThreeHeadedModel(
@@ -145,7 +140,11 @@ def build_model_from_config(
         ).to(device)
 
     if state_dict:
-        model.load_state_dict(state_dict)
+        # Strip _orig_mod. prefix from torch.compile() checkpoints
+        cleaned_state_dict = {
+            k.removeprefix("_orig_mod."): v for k, v in state_dict.items()
+        }
+        model.load_state_dict(cleaned_state_dict)
 
     return model
 

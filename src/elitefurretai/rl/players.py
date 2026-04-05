@@ -319,7 +319,20 @@ class BatchInferencePlayer(Player):
                     if self.probabilistic
                     else np.argmax(probs)
                 )
-                log_prob = float(unscaled_log_probs[action])
+
+                # Compute log_prob from the MASKED distribution so PPO
+                # ratios are consistent with the learner (which also masks).
+                if mask is not None:
+                    valid_mask = mask.astype(bool)
+                    log_valid_mass = np.log(
+                        np.exp(unscaled_log_probs[valid_mask]).sum()
+                    )
+                    log_prob = float(
+                        unscaled_log_probs[action] - log_valid_mass
+                    )
+                else:
+                    log_prob = float(unscaled_log_probs[action])
+
                 future.set_result({
                     "action": action,
                     "log_prob": log_prob,
@@ -409,7 +422,16 @@ class BatchInferencePlayer(Player):
             # The temperature-scaled probs only determine which action is
             # *selected*, but the policy gradient must use the true policy
             # distribution to avoid biased ratio estimates.
-            log_prob = float(unscaled_log_probs[action])
+            # Apply mask correction so old_log_prob matches the learner's
+            # masked Categorical distribution.
+            if mask is not None:
+                valid_mask = mask.astype(bool)
+                log_valid_mass = np.log(
+                    np.exp(unscaled_log_probs[valid_mask]).sum()
+                )
+                log_prob = float(unscaled_log_probs[action] - log_valid_mass)
+            else:
+                log_prob = float(unscaled_log_probs[action])
 
             future.set_result(
                 {
