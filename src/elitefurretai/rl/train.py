@@ -622,6 +622,17 @@ def mp_worker_process(
                         f"({consecutive_zero_completion_batches} consecutive batches)."
                     )
 
+                # Periodic garbage collection to reclaim memory from asyncio
+                # coroutine frames, old battle objects, and stale trajectory dicts.
+                if battle_batch % 10 == 0:
+                    gc.collect()
+                    # Log memory so we can detect gradual growth before OOM.
+                    if battle_batch % 50 == 0:
+                        logger.info(
+                            "[MPWorker %d] Batch %d memory: %s",
+                            worker_id, battle_batch, get_memory_usage_mb(),
+                        )
+
                 # Clean up battle state for next batch
                 if had_timeout:
                     # Root-cause recovery: canceled challenge coroutines can leave lingering
@@ -921,7 +932,7 @@ def main():
 
     # Create multiprocessing queues
     mp_traj_queue: MPQueue = MPQueue(maxsize=1024)
-    weight_queues: List[MPQueue] = [MPQueue(maxsize=5) for _ in range(config.num_workers)]
+    weight_queues: List[MPQueue] = [MPQueue(maxsize=2) for _ in range(config.num_workers)]
     mp_error_queue: MPQueue = MPQueue(maxsize=100)  # For workers to report errors
     mp_stop_event: MPEvent = mp.Event()
 
@@ -1052,6 +1063,17 @@ def main():
                     if torch.cuda.is_available():
                         metrics['gpu_mem_allocated_gb'] = torch.cuda.memory_allocated() / (1024 ** 3)
                         metrics['gpu_mem_reserved_gb'] = torch.cuda.memory_reserved() / (1024 ** 3)
+
+                    # Per-worker memory tracking (detect gradual growth → OOM before it happens)
+                    total_worker_rss_gb = 0.0
+                    for wp in processes:
+                        if wp.is_alive() and wp.pid:
+                            try:
+                                worker_proc = psutil.Process(wp.pid)
+                                total_worker_rss_gb += worker_proc.memory_info().rss / (1024 ** 3)
+                            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                                pass
+                    metrics['mem_workers_total_rss_gb'] = total_worker_rss_gb
 
                     # Portfolio-specific metrics (if using portfolio learner)
                     if isinstance(learner, PortfolioRNaDLearner):

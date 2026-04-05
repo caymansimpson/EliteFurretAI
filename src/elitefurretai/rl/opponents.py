@@ -20,6 +20,7 @@ In short: `OpponentPool` is global/curriculum-focused, while
 """
 
 import asyncio
+import gc
 import importlib
 import importlib.util
 import logging
@@ -1436,6 +1437,25 @@ class WorkerOpponentFactory:
         # Explicitly tear down old runtime state before re-creating players.
         self.teardown_runtime_agents()
 
+        # Drop references to old player/opponent objects so they can be GC'd.
+        # Without this, asyncio coroutine frames may prevent collection.
+        for p in self.players:
+            p.current_trajectories.clear()
+            p.completed_trajectories.clear()
+            p.hidden_states.clear()
+        for o in self.opponents:
+            o.hidden_states.clear()
+        self.players.clear()
+        self.opponents.clear()
+        self.max_damage_opponents.clear()
+        self.random_baseline_opponents.clear()
+        self.max_base_power_baseline_opponents.clear()
+        self.simple_heuristic_baseline_opponents.clear()
+        self.vgc_bench_baseline_opponents.clear()
+
+        # Force a GC cycle to reclaim memory from the old objects.
+        gc.collect()
+
         # Bump generation so newly-created players use unique usernames.
         self._rebuild_generation += 1
 
@@ -1449,11 +1469,16 @@ class WorkerOpponentFactory:
             player.clear_completed_trajectories()
             player.hidden_states.clear()
             player.current_trajectories.clear()
+            player._discarded_battles.clear()
+            player._request_generation.clear()
 
         for opponent in self.opponents:
             opponent.reset_battles()
             opponent.clear_completed_trajectories()
             opponent.hidden_states.clear()
+            opponent.current_trajectories.clear()
+            opponent._discarded_battles.clear()
+            opponent._request_generation.clear()
 
         for md_opp in self.max_damage_opponents:
             md_opp.reset_battles()
