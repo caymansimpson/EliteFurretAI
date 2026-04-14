@@ -11,14 +11,14 @@ from poke_env.player import MaxBasePowerPlayer, Player
 from poke_env.player.baselines import SimpleHeuristicsPlayer
 from poke_env.ps_client import AccountConfiguration, ServerConfiguration
 
+from elitefurretai.engine.showdown_server_manager import (
+    launch_showdown_servers,
+    shutdown_showdown_servers,
+)
 from elitefurretai.etl import TeamRepo
 from elitefurretai.rl.model_io import load_agent_from_checkpoint
 from elitefurretai.rl.opponents import _create_vgc_bench_player
 from elitefurretai.rl.players import BatchInferencePlayer, MaxDamagePlayer
-from elitefurretai.rl.server_manager import (
-    launch_showdown_servers,
-    shutdown_showdown_servers,
-)
 
 
 @dataclass

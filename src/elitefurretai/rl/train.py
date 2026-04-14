@@ -32,27 +32,11 @@ from typing import Any, Dict, List, Optional, TextIO, Tuple, Union
 import numpy as np
 import psutil
 import torch
-from poke_env import ServerConfiguration
+from poke_env import AccountConfiguration, ServerConfiguration
+from poke_env.player import MaxBasePowerPlayer, RandomPlayer
 
 import wandb
-from elitefurretai.etl import Embedder, TeamRepo
-from elitefurretai.etl.system_utils import (
-    configure_torch_multiprocessing,
-    suppress_third_party_warnings,
-)
-from elitefurretai.rl.config import RNaDConfig
-from elitefurretai.rl.learners import PortfolioRNaDLearner, RNaDLearner
-from elitefurretai.rl.model_io import (
-    build_model_from_config,
-    load_checkpoint,
-    save_checkpoint,
-)
-from elitefurretai.rl.opponents import (
-    OpponentPool,
-    WorkerOpponentFactory,
-)
-from elitefurretai.rl.players import RNaDAgent, cleanup_worker_executors
-from elitefurretai.rl.server_manager import (
+from elitefurretai.engine.showdown_server_manager import (
     allocate_server_ports,
     derive_external_vgcbench_username,
     launch_external_vgcbench_runners,
@@ -60,8 +44,32 @@ from elitefurretai.rl.server_manager import (
     shutdown_external_vgcbench_runners,
     shutdown_showdown_servers,
 )
+from elitefurretai.engine.sync_battle_driver import (
+    SyncBaselineController,
+    SyncPolicyPlayer,
+    SyncRustBattleDriver,
+)
+from elitefurretai.etl import Embedder, TeamRepo
+from elitefurretai.etl.system_utils import (
+    configure_torch_multiprocessing,
+    suppress_third_party_warnings,
+)
+from elitefurretai.rl.config import RUST_ENGINE_BACKEND, RNaDConfig
+from elitefurretai.rl.learners import PortfolioRNaDLearner, RNaDLearner
+from elitefurretai.rl.model_io import (
+    build_model_from_config,
+    is_checkpoint_compatible_with_model_config,
+    load_agent_from_checkpoint,
+    load_checkpoint,
+    save_checkpoint,
+)
+from elitefurretai.rl.opponents import (
+    OpponentPool,
+    SimpleHeuristicBaselineCls,
+    WorkerOpponentFactory,
+)
+from elitefurretai.rl.players import MaxDamagePlayer, RNaDAgent, cleanup_worker_executors
 from elitefurretai.supervised import format_time
-from elitefurretai.supervised.model_archs import FlexibleThreeHeadedModel
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +77,7 @@ logger = logging.getLogger(__name__)
 def initialize_learner(
     config: RNaDConfig,
     agent: RNaDAgent,
-    base_model: FlexibleThreeHeadedModel,
+    base_model: Any,
 ) -> Union[RNaDLearner, PortfolioRNaDLearner]:
     """Create either standard or portfolio learner using shared config knobs."""
     if config.use_portfolio_regularization:
@@ -236,6 +244,513 @@ def get_dead_workers(processes: List[mp.Process], error_queue: MPQueue, verbose:
     return dead_procs
 
 
+def _load_agent_team_sources(
+    agent_team_path: Optional[str],
+) -> Tuple[Optional[str], Optional[List[str]]]:
+    if not agent_team_path:
+        return None, None
+
+    if os.path.isdir(agent_team_path):
+        team_strings: List[str] = []
+        for fname in sorted(os.listdir(agent_team_path)):
+            if not fname.endswith(".txt"):
+                continue
+            with open(os.path.join(agent_team_path, fname)) as f:
+                team_strings.append(f.read())
+        return None, team_strings
+
+    with open(agent_team_path) as f:
+        return f.read(), None
+
+
+def _build_team_supplier(
+    *,
+    team_repo: TeamRepo,
+    battle_format: str,
+    team_subdirectory: Optional[str],
+    fixed_team: Optional[str] = None,
+    team_options: Optional[List[str]] = None,
+) -> Any:
+    def supplier() -> str:
+        if team_options:
+            return team_repo._shuffle_team_order(random.choice(team_options))
+        if fixed_team is not None:
+            return team_repo._shuffle_team_order(fixed_team)
+        return team_repo.sample_team(battle_format, subdirectory=team_subdirectory)
+
+    return supplier
+
+
+class _RustPolicyOpponentPool:
+    def __init__(
+        self,
+        *,
+        main_agent: RNaDAgent,
+        bc_agent: Optional[RNaDAgent],
+        config: RNaDConfig,
+        team_repo: TeamRepo,
+        model_config: Dict[str, Any],
+        feature_set: str,
+        device: str,
+    ) -> None:
+        self.main_agent = main_agent
+        self.bc_agent = bc_agent
+        self.config = config
+        self.team_repo = team_repo
+        self.model_config = model_config
+        self.feature_set = feature_set
+        self.device = device
+        self.curriculum = dict(config.curriculum)
+        self.temperature = config.temperature_at_step(0)
+        self.top_p = config.top_p
+        self._batch_count = 0
+        self._baseline_controllers: Dict[str, SyncBaselineController] = {}
+
+        self._static_policies: Dict[str, SyncPolicyPlayer] = {
+            OpponentPool.SELF_PLAY: self._build_policy(
+                main_agent,
+                OpponentPool.SELF_PLAY,
+            ),
+        }
+        if bc_agent is not None:
+            self._static_policies[OpponentPool.BC_PLAYER] = self._build_policy(
+                bc_agent,
+                OpponentPool.BC_PLAYER,
+            )
+
+        self._loaded_exploiters: Dict[str, RNaDAgent] = {}
+        self._exploiter_cache_order: List[str] = []
+        self._exploiter_policies: Dict[str, SyncPolicyPlayer] = {}
+        self._active_exploiters: List[Tuple[float, str]] = []
+        self._loaded_ghosts: Dict[str, RNaDAgent] = {}
+        self._ghost_cache_order: List[str] = []
+        self._ghost_policies: Dict[str, SyncPolicyPlayer] = {}
+        self._past_models: List[Tuple[int, str]] = []
+        self._refresh_exploiters()
+        self._refresh_ghosts()
+        self._init_baselines()
+
+    def _init_baselines(self) -> None:
+        server_config = ServerConfiguration("", "")
+        account = AccountConfiguration(f"rust-baseline-{random.getrandbits(16):04x}", None)
+        sample_team = self.team_repo.sample_team(
+            self.config.battle_format,
+            subdirectory=self.config.team_pool_path,
+        )
+
+        self._baseline_controllers[OpponentPool.MAX_DAMAGE] = SyncBaselineController(
+            MaxDamagePlayer(
+                battle_format=self.config.battle_format,
+                account_configuration=account,
+                server_configuration=server_config,
+                start_listening=False,
+                team=sample_team,
+            ),
+            OpponentPool.MAX_DAMAGE,
+        )
+        self._baseline_controllers[OpponentPool.RANDOM_BASELINE] = SyncBaselineController(
+            RandomPlayer(
+                battle_format=self.config.battle_format,
+                account_configuration=account,
+                server_configuration=server_config,
+                start_listening=False,
+                team=sample_team,
+            ),
+            OpponentPool.RANDOM_BASELINE,
+        )
+        self._baseline_controllers[OpponentPool.MAX_BASE_POWER_BASELINE] = SyncBaselineController(
+            MaxBasePowerPlayer(
+                battle_format=self.config.battle_format,
+                account_configuration=account,
+                server_configuration=server_config,
+                start_listening=False,
+                team=sample_team,
+            ),
+            OpponentPool.MAX_BASE_POWER_BASELINE,
+        )
+        heuristic_cls = SimpleHeuristicBaselineCls or MaxBasePowerPlayer
+        self._baseline_controllers[OpponentPool.SIMPLE_HEURISTIC_BASELINE] = SyncBaselineController(
+            heuristic_cls(
+                battle_format=self.config.battle_format,
+                account_configuration=account,
+                server_configuration=server_config,
+                start_listening=False,
+                team=sample_team,
+            ),
+            OpponentPool.SIMPLE_HEURISTIC_BASELINE,
+        )
+
+    def _build_policy(
+        self,
+        agent: RNaDAgent,
+        opponent_type: str,
+    ) -> SyncPolicyPlayer:
+        return SyncPolicyPlayer(
+            agent,
+            self.config.battle_format,
+            device=self.device,
+            feature_set=self.feature_set,
+            collect_trajectories=False,
+            probabilistic=True,
+            temperature=self.temperature,
+            top_p=self.top_p,
+            max_battle_steps=self.config.max_battle_steps,
+            opponent_type=opponent_type,
+        )
+
+    def update_curriculum(self, curriculum: Dict[str, float]) -> None:
+        total = float(sum(curriculum.values()))
+        if total <= 0:
+            self.curriculum = {OpponentPool.SELF_PLAY: 1.0}
+            return
+        self.curriculum = {
+            key: float(value) / total for key, value in curriculum.items() if value > 0
+        }
+        if not self.curriculum:
+            self.curriculum = {OpponentPool.SELF_PLAY: 1.0}
+
+    def update_sampling(self, temperature: Optional[float], top_p: Optional[float]) -> None:
+        if temperature is not None:
+            self.temperature = temperature
+        if top_p is not None:
+            self.top_p = top_p
+        for policy in self._all_policies():
+            policy.update_sampling(temperature=temperature, top_p=top_p)
+
+    def sample_opponent(self) -> Tuple[str, str, Any]:
+        self._batch_count += 1
+        if self._batch_count % 10 == 0:
+            self._refresh_exploiters()
+            self._refresh_ghosts()
+
+        roll = random.random()
+        cumulative = 0.0
+        selected_type = OpponentPool.SELF_PLAY
+        for opp_type, weight in self.curriculum.items():
+            cumulative += weight
+            if roll < cumulative:
+                selected_type = opp_type
+                break
+
+        team_text = self.team_repo.sample_team(
+            self.config.battle_format,
+            subdirectory=self.config.team_pool_path,
+        )
+
+        if selected_type == OpponentPool.BC_PLAYER and OpponentPool.BC_PLAYER in self._static_policies:
+            return selected_type, team_text, self._static_policies[OpponentPool.BC_PLAYER]
+        if selected_type == OpponentPool.EXPLOITERS:
+            exploiter_policy = self._sample_exploiter_policy()
+            if exploiter_policy is not None:
+                return selected_type, team_text, exploiter_policy
+        if selected_type == OpponentPool.GHOSTS:
+            ghost_policy = self._sample_ghost_policy()
+            if ghost_policy is not None:
+                return selected_type, team_text, ghost_policy
+        if selected_type in self._baseline_controllers:
+            return selected_type, team_text, self._baseline_controllers[selected_type]
+        return OpponentPool.SELF_PLAY, team_text, self._static_policies[OpponentPool.SELF_PLAY]
+
+    def _all_policies(self) -> List[SyncPolicyPlayer]:
+        return [
+            *self._static_policies.values(),
+            *self._exploiter_policies.values(),
+            *self._ghost_policies.values(),
+        ]
+
+    def _list_compatible_checkpoints(self, directory: str) -> List[str]:
+        if not os.path.exists(directory):
+            return []
+        compatible_paths: List[str] = []
+        for filename in os.listdir(directory):
+            if not filename.endswith(".pt"):
+                continue
+            filepath = os.path.join(directory, filename)
+            if is_checkpoint_compatible_with_model_config(filepath, self.model_config):
+                compatible_paths.append(filepath)
+        return compatible_paths
+
+    def _refresh_exploiters(self) -> None:
+        files = self._list_compatible_checkpoints(self.config.exploiter_models_dir)
+        models = [
+            (os.path.getmtime(filepath), filepath)
+            for filepath in files
+            if os.path.isfile(filepath)
+        ]
+        models.sort(key=lambda item: item[0], reverse=True)
+        self._active_exploiters = models[: self.config.max_exploiter_models]
+
+    def _refresh_ghosts(self) -> None:
+        files = self._list_compatible_checkpoints(self.config.past_models_dir)
+        models: List[Tuple[int, str]] = []
+        for filepath in files:
+            filename = os.path.basename(filepath)
+            try:
+                step = int(filename.split("_step_")[1].split(".pt")[0])
+            except (IndexError, ValueError):
+                step = int(os.path.getmtime(filepath))
+            models.append((step, filepath))
+        models.sort(key=lambda item: item[0], reverse=True)
+        self._past_models = models[: self.config.max_past_models]
+
+    def _get_cached_agent(
+        self,
+        filepath: str,
+        *,
+        loaded: Dict[str, RNaDAgent],
+        cache_order: List[str],
+        max_loaded: int,
+    ) -> RNaDAgent:
+        if filepath in loaded:
+            if filepath in cache_order:
+                cache_order.remove(filepath)
+            cache_order.append(filepath)
+            return loaded[filepath]
+
+        loaded_model = load_agent_from_checkpoint(filepath, self.device)
+        loaded[filepath] = loaded_model
+        cache_order.append(filepath)
+
+        while len(cache_order) > max_loaded:
+            evicted = cache_order.pop(0)
+            loaded.pop(evicted, None)
+
+        return loaded_model
+
+    def _sample_exploiter_policy(self) -> Optional[SyncPolicyPlayer]:
+        if not self._active_exploiters:
+            return None
+        _, filepath = random.choice(self._active_exploiters)
+        agent = self._get_cached_agent(
+            filepath,
+            loaded=self._loaded_exploiters,
+            cache_order=self._exploiter_cache_order,
+            max_loaded=self.config.max_loaded_exploiter_models,
+        )
+        if filepath not in self._exploiter_policies:
+            self._exploiter_policies[filepath] = self._build_policy(
+                agent,
+                OpponentPool.EXPLOITERS,
+            )
+        return self._exploiter_policies[filepath]
+
+    def _sample_ghost_policy(self) -> Optional[SyncPolicyPlayer]:
+        if not self._past_models:
+            return None
+        _, filepath = random.choice(self._past_models)
+        agent = self._get_cached_agent(
+            filepath,
+            loaded=self._loaded_ghosts,
+            cache_order=self._ghost_cache_order,
+            max_loaded=self.config.max_loaded_ghost_models,
+        )
+        if filepath not in self._ghost_policies:
+            self._ghost_policies[filepath] = self._build_policy(
+                agent,
+                OpponentPool.GHOSTS,
+            )
+        return self._ghost_policies[filepath]
+
+
+def _run_rust_worker_loop(
+    *,
+    worker_id: int,
+    agent: RNaDAgent,
+    bc_agent: Optional[RNaDAgent],
+    team_repo: TeamRepo,
+    model: Any,
+    model_config: Dict[str, Any],
+    weight_queue: MPQueue,
+    traj_queue: MPQueue,
+    stop_event: MPEvent,
+    config: RNaDConfig,
+    embedder_feature_set: str,
+    verbose: bool,
+) -> None:
+    worker_process = psutil.Process(os.getpid())
+    worker_process.cpu_percent(interval=None)
+    fixed_agent_team, agent_team_options = _load_agent_team_sources(config.agent_team_path)
+    agent_team_supplier = _build_team_supplier(
+        team_repo=team_repo,
+        battle_format=config.battle_format,
+        team_subdirectory=config.team_pool_path,
+        fixed_team=fixed_agent_team,
+        team_options=agent_team_options,
+    )
+    opponent_team_supplier = _build_team_supplier(
+        team_repo=team_repo,
+        battle_format=config.battle_format,
+        team_subdirectory=config.team_pool_path,
+    )
+    initial_temperature = config.temperature_at_step(0)
+    p1_policy = SyncPolicyPlayer(
+        agent,
+        config.battle_format,
+        device="cpu",
+        feature_set=embedder_feature_set,
+        collect_trajectories=True,
+        probabilistic=True,
+        temperature=initial_temperature,
+        top_p=config.top_p,
+        max_battle_steps=config.max_battle_steps,
+        opponent_type=OpponentPool.SELF_PLAY,
+    )
+    opponent_pool = _RustPolicyOpponentPool(
+        main_agent=agent,
+        bc_agent=bc_agent,
+        config=config,
+        team_repo=team_repo,
+        model_config=model_config,
+        feature_set=embedder_feature_set,
+        device="cpu",
+    )
+
+    def battle_setup(_battle_index: int) -> Dict[str, Any]:
+        opponent_type, p2_team_text, sampled_p2_policy = opponent_pool.sample_opponent()
+        return {
+            "p1_policy": p1_policy,
+            "p2_policy": sampled_p2_policy,
+            "p1_team_text": agent_team_supplier(),
+            "p2_team_text": p2_team_text,
+            "opponent_type": opponent_type,
+        }
+
+    max_concurrent_battles = config.rust_max_concurrent_battles_per_worker
+    battles_per_batch = max(1, max_concurrent_battles * config.num_battles_per_pair)
+    driver = SyncRustBattleDriver(
+        format_id=config.battle_format,
+        p1_team=agent_team_supplier(),
+        p2_team=opponent_team_supplier(),
+        battle_tag_prefix=f"rust-worker-{worker_id}",
+        collect_rollouts=False,
+        feature_set=embedder_feature_set,
+        max_turns_per_battle=max(100, config.max_battle_steps * 2),
+        max_stalled_steps_per_battle=max(25, config.max_battle_steps // 2),
+        p1_policy=p1_policy,
+        p1_team_supplier=agent_team_supplier,
+        p2_team_supplier=opponent_team_supplier,
+        battle_setup_callback=battle_setup,
+    )
+    logger.info(
+        "[MPWorker %d][Rust] Startup: logical_cpus=%d cpu_budget_per_worker=%d players_per_worker=%d max_concurrent_battles=%d battles_per_batch=%d torch_threads=%d",
+        worker_id,
+        os.cpu_count() or 1,
+        config.cpu_budget_per_worker,
+        config.players_per_worker,
+        max_concurrent_battles,
+        battles_per_batch,
+        torch.get_num_threads(),
+    )
+    batch_index = 0
+    consecutive_zero_completion_batches = 0
+    last_weight_check = time.time()
+    total_completed_battles = 0
+    total_truncated_battles = 0
+
+    while not stop_event.is_set():
+        batch_index += 1
+        if time.time() - last_weight_check > 1.0:
+            try:
+                while not weight_queue.empty():
+                    incoming_payload = weight_queue.get_nowait()
+                    if isinstance(incoming_payload, dict) and "weights" in incoming_payload:
+                        model.load_state_dict(incoming_payload["weights"])
+                        opponent_pool.update_curriculum(
+                            incoming_payload.get("curriculum", opponent_pool.curriculum)
+                        )
+                        p1_policy.update_sampling(
+                            temperature=incoming_payload.get("temperature"),
+                            top_p=incoming_payload.get("top_p"),
+                        )
+                        opponent_pool.update_sampling(
+                            temperature=incoming_payload.get("temperature"),
+                            top_p=incoming_payload.get("top_p"),
+                        )
+                    else:
+                        model.load_state_dict(incoming_payload)
+            except Exception:
+                pass
+            last_weight_check = time.time()
+
+        batch_start = time.time()
+        stats = driver.run(
+            total_battles=battles_per_batch,
+            max_concurrent=max_concurrent_battles,
+        )
+        completed_trajectories = driver.consume_completed_trajectories()
+        for trajectory in completed_trajectories:
+            traj_queue.put(trajectory)
+
+        if completed_trajectories:
+            consecutive_zero_completion_batches = 0
+        else:
+            consecutive_zero_completion_batches += 1
+
+        if verbose:
+            logger.debug(
+                "[MPWorker %d][Rust] Batch %d: %d battles in %.2fs (%.2f b/s) | Sent %d trajectories | Truncated %d",
+                worker_id,
+                batch_index,
+                stats.completed_battles,
+                time.time() - batch_start,
+                stats.battles_per_second,
+                len(completed_trajectories),
+                stats.truncated_battles,
+            )
+
+        total_completed_battles += stats.completed_battles
+        total_truncated_battles += stats.truncated_battles
+        batch_truncation_rate = (
+            stats.truncated_battles / stats.completed_battles if stats.completed_battles > 0 else 0.0
+        )
+        cumulative_truncation_rate = (
+            total_truncated_battles / total_completed_battles if total_completed_battles > 0 else 0.0
+        )
+        worker_cpu_pct = worker_process.cpu_percent(interval=None)
+        system_cpu_pct = psutil.cpu_percent(interval=None)
+        worker_rss_gb = worker_process.memory_info().rss / (1024 ** 3)
+        effective_trajectory_yield = (
+            len(completed_trajectories) / stats.completed_battles if stats.completed_battles > 0 else 0.0
+        )
+        logger.info(
+            "[MPWorker %d][Rust] Batch %d summary: completed=%d truncated=%d batch_trunc_rate=%.3f cumulative_completed=%d cumulative_truncated=%d cumulative_trunc_rate=%.3f sent=%d",
+            worker_id,
+            batch_index,
+            stats.completed_battles,
+            stats.truncated_battles,
+            batch_truncation_rate,
+            total_completed_battles,
+            total_truncated_battles,
+            cumulative_truncation_rate,
+            len(completed_trajectories),
+        )
+        logger.info(
+            "[MPWorker %d][Rust] Batch %d perf: duration=%.2fs concurrency=%d battles_per_batch=%d non_truncated=%d non_truncated_bps=%.2f decision_rate=%.2f effective_yield=%.3f worker_cpu_pct=%.1f system_cpu_pct=%.1f threads=%d rss_gb=%.2f",
+            worker_id,
+            batch_index,
+            stats.duration_seconds,
+            max_concurrent_battles,
+            battles_per_batch,
+            stats.non_truncated_battles,
+            stats.non_truncated_battles_per_second,
+            stats.decisions_per_second,
+            effective_trajectory_yield,
+            worker_cpu_pct,
+            system_cpu_pct,
+            worker_process.num_threads(),
+            worker_rss_gb,
+        )
+
+        if consecutive_zero_completion_batches >= 5:
+            raise RuntimeError(
+                "Rust backend worker entered sustained zero-completion state "
+                f"({consecutive_zero_completion_batches} consecutive batches)."
+            )
+
+        if batch_index % 10 == 0:
+            gc.collect()
+
+
 def mp_worker_process(
     worker_id: int,
     server_port: int,
@@ -283,6 +798,12 @@ def mp_worker_process(
             return f"{mem_bytes / (1024 * 1024 * 1024):.0f}GB"
 
     try:
+        if not logging.getLogger().handlers:
+            logging.basicConfig(
+                level=logging.INFO,
+                format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+                datefmt="%Y-%m-%d %H:%M:%S",
+            )
         suppress_third_party_warnings(suppress_pydantic_field_warnings=True)
 
         battle_format = config.battle_format
@@ -373,6 +894,25 @@ def mp_worker_process(
         if verbose:
             logger.debug("[MPWorker %d] Loading teams from %s... Memory: %s", worker_id, team_pool_path, get_memory_usage_mb())
         team_repo = TeamRepo(team_pool_path)
+
+        if config.battle_backend == RUST_ENGINE_BACKEND:
+            if verbose:
+                logger.debug("[MPWorker %d] Starting Rust engine worker loop", worker_id)
+            _run_rust_worker_loop(
+                worker_id=worker_id,
+                agent=agent,
+                bc_agent=bc_agent,
+                team_repo=team_repo,
+                model=model,
+                model_config=model_config,
+                weight_queue=weight_queue,
+                traj_queue=traj_queue,
+                stop_event=stop_event,
+                config=config,
+                embedder_feature_set=embedder_feature_set,
+                verbose=verbose,
+            )
+            return
 
         # Set up asyncio event loop for this process
         loop = asyncio.new_event_loop()
@@ -858,13 +1398,16 @@ def main():
     config.verify()
     logger.info("Loaded config from %s, using device: %s... Loading servers", args.config, config.device)
 
-    # Launch Showdown servers
-    server_processes = launch_showdown_servers(config.num_servers, config.showdown_start_port)
+    server_processes: List[subprocess.Popen] = []
+    if config.battle_backend != RUST_ENGINE_BACKEND:
+        server_processes = launch_showdown_servers(config.num_servers, config.showdown_start_port)
+    else:
+        logger.info("Using Rust battle backend; skipping Showdown server launch")
 
     # Optionally auto-launch external vgc-bench runners (isolated environment)
     external_runner_processes: List[subprocess.Popen] = []
     external_runner_log_files: List[TextIO] = []
-    if config.auto_launch_external_vgcbench:
+    if config.auto_launch_external_vgcbench and config.battle_backend != RUST_ENGINE_BACKEND:
         server_ports = [
             config.showdown_start_port + i for i in range(config.num_servers)
         ]
@@ -872,6 +1415,8 @@ def main():
             external_runner_processes,
             external_runner_log_files,
         ) = launch_external_vgcbench_runners(config, server_ports)
+    elif config.auto_launch_external_vgcbench:
+        logger.warning("Ignoring external vgc-bench auto-launch because the Rust backend does not use Showdown servers")
 
     # Generate unique run ID to avoid stale-account collisions on Showdown server.
     # Include date + high-resolution random bits so rapid restarts don't reuse IDs.
@@ -922,13 +1467,17 @@ def main():
     # ==================== START WORKERS ====================
     # Workers generate training data by playing battles against opponent pool
     # Allocate ports for all workers
-    worker_ports, server_loads = allocate_server_ports(
-        config.num_workers,
-        config.players_per_worker,  # Number of concurrent players each worker runs
-        config.num_servers,
-        config.max_players_per_server,
-        config.showdown_start_port,
-    )
+    if config.battle_backend == RUST_ENGINE_BACKEND:
+        worker_ports = [0 for _ in range(config.num_workers)]
+        server_loads: List[int] = []
+    else:
+        worker_ports, server_loads = allocate_server_ports(
+            config.num_workers,
+            config.players_per_worker,  # Number of concurrent players each worker runs
+            config.num_servers,
+            config.max_players_per_server,
+            config.showdown_start_port,
+        )
 
     # Create multiprocessing queues
     mp_traj_queue: MPQueue = MPQueue(maxsize=1024)
@@ -961,17 +1510,22 @@ def main():
         processes.append(p)
         logger.info("Started multiprocessing worker %d (PID: %s) on port %d", i, p.pid, server_port)
 
-    logger.info("Server allocation (players per server):")
-    for idx, load in enumerate(server_loads):
-        port = config.showdown_start_port + idx
-        cap = config.max_players_per_server
-        logger.info("  Port %d: %d/%d players", port, load, cap)
+    if server_loads:
+        logger.info("Server allocation (players per server):")
+        for idx, load in enumerate(server_loads):
+            port = config.showdown_start_port + idx
+            cap = config.max_players_per_server
+            logger.info("  Port %d: %d/%d players", port, load, cap)
 
     # ==================== MAIN TRAINING LOOP ====================
     # Collect trajectories from workers, batch them, and perform policy updates
     trajectories = []  # Buffer to accumulate trajectories before training
     updates = start_step  # Current training step (may be >0 if resumed from checkpoint)
     total_battles = 0  # Track total number of battles completed across all workers
+    total_received_trajectories = 0
+    total_received_steps = 0
+    total_learner_trajectories = 0
+    total_learner_steps = 0
 
     # Timing breakdown
     time_collecting_battles = 0.0
@@ -1003,6 +1557,11 @@ def main():
 
                 trajectories.append(traj)
                 total_battles += 1  # Each trajectory represents one completed battle
+                total_received_trajectories += 1
+                if isinstance(traj, dict) and "steps" in traj:
+                    total_received_steps += len(traj["steps"])
+                else:
+                    total_received_steps += len(traj)
 
                 # Track win rate by opponent type (new trajectory format includes metadata)
                 # These rolling results are consumed by OpponentPool.update_curriculum().
@@ -1027,7 +1586,16 @@ def main():
             # Once we've collected enough trajectories, train the model
             if len(trajectories) >= config.train_batch_size:
                 # Collate trajectories into padded batches (handles variable length sequences)
-                batch, _ = collate_trajectories(trajectories, config.device, config.gamma, config.gae_lambda, max_seq_len=40)
+                batch, _ = collate_trajectories(
+                    trajectories,
+                    config.device,
+                    config.gamma,
+                    config.gae_lambda,
+                    max_seq_len=config.max_seq_len,
+                )
+                learner_steps_this_update = int(batch["padding_mask"].sum().item())
+                total_learner_steps += learner_steps_this_update
+                total_learner_trajectories += len(trajectories)
 
                 # Execute one RNaD policy update (PPO + KL regularization vs reference)
                 training_start = time.time()
@@ -1041,21 +1609,49 @@ def main():
                 last_update_time = current_time
 
                 # ===== LOG TRAINING METRICS =====
+                total_time = time.time() - start
+                metrics['update_step'] = updates
+                metrics['total_battles'] = total_battles
+                metrics['battles_per_second'] = total_battles / total_time
+                metrics['received_trajectories_per_second'] = total_received_trajectories / total_time
+                metrics['received_steps_per_second'] = total_received_steps / total_time
+                metrics['learner_trajectories_per_second'] = total_learner_trajectories / total_time
+                metrics['learner_steps_per_second'] = total_learner_steps / total_time
+                metrics['learner_steps_this_update'] = learner_steps_this_update
+                metrics['time_per_update_seconds'] = time_per_update
+                metrics['temperature'] = config.temperature_at_step(updates)
+                metrics.update(opponent_pool.get_training_metrics())
+
+                if total_time > 0:
+                    metrics['time_collecting_battles_pct'] = (time_collecting_battles / total_time) * 100
+                    metrics['time_training_pct'] = (time_training / total_time) * 100
+                    metrics['time_broadcasting_pct'] = (time_broadcasting / total_time) * 100
+
+                # Build win rate string for console output
+                win_rate_stats = opponent_pool.get_win_rate_stats()
+                win_rate_str = " | ".join([
+                    f"{opp_type}: {wr * 100:.1f}%"
+                    for opp_type, wr in win_rate_stats.items()
+                    if len(opponent_pool.win_rate_tracking.get(opp_type, [])) > 0
+                ])
+                if win_rate_str:
+                    win_rate_str = f" | Win rates: {win_rate_str}"
+
+                logger.info(
+                    "Update %d: Loss=%.4f, Policy=%.4f, Value=%.4f, RNaD=%.4f | "
+                    "Total Battles=%d in %s (%.2f b/s) | Learner Steps=%d (%.2f steps/s) | Learner Trajectories=%d (%.2f traj/s)%s",
+                    updates, metrics['loss'], metrics['policy_loss'],
+                    metrics['value_loss'], metrics['rnad_loss'],
+                    total_battles, format_time(total_time),
+                    total_battles / total_time,
+                    total_learner_steps,
+                    total_learner_steps / total_time,
+                    total_learner_trajectories,
+                    total_learner_trajectories / total_time,
+                    win_rate_str,
+                )
+
                 if config.use_wandb and updates % config.log_interval == 0:
-                    metrics['update_step'] = updates
-                    metrics['total_battles'] = total_battles
-                    metrics['battles_per_second'] = total_battles / (time.time() - start)
-                    metrics['time_per_update_seconds'] = time_per_update
-                    metrics['temperature'] = config.temperature_at_step(updates)
-                    metrics.update(opponent_pool.get_training_metrics())
-
-                    # Timing breakdown
-                    total_time = time.time() - start
-                    if total_time > 0:
-                        metrics['time_collecting_battles_pct'] = (time_collecting_battles / total_time) * 100
-                        metrics['time_training_pct'] = (time_training / total_time) * 100
-                        metrics['time_broadcasting_pct'] = (time_broadcasting / total_time) * 100
-
                     # Memory monitoring (detect leaks / approaching OOM)
                     proc = psutil.Process()
                     metrics['mem_rss_gb'] = proc.memory_info().rss / (1024 ** 3)
@@ -1091,26 +1687,6 @@ def main():
                                 metrics[f'portfolio_selection_pct_ref_{ref_idx}'] = (count / total_selections) * 100
 
                     wandb.log(metrics)
-
-                    # Build win rate string for console output
-                    win_rate_stats = opponent_pool.get_win_rate_stats()
-                    win_rate_str = " | ".join([
-                        f"{opp_type}: {wr * 100:.1f}%"
-                        for opp_type, wr in win_rate_stats.items()
-                        if len(opponent_pool.win_rate_tracking.get(opp_type, [])) > 0
-                    ])
-                    if win_rate_str:
-                        win_rate_str = f" | Win rates: {win_rate_str}"
-
-                    logger.info(
-                        "Update %d: Loss=%.4f, Policy=%.4f, Value=%.4f, RNaD=%.4f | "
-                        "Total Battles=%d in %s (%.2f b/s)%s",
-                        updates, metrics['loss'], metrics['policy_loss'],
-                        metrics['value_loss'], metrics['rnad_loss'],
-                        total_battles, format_time(time.time() - start),
-                        total_battles / (time.time() - start),
-                        win_rate_str,
-                    )
 
                 # ===== UPDATE REFERENCE MODEL =====
                 # Reference model is used for KL regularization in RNaD
@@ -1241,7 +1817,8 @@ def main():
             external_runner_processes,
             external_runner_log_files,
         )
-        shutdown_showdown_servers(server_processes)
+        if server_processes:
+            shutdown_showdown_servers(server_processes)
 
 
 if __name__ == "__main__":

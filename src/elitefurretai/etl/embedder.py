@@ -18,6 +18,7 @@ Key responsibilities:
 import logging
 from typing import Any, Dict, List, Optional
 
+import numpy as np
 from poke_env.battle import (
     DoubleBattle,
     Effect,
@@ -325,6 +326,21 @@ class Embedder:
             )
         return [float(features[key]) for key in self._feature_names]
 
+    def embed_to_array(
+        self, battle: DoubleBattle, bi: Optional["BattleInference"] = None
+    ) -> np.ndarray:
+        """Embed battle state directly to a NumPy array.
+
+        This avoids an intermediate Python list when the caller immediately
+        hands the result back to NumPy or PyTorch.
+        """
+        features = self.embed(battle, bi)
+        return np.fromiter(
+            (float(features[key]) for key in self._feature_names),
+            dtype=np.float32,
+            count=len(self._feature_names),
+        )
+
     def embed_to_vector(
         self, battle: DoubleBattle, bi: Optional["BattleInference"] = None
     ) -> List[float]:
@@ -340,9 +356,7 @@ class Embedder:
         Returns:
             List of floats representing the embedded state
         """
-        features = self.embed(battle, bi)
-        # Use cached feature names (already sorted at init time)
-        return [float(features[key]) for key in self._feature_names]
+        return self.embed_to_array(battle, bi).tolist()
 
     def _simplify_features(self, features: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -407,7 +421,7 @@ class Embedder:
         )
 
         # Now do it for the opponent
-        num_fainted, hp_frac, total_hp, num_status = 0, 0, 0, 0
+        num_fainted, hp_frac, total_hp, num_status = 0, 0., 0, 0
         for mon in fill_with_none(list(battle.opponent_team.values()), 4):
             if mon is None:
                 hp_frac += 1

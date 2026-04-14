@@ -23,7 +23,11 @@ from poke_env.stats import compute_raw_stats
 
 from elitefurretai.etl import Embedder
 from elitefurretai.etl.encoder import MDBO
-from elitefurretai.rl.fast_action_mask import fast_get_action_mask
+from elitefurretai.rl.fast_action_mask import (
+    fast_get_action_mask,
+    get_valid_targets_for_request_move,
+    slot_is_commanding,
+)
 from elitefurretai.supervised.model_archs import (
     FlexibleThreeHeadedModel,
     TransformerThreeHeadedModel,
@@ -99,8 +103,9 @@ class BatchInferencePlayer(Player):
         )
         self.queue: asyncio.Queue = create_in_poke_loop(asyncio.Queue)
         self.hidden_states: Dict[str, Any] = {}  # (h,c) for LSTM or context tensor for Transformer
+        underlying_model = getattr(model, "model", model)
         self._is_transformer: bool = isinstance(
-            model.model if isinstance(model, RNaDAgent) else model,
+            underlying_model,
             TransformerThreeHeadedModel,
         )
         self._inference_task: Optional[asyncio.Task] = None
@@ -120,6 +125,12 @@ class BatchInferencePlayer(Player):
         self.inference_request_timeout_s = 8.0
 
         super().__init__(accept_open_team_sheet=accept_open_team_sheet, **kwargs)
+
+    def _embed_battle_state(self, battle: Any) -> np.ndarray:
+        embed_to_array = getattr(self.embedder, "embed_to_array", None)
+        if callable(embed_to_array):
+            return cast(np.ndarray, embed_to_array(cast(DoubleBattle, battle)))
+        return np.asarray(self.embedder.embed_to_vector(cast(DoubleBattle, battle)), dtype=np.float32)
 
     def clear_completed_trajectories(self) -> None:
         self.completed_trajectories.clear()
@@ -564,7 +575,7 @@ class BatchInferencePlayer(Player):
             return "/forfeit" if self.trajectory_queue is not None else DefaultBattleOrder()
 
         try:
-            state = self.embedder.feature_dict_to_vector(self.embedder.embed(battle))
+            state = self._embed_battle_state(battle)
         except Exception:
             if battle.teampreview:
                 return "/team 1234"
@@ -977,6 +988,10 @@ class MaxDamagePlayer(Player):
                 slot_orders.append(PassBattleOrder())
                 continue
 
+            if slot_is_commanding(battle, slot, battle.last_request):
+                slot_orders.append(PassBattleOrder())
+                continue
+
             candidates = self._score_available_actions(battle, slot, used_switches)
 
             if candidates:
@@ -1056,13 +1071,37 @@ class MaxDamagePlayer(Player):
     def _score_available_actions(
         self, battle: DoubleBattle, slot: int, used_switches: Set[str]
     ) -> List[Tuple[BattleOrder, float]]:
+        if slot_is_commanding(battle, slot, battle.last_request):
+            return []
+
         available_moves = battle.available_moves[slot] if slot < len(battle.available_moves) else []
         active_mon = battle.active_pokemon[slot] if slot < len(battle.active_pokemon) else None
         candidates: List[Tuple[BattleOrder, float]] = []
 
+        request_moves: List[Dict[str, Any]] = []
+        if battle.last_request and slot < len(battle.last_request.get("active", [])):
+            raw_request_moves = battle.last_request["active"][slot].get("moves", [])
+            if isinstance(raw_request_moves, list):
+                request_moves = [move for move in raw_request_moves if isinstance(move, dict)]
+
+        request_move_by_id = {
+            move["id"]: move
+            for move in request_moves
+            if isinstance(move.get("id"), str)
+            and not move.get("disabled", False)
+            and move.get("pp", 1) > 0
+        }
+
+        if request_move_by_id:
+            available_moves = [move for move in available_moves if move.id in request_move_by_id]
+
         if available_moves and active_mon is not None:
             for move in available_moves:
-                targets = battle.get_possible_showdown_targets(move, active_mon)
+                request_move = request_move_by_id.get(move.id)
+                if request_move is not None:
+                    targets = get_valid_targets_for_request_move(battle, slot, request_move)
+                else:
+                    targets = battle.get_possible_showdown_targets(move, active_mon)
 
                 for target in targets:
                     if target < 0:
@@ -1117,7 +1156,11 @@ class MaxDamagePlayer(Player):
 
             if not candidates and available_moves:
                 move = available_moves[0]
-                targets = battle.get_possible_showdown_targets(move, active_mon)
+                request_move = request_move_by_id.get(move.id)
+                if request_move is not None:
+                    targets = get_valid_targets_for_request_move(battle, slot, request_move)
+                else:
+                    targets = battle.get_possible_showdown_targets(move, active_mon)
                 opp_targets = [t for t in targets if t > 0]
                 target = opp_targets[0] if opp_targets else (0 if 0 in targets else targets[0] if targets else 0)
                 candidates.append(

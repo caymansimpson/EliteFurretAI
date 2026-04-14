@@ -10,16 +10,16 @@ from poke_env.player import Player
 from poke_env.player.battle_order import DefaultBattleOrder
 from poke_env.ps_client import AccountConfiguration, ServerConfiguration
 
+from elitefurretai.engine.showdown_server_manager import (
+    launch_showdown_servers,
+    shutdown_showdown_servers,
+)
 from elitefurretai.etl import Embedder
 from elitefurretai.etl.encoder import MDBO
 from elitefurretai.inference.inference_utils import battle_to_str
 from elitefurretai.rl.fast_action_mask import fast_get_action_mask
 from elitefurretai.rl.model_io import load_agent_from_checkpoint
 from elitefurretai.rl.players import RNaDAgent
-from elitefurretai.rl.server_manager import (
-    launch_showdown_servers,
-    shutdown_showdown_servers,
-)
 
 
 class VerboseModelPlayer(Player):

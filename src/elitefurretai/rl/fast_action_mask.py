@@ -19,7 +19,9 @@ The key insight is that we can construct the set of valid action indices by:
 from typing import Dict, List, Optional, Set
 
 import numpy as np
+from poke_env.battle import Field, PokemonType
 from poke_env.battle.double_battle import DoubleBattle
+from poke_env.battle.effect import Effect
 
 from elitefurretai.etl.encoder import MDBO
 
@@ -34,15 +36,115 @@ MOVE_ACTION_BASE = 0  # Actions 0-39 are moves
 SWITCH_ACTION_BASE = 40  # Actions 40-43 are switches
 PASS_ACTION = 44  # Action 44 is pass
 
-# Target mapping: position -> offset in action encoding
+# Target mapping: poke-env/Showdown position -> offset in action encoding.
+# The action encoding itself is fixed by MDBO and uses the literal target values
+# that appear in Showdown choice strings.
 TARGET_TO_OFFSET = {
-    -2: 0,  # Opponent slot 1
-    -1: 1,  # Opponent slot 2
-    0: 2,  # No target / self
-    1: 3,  # Ally slot 1 (self or ally)
-    2: 4,  # Ally slot 2 (ally)
+    DoubleBattle.POKEMON_2_POSITION: 0,
+    DoubleBattle.POKEMON_1_POSITION: 1,
+    DoubleBattle.EMPTY_TARGET_POSITION: 2,
+    DoubleBattle.OPPONENT_1_POSITION: 3,
+    DoubleBattle.OPPONENT_2_POSITION: 4,
 }
 
+
+def slot_is_commanding(
+    battle: DoubleBattle,
+    slot: int,
+    request: Optional[Dict] = None,
+) -> bool:
+    """Return whether the active slot is currently under Commander.
+
+    In the Showdown websocket path, a commanded Tatsugiri can still leak move data
+    through the request/available_moves surfaces. Prefer the battle-state effect when
+    it is available, then fall back to request metadata if present.
+    """
+    active_pokemon = getattr(battle, "active_pokemon", [])
+    if slot < len(active_pokemon):
+        active_mon = active_pokemon[slot]
+        effects = getattr(active_mon, "effects", None) if active_mon is not None else None
+        if effects is not None and Effect.COMMANDER in effects:
+            return True
+
+    if not request:
+        return False
+
+    active_entries = request.get("active", [])
+    if slot < len(active_entries) and bool(active_entries[slot].get("commanding")):
+        return True
+
+    side_pokemon = request.get("side", {}).get("pokemon", [])
+    active_side_entries = [mon for mon in side_pokemon if mon.get("active", False)]
+    if slot < len(active_side_entries) and bool(active_side_entries[slot].get("commanding")):
+        return True
+
+    return False
+
+
+def _is_stellar_terastarstorm_user(battle: DoubleBattle, slot: int) -> bool:
+    active_pokemon = getattr(battle, "active_pokemon", [])
+    if slot >= len(active_pokemon):
+        return False
+
+    active_mon = active_pokemon[slot]
+    if active_mon is None:
+        return False
+
+    if getattr(active_mon, "is_terastallized", False) and getattr(active_mon, "tera_type", None) == PokemonType.STELLAR:
+        return True
+
+    if getattr(active_mon, "type_1", None) == PokemonType.STELLAR:
+        return True
+
+    if getattr(active_mon, "type_2", None) == PokemonType.STELLAR:
+        return True
+
+    species = getattr(active_mon, "species", None)
+    if isinstance(species, str) and species.lower() == "terapagosstellar":
+        return True
+
+    return False
+
+
+def _effective_target_type(
+    battle: DoubleBattle,
+    slot: int,
+    target_type: str,
+    move_info: Optional[Dict] = None,
+) -> str:
+    move_id = ""
+    if isinstance(move_info, dict):
+        raw_move_id = move_info.get("id")
+        if isinstance(raw_move_id, str):
+            move_id = raw_move_id
+
+    if move_id == "terastarstorm" and _is_stellar_terastarstorm_user(battle, slot):
+        return "allAdjacentFoes"
+
+    if move_id == "expandingforce" and Field.PSYCHIC_TERRAIN in battle.fields:
+        active_pokemon = getattr(battle, "active_pokemon", [])
+        if slot < len(active_pokemon):
+            active_mon = active_pokemon[slot]
+            if active_mon is not None and battle.is_grounded(active_mon):
+                return "allAdjacentFoes"
+
+    return target_type
+
+
+def get_valid_targets_for_request_move(
+    battle: DoubleBattle,
+    slot: int,
+    move_info: Dict,
+) -> List[int]:
+    target_type = move_info.get("target", "normal")
+    if not isinstance(target_type, str):
+        target_type = "normal"
+    return _get_valid_targets_for_move(
+        battle,
+        slot,
+        target_type,
+        move_info=move_info,
+    )
 
 def get_valid_slot_actions(
     battle: DoubleBattle,
@@ -61,6 +163,10 @@ def get_valid_slot_actions(
         Set of valid action indices (0-44) for this slot
     """
     valid_actions: Set[int] = set()
+
+    if slot_is_commanding(battle, slot, request):
+        valid_actions.add(PASS_ACTION)
+        return valid_actions
 
     # Handle force switch
     if battle.force_switch[slot]:
@@ -102,8 +208,7 @@ def get_valid_slot_actions(
             continue
 
         # Get valid targets for this move
-        target_type = move_info.get("target", "normal")
-        valid_targets = _get_valid_targets_for_move(battle, slot, target_type)
+        valid_targets = get_valid_targets_for_request_move(battle, slot, move_info)
 
         for target in valid_targets:
             target_offset = TARGET_TO_OFFSET.get(target, 2)
@@ -192,19 +297,30 @@ def _get_valid_targets_for_move(
     battle: DoubleBattle,
     slot: int,
     target_type: str,
+    move_info: Optional[Dict] = None,
 ) -> List[int]:
     """
     Get valid target positions for a move based on its target type.
 
-    Target positions in Showdown:
-    - -2: Opponent slot 1 (their left)
-    - -1: Opponent slot 2 (their right)
+    Target positions in poke-env / Showdown:
+    - -1: Ally slot 1 (our left)
+    - -2: Ally slot 2 (our right)
     -  0: No target / self-targeting
-    -  1: Ally slot 1 (our left)
-    -  2: Ally slot 2 (our right)
+    -  1: Opponent slot 1 (their left)
+    -  2: Opponent slot 2 (their right)
     """
+    target_type = _effective_target_type(battle, slot, target_type, move_info)
+
     opp_active = battle.opponent_active_pokemon
     ally_active = battle.active_pokemon
+    opponent_positions = [
+        DoubleBattle.OPPONENT_1_POSITION,
+        DoubleBattle.OPPONENT_2_POSITION,
+    ]
+    ally_positions = [
+        DoubleBattle.POKEMON_1_POSITION,
+        DoubleBattle.POKEMON_2_POSITION,
+    ]
 
     # Determine which opponent slots are occupied AND not fainted
     # A Pokemon can be in opponent_active_pokemon but fainted (awaiting switch)
@@ -240,9 +356,9 @@ def _get_valid_targets_for_move(
         # Must target an opponent - single target moves REQUIRE explicit target
         targets = []
         if opp_1_exists:
-            targets.append(-2)
+            targets.append(opponent_positions[0])
         if opp_2_exists:
-            targets.append(-1)
+            targets.append(opponent_positions[1])
         # NOTE: Do NOT add 0 (no-target) for adjacentFoe moves!
         # Even if only one opponent exists, Showdown still requires explicit target
         # for single-target moves like Wild Charge, Thunderbolt, etc.
@@ -254,13 +370,13 @@ def _get_valid_targets_for_move(
         # These are single-target moves that REQUIRE explicit target selection
         targets = []
         if opp_1_exists:
-            targets.append(-2)
+            targets.append(opponent_positions[0])
         if opp_2_exists:
-            targets.append(-1)
+            targets.append(opponent_positions[1])
         # Can also target ally (but not self)
         other_slot = 1 - slot
         if ally_exists[other_slot]:
-            targets.append(1 + other_slot)  # Convert to 1-indexed position
+            targets.append(ally_positions[other_slot])
         # NOTE: For normal/any moves, we MUST have at least one valid target.
         # If no valid targets exist (all fainted), return empty list - the move
         # should not be allowed. Returning [0] caused "Invalid target for Defog".
@@ -268,17 +384,17 @@ def _get_valid_targets_for_move(
 
     elif target_type == "adjacentAllyOrSelf":
         # Target self or ally
-        targets = [1 + slot]  # Self position (1-indexed)
+        targets = [ally_positions[slot]]
         other_slot = 1 - slot
         if ally_exists[other_slot]:
-            targets.append(1 + other_slot)
+            targets.append(ally_positions[other_slot])
         return targets
 
     elif target_type == "adjacentAlly":
         # Target ally only (not self)
         other_slot = 1 - slot
         if ally_exists[other_slot]:
-            return [1 + other_slot]
+            return [ally_positions[other_slot]]
         return [0]  # Fallback
 
     else:

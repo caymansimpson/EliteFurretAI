@@ -606,6 +606,10 @@ class OpponentPool:
         if forfeited:
             self.total_forfeits_tracked += 1
 
+    def update_win_rate(self, opponent_type: str, won: bool) -> None:
+        """Backward-compatible wrapper used by older tests and callers."""
+        self.record_battle_result(opponent_type=opponent_type, won=won)
+
     def get_win_rate_stats(self, window: int = 100) -> Dict[str, float]:
         stats: Dict[str, float] = {}
         for opp_type, results in self.win_rate_tracking.items():

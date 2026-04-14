@@ -1,0 +1,142 @@
+# ===== RNaD related =====
+clip_range: 0.2
+ent_coef: 0.02
+ent_coef_end: 0.001
+gae_lambda: 0.95
+gamma: 1
+max_grad_norm: 0.5
+rnad_alpha: 0.05
+vf_coef: 0.5
+use_portfolio_regularization: true
+portfolio_update_strategy: recent
+
+# ===== Exploration =====
+temperature_start: 1.0
+temperature_end: 0.5
+temperature_anneal_steps: 50000
+top_p: 0.95
+
+# ===== Distributional Value Head =====
+num_value_bins: 51
+value_min: -1.0
+value_max: 1.0
+
+# ===== Number Bank Embeddings =====
+use_number_banks: true
+number_bank_hp_bins: 100
+number_bank_stat_bins: 600
+number_bank_power_bins: 250
+number_bank_embedding_dim: 16
+
+# ===== Transformer Architecture =====
+use_transformer: true
+transformer_layers: 7
+transformer_heads: 16
+transformer_ff_dim: 2048
+transformer_dropout: 0.1
+use_decision_tokens: true
+use_causal_mask: true
+
+# ===== Optimizer =====
+optimizer:
+  type: adamw
+  weight_decay: 0.0001
+  warmup_steps: 100
+  schedule: cosine
+  param_groups:
+    backbone:
+      lr: 0.00001
+      weight_decay: 0.0001
+    heads:
+      lr: 0.00003
+      weight_decay: 0.0
+
+# ===== Training related =====
+embedder_feature_set: full
+initialize_path: data/models/supervised/curious-darkness-77_best.pt
+resume_from: null
+max_updates: 1
+save_dir: data/models/rl/worker_sweep_nw6
+train_batch_size: 256
+train_exploiters: false
+
+# ===== Architecture related (matching curious-darkness-77) =====
+early_layers: [2048, 1024, 1024]
+late_layers: [1024, 1024]
+lstm_layers: 4
+lstm_hidden_size: 512
+dropout: 0.2
+early_attention_heads: 16
+late_attention_heads: 32
+grouped_encoder_hidden_dim: 512
+grouped_encoder_aggregated_dim: 4096
+pokemon_attention_heads: 16
+teampreview_head_layers: [512, 256]
+teampreview_head_dropout: 0.15
+teampreview_attention_heads: 2
+turn_head_layers: [1024, 512, 512]
+max_seq_len: 40
+
+# ===== Curriculum / Opponent related =====
+battle_format: gen9vgc2024regg
+base_team_path: data/teams
+team_pool_path: constrained
+agent_team_path: data/teams/gen9vgc2024regg/constrained/naicchampion.txt
+bc_action_path: data/models/supervised/curious-darkness-77_best.pt
+bc_teampreview_path: data/models/supervised/curious-darkness-77_best.pt
+bc_win_path: data/models/supervised/curious-darkness-77_best.pt
+vgc_bench_checkpoint_path: data/models/vgc-bench-sb3-model.zip
+external_vgcbench_usernames:
+  - VGCBENCH
+external_vgcbench_startup_wait_s: 10.0
+auto_launch_external_vgcbench: true
+external_vgcbench_python_executable: /home/cayman/Repositories/venv-vgcbench/bin/python
+external_vgcbench_runner_script: src/elitefurretai/rl/analyze/vgcbench_external_runner.py
+external_vgcbench_team_file: data/teams/gen9vgc2024regg/vgcbench.txt
+external_vgcbench_log_dir: data/logs/vgcbench_runners
+external_vgcbench_log_to_files: false
+external_vgcbench_password: null
+external_vgcbench_n_challenges: 1000000
+external_vgcbench_runner_wait_for_server_timeout: 180.0
+external_vgcbench_accept_open_team_sheet: false
+curriculum:
+  self_play: 0.3
+  bc_player: 0.1
+  exploiters: 0.0
+  ghosts: 0.1
+  max_damage: 0.1
+  random_baseline: 0
+  max_base_power_baseline: 0
+  simple_heuristic_baseline: 0.1
+  vgc_bench_baseline: 0.3
+adaptive_curriculum: false
+portfolio_add_interval: 50
+ref_update_interval: 25
+checkpoint_interval: 25
+max_portfolio_size: 5
+max_exploiter_models: 5
+max_past_models: 5
+max_loaded_exploiter_models: 2
+max_loaded_ghost_models: 2
+past_models_dir: data/models/rl/worker_sweep_nw6/ghosts
+exploiter_models_dir: data/models/rl/exploiters
+
+# ===== Logging related =====
+log_interval: 1
+use_wandb: false
+wandb_project: elitefurretai-rnad
+wandb_run_name: worker-sweep-nw6
+wandb_tags: [stage2, rust_engine, worker_sweep]
+
+# ===== Performance / Hardware related =====
+batch_size: 4
+batch_timeout: 0.005
+device: cuda
+max_battle_steps: 40
+num_battles_per_pair: 32
+num_players: 18
+num_servers: 4
+num_workers: 6
+showdown_start_port: 8000
+use_mixed_precision: true
+battle_backend: rust_engine

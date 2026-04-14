@@ -46,18 +46,23 @@ class BattleInference:
         self._opponent_mons: Dict[str, Any] = {}
 
     @staticmethod
+    def _get_gen_data(mon: Pokemon) -> GenData:
+        return GenData.from_gen(mon.gen)
+
+    @staticmethod
     def load_opponent_set(mon: Pokemon) -> Dict[str, Any]:
         opponent_info: Dict[str, Any] = {}
+        gen_data = BattleInference._get_gen_data(mon)
 
         # Compute smallest and largest possible value for each stat
-        for nature in mon._data.natures:
+        for nature in gen_data.natures:
             for stat, minval, maxval in zip(
                 ["hp", "atk", "def", "spa", "spd", "spe"],
                 compute_raw_stats(
-                    mon.species, [0] * 6, [0] * 6, mon.level, nature, mon._data
+                    mon.species, [0] * 6, [0] * 6, mon.level, nature, gen_data
                 ),
                 compute_raw_stats(
-                    mon.species, [252] * 6, [31] * 6, mon.level, nature, mon._data
+                    mon.species, [252] * 6, [31] * 6, mon.level, nature, gen_data
                 ),
             ):
                 stats = opponent_info.get(stat, [sys.maxsize, 0])

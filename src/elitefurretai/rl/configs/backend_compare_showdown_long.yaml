@@ -1,0 +1,126 @@
+# ===== RNaD related =====
+clip_range: 0.2
+ent_coef: 0.01
+ent_coef_end: 0.001
+gae_lambda: 0.95
+gamma: 0.99
+max_grad_norm: 0.5
+rnad_alpha: 0.01
+vf_coef: 0.5
+use_portfolio_regularization: false
+
+# ===== Exploration =====
+temperature_start: 1.5
+temperature_end: 0.5
+temperature_anneal_steps: 50000
+top_p: 0.95
+
+# ===== Distributional Value Head =====
+num_value_bins: 51
+value_min: -1.0
+value_max: 1.0
+
+# ===== Number Bank Embeddings =====
+use_number_banks: false
+number_bank_hp_bins: 100
+number_bank_stat_bins: 600
+number_bank_power_bins: 250
+number_bank_embedding_dim: 16
+
+# ===== Transformer Architecture =====
+use_transformer: false
+transformer_layers: 6
+transformer_heads: 16
+transformer_ff_dim: 2048
+transformer_dropout: 0.1
+use_decision_tokens: true
+use_causal_mask: true
+
+# ===== Optimizer =====
+optimizer:
+  type: adamw
+  weight_decay: 0.0001
+  warmup_steps: 1000
+  schedule: cosine
+  param_groups:
+    backbone:
+      lr: 0.00001
+      weight_decay: 0.0001
+    heads:
+      lr: 0.00003
+      weight_decay: 0.0
+
+# ===== Training related =====
+embedder_feature_set: raw
+initialize_path: null
+resume_from: null
+max_updates: 3
+save_dir: data/models/rl/backend_compare_showdown_long
+train_batch_size: 4
+train_exploiters: false
+
+# ===== Architecture related =====
+early_layers: [4096, 2048, 2048, 1024]
+late_layers: [2048, 2048, 1024, 1024]
+lstm_layers: 4
+lstm_hidden_size: 512
+dropout: 0
+early_attention_heads: 16
+late_attention_heads: 32
+grouped_encoder_hidden_dim: 512
+grouped_encoder_aggregated_dim: 4096
+pokemon_attention_heads: 16
+teampreview_head_layers: [512, 256]
+teampreview_head_dropout: 0
+teampreview_attention_heads: 8
+turn_head_layers: [2048, 1024, 1024, 1024]
+max_seq_len: 40
+
+# ===== Curriculum / Opponent related =====
+battle_backend: showdown_websocket
+battle_format: gen9vgc2024regg
+base_team_path: data/teams
+team_pool_path: null
+agent_team_path: null
+bc_action_path: data/models/rl/rust_multiupdate/bc_bootstrap.pt
+bc_teampreview_path: data/models/rl/rust_multiupdate/bc_bootstrap.pt
+bc_win_path: data/models/rl/rust_multiupdate/bc_bootstrap.pt
+vgc_bench_checkpoint_path: data/models/vgc-bench-sb3-model.zip
+curriculum:
+  self_play: 0.35
+  bc_player: 0.0
+  exploiters: 0.0
+  ghosts: 0.25
+  max_damage: 0.20
+  random_baseline: 0.0
+  max_base_power_baseline: 0.0
+  simple_heuristic_baseline: 0.20
+adaptive_curriculum: false
+portfolio_add_interval: 50
+ref_update_interval: 25
+checkpoint_interval: 25
+max_portfolio_size: 5
+max_exploiter_models: 5
+max_past_models: 5
+max_loaded_exploiter_models: 2
+max_loaded_ghost_models: 2
+past_models_dir: data/models/rl/backend_compare_showdown_long/ghosts
+exploiter_models_dir: data/models/rl/exploiters
+
+# ===== Logging related =====
+log_interval: 1
+use_wandb: false
+wandb_project: elitefurretai-rnad
+wandb_run_name: backend-compare-showdown-long
+
+# ===== Performance / Hardware related =====
+batch_size: 4
+batch_timeout: 0.005
+device: cpu
+max_battle_steps: 30
+num_battles_per_pair: 2
+num_players: 8
+num_servers: 1
+num_workers: 1
+showdown_start_port: 8000
+use_mixed_precision: false

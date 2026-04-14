@@ -5,6 +5,13 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
+SHOWDOWN_WEBSOCKET_BACKEND = "showdown_websocket"
+RUST_ENGINE_BACKEND = "rust_engine"
+SUPPORTED_BATTLE_BACKENDS = {
+    SHOWDOWN_WEBSOCKET_BACKEND,
+    RUST_ENGINE_BACKEND,
+}
+
 
 @dataclass
 class RNaDConfig:
@@ -131,6 +138,11 @@ class RNaDConfig:
     # ===== Performance / Hardware related =====
     batch_size: int = 16  # Batch size for model inference during battle play
     batch_timeout: float = 0.05  # Max wait time (s) before sending incomplete batch for inference
+    battle_backend: str = (
+        SHOWDOWN_WEBSOCKET_BACKEND  # Battle execution backend. `showdown_websocket`
+        # preserves the current poke-env Player + Showdown server path, while
+        # `rust_engine` will use an in-process Rust simulator path.
+    )
     device: str = "cuda"  # Device for training ("cuda" for GPU, "cpu" for CPU)
     max_battle_steps: int = (
         40  # Maximum trajectory steps per battle before forfeiting to prevent memory explosion.
@@ -149,6 +161,20 @@ class RNaDConfig:
     )
     use_mixed_precision: bool = (
         True  # Enable automatic mixed precision (FP16) for ~2x speedup and reduced memory
+    )
+    use_central_gpu_inference: bool = (
+        False  # Deprecated for the simplified Rust fallback path. Kept only so
+        # older YAMLs still load; current runtime ignores this flag.
+    )
+    central_inference_batch_timeout: float = (
+        0.005  # Deprecated with `use_central_gpu_inference`; retained for YAML compatibility.
+    )
+    central_inference_max_batch_size: int = (
+        64  # Deprecated with `use_central_gpu_inference`; retained for YAML compatibility.
+    )
+    rust_max_concurrent_battles_override: Optional[int] = (
+        None  # Optional override for in-flight Rust battles per worker. If None,
+        # derive a conservative value from player and CPU budget.
     )
     use_multiprocessing: bool = (
         False  # Option 1: Use true multiprocessing (separate processes) instead of threading.
@@ -282,6 +308,11 @@ class RNaDConfig:
     turn_head_layers: List[int] = field(default_factory=lambda: [2048, 1024, 1024, 1024])
 
     def __post_init__(self):
+        if self.battle_backend not in SUPPORTED_BATTLE_BACKENDS:
+            raise ValueError(
+                "battle_backend must be one of "
+                f"{sorted(SUPPORTED_BATTLE_BACKENDS)}, got {self.battle_backend!r}"
+            )
         if self.max_portfolio_size <= 0:
             raise ValueError("max_portfolio_size must be > 0")
         if self.max_past_models <= 0:
@@ -457,6 +488,35 @@ class RNaDConfig:
     def players_per_worker(self) -> int:
         """Calculate how many players each worker should run (rounded up)."""
         return (self.num_players + self.num_workers - 1) // self.num_workers
+
+    @property
+    def cpu_budget_per_worker(self) -> int:
+        """Approximate logical CPU budget available to each worker."""
+        logical_cpus = os.cpu_count() or 1
+        return max(1, (logical_cpus + self.num_workers - 1) // max(1, self.num_workers))
+
+    @property
+    def rust_max_concurrent_battles_per_worker(self) -> int:
+        """Resolve a conservative in-flight battle count for the Rust backend.
+
+        The Rust path does not need websocket player/socket allocation like the
+        Showdown backend, so `players_per_worker // 2` is too conservative for
+        small worker allocations and can collapse to one active battle per
+        worker. We still cap concurrency by both the worker's player budget and
+        its approximate CPU budget to avoid oversubscribing a single process.
+        """
+        if self.rust_max_concurrent_battles_override is not None:
+            return max(1, min(self.num_battles_per_pair, self.rust_max_concurrent_battles_override))
+
+        if self.num_battles_per_pair <= 0:
+            return 1
+
+        worker_player_budget = max(1, self.players_per_worker)
+        worker_cpu_budget = self.cpu_budget_per_worker
+        return min(
+            self.num_battles_per_pair,
+            max(2, min(worker_player_budget, worker_cpu_budget)),
+        )
 
     @property
     def max_players_per_server(self) -> int:

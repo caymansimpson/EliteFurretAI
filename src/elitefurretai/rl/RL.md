@@ -8,52 +8,56 @@ This document is the **comprehensive, one-stop guide** to EliteFurretAI's reinfo
 2.  [**Architecture Overview**](#2-architecture-overview)
     -   IMPALA-Style Multiprocessing
     -   Architectural Principles
-3.  [**RNaD Algorithm Overview**](#3-rnad-algorithm-overview)
+3.  [**Battle Backends**](#3-battle-backends)
+    -   Supported Backends
+    -   Rust Backend Status
+    -   Core Rust Runtime Files
+4.  [**RNaD Algorithm Overview**](#4-rnad-algorithm-overview)
     -   Why Regularized Nash Dynamics?
     -   The RNaD Loss Function
     -   Inspiration from Ataraxos
-4.  [**Core Components and Files**](#4-core-components)
+5.  [**Core Components and Files**](#5-core-components)
     -   `agent.py`: The RL-Compatible Agent Wrapper
     -   `learner.py`: The Standard RNaD Learner
     -   `multiprocess_actor.py`: Actor Processes and Trainer
     -   `config.py`: The Configuration System
     -   `fast_action_mask.py`: Optimized Action Masking
     -   `utils/team_repo.py`: The Team Repository System
-5.  [**Training Workflow & Features**](#5-training-workflow--features)
+6.  [**Training Workflow & Features**](#6-training-workflow--features)
     -   The Multi-Stage Training Process
     -   Configuration-Driven Training
     -   Resume Training from Checkpoints
     -   Automatic Exploiter Training
     -   Comprehensive Monitoring with WandB
-6.  [**Exploiter Training Details**](#6-exploiter-training-details)
+7.  [**Exploiter Training Details**](#7-exploiter-training-details)
     -   What is an Exploiter?
     -   Design Decision: Single-Team Exploiters
     -   The Exploiter Training Workflow
     -   The Opponent Pool & Adaptive Curriculum
-7.  [**Performance & Optimization**](#7-performance--optimization)
+8.  [**Performance & Optimization**](#8-performance--optimization)
     -   Understanding the Bottlenecks
     -   Fast Action Masking (52,000x speedup)
     -   Embedder Move Caching (2.75x speedup)
     -   Mixed Precision Training (2x speedup)
     -   Why Multiprocessing? GIL Limitations
     -   Multi-Server Showdown Architecture
-8.  [**Scaling Experiments & Benchmarks**](#8-scaling-experiments--benchmarks)
+9.  [**Scaling Experiments & Benchmarks**](#9-scaling-experiments--benchmarks)
     -   Baseline Measurements
     -   Multi-Server Scaling Results
     -   Hardware Stress Testing
     -   Memory Requirements
     -   Optimal Configurations
-9.  [**Advanced Features**](#9-advanced-features)
+10. [**Advanced Features**](#10-advanced-features)
     -   Portfolio Regularization
     -   The Training Profiler
-10. [**Quick Start Guide**](#10-quick-start-guide)
+11. [**Quick Start Guide**](#11-quick-start-guide)
     -   Basic Usage & Commands
     -   Example Configurations
-11. [**Implementation Notes & Bug Fixes**](#11-implementation-notes--bug-fixes)
+12. [**Implementation Notes & Bug Fixes**](#12-implementation-notes--bug-fixes)
     -   Critical Bug Fixes
     -   OTS Deadlock Fix
     -   Known Issues & Workarounds
-12. [**Design Philosophy & Key Takeaways**](#12-design-philosophy--key-takeaways)
+13. [**Design Philosophy & Key Takeaways**](#13-design-philosophy--key-takeaways)
     -   Core Principles
     -   Lessons Learned
     -   Future Directions
@@ -135,6 +139,64 @@ The system uses an **IMPALA-style multiprocessing architecture** with separate P
 - Learner periodically **broadcasts updated weights** to all actors
 - Actors send completed trajectories via `multiprocessing.Queue`
 
+---
+
+## 3. Battle Backends
+
+The RL system now supports two execution backends:
+
+- `showdown_websocket`: the traditional local Pokemon Showdown server plus poke-env `Player` path
+- `rust_engine`: the in-process Rust simulator plus standalone `DoubleBattle` synchronization path
+
+### Supported Backends
+
+The project should keep both backends working unless there is an explicit decision to retire one. The websocket path is now the primary optimization target for RL training, and the Rust path remains useful for fallback, parity checks, and debugging.
+
+### Rust Backend Status
+
+The current Rust path remains supported, but it is no longer the primary optimization path.
+
+- It is still integrated into the real [train.py](/home/cayman/Repositories/EliteFurretAI/src/elitefurretai/rl/train.py) entrypoint.
+- It still has dedicated runtime and benchmark coverage under [unit_tests/engine](/home/cayman/Repositories/EliteFurretAI/unit_tests/engine).
+- The latest paired learner-facing comparison favored Showdown on wall-clock time to the same update count, while Rust remained useful as a fallback and comparison backend.
+
+The current recommendation is:
+
+- use `showdown_websocket` as the primary optimization and training focus
+- keep `rust_engine` available for fallback, parity checks, and debugging
+
+### Core Rust Runtime Files
+
+The Rust path is centered on these files:
+
+- [rust_battle_engine.py](/home/cayman/Repositories/EliteFurretAI/src/elitefurretai/engine/rust_battle_engine.py): binding adapter, request sanitization, protocol replay, standalone `DoubleBattle` synchronization
+- [sync_battle_driver.py](/home/cayman/Repositories/EliteFurretAI/src/elitefurretai/engine/sync_battle_driver.py): synchronous battle loop, policy batching, trajectory collection, diagnostics, synthetic teampreview compatibility
+- [battle_snapshot.py](/home/cayman/Repositories/EliteFurretAI/src/elitefurretai/engine/battle_snapshot.py): policy-facing observation object for the Rust self-play path
+- [rust_model_benchmark.py](/home/cayman/Repositories/EliteFurretAI/src/elitefurretai/engine/rust_model_benchmark.py): model-backed Rust benchmark entrypoint
+- [ENGINE.md](/home/cayman/Repositories/EliteFurretAI/src/elitefurretai/engine/ENGINE.md): current engine-package guide, backend decision summary, and Stage 2 runtime learnings
+
+### Engine Package Layout
+
+The execution-side modules now live in [src/elitefurretai/engine](/home/cayman/Repositories/EliteFurretAI/src/elitefurretai/engine) rather than directly under the RL package.
+
+That split is intentional:
+
+- `elitefurretai.engine` owns battle-execution concerns
+    - Rust request/state synchronization
+    - synchronous battle driving
+    - Showdown server process management
+    - engine comparison benchmarks
+- `elitefurretai.rl` owns algorithm and training concerns
+    - config
+    - learners
+    - players
+    - opponent sampling
+    - train entrypoint
+
+This keeps runtime/backend code from getting mixed together with RNaD-specific training code.
+
+The Rust binding team-conversion helpers now live directly in `rust_battle_engine.py` so the Rust engine boundary stays consolidated in one module. If the project later introduces a backend-agnostic team representation shared by multiple runtimes, that would be the point to split them back out.
+
 ### Why Multiprocessing Over Threading?
 
 Python's Global Interpreter Lock (GIL) prevents true parallel execution across threads:
@@ -163,7 +225,7 @@ Actor 2: [===RUN===][===RUN===][===RUN===][===RUN===]
 
 ---
 
-## 3. RNaD Algorithm Overview
+## 4. RNaD Algorithm Overview
 
 ### Why Regularized Nash Dynamics?
 
@@ -208,7 +270,7 @@ Our design is inspired by DeepMind's Ataraxos (superhuman Stratego AI):
 
 ---
 
-## 4. Core Components
+## 5. Core Components
 
 ### `agent.py`: The RL-Compatible Agent Wrapper
 
@@ -327,7 +389,7 @@ team_repo.save_team(team, format, path, name)  # Save new team
 
 ---
 
-## 5. Training Workflow & Features
+## 6. Training Workflow & Features
 
 ### The Multi-Stage Training Process
 
@@ -374,7 +436,7 @@ Logged metrics include:
 
 ---
 
-## 6. Exploiter Training Details
+## 7. Exploiter Training Details
 
 ### What is an Exploiter?
 
@@ -431,7 +493,7 @@ Win rates tracked per category; sampling adapts to weaknesses.
 
 ---
 
-## 7. Performance & Optimization
+## 8. Performance & Optimization
 
 This section documents the optimization journey from **540 battles/hr to 2,750 battles/hr** (5x improvement).
 
@@ -524,7 +586,7 @@ Each actor connects to a different server, distributing load across CPU cores.
 
 ---
 
-## 8. Scaling Experiments & Benchmarks
+## 9. Scaling Experiments & Benchmarks
 
 ### Baseline Measurements
 
@@ -613,7 +675,7 @@ num_showdown_servers: 2
 
 ---
 
-## 9. Advanced Features
+## 10. Advanced Features
 
 ### Portfolio Regularization: Preventing Strategy Collapse
 
@@ -653,7 +715,7 @@ Measures:
 
 ---
 
-## 10. Quick Start Guide
+## 11. Quick Start Guide
 
 ### Basic Usage & Commands
 
@@ -717,7 +779,7 @@ wandb_project: "elitefurretai-production"
 
 ---
 
-## 11. Implementation Notes & Bug Fixes
+## 12. Implementation Notes & Bug Fixes
 
 ### Critical Bug Fixes
 
@@ -792,7 +854,7 @@ Tested on forward pass (5.85ms baseline):
 
 ---
 
-## 12. Design Philosophy & Key Takeaways
+## 13. Design Philosophy & Key Takeaways
 
 ### Core Principles
 

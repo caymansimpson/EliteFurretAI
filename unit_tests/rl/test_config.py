@@ -35,7 +35,13 @@ def test_get_default_config():
 
     assert isinstance(config, RNaDConfig)
     assert config.battle_format == "gen9vgc2023regc"
+    assert config.battle_backend == "showdown_websocket"
     assert config.device in ["cuda", "cpu"]
+
+
+def test_invalid_battle_backend_raises_value_error():
+    with pytest.raises(ValueError, match="battle_backend"):
+        RNaDConfig(battle_backend="not_a_backend")
 
 
 def test_default_curriculum_sums_to_one():

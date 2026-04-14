@@ -20,6 +20,11 @@ Usage:
     learner = RNaDLearner(agent, ref_agent, lr=config.lr, device="cuda")
 """
 
+from elitefurretai.engine.showdown_server_manager import (
+    allocate_server_ports,
+    launch_showdown_servers,
+    shutdown_showdown_servers,
+)
 from elitefurretai.rl.config import RNaDConfig
 from elitefurretai.rl.learners import PortfolioRNaDLearner, RNaDLearner
 from elitefurretai.rl.model_io import (
@@ -37,11 +42,6 @@ from elitefurretai.rl.players import (
     MaxDamagePlayer,
     RNaDAgent,
     cleanup_worker_executors,
-)
-from elitefurretai.rl.server_manager import (
-    allocate_server_ports,
-    launch_showdown_servers,
-    shutdown_showdown_servers,
 )
 
 __all__ = [
