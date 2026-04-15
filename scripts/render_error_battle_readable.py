@@ -79,16 +79,16 @@ def _render_choice_line(
     )
 
 
-def _event_has_rejection(result: dict[str, Any] | None) -> bool:
+def _event_has_rejection(result: dict[str, Any] | None, rejection_side: str | None = None) -> bool:
     if result is None:
         return False
     initial_acceptance = result.get("initial_acceptance", {})
-    return (not bool(initial_acceptance.get("p1", True))) or (
-        not bool(initial_acceptance.get("p2", True))
-    )
+    if rejection_side is not None:
+        return not bool(initial_acceptance.get(rejection_side, True))
+    return (not bool(initial_acceptance.get("p1", True))) or (not bool(initial_acceptance.get("p2", True)))
 
 
-def _first_rejection_turn(record: dict[str, Any]) -> int | None:
+def _first_rejection_turn(record: dict[str, Any], rejection_side: str | None = None) -> int | None:
     trace = record.get("trace", [])
     for index, event in enumerate(trace):
         if event.get("event_type") != "decision_window":
@@ -96,13 +96,16 @@ def _first_rejection_turn(record: dict[str, Any]) -> int | None:
         paired_result = None
         if index + 1 < len(trace) and trace[index + 1].get("event_type") == "decision_result":
             paired_result = trace[index + 1]
-        if _event_has_rejection(paired_result):
+        if _event_has_rejection(paired_result, rejection_side=rejection_side):
             turn_before = event.get("turn_before")
             return int(turn_before) if turn_before is not None else None
     return None
 
 
-def _load_first_rejection_turns(rejection_jsonl_path: Path | None) -> dict[str, int]:
+def _load_first_rejection_turns(
+    rejection_jsonl_path: Path | None,
+    rejection_side: str | None = None,
+) -> dict[str, int]:
     if rejection_jsonl_path is None or not rejection_jsonl_path.exists():
         return {}
 
@@ -112,6 +115,8 @@ def _load_first_rejection_turns(rejection_jsonl_path: Path | None) -> dict[str, 
             continue
         event = json.loads(line)
         if event.get("event_type") != "rejected_choice":
+            continue
+        if rejection_side is not None and event.get("side") != rejection_side:
             continue
         battle_tag = event.get("battle_tag")
         turn_before = event.get("turn_before")
@@ -131,6 +136,7 @@ def _render_record(
     *,
     stop_after_first_rejection: bool,
     first_rejection_turn: int | None,
+    rejection_side: str | None,
 ) -> list[str]:
     lines = [
         f"## Battle {battle_index}: {record['battle_tag']}",
@@ -195,7 +201,7 @@ def _render_record(
         step_index += 1
 
         if stop_after_first_rejection and (
-            _event_has_rejection(paired_result)
+            _event_has_rejection(paired_result, rejection_side=rejection_side)
             or (first_rejection_turn is not None and int(event.get("turn_before", -1)) >= first_rejection_turn)
         ):
             break
@@ -206,21 +212,25 @@ def _render_record(
 def render_document(
     *,
     records_dir: Path,
-    summary_path: Path,
+    summary_path: Path | None,
     output_path: Path,
     limit: int,
     side: str,
     max_first_rejection_turn: int | None,
     stop_after_first_rejection: bool,
     rejection_jsonl_path: Path | None,
+    rejection_side: str | None,
 ) -> str:
-    first_rejection_turns = _load_first_rejection_turns(rejection_jsonl_path)
+    first_rejection_turns = _load_first_rejection_turns(
+        rejection_jsonl_path,
+        rejection_side=rejection_side,
+    )
     selected_records: list[tuple[Path, dict[str, Any], int | None]] = []
     for record_path in sorted(records_dir.glob("*.json")):
         record = json.loads(record_path.read_text(encoding="utf-8"))
         first_rejection_turn = first_rejection_turns.get(record.get("battle_tag"))
         if first_rejection_turn is None:
-            first_rejection_turn = _first_rejection_turn(record)
+            first_rejection_turn = _first_rejection_turn(record, rejection_side=rejection_side)
         if max_first_rejection_turn is not None:
             if first_rejection_turn is None or first_rejection_turn > max_first_rejection_turn:
                 continue
@@ -233,12 +243,18 @@ def render_document(
         title,
         "",
         f"Source records: {records_dir.as_posix()}",
-        f"Source summary: {summary_path.as_posix()}",
+        (
+            "Source summary: <not provided>"
+            if summary_path is None
+            else f"Source summary: {summary_path.as_posix()}"
+        ),
         (
             "Rejection source: trace decision_result metadata"
             if rejection_jsonl_path is None
             else f"Rejection source: {rejection_jsonl_path.as_posix()}"
         ),
+        f"Rendered side: {side}",
+        f"Rejected side filter: {rejection_side or 'any'}",
         (
             "Filter: none"
             if max_first_rejection_turn is None
@@ -262,6 +278,7 @@ def render_document(
                 side,
                 stop_after_first_rejection=stop_after_first_rejection,
                 first_rejection_turn=first_rejection_turn,
+                rejection_side=rejection_side,
             )
         )
 
@@ -273,18 +290,19 @@ def render_document(
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--records-dir", required=True)
-    parser.add_argument("--summary-path", required=True)
+    parser.add_argument("--summary-path")
     parser.add_argument("--output-path", required=True)
     parser.add_argument("--limit", type=int, default=10)
     parser.add_argument("--side", default="p1", choices=["p1", "p2"])
     parser.add_argument("--max-first-rejection-turn", type=int)
     parser.add_argument("--stop-after-first-rejection", action="store_true")
     parser.add_argument("--rejection-jsonl-path")
+    parser.add_argument("--rejection-side", choices=["p1", "p2"])
     args = parser.parse_args()
 
     render_document(
         records_dir=Path(args.records_dir),
-        summary_path=Path(args.summary_path),
+        summary_path=Path(args.summary_path) if args.summary_path is not None else None,
         output_path=Path(args.output_path),
         limit=args.limit,
         side=args.side,
@@ -293,6 +311,7 @@ def main() -> None:
         rejection_jsonl_path=(
             Path(args.rejection_jsonl_path) if args.rejection_jsonl_path is not None else None
         ),
+        rejection_side=args.rejection_side,
     )
 
 

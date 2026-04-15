@@ -639,6 +639,8 @@ class SyncRustBattleDriver:
         include_binding_snapshots: bool = True,
         diagnostic_log_path: Optional[str] = None,
         error_battle_record_path: Optional[str] = None,
+        error_battle_record_limit: int = 10,
+        log_observations: bool = False,
     ):
         from pokemon_showdown_py import RustBattle  # type: ignore[attr-defined]
 
@@ -662,8 +664,9 @@ class SyncRustBattleDriver:
         self._include_binding_snapshots = include_binding_snapshots
         self._diagnostic_log_path = diagnostic_log_path
         self._error_battle_record_path = error_battle_record_path
+        self._error_battle_record_limit = error_battle_record_limit
+        self._log_observations = log_observations
         self._selected_error_battle_tag: Optional[str] = None
-        self._error_battle_record_limit = 10
         self._embedder = (
             Embedder(format=format_id, feature_set=feature_set or Embedder.SIMPLE)
             if collect_rollouts
@@ -1316,6 +1319,7 @@ class SyncRustBattleDriver:
             p2_username="EliteFurretAI-p2",
             p1_team=p1_team_struct,
             p2_team=p2_team_struct,
+            log_observations=self._log_observations,
         )
         return {
             "engine": engine,
@@ -1688,6 +1692,42 @@ class SyncRustBattleDriver:
         )
 
     @staticmethod
+    def _observation_to_string(observation: Any) -> str:
+        if observation is None:
+            return "<observation unavailable>"
+
+        def mon_label(mon: Any) -> str:
+            if mon is None:
+                return "None"
+            species = getattr(mon, "species", getattr(mon, "name", "<unknown>"))
+            status = getattr(getattr(mon, "status", None), "name", None) or "None"
+            return f"{species} [status={status}]"
+
+        weather = ", ".join(effect.name for effect in getattr(observation, "weather", {})) or "None"
+        fields = ", ".join(effect.name for effect in getattr(observation, "fields", {})) or "None"
+        side_conditions = ", ".join(
+            effect.name for effect in getattr(observation, "side_conditions", {})
+        ) or "None"
+        opp_side_conditions = ", ".join(
+            effect.name for effect in getattr(observation, "opponent_side_conditions", {})
+        ) or "None"
+        events = getattr(observation, "events", []) or []
+        lines = [
+            f"Observed My Active: [{', '.join(mon_label(mon) for mon in getattr(observation, 'active_pokemon', []) or [])}]",
+            f"Observed Opp Active: [{', '.join(mon_label(mon) for mon in getattr(observation, 'opponent_active_pokemon', []) or [])}]",
+            f"Observed Weather: [{weather}]",
+            f"Observed Fields: [{fields}]",
+            f"Observed My Side Conditions: [{side_conditions}]",
+            f"Observed Opp Side Conditions: [{opp_side_conditions}]",
+            "Observed Events:",
+        ]
+        if events:
+            lines.extend(f"  - {event}" for event in events)
+        else:
+            lines.append("  - <no events yet>")
+        return "\n".join(lines)
+
+    @staticmethod
     def _battle_state_to_string(battle: Any) -> str:
         if battle is None:
             return "<battle state unavailable>"
@@ -1748,6 +1788,14 @@ class SyncRustBattleDriver:
             "Opp Team:",
             *team_lines(getattr(battle, "opponent_team", {})),
         ]
+        current_observation = getattr(battle, "_current_observation", None)
+        if current_observation is not None:
+            lines.extend(
+                [
+                    "Current Observation:",
+                    SyncRustBattleDriver._observation_to_string(current_observation),
+                ]
+            )
         return "\n".join(lines)
 
     @staticmethod

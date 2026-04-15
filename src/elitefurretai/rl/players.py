@@ -4,6 +4,7 @@ import logging
 import math
 import random
 from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 from threading import Lock
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Union, cast
 
@@ -34,6 +35,72 @@ from elitefurretai.supervised.model_archs import (
 )
 
 logger = logging.getLogger("MaxDamagePlayer")
+
+
+def _request_fingerprint(request: Optional[Dict[str, Any]]) -> Optional[tuple]:
+    # Summarize the legality-relevant parts of a Showdown request so we can cheaply
+    # detect same-turn request drift after async batched inference returns.
+    if request is None:
+        return None
+
+    active_entries = []
+    for active in request.get("active", []) or []:
+        if not isinstance(active, dict):
+            active_entries.append(None)
+            continue
+        moves = []
+        for move in active.get("moves", []) or []:
+            if not isinstance(move, dict):
+                continue
+            moves.append(
+                (
+                    move.get("id"),
+                    move.get("target"),
+                    move.get("disabled"),
+                    move.get("pp"),
+                )
+            )
+        active_entries.append(
+            (
+                tuple(moves),
+                active.get("canTerastallize"),
+                active.get("trapped"),
+                active.get("maybeTrapped"),
+                active.get("commanding"),
+            )
+        )
+
+    side_entries = []
+    side = request.get("side")
+    side_pokemon = side.get("pokemon", []) if isinstance(side, dict) else []
+    for mon in side_pokemon:
+        if not isinstance(mon, dict) or not mon.get("active", False):
+            continue
+        side_entries.append(
+            (
+                mon.get("ident"),
+                mon.get("condition"),
+                mon.get("active"),
+                mon.get("commanding"),
+                mon.get("terastallized"),
+            )
+        )
+
+    force_switch = request.get("forceSwitch")
+    force_switch_fingerprint = (
+        tuple(bool(value) for value in force_switch)
+        if isinstance(force_switch, list)
+        else None
+    )
+
+    return (
+        request.get("rqid"),
+        bool(request.get("teamPreview")),
+        bool(request.get("wait")),
+        force_switch_fingerprint,
+        tuple(active_entries),
+        tuple(side_entries),
+    )
 
 
 # Registry of worker-specific executors: worker_id -> ThreadPoolExecutor
@@ -583,7 +650,19 @@ class BatchInferencePlayer(Player):
                 return self.choose_random_doubles_move(battle)
             except Exception:
                 return DefaultBattleOrder()
-        mask = None if battle.teampreview else fast_get_action_mask(battle)
+        # The mask and final MDBO decode must use the same request payload. In the
+        # async batched path, battle.last_request can change mid-turn while inference
+        # is in flight; without a snapshot we can sample under one button layout and
+        # serialize under another, producing invalid Showdown commands.
+        request_snapshot = deepcopy(battle.last_request) if battle.last_request is not None else None
+        # This is cheaper than recomputing the full order twice and lets us drop the
+        # result if the live request has drifted before we send it.
+        request_fingerprint = _request_fingerprint(request_snapshot)
+        mask = (
+            None
+            if battle.teampreview
+            else fast_get_action_mask(battle, request_override=request_snapshot)
+        )
 
         # Snapshot request-time battle state so we can detect stale inference outputs.
         request_turn = getattr(battle, "turn", -1)
@@ -650,6 +729,19 @@ class BatchInferencePlayer(Player):
             self.hidden_states.pop(battle.battle_tag, None)
             return DefaultBattleOrder()
 
+        current_request_fingerprint = _request_fingerprint(battle.last_request)
+        if current_request_fingerprint != request_fingerprint:
+            logger.debug(
+                "STALE_REQUEST_SNAPSHOT_DROP tag=%s turn=%d rqid=%s->%s",
+                battle.battle_tag,
+                current_turn,
+                None if request_snapshot is None else request_snapshot.get("rqid"),
+                None if battle.last_request is None else battle.last_request.get("rqid"),
+            )
+            self.current_trajectories.pop(battle.battle_tag, None)
+            self.hidden_states.pop(battle.battle_tag, None)
+            return DefaultBattleOrder()
+
         if mask is not None and action_idx < len(mask) and mask[action_idx] == 0:
             logger.warning(
                 "MASK_MISMATCH tag=%s turn=%s action_idx=%d mask_value=%s",
@@ -684,7 +776,7 @@ class BatchInferencePlayer(Player):
         try:
             action_type = MDBO.FORCE_SWITCH if any(battle.force_switch) else MDBO.TURN
             mdbo = MDBO.from_int(action_idx, type=action_type)
-            return mdbo.to_double_battle_order(battle)
+            return mdbo.to_double_battle_order(battle, request=request_snapshot)
         except (ValueError, KeyError, AttributeError, IndexError, AssertionError):
             return DefaultBattleOrder()
 

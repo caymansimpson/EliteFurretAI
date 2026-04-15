@@ -682,5 +682,73 @@ def test_log_prob_computation():
     assert np.isclose(log_prob, np.log(0.25), atol=1e-8)
 
 
+def test_choose_move_drops_same_turn_request_mutation():
+    player = BatchInferencePlayer.__new__(BatchInferencePlayer)
+    player.max_battle_steps = 40
+    player.current_trajectories = {}
+    player.hidden_states = {}
+    player._discarded_battles = set()
+    player.trajectory_queue = None
+    player.queue = asyncio.Queue()
+    player.inference_request_timeout_s = 1.0
+    player._request_generation = {"battle-1": 1}
+    player._embed_battle_state = lambda battle: np.zeros(4, dtype=np.float32)
+
+    initial_request = {
+        "rqid": 9,
+        "active": [
+            {"moves": [{"move": "Uproar", "id": "uproar"}]},
+            {"moves": [{"move": "Knock Off", "id": "knockoff", "target": "normal"}]},
+        ],
+        "side": {
+            "pokemon": [
+                {"ident": "p1: Farigiraf", "active": True, "condition": "100/100", "commanding": False},
+                {"ident": "p1: Incineroar", "active": True, "condition": "100/100", "commanding": False},
+            ]
+        },
+    }
+    mutated_request = {
+        "rqid": 10,
+        "active": [
+            {"moves": [{"move": "Protect", "id": "protect", "target": "self"}]},
+            {"moves": [{"move": "Knock Off", "id": "knockoff", "target": "normal"}]},
+        ],
+        "side": {
+            "pokemon": [
+                {"ident": "p1: Farigiraf", "active": True, "condition": "100/100", "commanding": False},
+                {"ident": "p1: Incineroar", "active": True, "condition": "100/100", "commanding": False},
+            ]
+        },
+    }
+
+    battle = MagicMock(spec=DoubleBattle)
+    battle.battle_tag = "battle-1"
+    battle.teampreview = False
+    battle.turn = 5
+    battle.force_switch = [False, False]
+    battle.last_request = initial_request
+    battle.opponent_team = {}
+
+    async def run_test():
+        async def fake_put(item):
+            _, future, *_ = item
+            battle.last_request = mutated_request
+            future.set_result({"action": 0, "log_prob": 0.0, "value": 0.0})
+
+        player.queue.put = fake_put  # type: ignore[method-assign]
+
+        with patch(
+            "elitefurretai.rl.players.fast_get_action_mask",
+            return_value=np.ones(MDBO.action_space(), dtype=np.float32),
+        ), patch("elitefurretai.rl.players.MDBO.from_int") as mock_from_int:
+            order = await player._choose_move_async(battle, request_generation=1)
+            return order, mock_from_int
+
+    order, mock_from_int = asyncio.run(run_test())
+
+    assert isinstance(order, DefaultBattleOrder)
+    mock_from_int.assert_not_called()
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

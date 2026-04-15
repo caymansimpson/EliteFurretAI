@@ -173,7 +173,9 @@ class MDBO(BattleOrder):
             )
 
     def to_double_battle_order(
-        self, battle: DoubleBattle
+        self,
+        battle: DoubleBattle,
+        request: dict | None = None,
     ) -> Union[DoubleBattleOrder, DefaultBattleOrder]:
         """
         Converts this MDBO to a PyPokéEnv DoubleBattleOrder or DefaultBattleOrder.
@@ -184,6 +186,7 @@ class MDBO(BattleOrder):
         assert battle.player_role is not None, (
             "Cannot convert MDBO to DBO when player_role is None because we assume we have the right perspective"
         )
+        request_data = request if request is not None else battle.last_request
         orders: List[SingleBattleOrder] = []
         for i, order in enumerate(self.message.replace("/choose ", "").split(", ")):
             if order == "pass":
@@ -202,8 +205,8 @@ class MDBO(BattleOrder):
                 switch_idx = int(order[7]) - 1  # Convert 1-indexed to 0-indexed
 
                 # Get Pokemon order from the last request's side.pokemon list
-                if battle.last_request and "side" in battle.last_request:
-                    request_pokemon = battle.last_request["side"]["pokemon"]
+                if request_data and "side" in request_data:
+                    request_pokemon = request_data["side"]["pokemon"]
                     if switch_idx < len(request_pokemon):
                         # Get the identifier (e.g., "p1: Iron Hands") from request
                         ident = request_pokemon[switch_idx]["ident"]
@@ -239,6 +242,8 @@ class MDBO(BattleOrder):
                     "Cannot convert an order for a pokemon when it is not active"
                 )
 
+                move_idx = int(order[5]) - 1  # Convert 1-indexed to 0-indexed
+
                 # Special case: struggle/recharge are not in the Pokemon's move list
                 # but can appear in available_moves when all PP is depleted.
                 # In this case, use available_moves instead of the Pokemon's moveset.
@@ -247,9 +252,16 @@ class MDBO(BattleOrder):
                 ].id in ["struggle", "recharge"]:
                     # For struggle/recharge, any "move X" should use this move
                     move = battle.available_moves[i][0]
+                elif request_data:
+                    move = _get_request_move_by_slot_from_request(
+                        battle,
+                        request_data,
+                        i,
+                        move_idx,
+                        moving_mon,
+                    )
                 else:
                     # Normal case: look up move from Pokemon's moveset
-                    move_idx = int(order[5]) - 1  # Convert 1-indexed to 0-indexed
                     move_keys = list(moving_mon.moves.keys())
                     if move_idx >= len(move_keys):
                         raise ValueError(
@@ -321,6 +333,47 @@ _MOVE_ORDERS = (
 _MOVE_ORDER_MAPPINGS = {order: i for i, order in enumerate(_MOVE_ORDERS)}
 
 
+def _get_request_move_by_slot_from_request(
+    battle: DoubleBattle,
+    request,
+    slot: int,
+    move_idx: int,
+    moving_mon,
+):
+    if not request:
+        raise ValueError(f"Missing request data for slot {slot} on {moving_mon.species}")
+
+    active_requests = request.get("active", [])
+    if slot >= len(active_requests):
+        raise ValueError(
+            f"Missing active request for slot {slot} on {moving_mon.species}"
+        )
+
+    slot_request = active_requests[slot]
+    if not isinstance(slot_request, dict) or "moves" not in slot_request:
+        raise ValueError(
+            f"Missing move request data for slot {slot} on {moving_mon.species}"
+        )
+
+    request_moves = slot_request["moves"]
+    if move_idx >= len(request_moves):
+        raise ValueError(
+            f"Move index {move_idx + 1} out of bounds for request on {moving_mon.species} "
+            f"with {len(request_moves)} raw move slots"
+        )
+
+    move_request = dict(request_moves[move_idx])
+    move_request["disabled"] = False
+    decoded_moves = moving_mon.available_moves_from_request({"moves": [move_request]})
+    if not decoded_moves:
+        raise ValueError(
+            f"Could not decode request move slot {move_idx + 1} for {moving_mon.species}"
+        )
+    return decoded_moves[0]
+
+
+# The idea of this class is that it can convert teampreview orders into a single int
+# to help with RL tasks where we want a single action representing the entire teampreview order
 class MoveOrderEncoder:
     @staticmethod
     def action_space() -> int:

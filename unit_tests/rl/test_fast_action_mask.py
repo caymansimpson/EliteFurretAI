@@ -372,6 +372,62 @@ def test_force_switch_scenario(vgc_json_anon2):
         pytest.skip("No force switch scenario found in this battle")
 
 
+def test_double_force_switch_requires_both_switches_when_two_replacements_exist():
+    from unittest.mock import MagicMock
+
+    battle = MagicMock(spec=DoubleBattle)
+    battle.force_switch = [True, True]
+    battle.last_request = {
+        "forceSwitch": [True, True],
+        "side": {
+            "pokemon": [
+                {"active": True, "condition": "0 fnt"},
+                {"active": True, "condition": "0 fnt"},
+                {"active": False, "condition": "100/100"},
+                {"active": False, "condition": "100/100"},
+            ]
+        },
+    }
+
+    mask = fast_get_action_mask(battle)
+
+    switch_2 = SWITCH_ACTION_BASE + 2
+    switch_3 = SWITCH_ACTION_BASE + 3
+
+    assert mask[indices_to_action(switch_2, switch_3)] == 1.0
+    assert mask[indices_to_action(switch_3, switch_2)] == 1.0
+    assert mask[indices_to_action(switch_2, PASS_ACTION)] == 0.0
+    assert mask[indices_to_action(PASS_ACTION, switch_2)] == 0.0
+    assert mask[indices_to_action(PASS_ACTION, PASS_ACTION)] == 0.0
+
+
+def test_double_force_switch_allows_single_pass_when_only_one_replacement_exists():
+    from unittest.mock import MagicMock
+
+    battle = MagicMock(spec=DoubleBattle)
+    battle.force_switch = [True, True]
+    battle.last_request = {
+        "forceSwitch": [True, True],
+        "side": {
+            "pokemon": [
+                {"active": True, "condition": "0 fnt"},
+                {"active": True, "condition": "0 fnt"},
+                {"active": False, "condition": "100/100"},
+                {"active": False, "condition": "0 fnt"},
+            ]
+        },
+    }
+
+    mask = fast_get_action_mask(battle)
+
+    switch_2 = SWITCH_ACTION_BASE + 2
+
+    assert mask[indices_to_action(switch_2, PASS_ACTION)] == 1.0
+    assert mask[indices_to_action(PASS_ACTION, switch_2)] == 1.0
+    assert mask[indices_to_action(switch_2, switch_2)] == 0.0
+    assert mask[indices_to_action(PASS_ACTION, PASS_ACTION)] == 0.0
+
+
 # =============================================================================
 # SLOT-SPECIFIC TESTS
 # =============================================================================
@@ -808,7 +864,35 @@ def test_commanding_slot_masks_to_pass_pairs_only():
         assert slot0 == PASS_ACTION
 
 
-def test_terastarstorm_becomes_spread_when_stellar_terastallized():
+def test_request_commanding_false_overrides_stale_commander_effect():
+    from unittest.mock import MagicMock
+
+    from poke_env.battle.effect import Effect
+
+    battle = MagicMock(spec=DoubleBattle)
+    stale_commander_mon = MagicMock()
+    stale_commander_mon.effects = {Effect.COMMANDER: 0}
+    ally_mon = MagicMock()
+    ally_mon.effects = {}
+    battle.active_pokemon = [stale_commander_mon, ally_mon]
+
+    request = {
+        "active": [
+            {"moves": [], "commanding": False},
+            {"moves": [], "commanding": False},
+        ],
+        "side": {
+            "pokemon": [
+                {"active": True, "condition": "100/100", "commanding": False},
+                {"active": True, "condition": "100/100", "commanding": False},
+            ]
+        },
+    }
+
+    assert not slot_is_commanding(battle, 0, request)
+
+
+def test_request_target_truth_overrides_terastarstorm_spread_heuristic():
     from unittest.mock import MagicMock
 
     from poke_env.battle import PokemonType
@@ -842,10 +926,10 @@ def test_terastarstorm_becomes_spread_when_stellar_terastallized():
         {"id": "terastarstorm", "target": "normal", "pp": 8, "disabled": False},
     )
 
-    assert targets == [0]
+    assert targets == [1, 2, -2]
 
 
-def test_expanding_force_becomes_spread_in_psychic_terrain_for_grounded_user():
+def test_request_target_truth_overrides_expanding_force_spread_heuristic():
     from unittest.mock import MagicMock
 
     from poke_env.battle import Field, PokemonType
@@ -879,7 +963,69 @@ def test_expanding_force_becomes_spread_in_psychic_terrain_for_grounded_user():
         {"id": "expandingforce", "target": "normal", "pp": 16, "disabled": False},
     )
 
-    assert targets == [0]
+    assert targets == [1, 2, -2]
+
+
+def test_adjacent_ally_move_is_illegal_when_partner_slot_is_gone():
+    from unittest.mock import MagicMock
+
+    battle = MagicMock(spec=DoubleBattle)
+    battle.force_switch = [False, False]
+    battle.trapped = [False, False]
+    battle.fields = set()
+
+    fainted_partner = MagicMock()
+    fainted_partner.fainted = True
+    clefairy = MagicMock()
+    clefairy.fainted = False
+    opp_left = MagicMock()
+    opp_left.fainted = False
+    opp_right = MagicMock()
+    opp_right.fainted = False
+
+    battle.active_pokemon = [None, clefairy]
+    battle.opponent_active_pokemon = [opp_left, opp_right]
+
+    targets = get_valid_targets_for_request_move(
+        battle,
+        1,
+        {"id": "helpinghand", "target": "adjacentAlly", "pp": 32, "disabled": False},
+    )
+
+    assert targets == []
+
+    request = {
+        "active": [
+            {
+                "moves": [
+                    {"move": "Close Combat", "id": "closecombat", "pp": 7, "disabled": False, "target": "normal"},
+                    {"move": "Taunt", "id": "taunt", "pp": 30, "disabled": False, "target": "normal"},
+                    {"move": "Wide Guard", "id": "wideguard", "pp": 15, "disabled": False, "target": "allySide"},
+                    {"move": "Fake Out", "id": "fakeout", "pp": 14, "disabled": False, "target": "normal"},
+                ]
+            },
+            {
+                "moves": [
+                    {"move": "Protect", "id": "protect", "pp": 15, "disabled": False, "target": "self"},
+                    {"move": "Follow Me", "id": "followme", "pp": 32, "disabled": False, "target": "self"},
+                    {"move": "Helping Hand", "id": "helpinghand", "pp": 32, "disabled": False, "target": "adjacentAlly"},
+                    {"move": "Sing", "id": "sing", "pp": 21, "disabled": False, "target": "normal"},
+                ]
+            },
+        ],
+        "side": {
+            "pokemon": [
+                {"active": True, "condition": "0 fnt", "commanding": False},
+                {"active": True, "condition": "3/177", "commanding": False},
+                {"active": False, "condition": "0 fnt", "commanding": False},
+                {"active": False, "condition": "0 fnt", "commanding": False},
+            ]
+        },
+    }
+
+    slot1_actions = get_valid_slot_actions(battle, 1, request)
+
+    assert 22 not in slot1_actions
 
 
 def test_mask_generation_is_fast(vgc_json_anon):

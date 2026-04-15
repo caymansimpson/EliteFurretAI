@@ -8,8 +8,8 @@ changes and for separating simulator issues from policy-inference issues.
 import argparse
 from pathlib import Path
 
-from elitefurretai.etl.team_repo import TeamRepo
 from elitefurretai.engine.sync_battle_driver import SyncRustBattleDriver
+from elitefurretai.etl.team_repo import TeamRepo
 
 
 def _load_team_text(

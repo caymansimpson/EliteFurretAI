@@ -236,6 +236,346 @@ class TestStruggleRechargeHandling:
         assert order.first_order.order.id == "wildcharge"  # type: ignore[attr-defined, union-attr]
 
 
+class TestRequestSnapshotDecoding:
+    def test_request_override_keeps_original_move_slot_mapping(self):
+        battle = MagicMock(spec=DoubleBattle)
+        battle.player_role = "p1"
+
+        original_move = Move("uproar", gen=9)
+        mutated_move = Move("protect", gen=9)
+        ally_move = Move("knockoff", gen=9)
+
+        active_mon = MagicMock(spec=Pokemon)
+        active_mon.species = "farigiraf"
+        active_mon.moves = {
+            "uproar": original_move,
+            "protect": mutated_move,
+        }
+        active_mon.available_moves_from_request.side_effect = (
+            lambda request: [active_mon.moves[request["moves"][0]["id"]]]
+        )
+
+        ally_mon = MagicMock(spec=Pokemon)
+        ally_mon.species = "incineroar"
+        ally_mon.moves = {"knockoff": ally_move}
+        ally_mon.available_moves_from_request.side_effect = (
+            lambda request: [ally_mon.moves[request["moves"][0]["id"]]]
+        )
+
+        battle.active_pokemon = [active_mon, ally_mon]
+        battle.available_moves = [[original_move], [ally_move]]
+        battle.team = {}
+        battle.last_request = {
+            "active": [
+                {"moves": [{"move": "Protect", "id": "protect", "target": "self"}]},
+                {"moves": [{"move": "Knock Off", "id": "knockoff", "target": "normal"}]},
+            ]
+        }
+
+        request_snapshot = {
+            "active": [
+                {"moves": [{"move": "Uproar", "id": "uproar", "target": "normal"}]},
+                {"moves": [{"move": "Knock Off", "id": "knockoff", "target": "normal"}]},
+            ]
+        }
+
+        mdbo = MDBO(MDBO.TURN, "/choose move 1 -2, move 1 1")
+        order = mdbo.to_double_battle_order(battle, request=request_snapshot)
+
+        assert order.first_order.order.id == "uproar"  # type: ignore[attr-defined, union-attr]
+
+
+class TestMoveOrderInvariantDecoding:
+    """
+    Tests that MDBO decoding follows the pokemon moveset order invariant.
+
+    The source fix is to maintain `Pokemon.moves` in request order inside poke-env.
+    MDBO decoding should then be able to index `moving_mon.moves` directly.
+    """
+
+    def test_slot_three_decodes_to_protect_when_moves_are_request_ordered(self):
+        battle = MagicMock(spec=DoubleBattle)
+        battle.player_role = "p1"
+
+        behemoth_bash = Move("behemothbash", gen=9)
+        body_press = Move("bodypress", gen=9)
+        protect = Move("protect", gen=9)
+        iron_defense = Move("irondefense", gen=9)
+        ally_move = Move("tailwind", gen=9)
+
+        active_mon = MagicMock(spec=Pokemon)
+        active_mon.species = "zamazentacrowned"
+        active_mon.moves = {
+            "behemothbash": behemoth_bash,
+            "bodypress": body_press,
+            "protect": protect,
+            "irondefense": iron_defense,
+        }
+
+        ally_mon = MagicMock(spec=Pokemon)
+        ally_mon.species = "moltresgalar"
+        ally_mon.moves = {"tailwind": ally_move}
+
+        battle.active_pokemon = [active_mon, ally_mon]
+        battle.available_moves = [
+            [behemoth_bash, body_press, protect, iron_defense],
+            [ally_move],
+        ]
+        battle.last_request = None
+        battle.valid_orders = [
+            [
+                MagicMock(message="/choose move behemothbash 1"),
+                MagicMock(message="/choose move behemothbash 2"),
+                MagicMock(message="/choose move bodypress 1"),
+                MagicMock(message="/choose move bodypress 2"),
+                MagicMock(message="/choose move protect"),
+                MagicMock(message="/choose move irondefense"),
+            ],
+            [MagicMock(message="/choose move tailwind")],
+        ]
+
+        mdbo = MDBO(MDBO.TURN, "/choose move 3, pass")
+        order = mdbo.to_double_battle_order(battle)
+
+        assert order.first_order.order.id == "protect"  # type: ignore[attr-defined, union-attr]
+        assert order.first_order.move_target == 0  # type: ignore[attr-defined, union-attr]
+        assert order.first_order.message == "/choose move protect"  # type: ignore[attr-defined, union-attr]
+
+class TestRestrictedRequestMoveDecoding:
+    def test_single_legal_request_move_uses_request_slot_index(self):
+        battle = MagicMock(spec=DoubleBattle)
+        battle.player_role = "p1"
+
+        iron_head = Move("ironhead", gen=9)
+        aerial_ace = Move("aerialace", gen=9)
+        extreme_speed = Move("extremespeed", gen=9)
+        outrage = Move("outrage", gen=9)
+        protect = Move("protect", gen=9)
+
+        active_mon = MagicMock(spec=Pokemon)
+        active_mon.species = "dragonite"
+        active_mon.moves = {
+            "ironhead": iron_head,
+            "aerialace": aerial_ace,
+            "extremespeed": extreme_speed,
+            "outrage": outrage,
+        }
+        active_mon.available_moves_from_request.return_value = [outrage]
+
+        ally_mon = MagicMock(spec=Pokemon)
+        ally_mon.species = "dondozo"
+        ally_mon.moves = {"protect": protect}
+        ally_mon.available_moves_from_request.return_value = [protect]
+
+        battle.active_pokemon = [active_mon, ally_mon]
+        battle.available_moves = [[outrage], [protect]]
+        battle.last_request = {
+            "active": [
+                {"moves": [{"move": "Outrage", "id": "outrage"}], "trapped": True},
+                {"moves": [{"move": "Protect", "id": "protect", "disabled": False, "pp": 16}]},
+            ]
+        }
+
+        mdbo = MDBO(MDBO.TURN, "/choose move 1 2, move 1")
+        order = mdbo.to_double_battle_order(battle)
+
+        assert order.first_order.order.id == "outrage"  # type: ignore[attr-defined, union-attr]
+        assert order.first_order.move_target == 2  # type: ignore[attr-defined, union-attr]
+
+    def test_partial_request_move_subset_uses_request_order(self):
+        battle = MagicMock(spec=DoubleBattle)
+        battle.player_role = "p1"
+
+        dragon_claw = Move("dragonclaw", gen=9)
+        stomping_tantrum = Move("stompingtantrum", gen=9)
+        protect = Move("protect", gen=9)
+        heavy_slam = Move("heavyslam", gen=9)
+        ally_move = Move("tailwind", gen=9)
+
+        active_mon = MagicMock(spec=Pokemon)
+        active_mon.species = "archaludon"
+        active_mon.moves = {
+            "dragonclaw": dragon_claw,
+            "stompingtantrum": stomping_tantrum,
+            "protect": protect,
+            "heavyslam": heavy_slam,
+        }
+        active_mon.available_moves_from_request.return_value = [heavy_slam]
+
+        ally_mon = MagicMock(spec=Pokemon)
+        ally_mon.species = "tornadus"
+        ally_mon.moves = {"tailwind": ally_move}
+        ally_mon.available_moves_from_request.return_value = [ally_move]
+
+        battle.active_pokemon = [active_mon, ally_mon]
+        battle.available_moves = [[dragon_claw, heavy_slam], [ally_move]]
+        battle.last_request = {
+            "active": [
+                {
+                    "moves": [
+                        {"move": "Dragon Claw", "id": "dragonclaw", "disabled": False, "pp": 16},
+                        {"move": "Heavy Slam", "id": "heavyslam", "disabled": False, "pp": 16},
+                    ]
+                },
+                {"moves": [{"move": "Tailwind", "id": "tailwind", "disabled": False, "pp": 24}]},
+            ]
+        }
+
+        mdbo = MDBO(MDBO.TURN, "/choose move 2 1, pass")
+        order = mdbo.to_double_battle_order(battle)
+
+        assert order.first_order.order.id == "heavyslam"  # type: ignore[attr-defined, union-attr]
+        assert order.first_order.move_target == 1  # type: ignore[attr-defined, union-attr]
+
+    def test_disabled_request_slot_preserves_raw_slot_index(self):
+        battle = MagicMock(spec=DoubleBattle)
+        battle.player_role = "p1"
+        battle.gen = 9
+
+        protect = Move("protect", gen=9)
+        draco_meteor = Move("dracometeor", gen=9)
+        ally_move = Move("tailwind", gen=9)
+
+        active_mon = MagicMock(spec=Pokemon)
+        active_mon.species = "tatsugiri"
+        active_mon.moves = {
+            "protect": protect,
+            "dracometeor": draco_meteor,
+        }
+        active_mon.available_moves_from_request.side_effect = [
+            [draco_meteor],
+            [ally_move],
+        ]
+
+        ally_mon = MagicMock(spec=Pokemon)
+        ally_mon.species = "murkrow"
+        ally_mon.moves = {"tailwind": ally_move}
+        ally_mon.available_moves_from_request.return_value = [ally_move]
+
+        battle.active_pokemon = [active_mon, ally_mon]
+        battle.available_moves = [[draco_meteor], [ally_move]]
+        battle.last_request = {
+            "active": [
+                {
+                    "moves": [
+                        {"move": "Protect", "id": "protect", "disabled": True, "pp": 16},
+                        {
+                            "move": "Draco Meteor",
+                            "id": "dracometeor",
+                            "disabled": False,
+                            "pp": 8,
+                            "target": "adjacentFoe",
+                        },
+                    ]
+                },
+                {
+                    "moves": [
+                        {"move": "Tailwind", "id": "tailwind", "disabled": False, "pp": 24}
+                    ]
+                },
+            ]
+        }
+
+        mdbo = MDBO(MDBO.TURN, "/choose move 2 1, pass")
+        order = mdbo.to_double_battle_order(battle)
+
+        assert order.first_order.order.id == "dracometeor"  # type: ignore[attr-defined, union-attr]
+        assert order.first_order.move_target == 1  # type: ignore[attr-defined, union-attr]
+
+    def test_request_slot_decoding_preserves_targeted_ally_move(self):
+        battle = MagicMock(spec=DoubleBattle)
+        battle.player_role = "p1"
+        battle.gen = 9
+
+        helping_hand = Move("helpinghand", gen=9)
+        ally_move = Move("surf", gen=9)
+
+        active_mon = MagicMock(spec=Pokemon)
+        active_mon.species = "furret"
+        active_mon.moves = {"helpinghand": helping_hand}
+        active_mon.available_moves_from_request.return_value = [helping_hand]
+
+        ally_mon = MagicMock(spec=Pokemon)
+        ally_mon.species = "pelipper"
+        ally_mon.moves = {"surf": ally_move}
+        ally_mon.available_moves_from_request.return_value = [ally_move]
+
+        battle.active_pokemon = [active_mon, ally_mon]
+        battle.available_moves = [[helping_hand], [ally_move]]
+        battle.last_request = {
+            "active": [
+                {
+                    "moves": [
+                        {
+                            "move": "Helping Hand",
+                            "id": "helpinghand",
+                            "disabled": False,
+                            "pp": 32,
+                            "target": "adjacentAlly",
+                        }
+                    ]
+                },
+                {
+                    "moves": [{"move": "Surf", "id": "surf", "disabled": False, "pp": 24}]
+                },
+            ]
+        }
+
+        mdbo = MDBO(MDBO.TURN, "/choose move 1 -2, pass")
+        order = mdbo.to_double_battle_order(battle)
+
+        assert order.first_order.order.id == "helpinghand"  # type: ignore[attr-defined, union-attr]
+        assert order.first_order.move_target == -2  # type: ignore[attr-defined, union-attr]
+
+    def test_slot_one_targeted_move_stays_targeted_when_moves_are_request_ordered(self):
+        battle = MagicMock(spec=DoubleBattle)
+        battle.player_role = "p1"
+
+        behemoth_bash = Move("behemothbash", gen=9)
+        body_press = Move("bodypress", gen=9)
+        protect = Move("protect", gen=9)
+        iron_defense = Move("irondefense", gen=9)
+        ally_move = Move("tailwind", gen=9)
+
+        active_mon = MagicMock(spec=Pokemon)
+        active_mon.species = "zamazentacrowned"
+        active_mon.moves = {
+            "behemothbash": behemoth_bash,
+            "bodypress": body_press,
+            "protect": protect,
+            "irondefense": iron_defense,
+        }
+
+        ally_mon = MagicMock(spec=Pokemon)
+        ally_mon.species = "moltresgalar"
+        ally_mon.moves = {"tailwind": ally_move}
+
+        battle.active_pokemon = [active_mon, ally_mon]
+        battle.available_moves = [
+            [behemoth_bash, body_press, protect, iron_defense],
+            [ally_move],
+        ]
+        battle.last_request = None
+        battle.valid_orders = [
+            [
+                MagicMock(message="/choose move behemothbash 1"),
+                MagicMock(message="/choose move behemothbash 2"),
+                MagicMock(message="/choose move bodypress 1"),
+                MagicMock(message="/choose move bodypress 2"),
+                MagicMock(message="/choose move protect"),
+                MagicMock(message="/choose move irondefense"),
+            ],
+            [MagicMock(message="/choose move tailwind")],
+        ]
+
+        mdbo = MDBO(MDBO.TURN, "/choose move 1 2, pass")
+        order = mdbo.to_double_battle_order(battle)
+
+        assert order.first_order.order.id == "behemothbash"  # type: ignore[attr-defined, union-attr]
+        assert order.first_order.move_target == 2  # type: ignore[attr-defined, union-attr]
+        assert order.first_order.message == "/choose move behemothbash 2"  # type: ignore[attr-defined, union-attr]
+
+
 class TestMDBORoundtrip:
     """
     Tests that MDBO encoding/decoding roundtrips correctly for edge cases.

@@ -10,9 +10,9 @@ embedding when available, cached request access, and optional diagnostics.
 import argparse
 from pathlib import Path
 
+from elitefurretai.engine.sync_battle_driver import SyncPolicyPlayer, SyncRustBattleDriver
 from elitefurretai.etl import Embedder
 from elitefurretai.etl.team_repo import TeamRepo
-from elitefurretai.engine.sync_battle_driver import SyncPolicyPlayer, SyncRustBattleDriver
 from elitefurretai.rl.config import RNaDConfig
 from elitefurretai.rl.model_io import build_model_from_config, load_agent_from_checkpoint
 from elitefurretai.rl.players import RNaDAgent
@@ -48,6 +48,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--disable-binding-snapshots", action="store_true")
     parser.add_argument("--diagnostic-log-path")
     parser.add_argument("--error-battle-record-path")
+    parser.add_argument("--error-battle-record-limit", type=int, default=10)
+    parser.add_argument("--log-observations", action="store_true")
     return parser
 
 
@@ -125,6 +127,8 @@ def main() -> None:
         include_binding_snapshots=not args.disable_binding_snapshots,
         diagnostic_log_path=args.diagnostic_log_path,
         error_battle_record_path=args.error_battle_record_path,
+        error_battle_record_limit=args.error_battle_record_limit,
+        log_observations=args.log_observations,
     )
     stats = driver.run(
         total_battles=args.battles,
@@ -160,6 +164,8 @@ def main() -> None:
     print(f"binding_snapshots={not args.disable_binding_snapshots}")
     print(f"diagnostic_log_path={args.diagnostic_log_path or 'disabled'}")
     print(f"error_battle_record_path={args.error_battle_record_path or 'disabled'}")
+    print(f"error_battle_record_limit={args.error_battle_record_limit}")
+    print(f"log_observations={args.log_observations}")
     print(f"probabilistic={not args.greedy}")
     print(f"temperature={temperature}")
     print(f"top_p={top_p}")

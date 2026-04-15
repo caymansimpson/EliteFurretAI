@@ -272,6 +272,7 @@ def create_standalone_double_battle(
     perspective: str,
     team: Optional[List[Dict[str, Any]]] = None,
     gen: int = 9,
+    log_observations: bool = False,
 ) -> DoubleBattle:
     battle_logger = logging.getLogger(player_username)
     battle_logger.setLevel(logging.ERROR)
@@ -281,6 +282,7 @@ def create_standalone_double_battle(
         player_username,
         battle_logger,
         gen=gen,
+        log_observations=log_observations,
     )
     battle.player_role = perspective
     battle.player_username = player_username
@@ -333,6 +335,7 @@ class RustBattleEngine:
         p1_team: Optional[List[Dict[str, Any]]] = None,
         p2_team: Optional[List[Dict[str, Any]]] = None,
         gen: int = 9,
+        log_observations: bool = False,
     ):
         self.rust_battle = rust_battle
         self.battle_tag = battle_tag
@@ -359,6 +362,7 @@ class RustBattleEngine:
             perspective="p1",
             team=p1_team,
             gen=gen,
+            log_observations=log_observations,
         )
         self.p2_battle = create_standalone_double_battle(
             battle_tag=battle_tag,
@@ -367,6 +371,7 @@ class RustBattleEngine:
             perspective="p2",
             team=p2_team,
             gen=gen,
+            log_observations=log_observations,
         )
         self._drain_messages()
 

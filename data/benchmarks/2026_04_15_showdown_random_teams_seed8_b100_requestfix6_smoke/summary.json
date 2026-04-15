@@ -1,0 +1,18 @@
+{
+  "completed_battles": 100,
+  "p1_wins": 46,
+  "duration_seconds": 122.99628272501286,
+  "server_launch_seconds": 2.511212726996746,
+  "player_setup_seconds": 4.389824631012743,
+  "battle_loop_seconds": 116.09524536700337,
+  "teardown_seconds": 0.06639189101406373,
+  "cpu_user_seconds": 395.099348,
+  "cpu_system_seconds": 3.955312,
+  "invalid_choice_count": 0,
+  "p1_invalid_choice_count": 0,
+  "p1_turn_le_3_count": 0,
+  "error_family_counts": {},
+  "request_type_counts": {},
+  "jsonl_path": "data/benchmarks/2026_04_15_showdown_random_teams_seed8_b100_requestfix6_smoke/invalid_choices.jsonl",
+  "markdown_path": "data/benchmarks/2026_04_15_showdown_random_teams_seed8_b100_requestfix6_smoke/first_invalid_p1_turn_le_3.md"
+}

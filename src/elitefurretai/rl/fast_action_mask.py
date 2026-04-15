@@ -55,28 +55,26 @@ def slot_is_commanding(
 ) -> bool:
     """Return whether the active slot is currently under Commander.
 
-    In the Showdown websocket path, a commanded Tatsugiri can still leak move data
-    through the request/available_moves surfaces. Prefer the battle-state effect when
-    it is available, then fall back to request metadata if present.
+    In the Showdown websocket path, request metadata is the freshest source of truth.
+    Fall back to battle-state effects only when the current request does not specify
+    commanding status.
     """
+    if request:
+        active_entries = request.get("active", [])
+        if slot < len(active_entries) and "commanding" in active_entries[slot]:
+            return bool(active_entries[slot]["commanding"])
+
+        side_pokemon = request.get("side", {}).get("pokemon", [])
+        active_side_entries = [mon for mon in side_pokemon if mon.get("active", False)]
+        if slot < len(active_side_entries) and "commanding" in active_side_entries[slot]:
+            return bool(active_side_entries[slot]["commanding"])
+
     active_pokemon = getattr(battle, "active_pokemon", [])
     if slot < len(active_pokemon):
         active_mon = active_pokemon[slot]
         effects = getattr(active_mon, "effects", None) if active_mon is not None else None
         if effects is not None and Effect.COMMANDER in effects:
             return True
-
-    if not request:
-        return False
-
-    active_entries = request.get("active", [])
-    if slot < len(active_entries) and bool(active_entries[slot].get("commanding")):
-        return True
-
-    side_pokemon = request.get("side", {}).get("pokemon", [])
-    active_side_entries = [mon for mon in side_pokemon if mon.get("active", False)]
-    if slot < len(active_side_entries) and bool(active_side_entries[slot].get("commanding")):
-        return True
 
     return False
 
@@ -139,6 +137,18 @@ def get_valid_targets_for_request_move(
     target_type = move_info.get("target", "normal")
     if not isinstance(target_type, str):
         target_type = "normal"
+
+    # When Showdown provides an explicit request target, that button semantics is the
+    # source of truth for legality in the websocket path. Local target rewrites are
+    # only a fallback for contexts where request metadata is missing.
+    if "target" in move_info:
+        return _get_valid_targets_for_move(
+            battle,
+            slot,
+            target_type,
+            move_info=None,
+        )
+
     return _get_valid_targets_for_move(
         battle,
         slot,
@@ -174,14 +184,11 @@ def get_valid_slot_actions(
         available_switches = _get_available_switch_indices(battle, slot, request)
         for switch_idx in available_switches:
             valid_actions.add(SWITCH_ACTION_BASE + switch_idx)
-        # If no switches available (e.g., all backups fainted), pass is the only option
-        # Also, when both slots need to switch and there aren't enough targets,
-        # one slot may need to pass while the other switches
+
+        # If no switches are available at all, pass is the only fallback.
+        # Otherwise, pass legality for force switch is a joint property of both
+        # slots and is handled when building the combined mask.
         if not valid_actions:
-            valid_actions.add(PASS_ACTION)
-        # In doubles force_switch, pass is always an option when the slot's mon is fainted
-        # because the other slot might take the only available switch target
-        if _is_slot_fainted(battle, slot, request):
             valid_actions.add(PASS_ACTION)
         return valid_actions
 
@@ -261,36 +268,6 @@ def _get_available_switch_indices(
         switch_indices.append(i)
 
     return switch_indices
-
-
-def _is_slot_fainted(
-    battle: DoubleBattle,
-    slot: int,
-    request: Dict,
-) -> bool:
-    """
-    Check if the Pokemon in the given active slot is fainted.
-    Uses request data for accuracy.
-    """
-    if "side" not in request:
-        return False
-
-    side_pokemon = request["side"].get("pokemon", [])
-    for mon in side_pokemon:
-        if mon.get("active", False):
-            # Find which active slot this is
-            # In doubles, position 0 is slot 0, position 1 is slot 1
-            # The order in request matches the slots
-            pass  # We need to match by slot
-
-    # Alternative: use condition check on active pokemon
-    # Active mons are typically first in the list with active=True
-    active_mons = [m for m in side_pokemon if m.get("active", False)]
-    if slot < len(active_mons):
-        condition = active_mons[slot].get("condition", "0 fnt")
-        return "fnt" in condition
-
-    return False
 
 
 def _get_valid_targets_for_move(
@@ -395,14 +372,17 @@ def _get_valid_targets_for_move(
         other_slot = 1 - slot
         if ally_exists[other_slot]:
             return [ally_positions[other_slot]]
-        return [0]  # Fallback
+        return []
 
     else:
         # Unknown target type - default to no target
         return [0]
 
 
-def fast_get_action_mask(battle: DoubleBattle) -> np.ndarray:
+def fast_get_action_mask(
+    battle: DoubleBattle,
+    request_override: Optional[Dict] = None,
+) -> np.ndarray:
     """
     Generate action mask using direct enumeration from battle.last_request.
 
@@ -416,7 +396,7 @@ def fast_get_action_mask(battle: DoubleBattle) -> np.ndarray:
     """
     mask = np.zeros(MDBO.action_space(), dtype=np.float32)
 
-    request = battle.last_request
+    request = request_override if request_override is not None else battle.last_request
     if not request:
         # No request available - return all ones as fallback
         return np.ones(MDBO.action_space(), dtype=np.float32)
@@ -441,6 +421,12 @@ def fast_get_action_mask(battle: DoubleBattle) -> np.ndarray:
             if force_switch[1]
             else {PASS_ACTION}
         )
+
+        if _allow_force_switch_pass(force_switch, slot0_actions, slot1_actions):
+            slot0_actions = set(slot0_actions)
+            slot1_actions = set(slot1_actions)
+            slot0_actions.add(PASS_ACTION)
+            slot1_actions.add(PASS_ACTION)
 
         # If both need to switch, can't switch to same mon
         if force_switch[0] and force_switch[1]:
@@ -471,6 +457,31 @@ def fast_get_action_mask(battle: DoubleBattle) -> np.ndarray:
         return np.ones(MDBO.action_space(), dtype=np.float32)
 
     return mask
+
+
+def _allow_force_switch_pass(
+    force_switch: List[bool],
+    slot0_actions: Set[int],
+    slot1_actions: Set[int],
+) -> bool:
+    """
+    Return whether pass should be admitted during force switch.
+
+    In doubles, pass is only legal when both slots are forced to switch and
+    there are fewer distinct replacement targets than forced slots.
+    """
+
+    forced_slot_count = int(bool(force_switch[0])) + int(bool(force_switch[1]))
+    if forced_slot_count < 2:
+        return False
+
+    distinct_switch_targets = set()
+    for actions in (slot0_actions, slot1_actions):
+        for action in actions:
+            if SWITCH_ACTION_BASE <= action < PASS_ACTION:
+                distinct_switch_targets.add(action - SWITCH_ACTION_BASE)
+
+    return len(distinct_switch_targets) < forced_slot_count
 
 
 def _mark_valid_action_pairs(
