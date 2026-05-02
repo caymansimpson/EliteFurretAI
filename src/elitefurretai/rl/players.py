@@ -24,9 +24,9 @@ from poke_env.stats import compute_raw_stats
 
 from elitefurretai.etl import Embedder
 from elitefurretai.etl.encoder import MDBO
-from elitefurretai.rl.fast_action_mask import (
+from elitefurretai.rl.masking import (
     fast_get_action_mask,
-    get_valid_targets_for_request_move,
+    get_valid_targets,
     slot_is_commanding,
 )
 from elitefurretai.supervised.model_archs import (
@@ -166,10 +166,14 @@ class BatchInferencePlayer(Player):
         self.embedder = (
             embedder
             if embedder is not None
-            else Embedder(format=battle_format, feature_set=Embedder.FULL, omniscient=False)
+            else Embedder(
+                format=battle_format, feature_set=Embedder.FULL, omniscient=False
+            )
         )
-        self.queue: asyncio.Queue = create_in_poke_loop(asyncio.Queue)
-        self.hidden_states: Dict[str, Any] = {}  # (h,c) for LSTM or context tensor for Transformer
+        self.queue: asyncio.Queue = create_in_poke_loop(asyncio.Queue, POKE_LOOP)
+        self.hidden_states: Dict[
+            str, Any
+        ] = {}  # (h,c) for LSTM or context tensor for Transformer
         underlying_model = getattr(model, "model", model)
         self._is_transformer: bool = isinstance(
             underlying_model,
@@ -190,17 +194,58 @@ class BatchInferencePlayer(Player):
         # Why: if the inference loop stalls, we prefer fallback behavior over hanging
         # a battle coroutine indefinitely.
         self.inference_request_timeout_s = 8.0
+        self._diagnostics: Dict[str, float] = {
+            "requests_total": 0.0,
+            "default_choice_requests": 0.0,
+            "embed_calls": 0.0,
+            "embed_seconds": 0.0,
+            "inference_batches": 0.0,
+            "inference_batch_items": 0.0,
+            "inference_batch_size_max": 0.0,
+            "inference_executor_seconds": 0.0,
+            "inference_wait_calls": 0.0,
+            "inference_wait_seconds": 0.0,
+            "inference_timeouts": 0.0,
+            "transformer_batched_calls": 0.0,
+            "transformer_context_items": 0.0,
+            "transformer_context_tokens_real": 0.0,
+            "transformer_context_tokens_padded": 0.0,
+            "transformer_context_len_max": 0.0,
+            "stale_request_generation_drops": 0.0,
+            "stale_inference_drops": 0.0,
+            "stale_request_snapshot_drops": 0.0,
+            "mask_mismatches": 0.0,
+            "send_failures": 0.0,
+            "default_send_failures": 0.0,
+            "discarded_battles": 0.0,
+            "trajectory_steps_buffered": 0.0,
+            "completed_trajectories": 0.0,
+            "completed_trajectory_steps": 0.0,
+        }
 
         super().__init__(accept_open_team_sheet=accept_open_team_sheet, **kwargs)
 
     def _embed_battle_state(self, battle: Any) -> np.ndarray:
+        embed_start = asyncio.get_running_loop().time()
         embed_to_array = getattr(self.embedder, "embed_to_array", None)
         if callable(embed_to_array):
-            return cast(np.ndarray, embed_to_array(cast(DoubleBattle, battle)))
-        return np.asarray(self.embedder.embed_to_vector(cast(DoubleBattle, battle)), dtype=np.float32)
+            result = cast(np.ndarray, embed_to_array(cast(DoubleBattle, battle)))
+        else:
+            result = np.asarray(
+                self.embedder.embed_to_vector(cast(DoubleBattle, battle)),
+                dtype=np.float32,
+            )
+        self._diagnostics["embed_calls"] += 1
+        self._diagnostics["embed_seconds"] += (
+            asyncio.get_running_loop().time() - embed_start
+        )
+        return result
 
     def clear_completed_trajectories(self) -> None:
         self.completed_trajectories.clear()
+
+    def get_diagnostics_snapshot(self) -> Dict[str, float]:
+        return dict(self._diagnostics)
 
     async def stop_listening(self):
         await self.ps_client.stop_listening()
@@ -278,6 +323,12 @@ class BatchInferencePlayer(Player):
                 break
 
             if batch:
+                self._diagnostics["inference_batches"] += 1
+                self._diagnostics["inference_batch_items"] += len(batch)
+                self._diagnostics["inference_batch_size_max"] = max(
+                    self._diagnostics["inference_batch_size_max"],
+                    float(len(batch)),
+                )
                 await self._run_batch(batch, futures, battle_tags, is_tps, masks)
 
     def _add_to_batch(self, batch, futures, battle_tags, is_tps, masks, item):
@@ -287,7 +338,7 @@ class BatchInferencePlayer(Player):
         is_tps.append(item[3])
         masks.append(item[4])
 
-    def _gpu_inference_sync(self, states_np, hidden_cpu):
+    def _gpu_inference_sync(self, states_np, hidden_cpu, hidden_mask_cpu=None):
         states_tensor = (
             torch.tensor(states_np, dtype=torch.float32).to(self.device).unsqueeze(1)
         )
@@ -295,12 +346,20 @@ class BatchInferencePlayer(Player):
         if self._is_transformer:
             # Transformer: hidden_cpu is context tensor or None
             hidden = hidden_cpu.to(self.device) if hidden_cpu is not None else None
+            hidden_mask = (
+                hidden_mask_cpu.to(self.device) if hidden_mask_cpu is not None else None
+            )
         else:
             # LSTM: hidden_cpu is (h, c)
             hidden = (hidden_cpu[0].to(self.device), hidden_cpu[1].to(self.device))
+            hidden_mask = None
 
         with torch.no_grad():
-            turn_logits, tp_logits, values, _, next_hidden = self.model(states_tensor, hidden)
+            turn_logits, tp_logits, values, _, next_hidden = self.model(
+                states_tensor,
+                hidden,
+                hidden_mask=hidden_mask,
+            )
 
         # Temperature-scaled probs for action SELECTION (exploration)
         temp = max(self.temperature, 1e-6)
@@ -322,45 +381,116 @@ class BatchInferencePlayer(Player):
             # next_hidden is (h, c)
             next_hidden_cpu = (next_hidden[0].cpu(), next_hidden[1].cpu())
 
-        return turn_probs, tp_probs, turn_log_probs, tp_log_probs, values_np, next_hidden_cpu
+        return (
+            turn_probs,
+            tp_probs,
+            turn_log_probs,
+            tp_log_probs,
+            values_np,
+            next_hidden_cpu,
+        )
 
     async def _run_batch(self, states, futures, battle_tags, is_tps, masks):
         states_np = np.array(states)
 
         if self._is_transformer:
-            # Transformer: hidden is a context tensor per battle, or None.
-            # We need to handle variable-length contexts.  For simplicity,
-            # we set hidden to None for each battle (the model handles it)
-            # and store per-battle contexts separately.  For batched inference
-            # we process each battle individually since contexts may differ in length.
-            # TODO: pad contexts for true batched Transformer inference.
+            context_lengths: List[int] = []
+            hidden_size: Optional[int] = None
+            context_tensors: List[Optional[torch.Tensor]] = []
+            for tag in battle_tags:
+                ctx = cast(Optional[torch.Tensor], self.hidden_states.get(tag, None))
+                context_tensors.append(ctx)
+                if ctx is None:
+                    context_lengths.append(0)
+                    continue
+                if ctx.ndim != 3 or ctx.shape[0] != 1:
+                    raise ValueError(
+                        f"Expected transformer context shape (1, T, H), got {tuple(ctx.shape)}"
+                    )
+                context_lengths.append(int(ctx.shape[1]))
+                if hidden_size is None:
+                    hidden_size = int(ctx.shape[2])
+
+            max_context_len = max(context_lengths, default=0)
+            hidden_batch_cpu: Optional[torch.Tensor] = None
+            hidden_mask_cpu: Optional[torch.Tensor] = None
+            batch_size = len(battle_tags)
+            if max_context_len > 0:
+                if hidden_size is None:
+                    for ctx in context_tensors:
+                        if ctx is not None:
+                            hidden_size = int(ctx.shape[2])
+                            break
+                assert hidden_size is not None
+                hidden_batch_cpu = torch.zeros(
+                    batch_size,
+                    max_context_len,
+                    hidden_size,
+                    dtype=torch.float32,
+                )
+                hidden_mask_cpu = torch.zeros(
+                    batch_size,
+                    max_context_len,
+                    dtype=torch.bool,
+                )
+                for index, ctx in enumerate(context_tensors):
+                    if ctx is None:
+                        continue
+                    length = context_lengths[index]
+                    if length == 0:
+                        continue
+                    hidden_batch_cpu[index, :length, :] = ctx[0, :length, :]
+                    hidden_mask_cpu[index, :length] = True
+
+            self._diagnostics["transformer_batched_calls"] += 1
+            self._diagnostics["transformer_context_items"] += batch_size
+            self._diagnostics["transformer_context_tokens_real"] += float(
+                sum(context_lengths)
+            )
+            self._diagnostics["transformer_context_tokens_padded"] += float(
+                batch_size * max_context_len
+            )
+            self._diagnostics["transformer_context_len_max"] = max(
+                self._diagnostics["transformer_context_len_max"],
+                float(max_context_len),
+            )
+
+            loop = asyncio.get_running_loop()
+            executor = get_worker_executor(self.worker_id)
+            inference_start = loop.time()
+            (
+                turn_probs,
+                tp_probs,
+                turn_log_probs,
+                tp_log_probs,
+                values,
+                next_ctx_batch,
+            ) = await loop.run_in_executor(
+                executor,
+                self._gpu_inference_sync,
+                states_np,
+                hidden_batch_cpu,
+                hidden_mask_cpu,
+            )
+            next_ctx_batch = cast(torch.Tensor, next_ctx_batch)
+            self._diagnostics["inference_executor_seconds"] += (
+                asyncio.get_running_loop().time() - inference_start
+            )
+
+            next_lengths = [length + 1 for length in context_lengths]
             all_results: List[Dict[str, Any]] = []
             for i, tag in enumerate(battle_tags):
-                single_state = states_np[i : i + 1]
-                ctx = self.hidden_states.get(tag, None)
-                loop = asyncio.get_running_loop()
-                executor = get_worker_executor(self.worker_id)
-                (
-                    turn_probs,
-                    tp_probs,
-                    turn_log_probs,
-                    tp_log_probs,
-                    values,
-                    next_ctx,
-                ) = await loop.run_in_executor(
-                    executor,
-                    self._gpu_inference_sync,
-                    single_state,
-                    ctx,
+                next_len = next_lengths[i]
+                self.hidden_states[tag] = next_ctx_batch[i : i + 1, :next_len, :].clone()
+                all_results.append(
+                    {
+                        "turn_probs": turn_probs[i, 0],
+                        "tp_probs": tp_probs[i, 0],
+                        "turn_log_probs": turn_log_probs[i, 0],
+                        "tp_log_probs": tp_log_probs[i, 0],
+                        "value": values[i, 0],
+                    }
                 )
-                self.hidden_states[tag] = next_ctx
-                all_results.append({
-                    "turn_probs": turn_probs[0, 0],
-                    "tp_probs": tp_probs[0, 0],
-                    "turn_log_probs": turn_log_probs[0, 0],
-                    "tp_log_probs": tp_log_probs[0, 0],
-                    "value": values[0, 0],
-                })
 
             for i, future in enumerate(futures):
                 is_tp = is_tps[i]
@@ -402,21 +532,19 @@ class BatchInferencePlayer(Player):
                 # ratios are consistent with the learner (which also masks).
                 if mask is not None:
                     valid_mask = mask.astype(bool)
-                    log_valid_mass = np.log(
-                        np.exp(unscaled_log_probs[valid_mask]).sum()
-                    )
-                    log_prob = float(
-                        unscaled_log_probs[action] - log_valid_mass
-                    )
+                    log_valid_mass = np.log(np.exp(unscaled_log_probs[valid_mask]).sum())
+                    log_prob = float(unscaled_log_probs[action] - log_valid_mass)
                 else:
                     log_prob = float(unscaled_log_probs[action])
 
-                future.set_result({
-                    "action": action,
-                    "log_prob": log_prob,
-                    "value": r["value"],
-                    "probs": probs,
-                })
+                future.set_result(
+                    {
+                        "action": action,
+                        "log_prob": log_prob,
+                        "value": r["value"],
+                        "probs": probs,
+                    }
+                )
             return
 
         # ---- LSTM path (original batched inference) ----
@@ -436,6 +564,7 @@ class BatchInferencePlayer(Player):
 
         loop = asyncio.get_running_loop()
         executor = get_worker_executor(self.worker_id)
+        inference_start = loop.time()
         (
             turn_probs,
             tp_probs,
@@ -448,6 +577,9 @@ class BatchInferencePlayer(Player):
             self._gpu_inference_sync,
             states_np,
             (h_batch, c_batch),
+        )
+        self._diagnostics["inference_executor_seconds"] += (
+            asyncio.get_running_loop().time() - inference_start
         )
 
         h_next_cpu, c_next_cpu = next_hidden_cpu
@@ -504,9 +636,7 @@ class BatchInferencePlayer(Player):
             # masked Categorical distribution.
             if mask is not None:
                 valid_mask = mask.astype(bool)
-                log_valid_mass = np.log(
-                    np.exp(unscaled_log_probs[valid_mask]).sum()
-                )
+                log_valid_mass = np.log(np.exp(unscaled_log_probs[valid_mask]).sum())
                 log_prob = float(unscaled_log_probs[action] - log_valid_mass)
             else:
                 log_prob = float(unscaled_log_probs[action])
@@ -523,6 +653,7 @@ class BatchInferencePlayer(Player):
     async def _handle_battle_request(
         self, battle: AbstractBattle, maybe_default_order: bool = False
     ):
+        self._diagnostics["requests_total"] += 1
 
         # Defensive guard: do not attempt to send orders for battles that are already
         # marked finished locally.
@@ -533,10 +664,12 @@ class BatchInferencePlayer(Player):
         self._request_generation[battle.battle_tag] = request_generation
 
         if maybe_default_order and random.random() < self.DEFAULT_CHOICE_CHANCE:
+            self._diagnostics["default_choice_requests"] += 1
             message = self.choose_default_move().message
             try:
                 await self.ps_client.send_message(message, battle.battle_tag)
             except Exception as exc:
+                self._diagnostics["default_send_failures"] += 1
                 logger.warning(
                     "DEFAULT_SEND_FAILURE "
                     f"tag={battle.battle_tag} turn={getattr(battle, 'turn', '?')} "
@@ -593,6 +726,7 @@ class BatchInferencePlayer(Player):
             try:
                 await self.ps_client.send_message(message, battle.battle_tag)
             except Exception as exc:
+                self._diagnostics["send_failures"] += 1
                 # Rich context to diagnose first trigger root causes:
                 # - which battle tag failed
                 # - what message we attempted
@@ -601,7 +735,9 @@ class BatchInferencePlayer(Player):
                 legal_move_names = []
                 legal_switch_names = []
                 if isinstance(battle, DoubleBattle):
-                    active_names = [p.species for p in battle.active_pokemon if p is not None]
+                    active_names = [
+                        p.species for p in battle.active_pokemon if p is not None
+                    ]
                     for moves in battle.available_moves:
                         legal_move_names.append([m.id for m in moves])
                     for switches in battle.available_switches:
@@ -636,10 +772,13 @@ class BatchInferencePlayer(Player):
 
         current_steps = len(self.current_trajectories.get(battle.battle_tag, []))
         if current_steps >= self.max_battle_steps:
+            self._diagnostics["discarded_battles"] += 1
             self._discarded_battles.add(battle.battle_tag)
             self.current_trajectories.pop(battle.battle_tag, None)
             self.hidden_states.pop(battle.battle_tag, None)
-            return "/forfeit" if self.trajectory_queue is not None else DefaultBattleOrder()
+            return (
+                "/forfeit" if self.trajectory_queue is not None else DefaultBattleOrder()
+            )
 
         try:
             state = self._embed_battle_state(battle)
@@ -654,7 +793,9 @@ class BatchInferencePlayer(Player):
         # async batched path, battle.last_request can change mid-turn while inference
         # is in flight; without a snapshot we can sample under one button layout and
         # serialize under another, producing invalid Showdown commands.
-        request_snapshot = deepcopy(battle.last_request) if battle.last_request is not None else None
+        request_snapshot = (
+            deepcopy(battle.last_request) if battle.last_request is not None else None
+        )
         # This is cheaper than recomputing the full order twice and lets us drop the
         # result if the live request has drifted before we send it.
         request_fingerprint = _request_fingerprint(request_snapshot)
@@ -676,14 +817,27 @@ class BatchInferencePlayer(Player):
         loop = asyncio.get_running_loop()
         future = loop.create_future()
         await self.queue.put((state, future, battle.battle_tag, battle.teampreview, mask))
+        wait_start = asyncio.get_running_loop().time()
         try:
-            result = await asyncio.wait_for(future, timeout=self.inference_request_timeout_s)
+            result = await asyncio.wait_for(
+                future, timeout=self.inference_request_timeout_s
+            )
+            self._diagnostics["inference_wait_calls"] += 1
+            self._diagnostics["inference_wait_seconds"] += (
+                asyncio.get_running_loop().time() - wait_start
+            )
         except asyncio.TimeoutError:
+            self._diagnostics["inference_wait_calls"] += 1
+            self._diagnostics["inference_wait_seconds"] += (
+                asyncio.get_running_loop().time() - wait_start
+            )
+            self._diagnostics["inference_timeouts"] += 1
             logger.debug(
                 "INFERENCE_TIMEOUT tag=%s turn=%s teampreview=%s queue_size=%s",
-                battle.battle_tag, getattr(battle, 'turn', '?'),
+                battle.battle_tag,
+                getattr(battle, "turn", "?"),
                 battle.teampreview,
-                self.queue.qsize() if hasattr(self.queue, 'qsize') else '?',
+                self.queue.qsize() if hasattr(self.queue, "qsize") else "?",
             )
             self.current_trajectories.pop(battle.battle_tag, None)
             self.hidden_states.pop(battle.battle_tag, None)
@@ -694,9 +848,12 @@ class BatchInferencePlayer(Player):
         if request_generation is not None:
             latest_generation = self._request_generation.get(battle.battle_tag, -1)
             if latest_generation != request_generation:
+                self._diagnostics["stale_request_generation_drops"] += 1
                 logger.debug(
                     "STALE_REQUEST_GENERATION_DROP tag=%s request_gen=%d latest_gen=%d",
-                    battle.battle_tag, request_generation, latest_generation,
+                    battle.battle_tag,
+                    request_generation,
+                    latest_generation,
                 )
                 self.current_trajectories.pop(battle.battle_tag, None)
                 self.hidden_states.pop(battle.battle_tag, None)
@@ -719,11 +876,16 @@ class BatchInferencePlayer(Player):
             or current_teampreview != request_teampreview
             or current_force_switch != request_force_switch
         ):
+            self._diagnostics["stale_inference_drops"] += 1
             logger.debug(
                 "STALE_INFERENCE_DROP tag=%s turn=%d->%d tp=%s->%s fs=%s->%s",
-                battle.battle_tag, request_turn, current_turn,
-                request_teampreview, current_teampreview,
-                request_force_switch, current_force_switch,
+                battle.battle_tag,
+                request_turn,
+                current_turn,
+                request_teampreview,
+                current_teampreview,
+                request_force_switch,
+                current_force_switch,
             )
             self.current_trajectories.pop(battle.battle_tag, None)
             self.hidden_states.pop(battle.battle_tag, None)
@@ -731,6 +893,7 @@ class BatchInferencePlayer(Player):
 
         current_request_fingerprint = _request_fingerprint(battle.last_request)
         if current_request_fingerprint != request_fingerprint:
+            self._diagnostics["stale_request_snapshot_drops"] += 1
             logger.debug(
                 "STALE_REQUEST_SNAPSHOT_DROP tag=%s turn=%d rqid=%s->%s",
                 battle.battle_tag,
@@ -743,13 +906,17 @@ class BatchInferencePlayer(Player):
             return DefaultBattleOrder()
 
         if mask is not None and action_idx < len(mask) and mask[action_idx] == 0:
+            self._diagnostics["mask_mismatches"] += 1
             logger.warning(
                 "MASK_MISMATCH tag=%s turn=%s action_idx=%d mask_value=%s",
-                battle.battle_tag, getattr(battle, 'turn', '?'),
-                action_idx, mask[action_idx],
+                battle.battle_tag,
+                getattr(battle, "turn", "?"),
+                action_idx,
+                mask[action_idx],
             )
 
         if self.trajectory_queue is not None:
+            self._diagnostics["trajectory_steps_buffered"] += 1
             self.current_trajectories.setdefault(battle.battle_tag, []).append(
                 {
                     "state": state,
@@ -813,6 +980,8 @@ class BatchInferencePlayer(Player):
                 step["reward"] = step_reward
 
             filtered_traj = [step for step in traj if step is not None]
+            self._diagnostics["completed_trajectories"] += 1
+            self._diagnostics["completed_trajectory_steps"] += len(filtered_traj)
             self.trajectory_queue.put(
                 {
                     "steps": filtered_traj,
@@ -831,7 +1000,9 @@ class RNaDAgent(torch.nn.Module):
     Handles hidden states and value function transformation.
     """
 
-    def __init__(self, model: Union[FlexibleThreeHeadedModel, TransformerThreeHeadedModel]):
+    def __init__(
+        self, model: Union[FlexibleThreeHeadedModel, TransformerThreeHeadedModel]
+    ):
         super().__init__()
         self.model = model
         self._is_transformer = isinstance(model, TransformerThreeHeadedModel)
@@ -859,10 +1030,17 @@ class RNaDAgent(torch.nn.Module):
         )
         return (h, c)
 
-    def forward(self, x, hidden_state=None, mask=None):
-        turn_logits, tp_logits, value, win_dist_logits, next_hidden = (
-            self.model.forward_with_hidden(x, hidden_state, mask)
-        )
+    def forward(self, x, hidden_state=None, mask=None, hidden_mask=None):
+        if self._is_transformer:
+            assert isinstance(self.model, TransformerThreeHeadedModel)
+            turn_logits, tp_logits, value, win_dist_logits, next_hidden = (
+                self.model.forward_with_hidden(x, hidden_state, mask, hidden_mask)
+            )
+        else:
+            assert isinstance(self.model, FlexibleThreeHeadedModel)
+            turn_logits, tp_logits, value, win_dist_logits, next_hidden = (
+                self.model.forward_with_hidden(x, hidden_state, mask)
+            )
         return turn_logits, tp_logits, value, win_dist_logits, next_hidden
 
 
@@ -872,20 +1050,12 @@ class MaxDamagePlayer(Player):
         battle_format: str = "gen9vgc2023regc",
         switch_threshold: float = 1.5,
         temperature: float = 0.5,
-        debug: bool = False,
         *args,
         **kwargs,
     ):
         super().__init__(*args, battle_format=battle_format, **kwargs)
         self.switch_threshold = switch_threshold
         self.temperature = temperature
-        self.debug = debug
-        if debug:
-            logger.setLevel(logging.DEBUG)
-            if not logger.handlers:
-                handler = logging.StreamHandler()
-                handler.setFormatter(logging.Formatter("[MDP] %(message)s"))
-                logger.addHandler(handler)
 
     @staticmethod
     def _estimate_evs_and_nature(
@@ -1021,7 +1191,10 @@ class MaxDamagePlayer(Player):
         selected_indices: List[int] = []
         for selected_mon, _ in pokemon_total_damages[:4]:
             for idx, mon in enumerate(team_list):
-                if mon.species == selected_mon.species and (idx + 1) not in selected_indices:
+                if (
+                    mon.species == selected_mon.species
+                    and (idx + 1) not in selected_indices
+                ):
                     selected_indices.append(idx + 1)
                     break
 
@@ -1036,23 +1209,18 @@ class MaxDamagePlayer(Player):
 
         self._estimate_opponent_stats(battle)
 
-        if self.debug:
-            active = [m.species if m else "None" for m in battle.active_pokemon]
-            opp_active = [m.species if m else "None" for m in battle.opponent_active_pokemon]
-            logger.debug(f"Turn {battle.turn}: Active={active} vs Opp={opp_active}")
-            for m in battle.opponent_active_pokemon:
-                if m:
-                    logger.debug(f"  Opp {m.species} stats={m.stats}")
-
         used_switches: Set[str] = set()
         slot_orders: List[BattleOrder] = []
 
         for slot in range(2):
-            active_mon = battle.active_pokemon[slot] if slot < len(battle.active_pokemon) else None
+            active_mon = (
+                battle.active_pokemon[slot] if slot < len(battle.active_pokemon) else None
+            )
 
             if slot < len(battle.force_switch) and battle.force_switch[slot]:
                 switches = [
-                    s for s in battle.available_switches[slot]
+                    s
+                    for s in battle.available_switches[slot]
                     if s.species not in used_switches
                 ]
                 if switches:
@@ -1063,7 +1231,9 @@ class MaxDamagePlayer(Player):
                         )
                         for s in switches
                     ]
-                    chosen_order, _ = self._softmax_sample(switch_candidates, self.temperature)
+                    chosen_order, _ = self._softmax_sample(
+                        switch_candidates, self.temperature
+                    )
                     slot_orders.append(chosen_order)
                     chosen_payload = self._get_order_payload(chosen_order)
                     if isinstance(chosen_payload, Pokemon):
@@ -1087,31 +1257,17 @@ class MaxDamagePlayer(Player):
             candidates = self._score_available_actions(battle, slot, used_switches)
 
             if candidates:
-                chosen_order, chosen_score = self._softmax_sample(candidates, self.temperature)
+                chosen_order, chosen_score = self._softmax_sample(
+                    candidates, self.temperature
+                )
 
                 chosen_payload = self._get_order_payload(chosen_order)
                 if isinstance(chosen_payload, Pokemon):
                     used_switches.add(chosen_payload.species)
 
                 slot_orders.append(chosen_order)
-                if self.debug:
-                    if isinstance(chosen_payload, Pokemon):
-                        order_desc = f"SWITCH to {chosen_payload.species}"
-                    elif chosen_payload is not None and hasattr(chosen_payload, "id"):
-                        order_desc = (
-                            f"{chosen_payload.id} "
-                            f"target={getattr(chosen_order, 'move_target', None)}"
-                        )
-                    else:
-                        order_desc = str(chosen_order)
-                    logger.debug(
-                        f"  Slot {slot} ({active_mon.species}): {order_desc}"
-                        f" score={chosen_score:.0f} (from {len(candidates)} candidates, temp={self.temperature})"
-                    )
             else:
                 slot_orders.append(DefaultBattleOrder())
-                if self.debug:
-                    logger.debug(f"  Slot {slot} ({active_mon.species if active_mon else 'None'}): DEFAULT (no valid move or switch)")
 
         if len(slot_orders) == 2:
             return DoubleBattleOrder(
@@ -1166,15 +1322,21 @@ class MaxDamagePlayer(Player):
         if slot_is_commanding(battle, slot, battle.last_request):
             return []
 
-        available_moves = battle.available_moves[slot] if slot < len(battle.available_moves) else []
-        active_mon = battle.active_pokemon[slot] if slot < len(battle.active_pokemon) else None
+        available_moves = (
+            battle.available_moves[slot] if slot < len(battle.available_moves) else []
+        )
+        active_mon = (
+            battle.active_pokemon[slot] if slot < len(battle.active_pokemon) else None
+        )
         candidates: List[Tuple[BattleOrder, float]] = []
 
         request_moves: List[Dict[str, Any]] = []
         if battle.last_request and slot < len(battle.last_request.get("active", [])):
             raw_request_moves = battle.last_request["active"][slot].get("moves", [])
             if isinstance(raw_request_moves, list):
-                request_moves = [move for move in raw_request_moves if isinstance(move, dict)]
+                request_moves = [
+                    move for move in raw_request_moves if isinstance(move, dict)
+                ]
 
         request_move_by_id = {
             move["id"]: move
@@ -1185,15 +1347,20 @@ class MaxDamagePlayer(Player):
         }
 
         if request_move_by_id:
-            available_moves = [move for move in available_moves if move.id in request_move_by_id]
+            available_moves = [
+                move for move in available_moves if move.id in request_move_by_id
+            ]
 
         if available_moves and active_mon is not None:
             for move in available_moves:
                 request_move = request_move_by_id.get(move.id)
-                if request_move is not None:
-                    targets = get_valid_targets_for_request_move(battle, slot, request_move)
-                else:
-                    targets = battle.get_possible_showdown_targets(move, active_mon)
+                targets = get_valid_targets(
+                    battle,
+                    slot,
+                    request_move=request_move,
+                    move=move,
+                    active_mon=active_mon,
+                )
 
                 for target in targets:
                     if target < 0:
@@ -1226,52 +1393,47 @@ class MaxDamagePlayer(Player):
                         )
                         if damage_range and damage_range[0] is not None:
                             avg_damage = (damage_range[0] + damage_range[1]) / 2.0
-                            if self.debug:
-                                logger.debug(
-                                    f"    {active_mon.species} {move.id} -> {target_mon.species}"
-                                    f" (target={target}): {damage_range[0]}-{damage_range[1]}"
-                                    f" (avg={avg_damage:.0f})"
-                                )
                             candidates.append(
                                 (
-                                    cast(BattleOrder, self.create_order(move, move_target=target)),
+                                    cast(
+                                        BattleOrder,
+                                        self.create_order(move, move_target=target),
+                                    ),
                                     avg_damage,
                                 )
                             )
-                    except Exception as e:
-                        if self.debug:
-                            logger.debug(
-                                f"    {active_mon.species} {move.id} -> {target_mon.species}"
-                                f" (target={target}): EXCEPTION: {e}"
-                            )
+                    except Exception:
                         continue
 
             if not candidates and available_moves:
                 move = available_moves[0]
                 request_move = request_move_by_id.get(move.id)
-                if request_move is not None:
-                    targets = get_valid_targets_for_request_move(battle, slot, request_move)
-                else:
-                    targets = battle.get_possible_showdown_targets(move, active_mon)
+                targets = get_valid_targets(
+                    battle,
+                    slot,
+                    request_move=request_move,
+                    move=move,
+                    active_mon=active_mon,
+                )
                 opp_targets = [t for t in targets if t > 0]
-                target = opp_targets[0] if opp_targets else (0 if 0 in targets else targets[0] if targets else 0)
+                target = (
+                    opp_targets[0]
+                    if opp_targets
+                    else (0 if 0 in targets else targets[0] if targets else 0)
+                )
                 candidates.append(
                     (cast(BattleOrder, self.create_order(move, move_target=target)), 0.0)
                 )
-                if self.debug:
-                    logger.debug(
-                        f"    {active_mon.species}: FALLBACK {move.id} target={target}"
-                        f" (all_targets={targets})"
-                    )
 
         available_switches = [
-            s for s in battle.available_switches[slot]
-            if s.species not in used_switches
+            s for s in battle.available_switches[slot] if s.species not in used_switches
         ]
         for switch_mon in available_switches:
             switch_damage = self._get_best_move_damage(battle, switch_mon)[0]
             switch_score = switch_damage / self.switch_threshold
-            candidates.append((cast(BattleOrder, self.create_order(switch_mon)), switch_score))
+            candidates.append(
+                (cast(BattleOrder, self.create_order(switch_mon)), switch_score)
+            )
 
         return candidates
 

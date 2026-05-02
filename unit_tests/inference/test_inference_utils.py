@@ -1273,9 +1273,17 @@ def test_get_priority_and_identifier():
     assert get_priority_and_identifier(
         ["", "move", "p1a: Furret", "Giga Impact"], battle
     ) == ("p1: Furret", None)
-    furret._effects = {Effect.DANCER: 1}
+    furret._effects = {}
     assert get_priority_and_identifier(
-        ["", "move", "p1a: Furret", "Giga Impact"], battle
+        [
+            "",
+            "move",
+            "p1a: Furret",
+            "Giga Impact",
+            "p2a: Sentret",
+            "[from]ability: Dancer",
+        ],
+        battle,
     ) == ("p1: Furret", None)
     furret._effects = {Effect.QUICK_DRAW: 1}
     assert get_priority_and_identifier(

@@ -107,7 +107,11 @@ def _parse_team_header(header: str) -> Dict[str, str]:
 
 def pokepaste_to_rust_team(team: str, default_level: int = 50) -> List[Dict[str, object]]:
     """Convert a PokePaste export into dictionaries matching the Rust PokemonSet shape."""
-    blocks = [block.strip() for block in team.replace("\r\n", "\n").split("\n\n") if block.strip()]
+    blocks = [
+        block.strip()
+        for block in team.replace("\r\n", "\n").split("\n\n")
+        if block.strip()
+    ]
     if not blocks:
         raise ValueError("Team export is empty")
 
@@ -202,7 +206,10 @@ class CachedRustBattleBinding:
     def __init__(self, rust_battle: Any):
         self._rust_battle = rust_battle
         self._request_json_cache: Dict[str, Optional[str]] = {"p1": None, "p2": None}
-        self._request_dict_cache: Dict[str, Optional[Dict[str, Any]]] = {"p1": None, "p2": None}
+        self._request_dict_cache: Dict[str, Optional[Dict[str, Any]]] = {
+            "p1": None,
+            "p2": None,
+        }
         self._message_cache: Dict[str, Tuple[str, ...]] = {"p1": (), "p2": ()}
 
     def choose(self, side: str, choice: str) -> bool:
@@ -272,7 +279,6 @@ def create_standalone_double_battle(
     perspective: str,
     team: Optional[List[Dict[str, Any]]] = None,
     gen: int = 9,
-    log_observations: bool = False,
 ) -> DoubleBattle:
     battle_logger = logging.getLogger(player_username)
     battle_logger.setLevel(logging.ERROR)
@@ -282,7 +288,6 @@ def create_standalone_double_battle(
         player_username,
         battle_logger,
         gen=gen,
-        log_observations=log_observations,
     )
     battle.player_role = perspective
     battle.player_username = player_username
@@ -294,7 +299,9 @@ def create_standalone_double_battle(
             if sanitized.get("teraType") is None:
                 sanitized.pop("teraType", None)
             sanitized_team.append(sanitized)
-        battle.teampreview_team = [mon.to_pokemon() for mon in team_from_json(sanitized_team)]
+        battle.teampreview_team = [
+            mon.to_pokemon() for mon in team_from_json(sanitized_team)
+        ]
     return battle
 
 
@@ -335,7 +342,6 @@ class RustBattleEngine:
         p1_team: Optional[List[Dict[str, Any]]] = None,
         p2_team: Optional[List[Dict[str, Any]]] = None,
         gen: int = 9,
-        log_observations: bool = False,
     ):
         self.rust_battle = rust_battle
         self.battle_tag = battle_tag
@@ -362,7 +368,6 @@ class RustBattleEngine:
             perspective="p1",
             team=p1_team,
             gen=gen,
-            log_observations=log_observations,
         )
         self.p2_battle = create_standalone_double_battle(
             battle_tag=battle_tag,
@@ -371,7 +376,6 @@ class RustBattleEngine:
             perspective="p2",
             team=p2_team,
             gen=gen,
-            log_observations=log_observations,
         )
         self._drain_messages()
 
@@ -479,7 +483,9 @@ class RustBattleEngine:
         self._refresh_request_cache()
         self._apply_requests()
 
-    def _record_protocol_line(self, side: str, raw_line: str, normalized_line: str) -> None:
+    def _record_protocol_line(
+        self, side: str, raw_line: str, normalized_line: str
+    ) -> None:
         history = self._protocol_history.get(side)
         if history is None:
             return
@@ -518,7 +524,9 @@ class RustBattleEngine:
                 self._reconcile_active_slots_from_request(battle, request)
 
     @staticmethod
-    def _reconcile_active_slots_from_request(battle: DoubleBattle, request: Dict[str, Any]) -> None:
+    def _reconcile_active_slots_from_request(
+        battle: DoubleBattle, request: Dict[str, Any]
+    ) -> None:
         active_requests = request.get("active")
         side = request.get("side")
         if not isinstance(active_requests, list) or not isinstance(side, dict):
@@ -527,7 +535,9 @@ class RustBattleEngine:
         if not isinstance(pokemon_list, list) or battle.player_role is None:
             return
 
-        for active_pokemon_number, pokemon_dict in enumerate(pokemon_list[: len(active_requests)]):
+        for active_pokemon_number, pokemon_dict in enumerate(
+            pokemon_list[: len(active_requests)]
+        ):
             if not isinstance(pokemon_dict, dict):
                 continue
             ident = pokemon_dict.get("ident")
@@ -542,7 +552,9 @@ class RustBattleEngine:
             slot_key = f"{battle.player_role}{'a' if active_pokemon_number == 0 else 'b'}"
             battle._active_pokemon[slot_key] = pokemon
 
-    def _sanitize_request_for_poke_env(self, request: Dict[str, Any], side: str) -> Dict[str, Any]:
+    def _sanitize_request_for_poke_env(
+        self, request: Dict[str, Any], side: str
+    ) -> Dict[str, Any]:
         sanitized = json.loads(json.dumps(request))
         side_data = sanitized.get("side")
         if isinstance(side_data, dict):
@@ -589,7 +601,9 @@ class RustBattleEngine:
         if not active_requests:
             return
 
-        matched_request_indices = self._match_active_requests_to_pokemon(active_requests, pokemon_list)
+        matched_request_indices = self._match_active_requests_to_pokemon(
+            active_requests, pokemon_list
+        )
         if not any(index is not None for index in matched_request_indices):
             return
 
@@ -768,7 +782,9 @@ class RustBattleEngine:
         return tuple(move_ids)
 
     @staticmethod
-    def _pokemon_matches_request_move_ids(pokemon: Dict[str, Any], move_ids: Tuple[str, ...]) -> bool:
+    def _pokemon_matches_request_move_ids(
+        pokemon: Dict[str, Any], move_ids: Tuple[str, ...]
+    ) -> bool:
         if not move_ids:
             return False
         pokemon_move_ids = tuple(str(move_id) for move_id in pokemon.get("moves", []))

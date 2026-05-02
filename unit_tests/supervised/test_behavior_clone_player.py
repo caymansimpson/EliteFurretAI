@@ -270,7 +270,7 @@ def test_check_win_advantage_swing_skill_issue():
         mock_battle = MagicMock()
         mock_battle.battle_tag = "test-battle"
 
-        asyncio.get_event_loop().run_until_complete(
+        asyncio.new_event_loop().run_until_complete(
             player._check_win_advantage_swing(mock_battle, current_advantage=0.6)
         )
 
@@ -296,7 +296,7 @@ def test_check_win_advantage_swing_misclick():
         mock_battle = MagicMock()
         mock_battle.battle_tag = "test-battle"
 
-        asyncio.get_event_loop().run_until_complete(
+        asyncio.new_event_loop().run_until_complete(
             player._check_win_advantage_swing(mock_battle, current_advantage=-0.6)
         )
 
@@ -323,7 +323,7 @@ def test_check_win_advantage_no_swing():
         mock_battle.battle_tag = "test-battle"
 
         # Small positive change
-        asyncio.get_event_loop().run_until_complete(
+        asyncio.new_event_loop().run_until_complete(
             player._check_win_advantage_swing(mock_battle, current_advantage=0.3)
         )
 

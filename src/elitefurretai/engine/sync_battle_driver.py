@@ -33,7 +33,7 @@ from elitefurretai.engine.rust_battle_engine import (
 from elitefurretai.etl.battle_data import team_from_json
 from elitefurretai.etl.embedder import Embedder
 from elitefurretai.etl.encoder import MDBO
-from elitefurretai.rl.fast_action_mask import (
+from elitefurretai.rl.masking import (
     ACTIONS_PER_SLOT,
     PASS_ACTION,
     SWITCH_ACTION_BASE,
@@ -108,6 +108,7 @@ class SyncDriverProfile:
             + self.policy_rollout_record_seconds
         )
 
+
 @dataclass
 class SyncDriverStats:
     completed_battles: int
@@ -167,7 +168,9 @@ class SyncPolicyPlayer:
     ):
         self.agent = agent
         self.device = device
-        self.embedder = Embedder(format=format_id, feature_set=feature_set, omniscient=False)
+        self.embedder = Embedder(
+            format=format_id, feature_set=feature_set, omniscient=False
+        )
         self.collect_trajectories = collect_trajectories
         self.probabilistic = probabilistic
         self.temperature = temperature
@@ -204,7 +207,9 @@ class SyncPolicyPlayer:
             return cast(np.ndarray, embed_to_array(battle))
         return np.asarray(self.embedder.embed_to_vector(battle), dtype=np.float32)
 
-    def update_sampling(self, temperature: Optional[float] = None, top_p: Optional[float] = None) -> None:
+    def update_sampling(
+        self, temperature: Optional[float] = None, top_p: Optional[float] = None
+    ) -> None:
         if temperature is not None:
             self.temperature = temperature
         if top_p is not None:
@@ -229,7 +234,9 @@ class SyncPolicyPlayer:
             action_mask=None,
             action_to_choice={},
             is_teampreview=bool(battle.teampreview),
-            opponent_fainted=sum(1 for mon in battle.opponent_team.values() if mon.fainted),
+            opponent_fainted=sum(
+                1 for mon in battle.opponent_team.values() if mon.fainted
+            ),
         )
         return self.choose_action_from_snapshot(snapshot, opponent_type=opponent_type)
 
@@ -254,7 +261,9 @@ class SyncPolicyPlayer:
                 self.profile.embed_seconds += time.perf_counter() - embed_start
 
         if snapshot.is_teampreview:
-            action_idx, choice, log_prob, value = self._sample_teampreview(snapshot.battle_tag, state)
+            action_idx, choice, log_prob, value = self._sample_teampreview(
+                snapshot.battle_tag, state
+            )
             rollout_step = self._build_rollout_step(
                 battle=snapshot.battle,
                 state=state,
@@ -323,7 +332,9 @@ class SyncPolicyPlayer:
             ]
 
         prepared: List[Dict[str, Any]] = []
-        results: List[Tuple[str, Optional[RolloutStep]]] = [("default", None)] * len(snapshots)
+        results: List[Tuple[str, Optional[RolloutStep]]] = [("default", None)] * len(
+            snapshots
+        )
 
         for index, (snapshot, opponent_type) in enumerate(zip(snapshots, opponent_types)):
             if opponent_type is not None:
@@ -386,7 +397,9 @@ class SyncPolicyPlayer:
             return results
 
         states_np = np.asarray([entry["state"] for entry in prepared], dtype=np.float32)
-        state_tensor = torch.as_tensor(states_np, dtype=torch.float32, device=self.device).unsqueeze(1)
+        state_tensor = torch.as_tensor(
+            states_np, dtype=torch.float32, device=self.device
+        ).unsqueeze(1)
 
         hidden_states: List[Tuple[torch.Tensor, torch.Tensor]] = []
         for entry in prepared:
@@ -403,20 +416,28 @@ class SyncPolicyPlayer:
 
         inference_start = time.perf_counter()
         with torch.no_grad():
-            turn_logits, tp_logits, values, _, next_hidden = self.agent(state_tensor, hidden)
+            turn_logits, tp_logits, values, _, next_hidden = self.agent(
+                state_tensor, hidden
+            )
         self.profile.inference_seconds += time.perf_counter() - inference_start
 
         next_hidden = cast(Tuple[torch.Tensor, torch.Tensor], next_hidden)
         for batch_index, entry in enumerate(prepared):
             snapshot = cast(BattleSnapshot, entry["snapshot"])
-            logits = tp_logits[batch_index, 0] if entry["is_teampreview"] else turn_logits[batch_index, 0]
+            logits = (
+                tp_logits[batch_index, 0]
+                if entry["is_teampreview"]
+                else turn_logits[batch_index, 0]
+            )
             mask = cast(Optional[np.ndarray], entry["mask"])
             decode_start = time.perf_counter()
             action_idx, log_prob = self._select_action_from_logits(logits, mask)
             choice = (
                 MDBO.from_int(action_idx, type=MDBO.TEAMPREVIEW).message
                 if entry["is_teampreview"]
-                else cast(Dict[int, str], entry["action_to_choice"]).get(action_idx, "default")
+                else cast(Dict[int, str], entry["action_to_choice"]).get(
+                    action_idx, "default"
+                )
             )
             if entry["is_teampreview"]:
                 choice = _normalize_choice_message(choice)
@@ -466,7 +487,9 @@ class SyncPolicyPlayer:
             if index == len(traj) - 1:
                 step_reward += 1.0 if won else -1.0
             prev_step = traj[index - 1] if index > 0 else None
-            prev_fainted = int(prev_step["opponent_fainted"]) if prev_step is not None else 0
+            prev_fainted = (
+                int(prev_step["opponent_fainted"]) if prev_step is not None else 0
+            )
             ko_delta = step["opponent_fainted"] - prev_fainted
             if ko_delta > 0:
                 step_reward += 0.05 * ko_delta
@@ -511,9 +534,13 @@ class SyncPolicyPlayer:
             "reward": 0.0,
             "is_teampreview": bool(battle.teampreview),
             "mask": mask,
-            "opponent_fainted": sum(1 for mon in battle.opponent_team.values() if mon.fainted),
+            "opponent_fainted": sum(
+                1 for mon in battle.opponent_team.values() if mon.fainted
+            ),
         }
-        self.current_trajectories.setdefault(getattr(battle, "battle_tag", "unknown"), []).append(step)
+        self.current_trajectories.setdefault(
+            getattr(battle, "battle_tag", "unknown"), []
+        ).append(step)
         self.profile.rollout_record_seconds += time.perf_counter() - rollout_start
         return RolloutStep(
             state=state,
@@ -525,7 +552,9 @@ class SyncPolicyPlayer:
             opponent_fainted=cast(int, step["opponent_fainted"]),
         )
 
-    def _sample_teampreview(self, battle_tag: str, state: Any) -> Tuple[int, str, float, float]:
+    def _sample_teampreview(
+        self, battle_tag: str, state: Any
+    ) -> Tuple[int, str, float, float]:
         action, log_prob, value = self._sample_masked_action(
             battle_tag,
             state,
@@ -543,7 +572,9 @@ class SyncPolicyPlayer:
         *,
         is_teampreview: bool,
     ) -> Tuple[int, float, float]:
-        state_tensor = torch.tensor(np.array([state]), dtype=torch.float32, device=self.device).unsqueeze(1)
+        state_tensor = torch.tensor(
+            np.array([state]), dtype=torch.float32, device=self.device
+        ).unsqueeze(1)
         hidden = self.hidden_states.get(battle_tag)
         if hidden is None:
             hidden = self.agent.get_initial_state(1, self.device)
@@ -551,7 +582,9 @@ class SyncPolicyPlayer:
 
         inference_start = time.perf_counter()
         with torch.no_grad():
-            turn_logits, tp_logits, values, _, next_hidden = self.agent(state_tensor, hidden)
+            turn_logits, tp_logits, values, _, next_hidden = self.agent(
+                state_tensor, hidden
+            )
         self.profile.inference_seconds += time.perf_counter() - inference_start
 
         logits = tp_logits[0, 0] if is_teampreview else turn_logits[0, 0]
@@ -561,7 +594,9 @@ class SyncPolicyPlayer:
 
         if self._is_transformer:
             next_hidden = self._trim_transformer_context(next_hidden)
-            self.hidden_states[battle_tag] = next_hidden.cpu() if next_hidden is not None else None
+            self.hidden_states[battle_tag] = (
+                next_hidden.cpu() if next_hidden is not None else None
+            )
         else:
             self.hidden_states[battle_tag] = (next_hidden[0].cpu(), next_hidden[1].cpu())
 
@@ -594,7 +629,11 @@ class SyncPolicyPlayer:
                 filtered[keep] = probs[keep]
                 probs = filtered / filtered.sum()
 
-        action = int(np.random.choice(np.arange(len(probs)), p=probs) if self.probabilistic else int(np.argmax(probs)))
+        action = int(
+            np.random.choice(np.arange(len(probs)), p=probs)
+            if self.probabilistic
+            else int(np.argmax(probs))
+        )
         if mask is not None:
             valid_mask = mask.astype(bool)
             log_valid_mass = np.log(np.exp(unscaled_log_probs[valid_mask]).sum())
@@ -614,7 +653,9 @@ class SyncBaselineController:
             return _normalize_choice_message(str(self.chooser.teampreview(battle)))
 
         choice = self.chooser.choose_move(battle)
-        message = choice if isinstance(choice, str) else getattr(choice, "message", str(choice))
+        message = (
+            choice if isinstance(choice, str) else getattr(choice, "message", str(choice))
+        )
         return _normalize_choice_message(str(message))
 
 
@@ -640,7 +681,6 @@ class SyncRustBattleDriver:
         diagnostic_log_path: Optional[str] = None,
         error_battle_record_path: Optional[str] = None,
         error_battle_record_limit: int = 10,
-        log_observations: bool = False,
     ):
         from pokemon_showdown_py import RustBattle  # type: ignore[attr-defined]
 
@@ -665,7 +705,6 @@ class SyncRustBattleDriver:
         self._diagnostic_log_path = diagnostic_log_path
         self._error_battle_record_path = error_battle_record_path
         self._error_battle_record_limit = error_battle_record_limit
-        self._log_observations = log_observations
         self._selected_error_battle_tag: Optional[str] = None
         self._embedder = (
             Embedder(format=format_id, feature_set=feature_set or Embedder.SIMPLE)
@@ -686,7 +725,12 @@ class SyncRustBattleDriver:
     @staticmethod
     def _all_teampreview_legal_actions() -> List[Tuple[int, str]]:
         return [
-            (action, _normalize_choice_message(MDBO.from_int(action, type=MDBO.TEAMPREVIEW).message))
+            (
+                action,
+                _normalize_choice_message(
+                    MDBO.from_int(action, type=MDBO.TEAMPREVIEW).message
+                ),
+            )
             for action in range(MDBO.teampreview_space())
         ]
 
@@ -702,14 +746,20 @@ class SyncRustBattleDriver:
         ordered_indices = [digit - 1 for digit in digits]
         used_indices = set(ordered_indices)
         reordered = [dict(team[index]) for index in ordered_indices]
-        reordered.extend(dict(member) for index, member in enumerate(team) if index not in used_indices)
+        reordered.extend(
+            dict(member) for index, member in enumerate(team) if index not in used_indices
+        )
         return reordered
 
     @staticmethod
-    def _build_teampreview_request(team: List[Dict[str, object]], side: str) -> Dict[str, Any]:
+    def _build_teampreview_request(
+        team: List[Dict[str, object]], side: str
+    ) -> Dict[str, Any]:
         pokemon_entries: List[Dict[str, Any]] = []
         for request_index, member in enumerate(team):
-            species = str(member.get("species", member.get("name", f"Pokemon{request_index + 1}")))
+            species = str(
+                member.get("species", member.get("name", f"Pokemon{request_index + 1}"))
+            )
             name = str(member.get("name", species))
             raw_level = member.get("level", 50)
             level = int(raw_level) if isinstance(raw_level, (int, float, str)) else 50
@@ -749,7 +799,9 @@ class SyncRustBattleDriver:
             team=team,
         )
         battle._teampreview = True
-        battle._teampreview_opponent_team = [mon.to_pokemon() for mon in team_from_json(opponent_team)]
+        battle._teampreview_opponent_team = [
+            mon.to_pokemon() for mon in team_from_json(opponent_team)
+        ]
         return battle
 
     def _choose_teampreview_action(
@@ -878,7 +930,9 @@ class SyncRustBattleDriver:
                     "sanitized_request": p1_request,
                     "raw_request": None,
                     "legal_choice_count": len(p1_step["snapshot"].legal_actions),
-                    "legal_choices": [choice for _, choice in p1_step["snapshot"].legal_actions],
+                    "legal_choices": [
+                        choice for _, choice in p1_step["snapshot"].legal_actions
+                    ],
                     "battle_state_poke_env": self._battle_state_to_string(p1_battle),
                     "battle_state_request": self._request_state_to_string(p1_request),
                     "protocol_log_length_before": 0,
@@ -891,7 +945,9 @@ class SyncRustBattleDriver:
                     "sanitized_request": p2_request,
                     "raw_request": None,
                     "legal_choice_count": len(p2_step["snapshot"].legal_actions),
-                    "legal_choices": [choice for _, choice in p2_step["snapshot"].legal_actions],
+                    "legal_choices": [
+                        choice for _, choice in p2_step["snapshot"].legal_actions
+                    ],
                     "battle_state_poke_env": self._battle_state_to_string(p2_battle),
                     "battle_state_request": self._request_state_to_string(p2_request),
                     "protocol_log_length_before": 0,
@@ -920,8 +976,12 @@ class SyncRustBattleDriver:
         return {
             "p1_choice": p1_step["choice"],
             "p2_choice": p2_step["choice"],
-            "p1_team_struct": self._apply_teampreview_choice_to_team(p1_team_struct, p1_step["choice"]),
-            "p2_team_struct": self._apply_teampreview_choice_to_team(p2_team_struct, p2_step["choice"]),
+            "p1_team_struct": self._apply_teampreview_choice_to_team(
+                p1_team_struct, p1_step["choice"]
+            ),
+            "p2_team_struct": self._apply_teampreview_choice_to_team(
+                p2_team_struct, p2_step["choice"]
+            ),
             "p1_rollout_step": p1_step["rollout_step"],
             "trace": trace,
         }
@@ -955,10 +1015,14 @@ class SyncRustBattleDriver:
         diagnostic_handle = self._open_diagnostic_log()
 
         try:
-            while next_battle_index < total_battles and len(active_battles) < max_concurrent:
+            while (
+                next_battle_index < total_battles and len(active_battles) < max_concurrent
+            ):
                 battle_setup_start = time.perf_counter()
                 active_battles.append(self._new_active_battle(next_battle_index))
-                driver_profile.battle_setup_seconds += time.perf_counter() - battle_setup_start
+                driver_profile.battle_setup_seconds += (
+                    time.perf_counter() - battle_setup_start
+                )
                 next_battle_index += 1
 
             while active_battles:
@@ -968,7 +1032,9 @@ class SyncRustBattleDriver:
                 for active in active_battles:
                     engine: RustBattleEngine = active["engine"]
                     turn_limit_hit = engine.turn > self._max_turns_per_battle
-                    stalled_limit_hit = active["stalled_steps"] > self._max_stalled_steps_per_battle
+                    stalled_limit_hit = (
+                        active["stalled_steps"] > self._max_stalled_steps_per_battle
+                    )
                     truncated = turn_limit_hit or stalled_limit_hit
                     if engine.ended or truncated:
                         p1_won = bool(engine.p1_battle.won) if engine.ended else False
@@ -976,11 +1042,19 @@ class SyncRustBattleDriver:
                         p2_policy = active.get("p2_policy")
                         finalize_start = time.perf_counter()
                         if p1_policy is not None:
-                            p1_policy.finish_battle(engine.battle_tag, p1_won, truncated=truncated and not engine.ended)
+                            p1_policy.finish_battle(
+                                engine.battle_tag,
+                                p1_won,
+                                truncated=truncated and not engine.ended,
+                            )
                         else:
                             self._finalize_trajectory(active["trajectory"], p1_won)
                         if isinstance(p2_policy, SyncPolicyPlayer):
-                            p2_policy.finish_battle(engine.battle_tag + ":p2", not p1_won if engine.ended else False, truncated=truncated and not engine.ended)
+                            p2_policy.finish_battle(
+                                engine.battle_tag + ":p2",
+                                not p1_won if engine.ended else False,
+                                truncated=truncated and not engine.ended,
+                            )
                         completed_battles += 1
                         if truncated and not engine.ended:
                             truncated_battles += 1
@@ -1001,8 +1075,12 @@ class SyncRustBattleDriver:
                                     "stalled_steps": active["stalled_steps"],
                                     "max_turns_per_battle": self._max_turns_per_battle,
                                     "max_stalled_steps_per_battle": self._max_stalled_steps_per_battle,
-                                    "p1_request_type": self._engine_request_type(engine, "p1"),
-                                    "p2_request_type": self._engine_request_type(engine, "p2"),
+                                    "p1_request_type": self._engine_request_type(
+                                        engine, "p1"
+                                    ),
+                                    "p2_request_type": self._engine_request_type(
+                                        engine, "p2"
+                                    ),
                                     "p1_request": self._engine_request_json(engine, "p1"),
                                     "p2_request": self._engine_request_json(engine, "p2"),
                                 },
@@ -1013,14 +1091,18 @@ class SyncRustBattleDriver:
                             truncated=truncated and not engine.ended,
                             p1_won=p1_won,
                         )
-                        driver_profile.trajectory_finalize_seconds += time.perf_counter() - finalize_start
+                        driver_profile.trajectory_finalize_seconds += (
+                            time.perf_counter() - finalize_start
+                        )
                         if p1_won:
                             p1_wins += 1
                         rollout_steps += len(active["trajectory"])
                         if next_battle_index < total_battles:
                             battle_setup_start = time.perf_counter()
                             next_active.append(self._new_active_battle(next_battle_index))
-                            driver_profile.battle_setup_seconds += time.perf_counter() - battle_setup_start
+                            driver_profile.battle_setup_seconds += (
+                                time.perf_counter() - battle_setup_start
+                            )
                             next_battle_index += 1
                         continue
 
@@ -1041,14 +1123,18 @@ class SyncRustBattleDriver:
                             tracked_policies[id(p1_policy)] = p1_policy
                             snapshot_start = time.perf_counter()
                             snapshot = self._build_battle_snapshot(engine, "p1")
-                            driver_profile.snapshot_build_seconds += time.perf_counter() - snapshot_start
+                            driver_profile.snapshot_build_seconds += (
+                                time.perf_counter() - snapshot_start
+                            )
                             pending["p1_snapshot"] = snapshot
                             batched_policy_requests.setdefault(p1_policy, []).append(
                                 {
                                     "pending": pending,
                                     "side": "p1",
                                     "snapshot": snapshot,
-                                    "opponent_type": active.get("opponent_type", "self_play"),
+                                    "opponent_type": active.get(
+                                        "opponent_type", "self_play"
+                                    ),
                                 }
                             )
                         else:
@@ -1059,11 +1145,16 @@ class SyncRustBattleDriver:
                                 policy=p1_policy,
                                 opponent_type=active.get("opponent_type", "self_play"),
                             )
-                            driver_profile.baseline_choice_seconds += time.perf_counter() - choice_start
+                            driver_profile.baseline_choice_seconds += (
+                                time.perf_counter() - choice_start
+                            )
                             pending["p1_choice"] = step["choice"]
                             pending["p1_fallback_choice"] = step.get("fallback_choice")
                             pending["p1_snapshot"] = step.get("snapshot")
-                            if self._collect_rollouts and step.get("rollout_step") is not None:
+                            if (
+                                self._collect_rollouts
+                                and step.get("rollout_step") is not None
+                            ):
                                 active["trajectory"].append(step["rollout_step"])
 
                     if engine.needs_action("p2"):
@@ -1072,7 +1163,9 @@ class SyncRustBattleDriver:
                             tracked_policies[id(p2_policy)] = p2_policy
                             snapshot_start = time.perf_counter()
                             snapshot = self._build_battle_snapshot(engine, "p2")
-                            driver_profile.snapshot_build_seconds += time.perf_counter() - snapshot_start
+                            driver_profile.snapshot_build_seconds += (
+                                time.perf_counter() - snapshot_start
+                            )
                             pending["p2_snapshot"] = snapshot
                             batched_policy_requests.setdefault(p2_policy, []).append(
                                 {
@@ -1084,12 +1177,16 @@ class SyncRustBattleDriver:
                             )
                         else:
                             choice_start = time.perf_counter()
-                            p2_choice, p2_fallback_choice, p2_battle_snapshot = self._sample_choice(
-                                engine,
-                                side="p2",
-                                policy=p2_policy,
+                            p2_choice, p2_fallback_choice, p2_battle_snapshot = (
+                                self._sample_choice(
+                                    engine,
+                                    side="p2",
+                                    policy=p2_policy,
+                                )
                             )
-                            driver_profile.baseline_choice_seconds += time.perf_counter() - choice_start
+                            driver_profile.baseline_choice_seconds += (
+                                time.perf_counter() - choice_start
+                            )
                             pending["p2_choice"] = p2_choice
                             pending["p2_fallback_choice"] = p2_fallback_choice
                             pending["p2_snapshot"] = p2_battle_snapshot
@@ -1103,18 +1200,26 @@ class SyncRustBattleDriver:
                         [cast(BattleSnapshot, item["snapshot"]) for item in requests],
                         [cast(Optional[str], item["opponent_type"]) for item in requests],
                     )
-                    driver_profile.batched_policy_seconds += time.perf_counter() - batched_policy_start
+                    driver_profile.batched_policy_seconds += (
+                        time.perf_counter() - batched_policy_start
+                    )
                     for request, (choice, rollout_step) in zip(requests, decisions):
                         pending = cast(Dict[str, Any], request["pending"])
                         side = cast(str, request["side"])
                         snapshot = cast(BattleSnapshot, request["snapshot"])
-                        fallback_choice = snapshot.legal_actions[0][1] if snapshot.legal_actions else "default"
+                        fallback_choice = (
+                            snapshot.legal_actions[0][1]
+                            if snapshot.legal_actions
+                            else "default"
+                        )
                         if side == "p1":
                             pending["p1_choice"] = choice
                             pending["p1_fallback_choice"] = fallback_choice
                             if self._collect_rollouts and rollout_step is not None:
                                 active_entry = cast(Dict[str, Any], pending["active"])
-                                cast(List[RolloutStep], active_entry["trajectory"]).append(rollout_step)
+                                cast(List[RolloutStep], active_entry["trajectory"]).append(
+                                    rollout_step
+                                )
                         else:
                             pending["p2_choice"] = choice
                             pending["p2_fallback_choice"] = fallback_choice
@@ -1126,8 +1231,12 @@ class SyncRustBattleDriver:
                     submit_p2_choice = cast(Optional[str], pending["p2_choice"])
                     p1_fallback_choice = cast(Optional[str], pending["p1_fallback_choice"])
                     p2_fallback_choice = cast(Optional[str], pending["p2_fallback_choice"])
-                    p1_snapshot: Optional[BattleSnapshot] = cast(Optional[BattleSnapshot], pending["p1_snapshot"])
-                    p2_pending_snapshot: Optional[BattleSnapshot] = cast(Optional[BattleSnapshot], pending["p2_snapshot"])
+                    p1_snapshot: Optional[BattleSnapshot] = cast(
+                        Optional[BattleSnapshot], pending["p1_snapshot"]
+                    )
+                    p2_pending_snapshot: Optional[BattleSnapshot] = cast(
+                        Optional[BattleSnapshot], pending["p2_snapshot"]
+                    )
 
                     if submit_p1_choice is None and submit_p2_choice is None:
                         raise RuntimeError(
@@ -1137,8 +1246,13 @@ class SyncRustBattleDriver:
                     previous_turn = engine.turn
                     p1_protocol_log_before_step = self._engine_protocol_log(engine, "p1")
                     p2_protocol_log_before_step = self._engine_protocol_log(engine, "p2")
-                    selected_error_battle_tag = getattr(self, "_selected_error_battle_tag", None)
-                    if selected_error_battle_tag is None or selected_error_battle_tag == engine.battle_tag:
+                    selected_error_battle_tag = getattr(
+                        self, "_selected_error_battle_tag", None
+                    )
+                    if (
+                        selected_error_battle_tag is None
+                        or selected_error_battle_tag == engine.battle_tag
+                    ):
                         self._append_battle_trace_entry(
                             active,
                             {
@@ -1146,7 +1260,9 @@ class SyncRustBattleDriver:
                                 "turn_before": previous_turn,
                                 "stalled_steps_before": active["stalled_steps"],
                                 "p1": self._build_trace_side_state(engine, p1_snapshot),
-                                "p2": self._build_trace_side_state(engine, p2_pending_snapshot),
+                                "p2": self._build_trace_side_state(
+                                    engine, p2_pending_snapshot
+                                ),
                                 "submitted_choices": {
                                     "p1": submit_p1_choice,
                                     "p2": submit_p2_choice,
@@ -1160,7 +1276,9 @@ class SyncRustBattleDriver:
                     step_start = time.perf_counter()
                     step_result = cast(
                         Tuple[bool, bool, bool],
-                        engine.step(p1_choice=submit_p1_choice, p2_choice=submit_p2_choice),
+                        engine.step(
+                            p1_choice=submit_p1_choice, p2_choice=submit_p2_choice
+                        ),
                     )
                     _, p1_accepted, p2_accepted = step_result
                     p1_initially_accepted = p1_accepted
@@ -1171,15 +1289,29 @@ class SyncRustBattleDriver:
                     if not p2_initially_accepted:
                         p2_rejected_choices += 1
                         self._select_error_battle(engine.battle_tag)
-                    if not p1_initially_accepted and p1_fallback_choice is not None and p1_fallback_choice != submit_p1_choice:
-                        fallback_result = cast(Tuple[bool, bool, bool], engine.step(p1_choice=p1_fallback_choice))
+                    if (
+                        not p1_initially_accepted
+                        and p1_fallback_choice is not None
+                        and p1_fallback_choice != submit_p1_choice
+                    ):
+                        fallback_result = cast(
+                            Tuple[bool, bool, bool],
+                            engine.step(p1_choice=p1_fallback_choice),
+                        )
                         _, p1_accepted, _ = fallback_result
                         if p1_accepted:
                             p1_fallback_recoveries += 1
                     if not p1_accepted:
                         p1_unrecovered_rejections += 1
-                    if not p2_initially_accepted and p2_fallback_choice is not None and p2_fallback_choice != submit_p2_choice:
-                        fallback_result = cast(Tuple[bool, bool, bool], engine.step(p2_choice=p2_fallback_choice))
+                    if (
+                        not p2_initially_accepted
+                        and p2_fallback_choice is not None
+                        and p2_fallback_choice != submit_p2_choice
+                    ):
+                        fallback_result = cast(
+                            Tuple[bool, bool, bool],
+                            engine.step(p2_choice=p2_fallback_choice),
+                        )
                         _, _, p2_accepted = fallback_result
                         if p2_accepted:
                             p2_fallback_recoveries += 1
@@ -1188,7 +1320,10 @@ class SyncRustBattleDriver:
                         p2_unrecovered_rejections += 1
                     p1_protocol_log_after_step = self._engine_protocol_log(engine, "p1")
                     p2_protocol_log_after_step = self._engine_protocol_log(engine, "p2")
-                    if getattr(self, "_selected_error_battle_tag", None) == engine.battle_tag:
+                    if (
+                        getattr(self, "_selected_error_battle_tag", None)
+                        == engine.battle_tag
+                    ):
                         self._append_battle_trace_entry(
                             active,
                             {
@@ -1204,8 +1339,10 @@ class SyncRustBattleDriver:
                                     "p2": p2_accepted,
                                 },
                                 "fallback_recovered": {
-                                    "p1": (not p1_initially_accepted) and bool(p1_accepted),
-                                    "p2": (not p2_initially_accepted) and bool(p2_accepted),
+                                    "p1": (not p1_initially_accepted)
+                                    and bool(p1_accepted),
+                                    "p2": (not p2_initially_accepted)
+                                    and bool(p2_accepted),
                                 },
                                 "protocol_log_lengths": {
                                     "p1": len(self._engine_protocol_log(engine, "p1")),
@@ -1255,8 +1392,12 @@ class SyncRustBattleDriver:
         for policy in tracked_policies.values():
             driver_profile.policy_embed_seconds += policy.profile.embed_seconds
             driver_profile.policy_inference_seconds += policy.profile.inference_seconds
-            driver_profile.policy_action_decode_seconds += policy.profile.action_decode_seconds
-            driver_profile.policy_rollout_record_seconds += policy.profile.rollout_record_seconds
+            driver_profile.policy_action_decode_seconds += (
+                policy.profile.action_decode_seconds
+            )
+            driver_profile.policy_rollout_record_seconds += (
+                policy.profile.rollout_record_seconds
+            )
         return SyncDriverStats(
             completed_battles=completed_battles,
             p1_wins=p1_wins,
@@ -1277,13 +1418,25 @@ class SyncRustBattleDriver:
         )
 
     def _new_active_battle(self, battle_index: int) -> Dict[str, Any]:
-        battle_setup = self._battle_setup_callback(battle_index) if self._battle_setup_callback is not None else {}
+        battle_setup = (
+            self._battle_setup_callback(battle_index)
+            if self._battle_setup_callback is not None
+            else {}
+        )
         p1_team_text = battle_setup.get("p1_team_text")
         if p1_team_text is None:
-            p1_team_text = self._p1_team_supplier() if self._p1_team_supplier is not None else self._p1_team_text
+            p1_team_text = (
+                self._p1_team_supplier()
+                if self._p1_team_supplier is not None
+                else self._p1_team_text
+            )
         p2_team_text = battle_setup.get("p2_team_text")
         if p2_team_text is None:
-            p2_team_text = self._p2_team_supplier() if self._p2_team_supplier is not None else self._p2_team_text
+            p2_team_text = (
+                self._p2_team_supplier()
+                if self._p2_team_supplier is not None
+                else self._p2_team_text
+            )
         p1_team_struct = pokepaste_to_rust_team(p1_team_text)
         p2_team_struct = pokepaste_to_rust_team(p2_team_text)
         battle_tag = f"{self._battle_tag_prefix}-{battle_index}"
@@ -1319,11 +1472,12 @@ class SyncRustBattleDriver:
             p2_username="EliteFurretAI-p2",
             p1_team=p1_team_struct,
             p2_team=p2_team_struct,
-            log_observations=self._log_observations,
         )
         return {
             "engine": engine,
-            "trajectory": [teampreview["p1_rollout_step"]] if teampreview["p1_rollout_step"] is not None else [],
+            "trajectory": [teampreview["p1_rollout_step"]]
+            if teampreview["p1_rollout_step"] is not None
+            else [],
             "last_turn": engine.turn,
             "stalled_steps": 0,
             "p1_policy": p1_policy,
@@ -1348,7 +1502,9 @@ class SyncRustBattleDriver:
                 snapshot=snapshot,
                 opponent_type=opponent_type if side == "p1" else None,
             )
-            fallback_choice = snapshot.legal_actions[0][1] if snapshot.legal_actions else "default"
+            fallback_choice = (
+                snapshot.legal_actions[0][1] if snapshot.legal_actions else "default"
+            )
             return {
                 "choice": choice,
                 "fallback_choice": fallback_choice,
@@ -1359,7 +1515,9 @@ class SyncRustBattleDriver:
         action, choice, mask = self._sample_action_and_mask(snapshot)
         return {
             "choice": choice,
-            "fallback_choice": snapshot.legal_actions[0][1] if snapshot.legal_actions else "default",
+            "fallback_choice": snapshot.legal_actions[0][1]
+            if snapshot.legal_actions
+            else "default",
             "snapshot": snapshot,
             "rollout_step": RolloutStep(
                 state=snapshot.state_vector,
@@ -1372,10 +1530,18 @@ class SyncRustBattleDriver:
             ),
         }
 
-    def _build_battle_snapshot(self, engine: RustBattleEngine, side: str) -> BattleSnapshot:
+    def _build_battle_snapshot(
+        self, engine: RustBattleEngine, side: str
+    ) -> BattleSnapshot:
         battle = engine.battle_for(side)
-        side_snapshot = engine.side_snapshot(side) if self._include_binding_snapshots else None
-        request = (side_snapshot.request if side_snapshot is not None else engine.request_json(side)) or {}
+        side_snapshot = (
+            engine.side_snapshot(side) if self._include_binding_snapshots else None
+        )
+        request = (
+            side_snapshot.request
+            if side_snapshot is not None
+            else engine.request_json(side)
+        ) or {}
         legal_pairs = (
             self._all_teampreview_legal_actions()
             if battle.teampreview
@@ -1407,7 +1573,9 @@ class SyncRustBattleDriver:
             action_mask=action_mask,
             action_to_choice=action_to_choice,
             is_teampreview=bool(battle.teampreview),
-            opponent_fainted=sum(1 for mon in battle.opponent_team.values() if mon.fainted),
+            opponent_fainted=sum(
+                1 for mon in battle.opponent_team.values() if mon.fainted
+            ),
             state_vector=state_vector,
             binding_snapshot=side_snapshot,
         )
@@ -1421,14 +1589,21 @@ class SyncRustBattleDriver:
         if isinstance(policy, SyncPolicyPlayer):
             step = self._build_choice_context(engine, side, policy=policy)
             fallback_choice = cast(Optional[str], step.get("fallback_choice"))
-            return cast(str, step["choice"]), fallback_choice, cast(BattleSnapshot, step["snapshot"])
+            return (
+                cast(str, step["choice"]),
+                fallback_choice,
+                cast(BattleSnapshot, step["snapshot"]),
+            )
         if isinstance(policy, SyncBaselineController):
             snapshot = self._build_battle_snapshot(engine, side)
             choice = policy.choose(engine.battle_for(side))
             return choice, choice, snapshot
         snapshot = self._build_battle_snapshot(engine, side)
         _, choice, _ = self._sample_action_and_mask(snapshot)
-        fallback_choice = cast(Optional[str], snapshot.legal_actions[0][1] if snapshot.legal_actions else "default")
+        fallback_choice = cast(
+            Optional[str],
+            snapshot.legal_actions[0][1] if snapshot.legal_actions else "default",
+        )
         return choice, fallback_choice, snapshot
 
     def _sample_action_and_mask(
@@ -1535,9 +1710,15 @@ class SyncRustBattleDriver:
 
         side = request.get("side") or {}
         pokemon_list = side.get("pokemon") or []
-        active_side_pokemon = [pokemon for pokemon in pokemon_list if pokemon.get("active")]
-        active_side_entry = active_side_pokemon[slot] if slot < len(active_side_pokemon) else None
-        if isinstance(active_side_entry, dict) and bool(active_side_entry.get("commanding")):
+        active_side_pokemon = [
+            pokemon for pokemon in pokemon_list if pokemon.get("active")
+        ]
+        active_side_entry = (
+            active_side_pokemon[slot] if slot < len(active_side_pokemon) else None
+        )
+        if isinstance(active_side_entry, dict) and bool(
+            active_side_entry.get("commanding")
+        ):
             return pass_only_action()
 
         active_request = active_requests[slot]
@@ -1643,10 +1824,22 @@ class SyncRustBattleDriver:
         protocol_log_before_step: Sequence[Dict[str, str]],
         protocol_log_after_step: Sequence[Dict[str, str]],
     ) -> None:
-        request = snapshot.request if snapshot is not None else (self._engine_request_json(engine, side) or {})
+        request = (
+            snapshot.request
+            if snapshot is not None
+            else (self._engine_request_json(engine, side) or {})
+        )
         legal_actions = snapshot.legal_actions if snapshot is not None else []
-        battle = snapshot.battle if snapshot is not None else self._engine_battle_for(engine, side)
-        raw_request = snapshot.binding_snapshot.raw_request if snapshot is not None and snapshot.binding_snapshot is not None else None
+        battle = (
+            snapshot.battle
+            if snapshot is not None
+            else self._engine_battle_for(engine, side)
+        )
+        raw_request = (
+            snapshot.binding_snapshot.raw_request
+            if snapshot is not None and snapshot.binding_snapshot is not None
+            else None
+        )
         request_type = self._request_type_from_request(request)
         if request_type is None:
             request_type = self._engine_request_type(engine, side)
@@ -1662,19 +1855,27 @@ class SyncRustBattleDriver:
                 "choice": submitted_choice,
                 "choice_kind": self._classify_choice(submitted_choice),
                 "choice_slot_kinds": self._split_choice_kinds(submitted_choice),
-                "choice_action_index": self._action_index_for_choice(legal_actions, submitted_choice),
-                "choice_in_legal_actions": self._choice_in_legal_actions(legal_actions, submitted_choice),
+                "choice_action_index": self._action_index_for_choice(
+                    legal_actions, submitted_choice
+                ),
+                "choice_in_legal_actions": self._choice_in_legal_actions(
+                    legal_actions, submitted_choice
+                ),
                 "fallback_choice": fallback_choice,
                 "fallback_kind": self._classify_choice(fallback_choice),
                 "fallback_slot_kinds": self._split_choice_kinds(fallback_choice),
-                "fallback_in_legal_actions": self._choice_in_legal_actions(legal_actions, fallback_choice),
+                "fallback_in_legal_actions": self._choice_in_legal_actions(
+                    legal_actions, fallback_choice
+                ),
                 "fallback_recovered": fallback_recovered,
                 "legal_choice_count": len(legal_actions),
                 "legal_choices": [choice for _, choice in legal_actions],
                 "legal_choice_preview": [choice for _, choice in legal_actions[:8]],
                 "force_switch": request.get("forceSwitch"),
                 "active_trapped": [
-                    bool(active.get("trapped")) for active in (request.get("active") or []) if isinstance(active, dict)
+                    bool(active.get("trapped"))
+                    for active in (request.get("active") or [])
+                    if isinstance(active, dict)
                 ],
                 "can_tera": [
                     active.get("canTerastallize") is not None
@@ -1682,8 +1883,12 @@ class SyncRustBattleDriver:
                     if isinstance(active, dict)
                 ],
                 "protocol_history": self._engine_protocol_history(engine, side, limit=5),
-                "protocol_log_before_step": [dict(entry) for entry in protocol_log_before_step],
-                "protocol_log_after_step": [dict(entry) for entry in protocol_log_after_step],
+                "protocol_log_before_step": [
+                    dict(entry) for entry in protocol_log_before_step
+                ],
+                "protocol_log_after_step": [
+                    dict(entry) for entry in protocol_log_after_step
+                ],
                 "stalled_steps": None,
                 "battle_state_poke_env": self._battle_state_to_string(battle),
                 "battle_state_request": self._request_state_to_string(request),
@@ -1703,14 +1908,27 @@ class SyncRustBattleDriver:
             status = getattr(getattr(mon, "status", None), "name", None) or "None"
             return f"{species} [status={status}]"
 
-        weather = ", ".join(effect.name for effect in getattr(observation, "weather", {})) or "None"
-        fields = ", ".join(effect.name for effect in getattr(observation, "fields", {})) or "None"
-        side_conditions = ", ".join(
-            effect.name for effect in getattr(observation, "side_conditions", {})
-        ) or "None"
-        opp_side_conditions = ", ".join(
-            effect.name for effect in getattr(observation, "opponent_side_conditions", {})
-        ) or "None"
+        weather = (
+            ", ".join(effect.name for effect in getattr(observation, "weather", {}))
+            or "None"
+        )
+        fields = (
+            ", ".join(effect.name for effect in getattr(observation, "fields", {}))
+            or "None"
+        )
+        side_conditions = (
+            ", ".join(
+                effect.name for effect in getattr(observation, "side_conditions", {})
+            )
+            or "None"
+        )
+        opp_side_conditions = (
+            ", ".join(
+                effect.name
+                for effect in getattr(observation, "opponent_side_conditions", {})
+            )
+            or "None"
+        )
         events = getattr(observation, "events", []) or []
         lines = [
             f"Observed My Active: [{', '.join(mon_label(mon) for mon in getattr(observation, 'active_pokemon', []) or [])}]",
@@ -1750,7 +1968,9 @@ class SyncRustBattleDriver:
             lines: List[str] = []
             for index, mon in enumerate(team, start=1):
                 species = getattr(mon, "species", getattr(mon, "name", f"mon-{index}"))
-                lines.append(f"  - {prefix}{index}: {species} [active={getattr(mon, 'active', False)}, fainted={getattr(mon, 'fainted', False)}]")
+                lines.append(
+                    f"  - {prefix}{index}: {species} [active={getattr(mon, 'active', False)}, fainted={getattr(mon, 'fainted', False)}]"
+                )
             return lines
 
         if bool(getattr(battle, "teampreview", False)):
@@ -1761,14 +1981,28 @@ class SyncRustBattleDriver:
                     "My Teampreview Team:",
                     *preview_lines("slot ", getattr(battle, "teampreview_team", []) or []),
                     "Opp Teampreview Team:",
-                    *preview_lines("slot ", getattr(battle, "teampreview_opponent_team", []) or []),
+                    *preview_lines(
+                        "slot ", getattr(battle, "teampreview_opponent_team", []) or []
+                    ),
                 ]
             )
 
-        weather = ", ".join(effect.name for effect in getattr(battle, "weather", {})) or "None"
-        fields = ", ".join(effect.name for effect in getattr(battle, "fields", {})) or "None"
-        side_conditions = ", ".join(effect.name for effect in getattr(battle, "side_conditions", {})) or "None"
-        opp_side_conditions = ", ".join(effect.name for effect in getattr(battle, "opponent_side_conditions", {})) or "None"
+        weather = (
+            ", ".join(effect.name for effect in getattr(battle, "weather", {})) or "None"
+        )
+        fields = (
+            ", ".join(effect.name for effect in getattr(battle, "fields", {})) or "None"
+        )
+        side_conditions = (
+            ", ".join(effect.name for effect in getattr(battle, "side_conditions", {}))
+            or "None"
+        )
+        opp_side_conditions = (
+            ", ".join(
+                effect.name for effect in getattr(battle, "opponent_side_conditions", {})
+            )
+            or "None"
+        )
         active_pokemon = getattr(battle, "active_pokemon", []) or []
         opponent_active_pokemon = getattr(battle, "opponent_active_pokemon", []) or []
         lines = [
@@ -1862,7 +2096,9 @@ class SyncRustBattleDriver:
         if battle_tag not in selected_tags and len(selected_tags) < record_limit:
             selected_tags.add(battle_tag)
 
-    def _append_battle_trace_entry(self, active: Dict[str, Any], event: Dict[str, Any]) -> None:
+    def _append_battle_trace_entry(
+        self, active: Dict[str, Any], event: Dict[str, Any]
+    ) -> None:
         if not getattr(self, "_error_battle_record_path", None):
             return
         active.setdefault("battle_trace", []).append(event)
@@ -1881,13 +2117,17 @@ class SyncRustBattleDriver:
             "side": snapshot.side,
             "request_type": self._request_type_from_request(snapshot.request),
             "sanitized_request": snapshot.request,
-            "raw_request": binding_snapshot.raw_request if binding_snapshot is not None else None,
+            "raw_request": binding_snapshot.raw_request
+            if binding_snapshot is not None
+            else None,
             "legal_choice_count": len(snapshot.legal_actions),
             "legal_choices": [choice for _, choice in snapshot.legal_actions],
             "battle_state_poke_env": self._battle_state_to_string(snapshot.battle),
             "battle_state_request": self._request_state_to_string(snapshot.request),
             "protocol_log_length_before": protocol_log_length_before,
-            "protocol_history": binding_snapshot.pending_messages if binding_snapshot is not None else None,
+            "protocol_history": binding_snapshot.pending_messages
+            if binding_snapshot is not None
+            else None,
         }
 
     def _finalize_error_battle_record(
@@ -1958,7 +2198,9 @@ class SyncRustBattleDriver:
         return [self._classify_choice(part.strip()) for part in choice.split(",")]
 
     @staticmethod
-    def _choice_in_legal_actions(legal_actions: Sequence[Tuple[int, str]], choice: Optional[str]) -> bool:
+    def _choice_in_legal_actions(
+        legal_actions: Sequence[Tuple[int, str]], choice: Optional[str]
+    ) -> bool:
         if choice is None:
             return False
         return any(legal_choice == choice for _, legal_choice in legal_actions)
@@ -1997,7 +2239,9 @@ class SyncRustBattleDriver:
         return battle_for(side)
 
     @staticmethod
-    def _engine_protocol_history(engine: Any, side: str, limit: int = 5) -> List[Dict[str, str]]:
+    def _engine_protocol_history(
+        engine: Any, side: str, limit: int = 5
+    ) -> List[Dict[str, str]]:
         protocol_history = getattr(engine, "protocol_history", None)
         if protocol_history is None:
             return []

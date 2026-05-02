@@ -6,7 +6,7 @@ import resource
 import time
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, cast
+from typing import Any, Dict, List, Optional, Sequence, Union, cast
 
 from poke_env import AccountConfiguration, ServerConfiguration
 from poke_env.battle import AbstractBattle, DoubleBattle
@@ -31,7 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--format", default="gen9vgc2024regg")
     parser.add_argument("--config", required=True)
-    parser.add_argument("--checkpoint", required=True)
+    parser.add_argument("--checkpoint")
     parser.add_argument("--opponent-checkpoint")
     parser.add_argument("--battles", type=int, default=60)
     parser.add_argument("--max-concurrent-battles", type=int, default=1)
@@ -86,7 +86,7 @@ def _build_team_source(
     team_path: Optional[str],
     random_teams: bool,
     subdirectory: Optional[str],
-) -> str | Teambuilder:
+) -> Union[str, Teambuilder]:
     if random_teams:
         return RandomTeamRepoTeambuilder(
             repo=repo,
@@ -135,7 +135,7 @@ def _observation_to_lines(observation: Optional[Observation]) -> List[str]:
         f"Observed Opp Team: {_render_team(getattr(observation, 'opponent_team', {}))}",
         "Observed Events:",
     ]
-    events = getattr(observation, 'events', [])
+    events = getattr(observation, "events", [])
     if events:
         lines.extend(f"  - {_stringify_event(event)}" for event in events)
     else:
@@ -182,7 +182,11 @@ def _battle_state_to_string(battle: AbstractBattle) -> str:
         f"Can Tera: {getattr(battle, 'can_tera', None)}",
     ]
     if bool(getattr(battle, "teampreview", False)):
-        lines.extend(_preview_lines("My Teampreview Team:", getattr(battle, "teampreview_team", []) or []))
+        lines.extend(
+            _preview_lines(
+                "My Teampreview Team:", getattr(battle, "teampreview_team", []) or []
+            )
+        )
         lines.extend(
             _preview_lines(
                 "Opp Teampreview Team:",
@@ -372,11 +376,17 @@ class DiagnosticBatchInferencePlayer(BatchInferencePlayer):
                 "player_role": getattr(battle, "player_role", None),
                 "error_message": message,
                 "attempted_message": self._last_messages.get(battle.battle_tag),
-                "request_type": _request_type_from_request(getattr(battle, "last_request", {}) or {}),
+                "request_type": _request_type_from_request(
+                    getattr(battle, "last_request", {}) or {}
+                ),
                 "request": deepcopy(getattr(battle, "last_request", {}) or {}),
                 "battle_state": _battle_state_to_string(battle),
-                "request_state": _request_state_to_string(getattr(battle, "last_request", {}) or {}),
-                "observations": _observations_to_string(battle, getattr(battle, "turn", 0)),
+                "request_state": _request_state_to_string(
+                    getattr(battle, "last_request", {}) or {}
+                ),
+                "observations": _observations_to_string(
+                    battle, getattr(battle, "turn", 0)
+                ),
             }
             self._diagnostic_records.append(record)
 
@@ -387,17 +397,19 @@ async def _run(args: argparse.Namespace) -> None:
     repo = TeamRepo(shuffle=False)
     rng = random.Random(args.seed)
     config = RNaDConfig.load(args.config)
-    feature_set = args.feature_set or config.embedder_feature_set
-    temperature = args.temperature if args.temperature is not None else config.temperature_at_step(0)
-    top_p = args.top_p if args.top_p is not None else config.top_p
+    feature_set = args.feature_set or config.training.embedder_feature_set
+    temperature = (
+        args.temperature if args.temperature is not None else config.temperature_at_step(0)
+    )
+    top_p = args.top_p if args.top_p is not None else config.exploration.top_p
 
     team_subdirectory = args.team_subdirectory
     if team_subdirectory is None and args.random_teams:
-        team_subdirectory = config.team_pool_path
+        team_subdirectory = config.curriculum.team_pool_path
 
     opponent_team_subdirectory = args.opponent_team_subdirectory
     if opponent_team_subdirectory is None and args.random_opponent_teams:
-        opponent_team_subdirectory = config.team_pool_path
+        opponent_team_subdirectory = config.curriculum.team_pool_path
 
     p1_team = _build_team_source(
         repo=repo,
@@ -407,7 +419,7 @@ async def _run(args: argparse.Namespace) -> None:
         subdirectory=team_subdirectory,
     )
     if args.opponent_team_path is not None:
-        p2_team: str | Teambuilder = Path(args.opponent_team_path).read_text()
+        p2_team: Union[str, Teambuilder] = Path(args.opponent_team_path).read_text()
     elif args.random_opponent_teams:
         p2_team = _build_team_source(
             repo=repo,
@@ -419,7 +431,7 @@ async def _run(args: argparse.Namespace) -> None:
     elif args.no_mirror:
         p2_team = repo.sample_team(
             args.format,
-            subdirectory=config.team_pool_path,
+            subdirectory=config.curriculum.team_pool_path,
         )
     else:
         p2_team = p1_team
@@ -444,15 +456,19 @@ async def _run(args: argparse.Namespace) -> None:
     try:
         setup_start = time.perf_counter()
         suffix = rng.randint(100000, 999999)
-        server_config = ServerConfiguration(f"ws://localhost:{args.port}/showdown/websocket", "")
+        server_config = ServerConfiguration(
+            f"ws://localhost:{args.port}/showdown/websocket", ""
+        )
 
         embedder = Embedder(
-            format=config.battle_format,
+            format=config.curriculum.battle_format,
             feature_set=feature_set,
             omniscient=False,
         )
         p1_agent = _build_agent(config, args.device, args.checkpoint)
-        p2_agent = _build_agent(config, args.device, args.opponent_checkpoint or args.checkpoint)
+        p2_agent = _build_agent(
+            config, args.device, args.opponent_checkpoint or args.checkpoint
+        )
 
         player1 = DiagnosticBatchInferencePlayer(
             model=p1_agent,
@@ -462,13 +478,12 @@ async def _run(args: argparse.Namespace) -> None:
             probabilistic=not args.greedy,
             embedder=embedder,
             max_battle_steps=args.max_battle_steps,
-            battle_format=config.battle_format,
+            battle_format=config.curriculum.battle_format,
             team=p1_team,
             max_concurrent_battles=args.max_concurrent_battles,
             server_configuration=server_config,
             account_configuration=AccountConfiguration(f"showdiagp1{suffix}", None),
             log_level=args.log_level,
-            log_observations=True,
             diagnostic_records=diagnostic_records,
         )
         player2 = BatchInferencePlayer(
@@ -479,13 +494,12 @@ async def _run(args: argparse.Namespace) -> None:
             probabilistic=not args.greedy,
             embedder=embedder,
             max_battle_steps=args.max_battle_steps,
-            battle_format=config.battle_format,
+            battle_format=config.curriculum.battle_format,
             team=p2_team,
             max_concurrent_battles=args.max_concurrent_battles,
             server_configuration=server_config,
             account_configuration=AccountConfiguration(f"showdiagp2{suffix}", None),
             log_level=args.log_level,
-            log_observations=True,
         )
 
         p1_model_player = cast(BatchInferencePlayer, player1)
@@ -550,7 +564,9 @@ async def _run(args: argparse.Namespace) -> None:
     summary = {
         "completed_battles": getattr(player1, "n_finished_battles", 0),
         "p1_wins": getattr(player1, "n_won_battles", 0),
-        "duration_seconds": server_launch_seconds + player_setup_seconds + battle_loop_seconds,
+        "duration_seconds": server_launch_seconds
+        + player_setup_seconds
+        + battle_loop_seconds,
         "server_launch_seconds": server_launch_seconds,
         "player_setup_seconds": player_setup_seconds,
         "battle_loop_seconds": battle_loop_seconds,
@@ -558,7 +574,9 @@ async def _run(args: argparse.Namespace) -> None:
         "cpu_user_seconds": usage.ru_utime,
         "cpu_system_seconds": usage.ru_stime,
         "invalid_choice_count": len(diagnostic_records),
-        "p1_invalid_choice_count": sum(1 for record in diagnostic_records if record.get("player_role") == "p1"),
+        "p1_invalid_choice_count": sum(
+            1 for record in diagnostic_records if record.get("player_role") == "p1"
+        ),
         "p1_turn_le_3_count": len(first_p1_early_records),
         "error_family_counts": error_family_counts,
         "request_type_counts": request_type_counts,

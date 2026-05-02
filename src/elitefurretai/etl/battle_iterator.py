@@ -706,14 +706,28 @@ class BattleIterator:
             map(lambda x: self._perspective + ": " + team[x].name, team_choice)
         )
 
+        # Showdown puts active Pokemon first in side["pokemon"] (slot a then b),
+        # followed by bench. parse_request matches request["active"][i] against
+        # request["side"]["pokemon"][i], so we must mirror that ordering here.
+        active_pokemon = self.battle._active_pokemon  # type: ignore
+        active_a = active_pokemon.get(f"{self.perspective}a")
+        active_b = active_pokemon.get(f"{self.perspective}b")
+        ordered_team: List[Pokemon] = []
+        if active_a is not None:
+            ordered_team.append(active_a)
+        if active_b is not None and active_b is not active_a:
+            ordered_team.append(active_b)
+        for mon in self.battle.team.values():
+            if mon in ordered_team:
+                continue
+            if mon.identifier(self._perspective) not in identifiers:
+                continue
+            ordered_team.append(mon)
+
         req["side"] = {
             "name": self.battle.player_username,
             "id": self.battle.player_role,
-            "pokemon": [
-                self._generate_request_mon(mon)
-                for mon in self.battle.team.values()
-                if mon.identifier(self._perspective) in identifiers
-            ],
+            "pokemon": [self._generate_request_mon(mon) for mon in ordered_team],
         }
 
         req["rqid"] = self.index

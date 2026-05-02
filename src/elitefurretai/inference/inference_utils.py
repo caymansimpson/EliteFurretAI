@@ -15,6 +15,7 @@ from poke_env.battle import (
     Field,
     Move,
     MoveCategory,
+    MoveSet,
     Pokemon,
     PokemonType,
     SideCondition,
@@ -47,11 +48,11 @@ def copy_pokemon(orig: Pokemon, gen: int) -> Pokemon:
     mon._active = orig._active
     mon._current_hp = orig._current_hp
     mon._effects = orig._effects
-    mon._first_turn = orig._first_turn
+    mon._active_turns = orig._active_turns
     mon._gender = orig._gender
     mon._level = orig._level
     mon._max_hp = orig._max_hp
-    mon._moves = {k: v for k, v in orig._moves.items()}
+    mon._moves = MoveSet({k: v for k, v in orig._moves.moves.items()})
     mon._must_recharge = orig._must_recharge
     mon._ability = orig._ability
     mon._preparing_target = orig._preparing_target
@@ -482,13 +483,14 @@ def get_priority_and_identifier(
         priority = 1
 
     # Override if my place in the priority bracket is overriden
+    is_dancer_copy = any("[from]ability: Dancer" in part for part in event)
     if (
         Effect.QUASH in mon.effects
         or Effect.AFTER_YOU in mon.effects
         or Effect.QUICK_CLAW in mon.effects
         or Effect.QUICK_DRAW in mon.effects
         or Effect.CUSTAP_BERRY in mon.effects
-        or Effect.DANCER in mon.effects
+        or is_dancer_copy
         or mon.item == "laggingtail"
         or mon.item == "fullincense"
         or mon.ability == "stall"

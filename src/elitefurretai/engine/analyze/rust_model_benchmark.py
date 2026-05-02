@@ -14,7 +14,7 @@ from elitefurretai.engine.sync_battle_driver import SyncPolicyPlayer, SyncRustBa
 from elitefurretai.etl import Embedder
 from elitefurretai.etl.team_repo import TeamRepo
 from elitefurretai.rl.config import RNaDConfig
-from elitefurretai.rl.model_io import build_model_from_config, load_agent_from_checkpoint
+from elitefurretai.rl.learners import build_model_from_config, load_agent_from_checkpoint
 from elitefurretai.rl.players import RNaDAgent
 
 
@@ -49,7 +49,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--diagnostic-log-path")
     parser.add_argument("--error-battle-record-path")
     parser.add_argument("--error-battle-record-limit", type=int, default=10)
-    parser.add_argument("--log-observations", action="store_true")
     return parser
 
 
@@ -58,8 +57,8 @@ def _build_agent(config: RNaDConfig, device: str, checkpoint: str | None) -> RNa
         return load_agent_from_checkpoint(checkpoint, device)
 
     embedder = Embedder(
-        format=config.battle_format,
-        feature_set=config.embedder_feature_set,
+        format=config.curriculum.battle_format,
+        feature_set=config.training.embedder_feature_set,
         omniscient=False,
     )
     model = build_model_from_config(config.to_dict(), embedder, device, None)
@@ -70,51 +69,59 @@ def main() -> None:
     args = build_parser().parse_args()
     config = RNaDConfig.load(args.config)
     repo = TeamRepo(shuffle=False)
-    feature_set = args.feature_set or config.embedder_feature_set
-    max_concurrent = args.max_concurrent or max(1, config.players_per_worker // 2)
-    max_turns_per_battle = args.max_turns_per_battle or max(100, config.max_battle_steps * 2)
-    max_stalled_steps_per_battle = args.max_stalled_steps_per_battle or max(25, config.max_battle_steps // 2)
+    feature_set = args.feature_set or config.training.embedder_feature_set
+    max_concurrent = args.max_concurrent or max(1, config.hardware.players_per_worker // 2)
+    max_turns_per_battle = args.max_turns_per_battle or max(
+        100, config.hardware.max_battle_steps * 2
+    )
+    max_stalled_steps_per_battle = args.max_stalled_steps_per_battle or max(
+        25, config.hardware.max_battle_steps // 2
+    )
 
-    p1_team = _load_team_text(config.battle_format, args.team_path, repo)
+    p1_team = _load_team_text(config.curriculum.battle_format, args.team_path, repo)
     if args.opponent_team_path is not None:
         p2_team = Path(args.opponent_team_path).read_text()
     elif args.no_mirror:
-        p2_team = repo.sample_team(config.battle_format)
+        p2_team = repo.sample_team(config.curriculum.battle_format)
     else:
         p2_team = p1_team
 
     p1_agent = _build_agent(config, args.device, args.checkpoint)
-    p2_agent = _build_agent(config, args.device, args.opponent_checkpoint or args.checkpoint)
+    p2_agent = _build_agent(
+        config, args.device, args.opponent_checkpoint or args.checkpoint
+    )
 
-    temperature = args.temperature if args.temperature is not None else config.temperature_at_step(0)
-    top_p = args.top_p if args.top_p is not None else config.top_p
+    temperature = (
+        args.temperature if args.temperature is not None else config.temperature_at_step(0)
+    )
+    top_p = args.top_p if args.top_p is not None else config.exploration.top_p
     p1_policy = SyncPolicyPlayer(
         p1_agent,
-        config.battle_format,
+        config.curriculum.battle_format,
         device=args.device,
         feature_set=feature_set,
         collect_trajectories=args.collect_rollouts,
         probabilistic=not args.greedy,
         temperature=temperature,
         top_p=top_p,
-        max_battle_steps=config.max_battle_steps,
+        max_battle_steps=config.hardware.max_battle_steps,
         opponent_type="self_play",
     )
     p2_policy = SyncPolicyPlayer(
         p2_agent,
-        config.battle_format,
+        config.curriculum.battle_format,
         device=args.device,
         feature_set=feature_set,
         collect_trajectories=False,
         probabilistic=not args.greedy,
         temperature=temperature,
         top_p=top_p,
-        max_battle_steps=config.max_battle_steps,
+        max_battle_steps=config.hardware.max_battle_steps,
         opponent_type="self_play",
     )
 
     driver = SyncRustBattleDriver(
-        format_id=config.battle_format,
+        format_id=config.curriculum.battle_format,
         p1_team=p1_team,
         p2_team=p2_team,
         feature_set=feature_set,
@@ -128,7 +135,6 @@ def main() -> None:
         diagnostic_log_path=args.diagnostic_log_path,
         error_battle_record_path=args.error_battle_record_path,
         error_battle_record_limit=args.error_battle_record_limit,
-        log_observations=args.log_observations,
     )
     stats = driver.run(
         total_battles=args.battles,
@@ -157,7 +163,9 @@ def main() -> None:
     print(f"max_concurrent={max_concurrent}")
     print(f"device={args.device}")
     print(f"model_checkpoint={args.checkpoint or 'fresh_config_model'}")
-    print(f"opponent_checkpoint={args.opponent_checkpoint or args.checkpoint or 'fresh_config_model'}")
+    print(
+        f"opponent_checkpoint={args.opponent_checkpoint or args.checkpoint or 'fresh_config_model'}"
+    )
     print(f"feature_set={feature_set}")
     print(f"max_turns_per_battle={max_turns_per_battle}")
     print(f"max_stalled_steps_per_battle={max_stalled_steps_per_battle}")
@@ -165,7 +173,6 @@ def main() -> None:
     print(f"diagnostic_log_path={args.diagnostic_log_path or 'disabled'}")
     print(f"error_battle_record_path={args.error_battle_record_path or 'disabled'}")
     print(f"error_battle_record_limit={args.error_battle_record_limit}")
-    print(f"log_observations={args.log_observations}")
     print(f"probabilistic={not args.greedy}")
     print(f"temperature={temperature}")
     print(f"top_p={top_p}")
@@ -178,7 +185,9 @@ def main() -> None:
     print(f"policy_embed_seconds={stats.profile.policy_embed_seconds:.3f}")
     print(f"policy_inference_seconds={stats.profile.policy_inference_seconds:.3f}")
     print(f"policy_action_decode_seconds={stats.profile.policy_action_decode_seconds:.3f}")
-    print(f"policy_rollout_record_seconds={stats.profile.policy_rollout_record_seconds:.3f}")
+    print(
+        f"policy_rollout_record_seconds={stats.profile.policy_rollout_record_seconds:.3f}"
+    )
     print(f"total_profiled_seconds={stats.profile.total_profiled_seconds:.3f}")
 
 

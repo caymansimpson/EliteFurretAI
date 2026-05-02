@@ -6,6 +6,7 @@ Tests for the 4 observation embedding improvements:
 3. One-hot boost encoding (-6 to +6)
 4. Entity ID embeddings for abilities and items
 """
+
 from logging import Logger
 
 import torch
@@ -199,7 +200,9 @@ class TestDurationEncoding:
 
         remaining_keys = [k for k in emb if ":remaining" in k]
         # 4 weathers + 6 fields + 4 duration SCs * 2 sides = 18
-        expected = len(TRACKED_WEATHERS) + len(TRACKED_FIELDS) + 2 * len(SIDE_CONDITION_DURATIONS)
+        expected = (
+            len(TRACKED_WEATHERS) + len(TRACKED_FIELDS) + 2 * len(SIDE_CONDITION_DURATIONS)
+        )
         assert len(remaining_keys) == expected
 
 
@@ -230,7 +233,9 @@ class TestTransitionFeatures:
         features = embedder.generate_transition_features(battle)
 
         for key, val in features.items():
-            assert val == -1, f"{key} should be -1 at turn 1 (no prev observations), got {val}"
+            assert val == -1, (
+                f"{key} should be -1 at turn 1 (no prev observations), got {val}"
+            )
 
     def test_transition_feature_keys(self):
         """Verify all expected transition feature keys are present."""
@@ -242,9 +247,14 @@ class TestTransitionFeatures:
         # Per-slot features: 4 slots × 8 features = 32
         slots = ["MY:0:", "MY:1:", "OPP:0:", "OPP:1:"]
         per_slot_feats = [
-            "used_move", "used_switch", "used_protect",
-            "was_crit", "hit_super_effective", "hit_resisted",
-            "move_missed", "move_failed",
+            "used_move",
+            "used_switch",
+            "used_protect",
+            "was_crit",
+            "hit_super_effective",
+            "hit_resisted",
+            "move_missed",
+            "move_failed",
         ]
         for slot in slots:
             for feat in per_slot_feats:
@@ -551,7 +561,9 @@ class TestOneHotBoostEncoding:
 
         for stat in ["accuracy", "atk", "def", "spa", "spd", "spe"]:
             boost_keys = [k for k in emb if k.startswith(f"BOOST:{stat}:")]
-            assert len(boost_keys) == 13, f"Expected 13 boost keys for {stat}, got {len(boost_keys)}"
+            assert len(boost_keys) == 13, (
+                f"Expected 13 boost keys for {stat}, got {len(boost_keys)}"
+            )
 
     def test_boost_one_hot_opponent(self):
         """One-hot boosts should also work for opponent pokemon features."""
@@ -838,6 +850,8 @@ class TestEntityIDEncoderModel:
             group_sizes=group_sizes,
             num_abilities=NUM_ABILITIES,
             num_items=NUM_ITEMS,
+            num_species=NUM_SPECIES,
+            num_moves=NUM_MOVES,
             ability_embed_dim=16,
             item_embed_dim=16,
         )
@@ -863,6 +877,8 @@ class TestEntityIDEncoderModel:
             group_sizes=group_sizes,
             num_abilities=NUM_ABILITIES,
             num_items=NUM_ITEMS,
+            num_species=NUM_SPECIES,
+            num_moves=NUM_MOVES,
         )
 
         # Groups 0-11 should each have ability_id and item_id
@@ -925,11 +941,15 @@ class TestEntityIDEncoderModel:
             # Set entity ID positions to valid integer values
             for local_idx, etype in encoder._group_maps[gi]:
                 if etype == "ability":
-                    x[:, :, local_idx] = torch.randint(0, NUM_ABILITIES, (batch, seq)).float()
+                    x[:, :, local_idx] = torch.randint(
+                        0, NUM_ABILITIES, (batch, seq)
+                    ).float()
                 elif etype == "item":
                     x[:, :, local_idx] = torch.randint(0, NUM_ITEMS, (batch, seq)).float()
                 elif etype == "species":
-                    x[:, :, local_idx] = torch.randint(0, NUM_SPECIES, (batch, seq)).float()
+                    x[:, :, local_idx] = torch.randint(
+                        0, NUM_SPECIES, (batch, seq)
+                    ).float()
                 else:  # move
                     x[:, :, local_idx] = torch.randint(0, NUM_MOVES, (batch, seq)).float()
 
@@ -973,6 +993,8 @@ class TestEntityIDEncoderModel:
             group_sizes=[2],
             num_abilities=5,
             num_items=5,
+            num_species=5,
+            num_moves=5,
         )
 
         # Set input to 0 (unknown) and check that padding_idx blocks gradients
@@ -1017,13 +1039,21 @@ class TestGroupedFeatureEncoderWithEntityIDs:
         for gi, gsize in enumerate(group_sizes):
             for local_idx, etype in gfe.entity_id_encoder._group_maps[gi]:
                 if etype == "ability":
-                    x[:, :, offset + local_idx] = torch.randint(0, NUM_ABILITIES, (batch, seq)).float()
+                    x[:, :, offset + local_idx] = torch.randint(
+                        0, NUM_ABILITIES, (batch, seq)
+                    ).float()
                 elif etype == "item":
-                    x[:, :, offset + local_idx] = torch.randint(0, NUM_ITEMS, (batch, seq)).float()
+                    x[:, :, offset + local_idx] = torch.randint(
+                        0, NUM_ITEMS, (batch, seq)
+                    ).float()
                 elif etype == "species":
-                    x[:, :, offset + local_idx] = torch.randint(0, NUM_SPECIES, (batch, seq)).float()
+                    x[:, :, offset + local_idx] = torch.randint(
+                        0, NUM_SPECIES, (batch, seq)
+                    ).float()
                 else:  # move
-                    x[:, :, offset + local_idx] = torch.randint(0, NUM_MOVES, (batch, seq)).float()
+                    x[:, :, offset + local_idx] = torch.randint(
+                        0, NUM_MOVES, (batch, seq)
+                    ).float()
             offset += gsize
 
         out = gfe(x)
@@ -1081,7 +1111,10 @@ class TestEmbedderIntegration:
 
         assert e_full.embedding_size == e_full_omni.embedding_size
         assert e_full.pokemon_embedding_size == e_full_omni.pokemon_embedding_size
-        assert e_full.opponent_pokemon_embedding_size == e_full_omni.opponent_pokemon_embedding_size
+        assert (
+            e_full.opponent_pokemon_embedding_size
+            == e_full_omni.opponent_pokemon_embedding_size
+        )
         assert e_full.battle_embedding_size == e_full_omni.battle_embedding_size
         assert e_full.transition_embedding_size == e_full_omni.transition_embedding_size
 
@@ -1106,10 +1139,18 @@ class TestEmbedderIntegration:
         item_id_keys = [k for k in emb if "item_id" in k]
         species_id_keys = [k for k in emb if "species_id" in k]
         move_id_keys = [k for k in emb if "move_id" in k]
-        assert len(ability_id_keys) == 12, f"Expected 12 ability_id keys (6 player + 6 opp), got {len(ability_id_keys)}"
-        assert len(item_id_keys) == 12, f"Expected 12 item_id keys, got {len(item_id_keys)}"
-        assert len(species_id_keys) == 12, f"Expected 12 species_id keys (6 player + 6 opp), got {len(species_id_keys)}"
-        assert len(move_id_keys) > 0, f"Expected move_id keys in move features, got {len(move_id_keys)}"
+        assert len(ability_id_keys) == 12, (
+            f"Expected 12 ability_id keys (6 player + 6 opp), got {len(ability_id_keys)}"
+        )
+        assert len(item_id_keys) == 12, (
+            f"Expected 12 item_id keys, got {len(item_id_keys)}"
+        )
+        assert len(species_id_keys) == 12, (
+            f"Expected 12 species_id keys (6 player + 6 opp), got {len(species_id_keys)}"
+        )
+        assert len(move_id_keys) > 0, (
+            f"Expected move_id keys in move features, got {len(move_id_keys)}"
+        )
 
         # Pruned features should be absent
         assert not any(k.endswith(":level") for k in emb), "level feature should be pruned"
@@ -1168,10 +1209,9 @@ class TestEmbedderIntegration:
         names = embedder.feature_names
         groups = embedder.group_embedding_sizes
 
-        expected_prefixes = (
-            [f"MON:{i}:" for i in range(6)]
-            + [f"OPP_MON:{i}:" for i in range(6)]
-        )
+        expected_prefixes = [f"MON:{i}:" for i in range(6)] + [
+            f"OPP_MON:{i}:" for i in range(6)
+        ]
 
         start = 0
         # Check player and opponent Pokemon groups
@@ -1188,9 +1228,15 @@ class TestEmbedderIntegration:
         # Group 12: battle state (no MON/OPP_MON/TRANSITION/EST_DAMAGE prefix)
         battle_group = names[start : start + groups[12]]
         for feat_name in battle_group:
-            assert not feat_name.startswith("MON:"), f"Battle group has MON feature: {feat_name}"
-            assert not feat_name.startswith("OPP_MON:"), f"Battle group has OPP_MON feature: {feat_name}"
-            assert not feat_name.startswith("TRANSITION:"), f"Battle group has TRANSITION: {feat_name}"
+            assert not feat_name.startswith("MON:"), (
+                f"Battle group has MON feature: {feat_name}"
+            )
+            assert not feat_name.startswith("OPP_MON:"), (
+                f"Battle group has OPP_MON feature: {feat_name}"
+            )
+            assert not feat_name.startswith("TRANSITION:"), (
+                f"Battle group has TRANSITION: {feat_name}"
+            )
         start += groups[12]
 
         # Group 13: feature engineered

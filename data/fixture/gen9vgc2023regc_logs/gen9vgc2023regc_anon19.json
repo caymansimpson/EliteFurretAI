@@ -504,7 +504,7 @@
       "|-terastallize|p2b: 62b3f62ef4|Fairy",
       "|-terastallize|p1b: 77b0ab8de8|Ghost",
       "|move|p2a: 1b26b17d61|Trick|p1a: 996b9bf6d1",
-      "|-activate|p2a: 1b26b17d61|move: Trick|p1a: Final Haunt|[of] p1a: 996b9bf6d1",
+      "|-activate|p2a: 1b26b17d61|move: Trick|p1a: 996b9bf6d1|[of] p1a: 996b9bf6d1",
       "|-item|p1a: 996b9bf6d1|Eject Button|[from] move: Trick",
       "|-enditem|p2a: 1b26b17d61|Eject Button|[silent]|[from] move: Trick",
       "|move|p2b: 62b3f62ef4|Dazzling Gleam|p1a: 996b9bf6d1|[spread] p1a,p1b",
