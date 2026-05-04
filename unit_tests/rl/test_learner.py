@@ -525,16 +525,16 @@ def _make_learner_with_epochs(agent, ref_agent, ppo_epochs=1, kl_early_stop=None
     )
 
 
-def test_ppo_default_epochs_is_one(learner):
-    """Default config should preserve original single-epoch behavior."""
-    assert learner.ppo_epochs == 1
+def test_ppo_default_epochs_is_three(learner):
+    """Default config uses K=3 mini-epochs (the standard PPO recommendation)."""
+    assert learner.ppo_epochs == 3
 
 
 def test_ppo_metrics_include_epochs_actual(learner, sample_batch):
-    """update() must report ppo_epochs_actual (=1 by default)."""
+    """update() must report ppo_epochs_actual; matches default K=3."""
     metrics = learner.update(sample_batch)
     assert "ppo_epochs_actual" in metrics
-    assert metrics["ppo_epochs_actual"] == 1
+    assert metrics["ppo_epochs_actual"] == 3
     assert "approx_kl" in metrics
 
 

@@ -86,10 +86,12 @@ class AlgorithmConfig:
     rnad_alpha: float = 0.01
     vf_coef: float = 0.5
     # PPO mini-epochs: how many gradient passes to take over the same batch
-    # per RL update. Default 1 reproduces the original behavior. Standard PPO
-    # uses 3-10. Old log probs from collection are reused across epochs;
-    # reference model forwards happen once per update (frozen across epochs).
-    ppo_epochs: int = 1
+    # per RL update. K=1 reproduces the original behavior. Standard PPO
+    # uses 3-10; we default to 3 — multiplies learning per battle without
+    # changing actor collection rate. Old log probs from collection are
+    # reused across epochs; reference model forwards happen once per update
+    # (frozen across epochs).
+    ppo_epochs: int = 3
     # Optional safety: stop the PPO inner loop early when approximate KL
     # between current and old policies exceeds this threshold. None disables.
     # Recommended range when used: 0.01 - 0.05.
