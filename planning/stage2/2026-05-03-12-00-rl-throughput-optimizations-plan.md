@@ -540,12 +540,196 @@ of previous; learner-side throughput unchanged.
 
 ## Updates
 
-*(Filled in as each phase completes — record `b/s_mean`, `b/s_std`, decision,
-commit hash or revert note.)*
+### Execution session 2026-05-03 evening (autonomous)
 
-- **Phase 0 baseline** (b/s_mean, b/s_std): `TBD`
-- **Phase 1 (H10+H8)** (smoke result, commit hash): `TBD`
-- **Phase 2 (H7+H11)** (b/s delta, parity test, commit hash): `TBD`
-- **Phase 3 (H4)** (chosen K, win-rate@200 vs wall-clock, commit hash): `TBD`
-- **Phase 4 (H1)** (b/s delta, parity test, commit hash): `TBD`
-- **Final stack vs. Phase 0 baseline** (b/s_mean delta, updates/hour delta): `TBD`
+Branch: `rl-throughput-opts` (off main at `22133b7`).
+
+**Reprioritization (per Cayman's direction):**
+
+The original plan's baseline numbers (1.61 b/s, 4.7M-step transformer, full
+embedder) were taken pre-shrink. Since this plan was written, the model is
+~5× smaller (`cool-bee-85-finetune` ≈ 27M params, 4-layer transformer with
+hidden=512 / ff=1024 / 8 heads) and the embedder was simplified. Actor
+inference is now much cheaper; collate is also smaller. So instead of the
+plan's Phase 1 → 2 → 3 → 4 order, executed:
+
+  **Phase 1 → Phase 3 (biggest expected win) → Phase 2 → Phase 4 (deferred)**.
+
+Compute budget: smoke-only. Skipped the multi-day Phase 0 baseline / 5-rerun
+benchmark protocol; ran one short smoke training (3 updates, Rust backend)
+per phase to detect regressions, deferring statistical promote/reject to
+Cayman's review.
+
+#### Phase 1 (H8+H10) — `commit 64c727c`
+
+- `_build_optimizer` now passes `fused=True` to AdamW when `device=cuda`.
+- Collapsed the double `clip_grad_norm_` call into one; `grad_norm_after`
+  is now `min(grad_norm_before, max_norm)` (correct post-clip norm; the
+  old code reported pre-clip in both fields, a latent reporting bug).
+- Drive-by: fixed `_config_to_flat_arch` referencing an undefined
+  `_is_nested_format` (left over from the recent BCPlayer-unification
+  refactor; was blocking the smoke test). Rewrote as always-flatten
+  (safe because no MODEL_ARCH_CONFIG_KEYS value is itself a dict).
+- Drive-by: `test_rl_train_smoke` globbed `save_dir` non-recursively but
+  checkpoints land under `save_dir/<run_name>/`; switched to `rglob`.
+- All RL unit tests pass. Smoke training: losses healthy, no fused
+  warnings on CPU path.
+
+**Decision: PROMOTE** (committed). No throughput change expected, all
+correctness-neutral (or correctness-improving for the grad-norm logging).
+
+#### Phase 3 (H4 PPO mini-epochs) — `commit 8ceef71`
+
+- Added `algorithm.ppo_epochs` (default 1) and
+  `algorithm.ppo_kl_early_stop` to config.
+- Restructured `PortfolioRNaDLearner.update()`:
+  - Reference model forwards now compute ONCE per update outside the
+    inner loop; their slice+masked logits are cached.
+  - Inner loop K times: forward main model, compute losses (reusing
+    cached refs), backward + clip + optimizer step.
+  - Scheduler advances once per update (not per epoch).
+  - Old log-probs from collection are reused across epochs (standard PPO).
+  - Bookkeeping (`portfolio_selection_counts`, `portfolio_kl_history`)
+    only tracks on epoch 0 via a new `track=` flag on
+    `_compute_portfolio_kl`, so a K=5 update bumps counters identically
+    to K=1.
+  - New metrics: `approx_kl` (Schulman approximation), `ppo_epochs_actual`.
+- 6 new unit tests in `test_learner.py`:
+  - default K=1 preserved
+  - K=3 takes 3 inner epochs
+  - K=3 drifts the model further from initial than K=1 (more steps)
+  - `_step` counter advances per update, not per epoch
+  - `ppo_kl_early_stop=0` triggers early bailout
+  - selection counter bumps once per update regardless of K
+- All RL tests pass (177 total: 171 existing + 6 new).
+- Smoke training: K=1 losses match pre-refactor magnitude; K=3 shows
+  the expected effect — value loss decreases per update where K=1 stays
+  flat over 3 updates (more learning per battle).
+
+**Decision: PROMOTE** (committed) with **default K=1**, knob added.
+Recommended initial value when Cayman benchmarks: K=3. The plan's
+quality-only gate (200-update win-rate × 3 reruns × 3 K values) was NOT
+run — needs Cayman's go-ahead and a budget for ~15-25 hours of GPU time.
+The implementation correctness is verified; the choice of K is the open
+decision.
+
+#### Phase 2 (H7+H11 vectorize collate + GAE) — `commit 727ef08`
+
+- `collate_trajectories` rewritten:
+  - Pre-allocate `(B, T, ...)` numpy buffers; fill via `np.stack`/list
+    assign per trajectory in one loop. Eliminates per-step
+    `torch.tensor()` allocations.
+  - Convert numpy → torch via `from_numpy` (zero-copy CPU); single
+    `.to(device, non_blocking=True)` per tensor.
+  - GAE replaced with one reverse-T loop using (B,) vector ops, with
+    padding-aware masking (gae stays at 0 through padded suffix,
+    matching original per-traj semantics).
+- 3 parity tests in `test_train_utils.py` against a frozen reference
+  implementation, atol=1e-5 across all keys including states, actions,
+  advantages, returns, padding_mask, masks. Tests cover single
+  trajectory, batch with varied lengths, and `max_seq_len` truncation.
+- All RL tests pass (180 total).
+- Microbenchmark on a realistic batch (B=64, T~25, dim=4096):
+  - OLD per-traj collate: **90.6 ms/call**
+  - NEW vectorized:       **22.1 ms/call** (4.10× speedup)
+- On a ~40s steady-state update this saves ~1-2% wall-clock — small in
+  fraction but free correctness-equivalent compute.
+
+**Decision: PROMOTE** (committed). Parity confirmed by tests; speedup
+confirmed by microbenchmark.
+
+#### Phase 4 (H1 KV-cache transformer) — **DEFERRED, recommend SKIP**
+
+After profiling and reading the architecture more carefully, I'm
+recommending you skip this phase rather than land it. Two reasons:
+
+**1. Profiling shows much smaller payoff than the plan estimated.**
+With `cool-bee-85-finetune` (27M params, 4-layer transformer,
+hidden=512, ff=1024, 8 heads) on CPU at B=8:
+
+| Sequence length | transformer forward | full forward_with_hidden |
+|---|---|---|
+| T=1   | 3.3 ms | 25.1 ms |
+| T=15  | ~10 ms | 29.5 ms |
+| T=30  | 18.2 ms | 34.9 ms |
+
+Cumulative transformer cost per battle (T=1..30): ~190 ms. Best-case
+KV-cache: 30 × 3.3 ms ≈ 100 ms. Savings: **~90 ms / battle of pure
+transformer time**, or **~10% of per-battle decision wall-clock**.
+
+But actor wall-clock per battle is dominated by Showdown websocket
+roundtrip, not local compute. Realistic end-to-end b/s improvement:
+**1-3%**, not the plan's "1.5-2× actor inference" estimate (which
+was sized against the much larger curious-darkness transformer
+running on GPU).
+
+**2. The architecture has a fundamental KV-cache obstruction.**
+The decision tokens (`[ACTOR]`, `[CRITIC]`, `[FIELD]`) are placed at
+positions 0-2 of the encoder sequence and `_build_causal_mask` makes
+them **bidirectional** — they attend to all positions including future
+turns. This means:
+
+- Each new turn changes DT's representations at every layer.
+- DT's K/V projections at every layer therefore change too.
+- Old turn positions attend to DT, so their representations would
+  change as well in a strict-equivalence forward — except we'd be
+  reusing cached K/V from when DT was in its older state.
+
+Pure KV-cache is **mathematically inconsistent** with this
+architecture. Implementations would either:
+  - **(a) Accept approximation** — DT representations drift; old turn
+    positions' attention to DT uses stale K/V. Parity test fails.
+    Subtly-wrong learning is much worse than no speedup.
+  - **(b) Recompute decision tokens every turn** — re-run all layers
+    for the 3 DT positions every turn. Saves only the K/V projection
+    cost on OLD turn positions. Net savings ~50% of the cost in (1)
+    above, so end-to-end ≤ 1% on Showdown wall-clock.
+  - **(c) Architectural change** — drop DT bidirectionality (causal
+    DT-from-turns only). Breaks BC checkpoint compatibility. Big
+    downstream change for marginal gain.
+
+Implementation cost for any of these: 4–8 hours of careful code +
+parity testing. Risk of subtle bugs corrupting training: real.
+Expected end-to-end gain at best: 1–3% throughput.
+
+**Recommended decision: SKIP Phase 4.** If you want to reconsider
+later, the right framing is "is a 1–3% throughput gain worth
+re-architecting the decision tokens to be causal?" — which is more
+of a Stage III architecture conversation than a throughput
+optimization.
+
+If you disagree and want me to attempt option (b) anyway, I can —
+just push back on this analysis.
+
+#### Summary of state at end of session
+
+| Phase | Status | Commit | Δ b/s expected | Δ verified |
+|---|---|---|---|---|
+| 1 (H8+H10) | LANDED | `64c727c` | <1% | smoke healthy |
+| 3 (H4 PPO mini-epochs) | LANDED, K=1 default | `8ceef71` | 0% (not throughput; multiplies learning per battle) | smoke healthy at K=1 and K=3 |
+| 2 (H7+H11 vectorize collate) | LANDED | `727ef08` | ~1-2% (collate share of update) | 4.10× collate microbench, parity test green |
+| 4 (H1 KV-cache) | NOT IMPLEMENTED, recommend SKIP | — | originally 1.5-2× actor inference; revised to 1-3% throughput due to model-size shrink + DT bidirectionality | — |
+
+**Awaiting Cayman's decisions:**
+1. Confirm K value for Phase 3 (recommend K=3 as a starting point;
+   needs the 200-update quality benchmark to validate).
+2. Confirm SKIP for Phase 4, or push back and ask me to attempt
+   option (b) (recompute DT every turn).
+3. Merge `rl-throughput-opts` to main, or hold for review.
+
+**Pre-existing bug fixed as a drive-by during Phase 1**: `learners.py`
+referenced an undefined `_is_nested_format` symbol after the recent
+"Refactor RL training" commit (`8161a8f`); was blocking the smoke
+test. Smoke test glob also updated for the per-run-subdir checkpoint
+layout.
+
+---
+
+*(Original tracker template, kept for reference)*
+
+- **Phase 0 baseline** (b/s_mean, b/s_std): not run (smoke-only budget)
+- **Phase 1 (H10+H8)** (smoke result, commit hash): healthy, `64c727c`
+- **Phase 2 (H7+H11)** (b/s delta, parity test, commit hash): 4.10× collate microbench, parity green, `727ef08`
+- **Phase 3 (H4)** (chosen K, win-rate@200 vs wall-clock, commit hash): default K=1, knob added; quality benchmark pending Cayman, `8ceef71`
+- **Phase 4 (H1)** (b/s delta, parity test, commit hash): not implemented; recommend skip (see above)
+- **Final stack vs. Phase 0 baseline** (b/s_mean delta, updates/hour delta): pending the formal benchmark
