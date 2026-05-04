@@ -703,5 +703,204 @@ def test_trajectory_truncation_mixed_lengths():
     assert batch["padding_mask"][1].sum() == 10
 
 
+# =============================================================================
+# VECTORIZED COLLATE PARITY TESTS (Phase 2: H7+H11)
+#
+# These tests pin down that the new vectorized collate_trajectories in train.py
+# produces the same numbers as the reference per-trajectory loop above. The
+# learner consumes advantages/returns as gradient targets — any drift here
+# silently corrupts learning, so this gate must be tight (atol=1e-5).
+# =============================================================================
+
+
+def _reference_collate(trajectories_dicts, device, gamma, gae_lambda, max_seq_len=40):
+    """Per-trajectory reference implementation (the pre-Phase-2 collate).
+
+    Mirrors the *new* function's signature: takes the same {"steps": [...]}
+    dict format and the same kwargs.
+    """
+    from elitefurretai.etl.encoder import MDBO
+
+    trajs = [
+        traj["steps"][-max_seq_len:] if len(traj["steps"]) > max_seq_len else traj["steps"]
+        for traj in trajectories_dicts
+    ]
+
+    batch_size = len(trajs)
+    max_len = max(len(t) for t in trajs)
+    dim = len(trajs[0][0]["state"])
+
+    states = torch.zeros(batch_size, max_len, dim)
+    actions = torch.zeros(batch_size, max_len, dtype=torch.long)
+    rewards = torch.zeros(batch_size, max_len)
+    log_probs = torch.zeros(batch_size, max_len)
+    values = torch.zeros(batch_size, max_len)
+    is_tp = torch.zeros(batch_size, max_len, dtype=torch.bool)
+    padding_mask = torch.zeros(batch_size, max_len, dtype=torch.bool)
+    masks = torch.ones(batch_size, max_len, MDBO.action_space())
+    advantages = torch.zeros(batch_size, max_len)
+    returns = torch.zeros(batch_size, max_len)
+
+    for i, traj in enumerate(trajs):
+        seq_len = len(traj)
+
+        traj_states = torch.tensor(np.array([step["state"] for step in traj]))
+        traj_actions = torch.tensor([step["action"] for step in traj])
+        traj_rewards = torch.tensor([step["reward"] for step in traj])
+        traj_log_probs = torch.tensor([step["log_prob"] for step in traj])
+        traj_values = torch.tensor([step["value"] for step in traj])
+        traj_is_tp = torch.tensor([step["is_teampreview"] for step in traj])
+
+        states[i, :seq_len] = traj_states
+        actions[i, :seq_len] = traj_actions
+        rewards[i, :seq_len] = traj_rewards
+        log_probs[i, :seq_len] = traj_log_probs
+        values[i, :seq_len] = traj_values
+        is_tp[i, :seq_len] = traj_is_tp
+        padding_mask[i, :seq_len] = 1
+
+        for t, step in enumerate(traj):
+            if not step["is_teampreview"]:
+                masks[i, t] = torch.tensor(step["mask"], dtype=torch.float32)
+
+        last_gae_lam = torch.tensor(0.0)
+        next_val = torch.tensor(0.0)
+        for t in reversed(range(seq_len)):
+            delta = traj_rewards[t] + gamma * next_val - traj_values[t]
+            last_gae_lam = delta + gamma * gae_lambda * last_gae_lam
+            advantages[i, t] = last_gae_lam
+            returns[i, t] = traj_values[t] + last_gae_lam
+            next_val = traj_values[t]
+
+    return {
+        "states": states.to(device),
+        "actions": actions.to(device),
+        "rewards": rewards.to(device),
+        "log_probs": log_probs.to(device),
+        "values": values.to(device),
+        "is_teampreview": is_tp.to(device),
+        "advantages": advantages.to(device),
+        "returns": returns.to(device),
+        "padding_mask": padding_mask.to(device),
+        "masks": masks.to(device),
+    }
+
+
+def _make_vararious_trajectories(seed, num_trajs, dim):
+    """Build a list of {"steps": [...]} trajectories with varied lengths,
+    rewards, values, and action mask shapes."""
+    from elitefurretai.etl.encoder import MDBO
+
+    rng = np.random.default_rng(seed)
+    action_space = MDBO.action_space()
+    tp_space = MDBO.teampreview_space()
+
+    trajectories = []
+    lengths = rng.integers(low=3, high=15, size=num_trajs).tolist()
+    for length in lengths:
+        steps = []
+        for t in range(length):
+            is_tp = t == 0
+            mask = np.ones(action_space, dtype=np.float32)
+            if not is_tp:
+                # randomly mask ~half
+                drop = rng.random(action_space) < 0.5
+                mask[drop] = 0.0
+                # ensure at least one valid action
+                mask[0] = 1.0
+            steps.append(
+                {
+                    "state": rng.standard_normal(dim).astype(np.float32),
+                    "action": int(rng.integers(0, tp_space if is_tp else action_space)),
+                    "log_prob": float(-rng.random()),
+                    "value": float(rng.standard_normal()),
+                    "reward": float(rng.standard_normal()) if t == length - 1 else 0.0,
+                    "is_teampreview": is_tp,
+                    "mask": mask,
+                }
+            )
+        trajectories.append({"steps": steps})
+    return trajectories
+
+
+def test_vectorized_collate_matches_reference_simple():
+    """Single-trajectory parity check on a tiny embed dim."""
+    from elitefurretai.rl.train import collate_trajectories
+
+    trajs = _make_vararious_trajectories(seed=1, num_trajs=1, dim=8)
+    new = collate_trajectories(trajs, "cpu", gamma=0.99, gae_lambda=0.95)
+    old = _reference_collate(trajs, "cpu", gamma=0.99, gae_lambda=0.95)
+
+    for key in new.keys() & old.keys():
+        if new[key].dtype.is_floating_point:
+            assert torch.allclose(new[key], old[key], atol=1e-5), (
+                f"Mismatch on key={key}: max diff = {(new[key] - old[key]).abs().max()}"
+            )
+        else:
+            assert torch.equal(new[key], old[key]), f"Mismatch on key={key}"
+
+
+def test_vectorized_collate_matches_reference_batch_varied_lengths():
+    """Batch of trajectories with varied lengths — exercises padding + GAE
+    boundary handling."""
+    from elitefurretai.rl.train import collate_trajectories
+
+    trajs = _make_vararious_trajectories(seed=2, num_trajs=8, dim=16)
+    new = collate_trajectories(trajs, "cpu", gamma=0.99, gae_lambda=0.95)
+    old = _reference_collate(trajs, "cpu", gamma=0.99, gae_lambda=0.95)
+
+    # Mandatory keys
+    for key in (
+        "states",
+        "actions",
+        "rewards",
+        "log_probs",
+        "values",
+        "is_teampreview",
+        "advantages",
+        "returns",
+        "padding_mask",
+        "masks",
+    ):
+        assert key in new, f"Vectorized collate missing key {key}"
+        assert key in old
+        if new[key].dtype.is_floating_point:
+            assert torch.allclose(new[key], old[key], atol=1e-5), (
+                f"Mismatch on key={key}: max diff = {(new[key] - old[key]).abs().max()}"
+            )
+        else:
+            assert torch.equal(new[key], old[key]), f"Mismatch on key={key}"
+
+
+def test_vectorized_collate_truncates_long_trajectories():
+    """max_seq_len kwarg must keep the trailing window (late game matters)."""
+    from elitefurretai.rl.train import collate_trajectories
+
+    trajs = _make_vararious_trajectories(seed=3, num_trajs=2, dim=4)
+    # Hand-craft one trajectory longer than max_seq_len
+    long_steps = trajs[0]["steps"]
+    while len(long_steps) < 50:
+        long_steps.append(
+            {
+                "state": np.zeros(4, dtype=np.float32),
+                "action": 1,
+                "log_prob": -0.1,
+                "value": 0.0,
+                "reward": 0.0,
+                "is_teampreview": False,
+                "mask": np.ones(2025, dtype=np.float32),
+            }
+        )
+    new = collate_trajectories(trajs, "cpu", gamma=0.99, gae_lambda=0.95, max_seq_len=10)
+    old = _reference_collate(trajs, "cpu", gamma=0.99, gae_lambda=0.95, max_seq_len=10)
+
+    assert new["states"].shape[1] == 10
+    for key in ("advantages", "returns", "padding_mask"):
+        if new[key].dtype.is_floating_point:
+            assert torch.allclose(new[key], old[key], atol=1e-5)
+        else:
+            assert torch.equal(new[key], old[key])
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

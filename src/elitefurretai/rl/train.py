@@ -323,66 +323,82 @@ def collate_trajectories(trajectories, device, gamma, gae_lambda, max_seq_len=40
 
     batch_size = len(trajectories)
     max_len = max(len(t) for t in trajectories)
-
-    # Get dim from first state
     dim = len(trajectories[0][0]["state"])
+    action_space = MDBO.action_space()
 
-    states = torch.zeros(batch_size, max_len, dim)
-    actions = torch.zeros(batch_size, max_len, dtype=torch.long)
-    rewards = torch.zeros(batch_size, max_len)
-    log_probs = torch.zeros(batch_size, max_len)
-    values = torch.zeros(batch_size, max_len)
-    is_tp = torch.zeros(batch_size, max_len, dtype=torch.bool)
-    padding_mask = torch.zeros(batch_size, max_len, dtype=torch.bool)
-    masks = torch.ones(batch_size, max_len, MDBO.action_space())
-    advantages = torch.zeros(batch_size, max_len)
-    returns = torch.zeros(batch_size, max_len)
+    # ── Pre-allocate numpy buffers and fill them per-trajectory ──────────────
+    # Avoids the per-step `torch.tensor(...)` calls in the inner loop, each of
+    # which is a separate allocation + dtype check. Numpy slice-assign is
+    # ~10× cheaper for the dimensions we care about. Final torch.from_numpy
+    # is zero-copy.
+    np_states = np.zeros((batch_size, max_len, dim), dtype=np.float32)
+    np_actions = np.zeros((batch_size, max_len), dtype=np.int64)
+    np_rewards = np.zeros((batch_size, max_len), dtype=np.float32)
+    np_log_probs = np.zeros((batch_size, max_len), dtype=np.float32)
+    np_values = np.zeros((batch_size, max_len), dtype=np.float32)
+    np_is_tp = np.zeros((batch_size, max_len), dtype=bool)
+    np_padding = np.zeros((batch_size, max_len), dtype=bool)
+    # Default to all-1s; turn steps overwrite with the real mask. Teampreview
+    # and padded positions stay all-1s (the learner ignores them via flat_is_tp
+    # and padding_mask anyway).
+    np_masks = np.ones((batch_size, max_len, action_space), dtype=np.float32)
 
     for i, traj in enumerate(trajectories):
         seq_len = len(traj)
 
-        # Extract fields
-        traj_states = torch.tensor(np.array([step["state"] for step in traj]))
-        traj_actions = torch.tensor([step["action"] for step in traj])
-        traj_rewards = torch.tensor([step["reward"] for step in traj])
-        traj_log_probs = torch.tensor([step["log_prob"] for step in traj])
-        traj_values = torch.tensor([step["value"] for step in traj])
-        traj_is_tp = torch.tensor([step["is_teampreview"] for step in traj])
+        np_states[i, :seq_len] = np.stack([step["state"] for step in traj])
+        np_actions[i, :seq_len] = [step["action"] for step in traj]
+        np_rewards[i, :seq_len] = [step["reward"] for step in traj]
+        np_log_probs[i, :seq_len] = [step["log_prob"] for step in traj]
+        np_values[i, :seq_len] = [step["value"] for step in traj]
+        np_is_tp[i, :seq_len] = [step["is_teampreview"] for step in traj]
+        np_padding[i, :seq_len] = True
 
-        states[i, :seq_len] = traj_states
-        actions[i, :seq_len] = traj_actions
-        rewards[i, :seq_len] = traj_rewards
-        log_probs[i, :seq_len] = traj_log_probs
-        values[i, :seq_len] = traj_values
-        is_tp[i, :seq_len] = traj_is_tp
-        padding_mask[i, :seq_len] = 1
-
-        # Collate action masks for turn steps
         for t, step in enumerate(traj):
             if not step["is_teampreview"]:
-                masks[i, t] = torch.tensor(step["mask"], dtype=torch.float32)
+                np_masks[i, t] = step["mask"]
 
-        # Compute GAE backwards, writing directly into the padded output tensors
-        last_gae_lam = torch.tensor(0.0)
-        next_val = torch.tensor(0.0)
-        for t in reversed(range(seq_len)):
-            delta = traj_rewards[t] + gamma * next_val - traj_values[t]
-            last_gae_lam = delta + gamma * gae_lambda * last_gae_lam
-            advantages[i, t] = last_gae_lam
-            returns[i, t] = traj_values[t] + last_gae_lam
-            next_val = traj_values[t]
+    # Convert to torch (zero-copy on CPU). Move to device once at the end.
+    states = torch.from_numpy(np_states)
+    actions = torch.from_numpy(np_actions)
+    rewards = torch.from_numpy(np_rewards)
+    log_probs = torch.from_numpy(np_log_probs)
+    values = torch.from_numpy(np_values)
+    is_tp = torch.from_numpy(np_is_tp)
+    padding_mask = torch.from_numpy(np_padding)
+    masks = torch.from_numpy(np_masks)
+
+    # ── Vectorized GAE ───────────────────────────────────────────────────────
+    # Single reverse-T loop with (B,) vector ops instead of B*T Python
+    # iterations. Padding handled by masking the gae update (gae stays at 0
+    # for batches whose t is past their seq_len, since the initial value is 0
+    # and we never updated it through the all-padded suffix).
+    advantages = torch.zeros(batch_size, max_len, dtype=torch.float32)
+    gae = torch.zeros(batch_size, dtype=torch.float32)
+    pad_float = padding_mask.float()
+    for t in reversed(range(max_len)):
+        if t + 1 < max_len:
+            # When t+1 is padded, treat next_val as 0 (terminal at end-of-traj).
+            next_val = values[:, t + 1] * pad_float[:, t + 1]
+        else:
+            next_val = torch.zeros(batch_size, dtype=torch.float32)
+        delta = rewards[:, t] + gamma * next_val - values[:, t]
+        gae_new = delta + gamma * gae_lambda * gae
+        gae = torch.where(padding_mask[:, t], gae_new, gae)
+        advantages[:, t] = gae
+    returns = (advantages + values) * pad_float
 
     return {
-        "states": states.to(device),
-        "actions": actions.to(device),
-        "rewards": rewards.to(device),
-        "log_probs": log_probs.to(device),
-        "values": values.to(device),
-        "is_teampreview": is_tp.to(device),
-        "advantages": advantages.to(device),
-        "returns": returns.to(device),
-        "padding_mask": padding_mask.to(device),
-        "masks": masks.to(device),
+        "states": states.to(device, non_blocking=True),
+        "actions": actions.to(device, non_blocking=True),
+        "rewards": rewards.to(device, non_blocking=True),
+        "log_probs": log_probs.to(device, non_blocking=True),
+        "values": values.to(device, non_blocking=True),
+        "is_teampreview": is_tp.to(device, non_blocking=True),
+        "advantages": advantages.to(device, non_blocking=True),
+        "returns": returns.to(device, non_blocking=True),
+        "padding_mask": padding_mask.to(device, non_blocking=True),
+        "masks": masks.to(device, non_blocking=True),
     }
 
 
