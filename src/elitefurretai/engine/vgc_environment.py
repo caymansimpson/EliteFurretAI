@@ -608,10 +608,10 @@ class _ShowdownBackend(_BackendBase):
             batch_timeout=hw.batch_timeout,
             max_battle_steps=hw.max_battle_steps,
             exploiter_models_dir=os.path.join(
-                str(self.config.training.run_dir), "exploiters"
+                str(self._config.training.run_dir), "exploiters"
             ),
             max_exploiter_models=cur.max_exploiter_models,
-            ghosts_dir=os.path.join(str(self.config.training.run_dir), "ghosts"),
+            ghosts_dir=os.path.join(str(self._config.training.run_dir), "ghosts"),
             max_ghosts=cur.max_ghosts,
             vgc_bench_checkpoint_path=cur.vgc_bench_checkpoint_path,
             external_vgcbench_usernames=cur.external_vgcbench_usernames,

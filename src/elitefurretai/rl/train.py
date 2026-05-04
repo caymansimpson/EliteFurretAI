@@ -198,10 +198,22 @@ def initialize_training_state(
             weights_only=False,
         )
         checkpoint_cfg = init_checkpoint.get("config", cfg)
-        checkpoint_rnad = RNaDConfig.from_dict(checkpoint_cfg)
+        # BC checkpoints store config in flat form (e.g. optimizer is the
+        # string "adamw"); RL checkpoints use the nested RNaDConfig shape.
+        # We only need embedder_feature_set here — read it from either layout
+        # and fall back to the runtime config if absent.
+        if (
+            isinstance(checkpoint_cfg.get("training"), dict)
+            and "embedder_feature_set" in checkpoint_cfg["training"]
+        ):
+            ckpt_feature_set = checkpoint_cfg["training"]["embedder_feature_set"]
+        else:
+            ckpt_feature_set = checkpoint_cfg.get(
+                "embedder_feature_set", config.training.embedder_feature_set
+            )
         embedder = Embedder(
             format=config.curriculum.battle_format,
-            feature_set=checkpoint_rnad.training.embedder_feature_set,
+            feature_set=ckpt_feature_set,
             omniscient=False,
         )
         base_model = build_model_from_config(
