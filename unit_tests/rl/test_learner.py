@@ -496,5 +496,126 @@ def test_rnad_agent_value_range(agent, simple_embedder):
     assert value.max() <= 1.0
 
 
+# =============================================================================
+# PPO MINI-EPOCH TESTS (algorithm.ppo_epochs)
+# =============================================================================
+
+
+def _make_learner_with_epochs(agent, ref_agent, ppo_epochs=1, kl_early_stop=None):
+    """Build a learner identical to the `learner` fixture but with K mini-epochs."""
+    config = RNaDConfig()
+    config.algorithm.clip_range = 0.2
+    config.algorithm.ent_coef = 0.01
+    config.algorithm.vf_coef = 0.5
+    config.algorithm.rnad_alpha = 0.1
+    config.algorithm.gamma = 0.99
+    config.algorithm.max_grad_norm = 0.5
+    config.algorithm.ppo_epochs = ppo_epochs
+    config.algorithm.ppo_kl_early_stop = kl_early_stop
+    config.hardware.device = "cpu"
+    config.hardware.use_mixed_precision = False
+    config.optimizer.warmup_steps = 0
+    config.optimizer.schedule = "constant"
+    config.optimizer.backbone_lr = 1e-4
+    config.optimizer.backbone_weight_decay = 1e-4
+    config.optimizer.heads_lr = 3e-4
+    config.optimizer.heads_weight_decay = 0.0
+    return PortfolioRNaDLearner(
+        model=agent, ref_models=[ref_agent], config=config, device="cpu"
+    )
+
+
+def test_ppo_default_epochs_is_one(learner):
+    """Default config should preserve original single-epoch behavior."""
+    assert learner.ppo_epochs == 1
+
+
+def test_ppo_metrics_include_epochs_actual(learner, sample_batch):
+    """update() must report ppo_epochs_actual (=1 by default)."""
+    metrics = learner.update(sample_batch)
+    assert "ppo_epochs_actual" in metrics
+    assert metrics["ppo_epochs_actual"] == 1
+    assert "approx_kl" in metrics
+
+
+def test_ppo_k3_runs_three_inner_epochs(agent, ref_agent, sample_batch):
+    """With ppo_epochs=3, the inner loop should run 3 times."""
+    learner = _make_learner_with_epochs(agent, ref_agent, ppo_epochs=3)
+    metrics = learner.update(sample_batch)
+    assert metrics["ppo_epochs_actual"] == 3
+    # All losses still finite
+    for key in ("loss", "policy_loss", "value_loss", "entropy", "rnad_loss"):
+        v = metrics[key]
+        assert not torch.isnan(torch.tensor(v)), f"{key} NaN with K=3"
+        assert not torch.isinf(torch.tensor(v)), f"{key} Inf with K=3"
+
+
+def test_ppo_k3_takes_more_optimizer_steps_than_k1(agent, ref_agent, sample_batch):
+    """K=3 should take 3 optimizer steps for one update vs 1 for K=1."""
+    # K=1
+    l1 = _make_learner_with_epochs(agent, ref_agent, ppo_epochs=1)
+    initial_state = copy.deepcopy(l1.model.state_dict())
+    l1.update(sample_batch)
+    after_k1 = copy.deepcopy(l1.model.state_dict())
+
+    # K=3 starting from same weights
+    l3 = _make_learner_with_epochs(agent, ref_agent, ppo_epochs=3)
+    l3.model.load_state_dict(initial_state)
+    l3.update(sample_batch)
+    after_k3 = copy.deepcopy(l3.model.state_dict())
+
+    # K=3 should drift further from initial than K=1 (more optimizer steps).
+    def total_drift(initial, final):
+        return sum(
+            (final[k] - initial[k]).norm().item()
+            for k in initial
+            if initial[k].dtype.is_floating_point
+        )
+
+    drift_k1 = total_drift(initial_state, after_k1)
+    drift_k3 = total_drift(initial_state, after_k3)
+    assert drift_k3 > drift_k1, (
+        f"Expected K=3 to drift further than K=1 (drift_k3={drift_k3:.6f}, drift_k1={drift_k1:.6f})"
+    )
+
+
+def test_ppo_step_counter_advances_once_per_update(agent, ref_agent, sample_batch):
+    """self._step bumps per update, not per epoch — entropy annealing depends on it."""
+    learner = _make_learner_with_epochs(agent, ref_agent, ppo_epochs=4)
+    assert learner._step == 0
+    learner.update(sample_batch)
+    assert learner._step == 1
+    learner.update(sample_batch)
+    assert learner._step == 2
+
+
+def test_ppo_kl_early_stop_caps_inner_epochs(agent, ref_agent, sample_batch):
+    """A tiny KL threshold should make the inner loop bail out early."""
+    # Threshold 0 means even a tiny ratio drift triggers early stop.
+    learner = _make_learner_with_epochs(agent, ref_agent, ppo_epochs=10, kl_early_stop=0.0)
+    metrics = learner.update(sample_batch)
+    assert metrics["ppo_epochs_actual"] < 10, (
+        "Early stop with KL threshold 0 should fire before all 10 epochs"
+    )
+    assert metrics["ppo_epochs_actual"] >= 1, "At least one epoch must run"
+
+
+def test_ppo_portfolio_selection_count_tracked_once_per_update(
+    agent, ref_agent, sample_batch
+):
+    """Selection counter should bump once per update regardless of K."""
+    learner = _make_learner_with_epochs(agent, ref_agent, ppo_epochs=5)
+    # tp + turn paths each call _compute_portfolio_kl once on the first epoch,
+    # so the counter on the (single) ref model bumps by 2 per update — same as
+    # K=1 baseline. Verify that and not 2*K=10.
+    initial_count = learner.portfolio_selection_counts[0]
+    learner.update(sample_batch)
+    final_count = learner.portfolio_selection_counts[0]
+    assert final_count - initial_count == 2, (
+        f"Selection count should bump by 2 (tp+turn) per update, got "
+        f"{final_count - initial_count}"
+    )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

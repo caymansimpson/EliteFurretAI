@@ -85,6 +85,15 @@ class AlgorithmConfig:
     max_grad_norm: float = 0.5
     rnad_alpha: float = 0.01
     vf_coef: float = 0.5
+    # PPO mini-epochs: how many gradient passes to take over the same batch
+    # per RL update. Default 1 reproduces the original behavior. Standard PPO
+    # uses 3-10. Old log probs from collection are reused across epochs;
+    # reference model forwards happen once per update (frozen across epochs).
+    ppo_epochs: int = 1
+    # Optional safety: stop the PPO inner loop early when approximate KL
+    # between current and old policies exceeds this threshold. None disables.
+    # Recommended range when used: 0.01 - 0.05.
+    ppo_kl_early_stop: Optional[float] = None
 
 
 @dataclass

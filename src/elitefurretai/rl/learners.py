@@ -155,6 +155,8 @@ class PortfolioRNaDLearner:
         self.vf_coef = config.algorithm.vf_coef
         self.rnad_alpha = config.algorithm.rnad_alpha
         self.gradient_clip = config.algorithm.max_grad_norm
+        self.ppo_epochs = max(1, config.algorithm.ppo_epochs)
+        self.ppo_kl_early_stop = config.algorithm.ppo_kl_early_stop
         self.device = device
         self.use_mixed_precision = config.hardware.use_mixed_precision
         self.max_portfolio_size = config.portfolio.max_portfolio_size
@@ -217,7 +219,14 @@ class PortfolioRNaDLearner:
         self,
         curr_dist: Categorical,
         ref_logits_list: list,
+        track: bool = True,
     ) -> torch.Tensor:
+        """Return min KL from curr_dist to any reference policy.
+
+        track=True records the per-ref KL into history and bumps the
+        selection counter — set False on PPO inner-loop epochs >0 to keep
+        bookkeeping aligned with one-update-per-counter semantics.
+        """
         if len(ref_logits_list) == 0:
             return torch.tensor(0.0, device=self.device)
 
@@ -228,15 +237,17 @@ class PortfolioRNaDLearner:
             ref_dist = Categorical(logits=ref_logits)
             kl = torch.distributions.kl_divergence(curr_dist, ref_dist).mean()
 
-            self.portfolio_kl_history[ref_idx].append(kl.item())
-            if len(self.portfolio_kl_history[ref_idx]) > 100:
-                self.portfolio_kl_history[ref_idx].pop(0)
+            if track:
+                self.portfolio_kl_history[ref_idx].append(kl.item())
+                if len(self.portfolio_kl_history[ref_idx]) > 100:
+                    self.portfolio_kl_history[ref_idx].pop(0)
 
             if min_kl is None or kl < min_kl:
                 min_kl = kl
                 best_ref_idx = ref_idx
 
-        self.portfolio_selection_counts[best_ref_idx] += 1
+        if track:
+            self.portfolio_selection_counts[best_ref_idx] += 1
 
         return min_kl if min_kl is not None else torch.tensor(0.0, device=self.device)
 
@@ -246,21 +257,31 @@ class PortfolioRNaDLearner:
         High-level flow (this is the meat of the algorithm):
           1. Move batch tensors onto the learner device.
           2. Normalize advantages (helps training stability).
-          3. Run main model + every reference model in the portfolio forward
-             over the full padded trajectory batch.
-          4. Compute losses split by step type:
-              - Teampreview steps (90 actions, no mask): PPO loss + entropy + KL
-              - Turn steps (2025 actions, masked): same, but logits get the
-                action mask applied so illegal actions can't move probability mass.
-          5. Compute distributional value loss (C51 cross-entropy) over all
-             non-padded steps.
-          6. Sum into total_loss = policy + vf*value - ent*entropy + α*KL.
-          7. Backprop, clip gradients, optimizer step, scheduler step.
-          8. Return a dict of metrics for wandb / console logging.
+          3. Run reference models forward ONCE (their outputs are frozen
+             across PPO inner-loop epochs).
+          4. For each PPO mini-epoch (config.algorithm.ppo_epochs, default 1):
+              a. Forward main model.
+              b. Compute losses split by step type:
+                  - Teampreview steps (90 actions, no mask): PPO loss + entropy + KL
+                  - Turn steps (2025 actions, masked): same, but logits get the
+                    action mask applied so illegal actions can't move
+                    probability mass.
+              c. Compute distributional value loss (C51 cross-entropy) over all
+                 non-padded steps.
+              d. Sum into total_loss = policy + vf*value - ent*entropy + α*KL.
+              e. Backprop, clip gradients, optimizer step.
+              f. Optionally early-stop on approximate KL drift.
+          5. Scheduler steps once per update (not per epoch).
+          6. Return a dict of metrics for wandb / console logging.
+
+        With ppo_epochs=1 (default) this reproduces the original behavior with
+        the only change being that ref_outputs are computed once before the
+        (single-iteration) loop.
 
         Returns:
             metrics dict with keys: loss, policy_loss, value_loss, entropy,
-            rnad_loss, grad norms, LRs, ent_coef, portfolio_*.
+            rnad_loss, grad norms, approx_kl, ppo_epochs_actual, LRs, ent_coef,
+            portfolio_*.
         """
         self._step += 1
         ent_coef = self.config.ent_coef_at_step(self._step)
@@ -305,206 +326,264 @@ class PortfolioRNaDLearner:
                 initial_hidden[1].to(self.device),
             )
 
-        with torch.amp.autocast(device_type=self.device, enabled=self.use_mixed_precision):  # type: ignore
-            if is_transformer:
-                # Transformer: call raw model.forward() for full trajectory
-                turn_logits, tp_logits, values, win_dist_logits = self.model.model.forward(
-                    states
-                )
-            else:
-                turn_logits, tp_logits, values, win_dist_logits, _ = self.model(
-                    states, initial_hidden_state
-                )
+        # ── Pre-compute everything that's constant across PPO epochs ─────────
+        flat_actions = actions.reshape(-1)
+        flat_old_log_probs = old_log_probs.reshape(-1)
+        flat_advantages = advantages.reshape(-1)
+        flat_returns = returns.reshape(-1)
+        flat_is_tp = is_teampreview.reshape(-1).bool()
+        flat_padding_mask = padding_mask.reshape(-1).bool()
 
-            ref_outputs = []
-            for ref_model in self.ref_models:
-                with torch.no_grad():
-                    if is_transformer:
-                        ref_turn, ref_tp, _, _ = ref_model.model.forward(states)
-                    else:
-                        ref_turn, ref_tp, _, _, _ = ref_model(states, initial_hidden_state)
-                    ref_outputs.append((ref_turn, ref_tp))
+        valid_tp_mask = flat_is_tp & flat_padding_mask
+        valid_turn_mask = (~flat_is_tp) & flat_padding_mask
+        has_tp = bool(valid_tp_mask.any().item())
+        has_turn = bool(valid_turn_mask.any().item())
+        has_padded = bool(flat_padding_mask.any().item())
 
-            flat_actions = actions.reshape(-1)
-            flat_old_log_probs = old_log_probs.reshape(-1)
-            flat_advantages = advantages.reshape(-1)
-            flat_returns = returns.reshape(-1)
-            flat_is_tp = is_teampreview.reshape(-1).bool()
-            flat_padding_mask = padding_mask.reshape(-1).bool()
+        tp_indices = (
+            torch.nonzero(valid_tp_mask, as_tuple=False).squeeze(-1) if has_tp else None
+        )
+        turn_indices = (
+            torch.nonzero(valid_turn_mask, as_tuple=False).squeeze(-1)
+            if has_turn
+            else None
+        )
 
-            policy_loss_tp = torch.tensor(0.0, device=self.device)
-            policy_loss_turn = torch.tensor(0.0, device=self.device)
-            entropy_tp = torch.tensor(0.0, device=self.device)
-            entropy_turn = torch.tensor(0.0, device=self.device)
-            rnad_loss_tp = torch.tensor(0.0, device=self.device)
-            rnad_loss_turn = torch.tensor(0.0, device=self.device)
-            value_loss = torch.tensor(0.0, device=self.device)
-
-            valid_tp_mask = flat_is_tp & flat_padding_mask
-            if valid_tp_mask.any():
-                tp_indices = torch.nonzero(valid_tp_mask, as_tuple=False).squeeze(-1)
-                curr_tp_logits = tp_logits.reshape(-1, tp_logits.shape[-1])[tp_indices]
-                curr_dist = Categorical(logits=curr_tp_logits)
-
-                ref_tp_logits_list = [
-                    ref_tp.reshape(-1, ref_tp.shape[-1])[tp_indices]
-                    for _, ref_tp in ref_outputs
-                ]
-                rnad_loss_tp = self._compute_portfolio_kl(curr_dist, ref_tp_logits_list)
-
-                # ── PPO clipped surrogate objective (teampreview path) ───────
-                # The PPO loss is a workhorse formula. Reading it slowly:
-                #   ratio = π_current(a | s) / π_old(a | s)
-                #         = exp(log_prob_current - log_prob_old)
-                #   surr1 = ratio       * advantage     ← unclipped
-                #   surr2 = clip(ratio) * advantage     ← clipped to [1-ε, 1+ε]
-                #   loss  = -min(surr1, surr2).mean()
-                #
-                # Why min? It's PPO's pessimistic bound: when an action looked
-                # good (advantage > 0) but ratio drifted high, we use the
-                # clipped (smaller) value, preventing aggressive moves. When
-                # the action looked bad (advantage < 0) and ratio is low, we
-                # similarly take the more pessimistic surrogate.
-                # ─────────────────────────────────────────────────────────────
-                curr_log_probs = curr_dist.log_prob(flat_actions[tp_indices])
-                ratio = torch.exp(curr_log_probs - flat_old_log_probs[tp_indices])
-                surr1 = ratio * flat_advantages[tp_indices]
-                surr2 = (
-                    torch.clamp(ratio, 1.0 - self.clip_range, 1.0 + self.clip_range)
-                    * flat_advantages[tp_indices]
-                )
-                policy_loss_tp = -torch.min(surr1, surr2).mean()
-
-                # Entropy bonus (high entropy = uncertain policy = exploration).
-                # Subtracted from total loss with coef ent_coef.
-                entropy_tp = curr_dist.entropy().mean()
-
-            valid_turn_mask = (~flat_is_tp) & flat_padding_mask
-            if valid_turn_mask.any():
-                turn_indices = torch.nonzero(valid_turn_mask, as_tuple=False).squeeze(-1)
-                curr_turn_logits = turn_logits.reshape(-1, turn_logits.shape[-1])[
-                    turn_indices
-                ]
-
-                ref_turn_logits_list = [
-                    ref_turn.reshape(-1, ref_turn.shape[-1])[turn_indices]
-                    for ref_turn, _ in ref_outputs
-                ]
-
-                # Apply action masks. Use a large finite negative value rather than
-                # -inf: with -inf, Categorical.kl_divergence's backward computes
-                # (-inf) - (-inf) = NaN at masked positions, then propagates NaN
-                # gradients into the unmasked positions and back through the model.
-                # -1e9 is small enough to make masked actions effectively zero
-                # probability under softmax, while keeping the backward pass finite.
-                flat_masks = action_masks.reshape(-1, action_masks.shape[-1])
-                curr_masks = flat_masks[turn_indices]
-                curr_turn_logits = curr_turn_logits.masked_fill(~curr_masks.bool(), -1e9)
-                ref_turn_logits_list = [
-                    ref_logits.masked_fill(~curr_masks.bool(), -1e9)
-                    for ref_logits in ref_turn_logits_list
-                ]
-
-                curr_dist = Categorical(logits=curr_turn_logits)
-                rnad_loss_turn = self._compute_portfolio_kl(
-                    curr_dist, ref_turn_logits_list
-                )
-
-                curr_log_probs = curr_dist.log_prob(flat_actions[turn_indices])
-                ratio = torch.exp(curr_log_probs - flat_old_log_probs[turn_indices])
-                surr1 = ratio * flat_advantages[turn_indices]
-                surr2 = (
-                    torch.clamp(ratio, 1.0 - self.clip_range, 1.0 + self.clip_range)
-                    * flat_advantages[turn_indices]
-                )
-                policy_loss_turn = -torch.min(surr1, surr2).mean()
-
-                entropy_turn = curr_dist.entropy().mean()
-
-            if flat_padding_mask.any():
-                # ── C51 distributional value loss ────────────────────────────
-                # Instead of regressing scalar value, the value head outputs a
-                # distribution over `num_value_bins` discrete return-bins
-                # spanning [value_min, value_max]. The target is constructed
-                # by `twohot_encode`: it places probability mass on the two
-                # bins straddling the true return, weighted by linear distance.
-                #
-                # Loss = cross-entropy(target_dist, predicted_dist), masked to
-                # ignore padding positions. This gives much richer gradients
-                # than scalar MSE — the value head learns *uncertainty* about
-                # the outcome, not just the mean.
-                # ─────────────────────────────────────────────────────────────
-                flat_dist_logits = win_dist_logits.reshape(-1, self.num_value_bins)
-                targets = twohot_encode(flat_returns, self.value_support)
-                log_probs_dist = torch.log_softmax(flat_dist_logits, dim=-1)
-                per_step_value_loss = -(targets * log_probs_dist).sum(dim=-1)
-                value_loss = (
-                    per_step_value_loss * flat_padding_mask.float()
-                ).sum() / flat_padding_mask.sum().clamp(min=1.0)
-
-            # ── Combine teampreview and turn-step contributions ──────────────
-            # Decisions at "teampreview" (pre-battle ordering, 90 actions) and
-            # "turn" (in-battle, 2025 actions) use different model heads. We
-            # compute losses separately for each then add. RNaD's KL term and
-            # the entropy bonus are summed across both step types so each
-            # head gets its share of the signal.
-            # ─────────────────────────────────────────────────────────────────
-            policy_loss = policy_loss_tp + policy_loss_turn
-            entropy_loss = entropy_tp + entropy_turn
-            rnad_loss = rnad_loss_tp + rnad_loss_turn
-
-            # The full RNaD loss:
-            #   total = policy + vf*value - ent*entropy + α*KL_to_reference
-            # Note the SIGN on entropy: we *subtract* it because we want to
-            # *maximize* entropy (encourage exploration) by making the loss
-            # smaller when entropy is high.
-            total_loss = (
-                policy_loss
-                + self.vf_coef * value_loss
-                - ent_coef * entropy_loss
-                + self.rnad_alpha * rnad_loss
-            )
-
-        self.optimizer.zero_grad()
-
-        grad_norm_before = 0.0
-        grad_norm_after = 0.0
-
-        if self.use_mixed_precision and self.scaler is not None:
-            self.scaler.scale(total_loss).backward()
-            self.scaler.unscale_(self.optimizer)
-            # clip_grad_norm_ returns the pre-clip total norm and clips in place,
-            # so the post-clip norm is mathematically min(pre, max_norm).
-            grad_norm_before = torch.nn.utils.clip_grad_norm_(
-                self.model.parameters(), self.gradient_clip
-            ).item()
-            grad_norm_after = min(grad_norm_before, self.gradient_clip)
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
+        # Action mask for turn steps. -1e9 (not -inf) avoids NaN in
+        # Categorical.kl_divergence backward when applied to fully-masked rows.
+        if has_turn:
+            flat_masks = action_masks.reshape(-1, action_masks.shape[-1])
+            curr_masks_bool = flat_masks[turn_indices].bool()
+            turn_mask_neg_inf = ~curr_masks_bool
         else:
-            total_loss.backward()
-            grad_norm_before = torch.nn.utils.clip_grad_norm_(
-                self.model.parameters(), self.gradient_clip
-            ).item()
-            grad_norm_after = min(grad_norm_before, self.gradient_clip)
-            self.optimizer.step()
+            turn_mask_neg_inf = None
 
+        # Distributional value targets — twohot is just a binning op, no grad.
+        if has_padded:
+            value_targets = twohot_encode(flat_returns, self.value_support)
+            valid_count_clamped = flat_padding_mask.sum().clamp(min=1.0)
+        else:
+            value_targets = None
+            valid_count_clamped = None
+
+        # ── Reference model forwards (frozen across PPO epochs) ──────────────
+        # Refs don't update during this call, so their logits at every step
+        # are identical between epoch 0 and epoch K-1. Pre-slice + pre-mask
+        # so the inner loop only computes the main model.
+        ref_tp_logits_list: list = []
+        ref_turn_logits_list: list = []
+        if len(self.ref_models) > 0:
+            with torch.amp.autocast(  # pyright: ignore[reportPrivateImportUsage]
+                device_type=self.device, enabled=self.use_mixed_precision
+            ):
+                with torch.no_grad():
+                    for ref_model in self.ref_models:
+                        if is_transformer:
+                            ref_turn, ref_tp, _, _ = ref_model.model.forward(states)
+                        else:
+                            ref_turn, ref_tp, _, _, _ = ref_model(
+                                states, initial_hidden_state
+                            )
+                        if has_tp:
+                            ref_tp_logits_list.append(
+                                ref_tp.reshape(-1, ref_tp.shape[-1])[tp_indices]
+                            )
+                        if has_turn:
+                            assert turn_mask_neg_inf is not None
+                            r = ref_turn.reshape(-1, ref_turn.shape[-1])[turn_indices]
+                            ref_turn_logits_list.append(
+                                r.masked_fill(turn_mask_neg_inf, -1e9)
+                            )
+
+        # ── PPO inner loop ────────────────────────────────────────────────────
+        # K=1 reproduces original behavior. K>1 reuses old log probs from
+        # collection time (standard PPO) — `flat_old_log_probs` does NOT update
+        # across epochs.
+        ppo_epochs = self.ppo_epochs
+        kl_early_stop = self.ppo_kl_early_stop
+        metrics: Dict[str, Any] = {}
+        epochs_run = 0
+        approx_kl = 0.0
+
+        for epoch in range(ppo_epochs):
+            # Bookkeeping (selection counts / kl history) tracks ONCE per update,
+            # on the first epoch — it represents "which ref was closest at the
+            # *start* of this update", not how many forward passes we did.
+            track_kl = epoch == 0
+
+            with torch.amp.autocast(  # pyright: ignore[reportPrivateImportUsage]
+                device_type=self.device, enabled=self.use_mixed_precision
+            ):
+                if is_transformer:
+                    turn_logits, tp_logits, values, win_dist_logits = (
+                        self.model.model.forward(states)
+                    )
+                else:
+                    turn_logits, tp_logits, values, win_dist_logits, _ = self.model(
+                        states, initial_hidden_state
+                    )
+
+                policy_loss_tp = torch.tensor(0.0, device=self.device)
+                policy_loss_turn = torch.tensor(0.0, device=self.device)
+                entropy_tp = torch.tensor(0.0, device=self.device)
+                entropy_turn = torch.tensor(0.0, device=self.device)
+                rnad_loss_tp = torch.tensor(0.0, device=self.device)
+                rnad_loss_turn = torch.tensor(0.0, device=self.device)
+                value_loss = torch.tensor(0.0, device=self.device)
+                approx_kl_sum = torch.tensor(0.0, device=self.device)
+                approx_kl_n = 0
+
+                if has_tp:
+                    curr_tp_logits = tp_logits.reshape(-1, tp_logits.shape[-1])[tp_indices]
+                    curr_dist = Categorical(logits=curr_tp_logits)
+                    rnad_loss_tp = self._compute_portfolio_kl(
+                        curr_dist, ref_tp_logits_list, track=track_kl
+                    )
+
+                    # ── PPO clipped surrogate objective (teampreview path) ──
+                    # ratio = π_current(a | s) / π_old(a | s)
+                    #       = exp(log_prob_current - log_prob_old)
+                    # surr1 = ratio       * advantage      (unclipped)
+                    # surr2 = clip(ratio) * advantage      (clipped to [1-ε, 1+ε])
+                    # loss  = -min(surr1, surr2).mean()
+                    # Why min: PPO's pessimistic bound — when an action looked
+                    # good but ratio drifted high we use the clipped (smaller)
+                    # value, preventing aggressive moves; symmetric for bad
+                    # actions with low ratio.
+                    curr_log_probs = curr_dist.log_prob(flat_actions[tp_indices])
+                    log_ratio = curr_log_probs - flat_old_log_probs[tp_indices]
+                    ratio = torch.exp(log_ratio)
+                    surr1 = ratio * flat_advantages[tp_indices]
+                    surr2 = (
+                        torch.clamp(ratio, 1.0 - self.clip_range, 1.0 + self.clip_range)
+                        * flat_advantages[tp_indices]
+                    )
+                    policy_loss_tp = -torch.min(surr1, surr2).mean()
+                    entropy_tp = curr_dist.entropy().mean()
+                    # Schulman approximate KL (PPO standard, low-variance)
+                    approx_kl_sum = (
+                        approx_kl_sum + ((torch.exp(log_ratio) - 1) - log_ratio).sum()
+                    )
+                    approx_kl_n += log_ratio.numel()
+
+                if has_turn:
+                    assert turn_indices is not None
+                    assert turn_mask_neg_inf is not None
+                    curr_turn_logits = turn_logits.reshape(-1, turn_logits.shape[-1])[
+                        turn_indices
+                    ]
+                    curr_turn_logits = curr_turn_logits.masked_fill(
+                        turn_mask_neg_inf, -1e9
+                    )
+                    curr_dist = Categorical(logits=curr_turn_logits)
+                    rnad_loss_turn = self._compute_portfolio_kl(
+                        curr_dist, ref_turn_logits_list, track=track_kl
+                    )
+
+                    curr_log_probs = curr_dist.log_prob(flat_actions[turn_indices])
+                    log_ratio = curr_log_probs - flat_old_log_probs[turn_indices]
+                    ratio = torch.exp(log_ratio)
+                    surr1 = ratio * flat_advantages[turn_indices]
+                    surr2 = (
+                        torch.clamp(ratio, 1.0 - self.clip_range, 1.0 + self.clip_range)
+                        * flat_advantages[turn_indices]
+                    )
+                    policy_loss_turn = -torch.min(surr1, surr2).mean()
+                    entropy_turn = curr_dist.entropy().mean()
+                    approx_kl_sum = (
+                        approx_kl_sum + ((torch.exp(log_ratio) - 1) - log_ratio).sum()
+                    )
+                    approx_kl_n += log_ratio.numel()
+
+                if has_padded:
+                    assert value_targets is not None
+                    assert valid_count_clamped is not None
+                    # ── C51 distributional value loss ────────────────────────
+                    # Value head outputs a distribution over num_value_bins
+                    # bins spanning [value_min, value_max]. The target is
+                    # twohot-encoded: probability mass on the two bins
+                    # straddling the true return, weighted by linear distance.
+                    # Loss = cross-entropy(target, predicted), masked over
+                    # padding. Richer gradient than scalar MSE — value head
+                    # learns *uncertainty*, not just the mean.
+                    flat_dist_logits = win_dist_logits.reshape(-1, self.num_value_bins)
+                    log_probs_dist = torch.log_softmax(flat_dist_logits, dim=-1)
+                    per_step_value_loss = -(value_targets * log_probs_dist).sum(dim=-1)
+                    value_loss = (
+                        per_step_value_loss * flat_padding_mask.float()
+                    ).sum() / valid_count_clamped
+
+                # Combine teampreview and turn-step contributions.
+                policy_loss = policy_loss_tp + policy_loss_turn
+                entropy_loss = entropy_tp + entropy_turn
+                rnad_loss = rnad_loss_tp + rnad_loss_turn
+
+                # total = policy + vf*value - ent*entropy + α*KL_to_reference
+                # Entropy is *subtracted* because we want to *maximize* it
+                # (encourage exploration).
+                total_loss = (
+                    policy_loss
+                    + self.vf_coef * value_loss
+                    - ent_coef * entropy_loss
+                    + self.rnad_alpha * rnad_loss
+                )
+
+            self.optimizer.zero_grad()
+
+            if self.use_mixed_precision and self.scaler is not None:
+                self.scaler.scale(total_loss).backward()
+                self.scaler.unscale_(self.optimizer)
+                grad_norm_before = torch.nn.utils.clip_grad_norm_(
+                    self.model.parameters(), self.gradient_clip
+                ).item()
+                grad_norm_after = min(grad_norm_before, self.gradient_clip)
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+            else:
+                total_loss.backward()
+                grad_norm_before = torch.nn.utils.clip_grad_norm_(
+                    self.model.parameters(), self.gradient_clip
+                ).item()
+                grad_norm_after = min(grad_norm_before, self.gradient_clip)
+                self.optimizer.step()
+
+            epochs_run += 1
+            approx_kl = (approx_kl_sum / approx_kl_n).item() if approx_kl_n > 0 else 0.0
+
+            metrics = {
+                "loss": total_loss.item(),
+                "policy_loss": policy_loss.item(),
+                "value_loss": value_loss.item(),
+                "entropy": entropy_loss.item(),
+                "rnad_loss": rnad_loss.item(),
+                "grad_norm_before_clip": grad_norm_before,
+                "grad_norm_after_clip": grad_norm_after,
+                "approx_kl": approx_kl,
+                "ppo_epochs_actual": epochs_run,
+            }
+
+            # Optional safety: stop the inner loop if the policy has drifted
+            # too far from the collection-time policy.
+            if (
+                kl_early_stop is not None
+                and approx_kl > kl_early_stop
+                and epoch + 1 < ppo_epochs
+            ):
+                break
+
+        # Scheduler advances once per update, not per epoch.
         self.scheduler.step()
 
-        return {
-            "loss": total_loss.item(),
-            "policy_loss": policy_loss.item(),
-            "value_loss": value_loss.item(),
-            "entropy": entropy_loss.item(),
-            "rnad_loss": rnad_loss.item(),
-            "grad_norm_before_clip": grad_norm_before,
-            "grad_norm_after_clip": grad_norm_after,
-            "portfolio_size": len(self.ref_models),
-            "portfolio_selections": dict(enumerate(self.portfolio_selection_counts)),
-            "lr_backbone": self.optimizer.param_groups[0]["lr"],
-            "lr_heads": self.optimizer.param_groups[1]["lr"],
-            "ent_coef": ent_coef,
-        }
+        metrics.update(
+            {
+                "portfolio_size": len(self.ref_models),
+                "portfolio_selections": dict(enumerate(self.portfolio_selection_counts)),
+                "lr_backbone": self.optimizer.param_groups[0]["lr"],
+                "lr_heads": self.optimizer.param_groups[1]["lr"],
+                "ent_coef": ent_coef,
+            }
+        )
+        return metrics
 
     def get_portfolio_stats(self) -> Dict[str, Any]:
         stats = {
