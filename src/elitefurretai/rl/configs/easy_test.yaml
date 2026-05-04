@@ -114,7 +114,7 @@ training:
   initialize_path: data/models/supervised/cool-bee-85-finetune_best.pt
   resume_from: null
   max_updates: 100000
-  save_dir: data/models
+  save_dir: data/models/rl
   train_batch_size: 256
   checkpoint_interval: 25
   log_interval: 1
