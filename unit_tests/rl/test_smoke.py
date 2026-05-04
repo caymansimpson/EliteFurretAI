@@ -161,6 +161,7 @@ def test_rl_train_smoke(tmp_path):
     )
 
     # The finally block in main() always saves a checkpoint regardless of
-    # checkpoint_interval, so at least one .pt file should exist.
-    checkpoints = list(save_dir.glob("*.pt"))
+    # checkpoint_interval, so at least one .pt file should exist. Checkpoints
+    # land under save_dir/<run_name>/ since the per-run-subdir refactor.
+    checkpoints = list(save_dir.rglob("*.pt"))
     assert checkpoints, f"No checkpoint found in {save_dir} after training completed"

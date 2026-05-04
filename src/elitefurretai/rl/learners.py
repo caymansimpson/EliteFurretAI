@@ -74,6 +74,7 @@ from elitefurretai.supervised.model_archs import TransformerThreeHeadedModel, tw
 def _build_optimizer(
     model: nn.Module,
     config: RNaDConfig,
+    device: str = "cpu",
 ) -> optim.Optimizer:
     """Build optimizer with topology-aware parameter groups from config.
 
@@ -123,7 +124,9 @@ def _build_optimizer(
     ]
 
     if opt.type == "adamw":
-        return optim.AdamW(param_groups)
+        # fused AdamW is CUDA-only and ~10-20% faster than the default foreach path.
+        use_fused = device.startswith("cuda")
+        return optim.AdamW(param_groups, fused=use_fused)
     else:
         return optim.Adam(param_groups)
 
@@ -144,7 +147,7 @@ class PortfolioRNaDLearner:
         self.model = model.to(device)
         self.ref_models = [ref.to(device) for ref in ref_models]
         self.config = config
-        self.optimizer = _build_optimizer(self.model, config)
+        self.optimizer = _build_optimizer(self.model, config, device=device)
         self.scheduler = _build_scheduler(self.optimizer, config)
         self.gamma = config.algorithm.gamma
         self.clip_range = config.algorithm.clip_range
@@ -470,22 +473,20 @@ class PortfolioRNaDLearner:
         if self.use_mixed_precision and self.scaler is not None:
             self.scaler.scale(total_loss).backward()
             self.scaler.unscale_(self.optimizer)
+            # clip_grad_norm_ returns the pre-clip total norm and clips in place,
+            # so the post-clip norm is mathematically min(pre, max_norm).
             grad_norm_before = torch.nn.utils.clip_grad_norm_(
-                self.model.parameters(), float("inf")
-            ).item()
-            grad_norm_after = torch.nn.utils.clip_grad_norm_(
                 self.model.parameters(), self.gradient_clip
             ).item()
+            grad_norm_after = min(grad_norm_before, self.gradient_clip)
             self.scaler.step(self.optimizer)
             self.scaler.update()
         else:
             total_loss.backward()
             grad_norm_before = torch.nn.utils.clip_grad_norm_(
-                self.model.parameters(), float("inf")
-            ).item()
-            grad_norm_after = torch.nn.utils.clip_grad_norm_(
                 self.model.parameters(), self.gradient_clip
             ).item()
+            grad_norm_after = min(grad_norm_before, self.gradient_clip)
             self.optimizer.step()
 
         self.scheduler.step()
@@ -580,18 +581,16 @@ def _config_to_flat_arch(d: Dict[str, Any]) -> Dict[str, Any]:
     """Return a flat dict of all config fields from either a flat or nested config dict.
 
     Nested configs (new format) store architecture fields under sub-sections like
-    "architecture", "value_head", "curriculum", etc. Merging all sections gives a
-    flat dict compatible with the legacy MODEL_ARCH_CONFIG_KEYS lookup.
+    "architecture", "value_head", "curriculum", etc. Flat configs have all fields
+    at the top level. Always-flatten is safe because no MODEL_ARCH_CONFIG_KEYS
+    value is itself a dict — top-level dict values are always sections.
     """
-
-    # TODO: remove if we move past curious-darkness and the not flat config;
-    # in fact, we should movepast making these flat to beign with
-    if not _is_nested_format(d):
-        return d
     flat: Dict[str, Any] = {}
-    for section in d.values():
-        if isinstance(section, dict):
-            flat.update(section)
+    for k, v in d.items():
+        if isinstance(v, dict):
+            flat.update(v)
+        else:
+            flat[k] = v
     return flat
 
 
