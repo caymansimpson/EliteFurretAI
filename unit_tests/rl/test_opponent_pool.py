@@ -35,31 +35,35 @@ def temp_exploiters_dir(tmp_path):
 
 
 @pytest.fixture
-def temp_past_models_dir(tmp_path):
-    d = tmp_path / "past_models"
+def temp_ghosts_dir(tmp_path):
+    d = tmp_path / "ghosts"
     d.mkdir()
     return str(d)
 
 
-def _make_pool(mock_main_model, temp_exploiters_dir, temp_past_models_dir, curriculum=None):
+def _make_pool(mock_main_model, temp_exploiters_dir, temp_ghosts_dir, curriculum=None):
     return OpponentPool(
         main_model=mock_main_model,
         device="cpu",
         battle_format="gen9vgc2023regc",
         curriculum=curriculum,
         exploiter_models_dir=temp_exploiters_dir,
-        past_models_dir=temp_past_models_dir,
+        ghosts_dir=temp_ghosts_dir,
     )
 
 
-def test_opponent_pool_initialization(mock_main_model, temp_exploiters_dir, temp_past_models_dir):
-    pool = _make_pool(mock_main_model, temp_exploiters_dir, temp_past_models_dir)
+def test_opponent_pool_initialization(
+    mock_main_model, temp_exploiters_dir, temp_ghosts_dir
+):
+    pool = _make_pool(mock_main_model, temp_exploiters_dir, temp_ghosts_dir)
 
     assert hasattr(pool, "curriculum")
     assert np.isclose(sum(pool.curriculum.values()), 1.0)
 
 
-def test_opponent_pool_custom_curriculum(mock_main_model, temp_exploiters_dir, temp_past_models_dir):
+def test_opponent_pool_custom_curriculum(
+    mock_main_model, temp_exploiters_dir, temp_ghosts_dir
+):
     curriculum = {
         "self_play": 0.8,
         "bc_player": 0.1,
@@ -73,7 +77,7 @@ def test_opponent_pool_custom_curriculum(mock_main_model, temp_exploiters_dir, t
     pool = _make_pool(
         mock_main_model,
         temp_exploiters_dir,
-        temp_past_models_dir,
+        temp_ghosts_dir,
         curriculum=curriculum,
     )
 
@@ -81,7 +85,7 @@ def test_opponent_pool_custom_curriculum(mock_main_model, temp_exploiters_dir, t
 
 
 def test_opponent_pool_rejects_invalid_curriculum(
-    mock_main_model, temp_exploiters_dir, temp_past_models_dir
+    mock_main_model, temp_exploiters_dir, temp_ghosts_dir
 ):
     curriculum = {
         "self_play": 0.5,
@@ -94,31 +98,33 @@ def test_opponent_pool_rejects_invalid_curriculum(
         _make_pool(
             mock_main_model,
             temp_exploiters_dir,
-            temp_past_models_dir,
+            temp_ghosts_dir,
             curriculum=curriculum,
         )
 
 
-def test_add_past_model_respects_limit(mock_main_model, temp_exploiters_dir, temp_past_models_dir):
+def test_add_ghost_respects_limit(mock_main_model, temp_exploiters_dir, temp_ghosts_dir):
     pool = OpponentPool(
         main_model=mock_main_model,
         device="cpu",
         battle_format="gen9vgc2023regc",
-        max_past_models=3,
+        max_ghosts=3,
         exploiter_models_dir=temp_exploiters_dir,
-        past_models_dir=temp_past_models_dir,
+        ghosts_dir=temp_ghosts_dir,
     )
 
     for step in [100, 200, 300, 400, 500]:
-        pool.add_past_model(step, f"path/model_{step}.pt")
+        pool.add_ghost(step, f"path/model_{step}.pt")
 
-    assert len(pool.past_models) == 3
-    steps = [m[0] for m in pool.past_models]
+    assert len(pool.ghosts) == 3
+    steps = [m[0] for m in pool.ghosts]
     assert 500 in steps and 400 in steps and 300 in steps
 
 
-def test_update_and_get_win_rate_stats(mock_main_model, temp_exploiters_dir, temp_past_models_dir):
-    pool = _make_pool(mock_main_model, temp_exploiters_dir, temp_past_models_dir)
+def test_update_and_get_win_rate_stats(
+    mock_main_model, temp_exploiters_dir, temp_ghosts_dir
+):
+    pool = _make_pool(mock_main_model, temp_exploiters_dir, temp_ghosts_dir)
 
     pool.update_win_rate("self_play", won=True)
     pool.update_win_rate("self_play", won=True)
@@ -129,21 +135,21 @@ def test_update_and_get_win_rate_stats(mock_main_model, temp_exploiters_dir, tem
 
 
 def test_load_exploiter_models_from_directory(
-    mock_main_model, temp_exploiters_dir, temp_past_models_dir
+    mock_main_model, temp_exploiters_dir, temp_ghosts_dir
 ):
     for idx in range(3):
         path = os.path.join(temp_exploiters_dir, f"exploiter_{idx}.pt")
         with open(path, "wb"):
             pass
 
-    pool = _make_pool(mock_main_model, temp_exploiters_dir, temp_past_models_dir)
+    pool = _make_pool(mock_main_model, temp_exploiters_dir, temp_ghosts_dir)
     pool._load_exploiter_models()
 
     assert len(pool.exploiter_models) == 3
 
 
 def test_sample_opponent_self_play_only(
-    mock_main_model, player_config, server_config, temp_exploiters_dir, temp_past_models_dir
+    mock_main_model, player_config, server_config, temp_exploiters_dir, temp_ghosts_dir
 ):
     curriculum = {
         "self_play": 1.0,
@@ -158,9 +164,11 @@ def test_sample_opponent_self_play_only(
     pool = _make_pool(
         mock_main_model,
         temp_exploiters_dir,
-        temp_past_models_dir,
+        temp_ghosts_dir,
         curriculum=curriculum,
     )
 
-    opponent = pool.sample_opponent(player_config, server_config, team="Pikachu @ Light Ball")
+    opponent = pool.sample_opponent(
+        player_config, server_config, team="Pikachu @ Light Ball"
+    )
     assert opponent is not None

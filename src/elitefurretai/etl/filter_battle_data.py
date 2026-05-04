@@ -22,7 +22,7 @@ import time
 import orjson
 
 from elitefurretai.etl.battle_data import BattleData
-from elitefurretai.supervised.train_utils import format_time
+from elitefurretai.supervised.utils import format_time
 
 
 def load_file(file):

@@ -1,22 +1,58 @@
 """learners.py — Training math and model I/O for EliteFurretAI RL.
 
-This file owns two concerns that are tightly coupled:
+What this file is
+-----------------
+The "brain" of the trainer. While workers are out playing battles and shipping
+trajectories, this is what consumes those trajectories and turns them into
+gradient updates for the model.
 
-  1. LEARNING ALGORITHM (PortfolioRNaDLearner)
-     Computes the RNaD loss (PPO + C51 value + KL regularization vs a portfolio of
-     reference models) and applies gradient updates. See RL.md for the math.
+Two concerns live here, intentionally coupled because they share types:
 
-     To replicate standard RNaD (single fixed reference, no portfolio), set
-     max_portfolio_size=1 and portfolio_update_strategy="recent" in the config.
-     PortfolioRNaDLearner reduces to the base algorithm in that configuration.
+  1. LEARNING ALGORITHM (`PortfolioRNaDLearner`)
+     The actual RL loss: PPO policy loss + C51 distributional value loss +
+     entropy bonus + KL regularization against a portfolio of reference models.
 
-  2. MODEL I/O  (bottom of this file)
-     Utilities for saving and loading model checkpoints. The checkpoint format
-     stores optimizer state, training step, and the RNaDConfig that produced the
-     model. train.py and worker.py import these from here.
+  2. MODEL I/O (bottom of file)
+     Save/load checkpoints. We pickle (model_state_dict, optimizer_state,
+     step, RNaDConfig) so a run can be resumed exactly.
+
+For ML researchers new to RL: a one-paragraph algorithm primer
+--------------------------------------------------------------
+Plain PPO (Schulman 2017) computes a "policy ratio" between the current and
+the data-collection-time policy, clips it to [1-ε, 1+ε], and uses that to
+weight an advantage estimate (GAE) for the policy gradient. A value head is
+trained to predict expected return so we have something to compute
+advantages against. That's the policy_loss + value_loss part.
+
+RNaD (Perolat et al., DeepMind 2022) adds a KL penalty against a slowly-moving
+"reference" policy (the anchor). This stops the agent from cycling between
+strategies in adversarial games and prevents catastrophic forgetting of what
+behavior cloning taught it. The α weight on this term (`rnad_alpha`) is the
+"how strongly do we tether the current policy to the reference" knob.
+
+Portfolio RNaD (this code) keeps not one but several reference models and
+uses min-KL across them: the regularization is satisfied as long as the
+current policy is close to *any* of the references. This avoids the failure
+mode where a single old reference becomes irrelevant.
+
+C51 distributional value head (Bellemare et al. 2017): instead of regressing
+the value as a scalar, we predict a distribution over discrete return-bins and
+use cross-entropy on a "two-hot" target. This gives richer gradients and
+empirically trains more stably than scalar MSE for our use case.
+
+To replicate standard RNaD (single fixed reference, no portfolio), set
+max_portfolio_size=1 and portfolio_update_strategy="recent" in the config.
+PortfolioRNaDLearner reduces to the base algorithm in that configuration.
+
+Where this fits in the bigger picture
+-------------------------------------
+train.py main loop:
+  - Pulls trajectories from the multiprocessing queue.
+  - When `train_batch_size` trajectories are accumulated, calls
+    `learner.update(batch)` (this file).
+  - Every N updates, broadcasts new model weights back to workers.
 """
 
-import copy
 import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -39,7 +75,22 @@ def _build_optimizer(
     model: nn.Module,
     config: RNaDConfig,
 ) -> optim.Optimizer:
-    """Build optimizer with topology-aware parameter groups from config."""
+    """Build optimizer with topology-aware parameter groups from config.
+
+    Why two parameter groups (backbone vs heads)
+    --------------------------------------------
+    The model has a big shared "backbone" (transformer / LSTM + encoder layers)
+    and several small "heads" (one each for turn actions, teampreview actions,
+    and win/value prediction). They train differently:
+      - Backbone: large, deep, already pretrained via BC. Wants a small LR
+        and meaningful weight decay so we don't undo BC.
+      - Heads: smaller, may need to adjust faster as the value/policy refines
+        for the new (RL) reward signal. Higher LR, often no weight decay.
+    Splitting them into two AdamW param groups gives each its own LR and WD.
+
+    The keywords below are matched as substrings of named parameter paths.
+    Anything matching is "head"; everything else is "backbone".
+    """
     opt = config.optimizer
 
     head_keywords = [
@@ -159,13 +210,6 @@ class PortfolioRNaDLearner:
         self.portfolio_kl_history.pop(idx)
         self.portfolio_selection_counts.pop(idx)
 
-    def update_main_reference(self):
-        if len(self.ref_models) > 0:
-            self.ref_models[-1].load_state_dict(self.model.state_dict())
-        else:
-            new_ref = RNaDAgent(copy.deepcopy(self.model.model))
-            self.add_reference_model(new_ref)
-
     def _compute_portfolio_kl(
         self,
         curr_dist: Categorical,
@@ -194,6 +238,27 @@ class PortfolioRNaDLearner:
         return min_kl if min_kl is not None else torch.tensor(0.0, device=self.device)
 
     def update(self, batch: Dict[str, torch.Tensor]) -> Dict[str, Any]:
+        """One gradient update from a batch of trajectories.
+
+        High-level flow (this is the meat of the algorithm):
+          1. Move batch tensors onto the learner device.
+          2. Normalize advantages (helps training stability).
+          3. Run main model + every reference model in the portfolio forward
+             over the full padded trajectory batch.
+          4. Compute losses split by step type:
+              - Teampreview steps (90 actions, no mask): PPO loss + entropy + KL
+              - Turn steps (2025 actions, masked): same, but logits get the
+                action mask applied so illegal actions can't move probability mass.
+          5. Compute distributional value loss (C51 cross-entropy) over all
+             non-padded steps.
+          6. Sum into total_loss = policy + vf*value - ent*entropy + α*KL.
+          7. Backprop, clip gradients, optimizer step, scheduler step.
+          8. Return a dict of metrics for wandb / console logging.
+
+        Returns:
+            metrics dict with keys: loss, policy_loss, value_loss, entropy,
+            rnad_loss, grad norms, LRs, ent_coef, portfolio_*.
+        """
         self._step += 1
         ent_coef = self.config.ent_coef_at_step(self._step)
 
@@ -207,10 +272,16 @@ class PortfolioRNaDLearner:
             "padding_mask", torch.ones_like(actions, dtype=torch.bool)
         ).to(self.device)
 
-        action_masks = batch.get("masks", None)
-        if action_masks is not None:
-            action_masks = action_masks.to(self.device)
+        action_masks = batch["masks"].to(self.device)
 
+        # ── Advantage normalization ───────────────────────────────────────────
+        # Why: PPO is sensitive to the *scale* of advantages. Large advantages
+        # cause big policy updates; small ones cause tiny ones. Per-batch
+        # standardization to zero-mean / unit-std makes training behave more
+        # uniformly across reward magnitudes and is a well-known PPO trick.
+        # We standardize using only valid (non-padded) entries so padding zeros
+        # don't bias the mean/std.
+        # ─────────────────────────────────────────────────────────────────────
         valid_advantages = advantages[padding_mask]
         if len(valid_advantages) > 1:
             advantages = (advantages - valid_advantages.mean()) / (
@@ -278,6 +349,20 @@ class PortfolioRNaDLearner:
                 ]
                 rnad_loss_tp = self._compute_portfolio_kl(curr_dist, ref_tp_logits_list)
 
+                # ── PPO clipped surrogate objective (teampreview path) ───────
+                # The PPO loss is a workhorse formula. Reading it slowly:
+                #   ratio = π_current(a | s) / π_old(a | s)
+                #         = exp(log_prob_current - log_prob_old)
+                #   surr1 = ratio       * advantage     ← unclipped
+                #   surr2 = clip(ratio) * advantage     ← clipped to [1-ε, 1+ε]
+                #   loss  = -min(surr1, surr2).mean()
+                #
+                # Why min? It's PPO's pessimistic bound: when an action looked
+                # good (advantage > 0) but ratio drifted high, we use the
+                # clipped (smaller) value, preventing aggressive moves. When
+                # the action looked bad (advantage < 0) and ratio is low, we
+                # similarly take the more pessimistic surrogate.
+                # ─────────────────────────────────────────────────────────────
                 curr_log_probs = curr_dist.log_prob(flat_actions[tp_indices])
                 ratio = torch.exp(curr_log_probs - flat_old_log_probs[tp_indices])
                 surr1 = ratio * flat_advantages[tp_indices]
@@ -287,6 +372,8 @@ class PortfolioRNaDLearner:
                 )
                 policy_loss_tp = -torch.min(surr1, surr2).mean()
 
+                # Entropy bonus (high entropy = uncertain policy = exploration).
+                # Subtracted from total loss with coef ent_coef.
                 entropy_tp = curr_dist.entropy().mean()
 
             valid_turn_mask = (~flat_is_tp) & flat_padding_mask
@@ -307,16 +394,13 @@ class PortfolioRNaDLearner:
                 # gradients into the unmasked positions and back through the model.
                 # -1e9 is small enough to make masked actions effectively zero
                 # probability under softmax, while keeping the backward pass finite.
-                if action_masks is not None:
-                    flat_masks = action_masks.reshape(-1, action_masks.shape[-1])
-                    curr_masks = flat_masks[turn_indices]
-                    curr_turn_logits = curr_turn_logits.masked_fill(
-                        ~curr_masks.bool(), -1e9
-                    )
-                    ref_turn_logits_list = [
-                        ref_logits.masked_fill(~curr_masks.bool(), -1e9)
-                        for ref_logits in ref_turn_logits_list
-                    ]
+                flat_masks = action_masks.reshape(-1, action_masks.shape[-1])
+                curr_masks = flat_masks[turn_indices]
+                curr_turn_logits = curr_turn_logits.masked_fill(~curr_masks.bool(), -1e9)
+                ref_turn_logits_list = [
+                    ref_logits.masked_fill(~curr_masks.bool(), -1e9)
+                    for ref_logits in ref_turn_logits_list
+                ]
 
                 curr_dist = Categorical(logits=curr_turn_logits)
                 rnad_loss_turn = self._compute_portfolio_kl(
@@ -335,7 +419,18 @@ class PortfolioRNaDLearner:
                 entropy_turn = curr_dist.entropy().mean()
 
             if flat_padding_mask.any():
-                # Distributional value loss (C51 cross-entropy with two-hot targets)
+                # ── C51 distributional value loss ────────────────────────────
+                # Instead of regressing scalar value, the value head outputs a
+                # distribution over `num_value_bins` discrete return-bins
+                # spanning [value_min, value_max]. The target is constructed
+                # by `twohot_encode`: it places probability mass on the two
+                # bins straddling the true return, weighted by linear distance.
+                #
+                # Loss = cross-entropy(target_dist, predicted_dist), masked to
+                # ignore padding positions. This gives much richer gradients
+                # than scalar MSE — the value head learns *uncertainty* about
+                # the outcome, not just the mean.
+                # ─────────────────────────────────────────────────────────────
                 flat_dist_logits = win_dist_logits.reshape(-1, self.num_value_bins)
                 targets = twohot_encode(flat_returns, self.value_support)
                 log_probs_dist = torch.log_softmax(flat_dist_logits, dim=-1)
@@ -344,10 +439,22 @@ class PortfolioRNaDLearner:
                     per_step_value_loss * flat_padding_mask.float()
                 ).sum() / flat_padding_mask.sum().clamp(min=1.0)
 
+            # ── Combine teampreview and turn-step contributions ──────────────
+            # Decisions at "teampreview" (pre-battle ordering, 90 actions) and
+            # "turn" (in-battle, 2025 actions) use different model heads. We
+            # compute losses separately for each then add. RNaD's KL term and
+            # the entropy bonus are summed across both step types so each
+            # head gets its share of the signal.
+            # ─────────────────────────────────────────────────────────────────
             policy_loss = policy_loss_tp + policy_loss_turn
             entropy_loss = entropy_tp + entropy_turn
             rnad_loss = rnad_loss_tp + rnad_loss_turn
 
+            # The full RNaD loss:
+            #   total = policy + vf*value - ent*entropy + α*KL_to_reference
+            # Note the SIGN on entropy: we *subtract* it because we want to
+            # *maximize* entropy (encourage exploration) by making the loss
+            # smaller when entropy is high.
             total_loss = (
                 policy_loss
                 + self.vf_coef * value_loss
@@ -476,8 +583,9 @@ def _config_to_flat_arch(d: Dict[str, Any]) -> Dict[str, Any]:
     "architecture", "value_head", "curriculum", etc. Merging all sections gives a
     flat dict compatible with the legacy MODEL_ARCH_CONFIG_KEYS lookup.
     """
-    from elitefurretai.rl.config import _is_nested_format
 
+    # TODO: remove if we move past curious-darkness and the not flat config;
+    # in fact, we should movepast making these flat to beign with
     if not _is_nested_format(d):
         return d
     flat: Dict[str, Any] = {}

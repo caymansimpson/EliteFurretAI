@@ -30,7 +30,7 @@ from elitefurretai.etl.system_utils import (
     configure_torch_multiprocessing,
     is_windows_or_wsl,
 )
-from elitefurretai.supervised.train_utils import format_time
+from elitefurretai.supervised.utils import format_time
 
 
 def save_metadata(save_dir, file_trajectory_counts):
@@ -80,9 +80,7 @@ def trajectories(
     print(f"Processing {len(files)} battle files into trajectories...")
 
     # Create an Embedder instance for feature extraction
-    emb = Embedder(
-        format="gen9vgc2023regc", feature_set=Embedder.FULL, omniscient=False
-    )
+    emb = Embedder(format="gen9vgc2023regc", feature_set=Embedder.FULL, omniscient=False)
 
     # Create a BattleDataset that yields full trajectories (one per __getitem__)
     dataset = BattleDataset(

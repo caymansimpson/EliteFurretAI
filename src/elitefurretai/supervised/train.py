@@ -22,7 +22,7 @@ from elitefurretai.etl import (
 )
 from elitefurretai.etl.system_utils import configure_torch_multiprocessing
 from elitefurretai.supervised.model_archs import TransformerThreeHeadedModel
-from elitefurretai.supervised.train_utils import (
+from elitefurretai.supervised.utils import (
     analyze,
     evaluate,
     focal_topk_cross_entropy_loss,
@@ -45,6 +45,9 @@ def train_epoch(
     running_teampreview_loss = 0.0
     running_win_loss = 0.0
     running_entropy = 0.0
+    # Brier score tracker (vs trajectory-final binary outcome).
+    brier_sum = 0.0
+    brier_count = 0
     steps = 0
     num_batches = 0
     start = time.time()
@@ -61,6 +64,10 @@ def train_epoch(
             batch = {k: v.to(config["device"]) for k, v in batch.items()}
 
         states = batch["states"].to(torch.float32)
+        # Slice to model's expected input size when featureset is smaller than FULL
+        state_input_dim = config.get("state_input_dim", states.shape[-1])
+        if state_input_dim < states.shape[-1]:
+            states = states[:, :, :state_input_dim]
         actions = batch["actions"]
         action_masks = batch["action_masks"]
         wins = batch["wins"].to(torch.float32)
@@ -114,9 +121,8 @@ def train_epoch(
                 if move_w != 1.0 or switch_w != 1.0:
                     slot1 = flat_turn_actions // 45
                     slot2 = flat_turn_actions % 45
-                    has_switch = (
-                        ((slot1 >= 40) & (slot1 <= 43))
-                        | ((slot2 >= 40) & (slot2 <= 43))
+                    has_switch = ((slot1 >= 40) & (slot1 <= 43)) | (
+                        (slot2 >= 40) & (slot2 <= 43)
                     )
                     sample_weights = torch.where(
                         has_switch,
@@ -208,6 +214,23 @@ def train_epoch(
             num_turn_samples = turn_valid_mask.sum().item()
             num_tp_samples = teampreview_valid_mask.sum().item()
 
+            # Brier score against the trajectory-final binary outcome
+            # (matches win_model_diagnostics.prediction_vs_actual_overall.brier_score).
+            with torch.no_grad():
+                valid_lengths = masks.sum(dim=1).long()
+                has_valid = valid_lengths > 0
+                if has_valid.any():
+                    last_idx = (valid_lengths - 1).clamp(min=0)
+                    batch_idx = torch.arange(wins.size(0), device=wins.device)
+                    final_win = wins[batch_idx, last_idx]
+                    binary_outcome = (final_win > 0).float().unsqueeze(1).expand_as(wins)
+                    pred_prob = (win_logits + 1.0) / 2.0
+                    brier_valid = valid_mask & has_valid.unsqueeze(1)
+                    if brier_valid.any():
+                        brier_sq = (pred_prob - binary_outcome) ** 2
+                        brier_sum += brier_sq[brier_valid].sum().item()
+                        brier_count += int(brier_valid.sum().item())
+
             # Scale loss by accumulation steps to maintain gradient magnitude
             loss = loss / accumulation_steps
 
@@ -265,6 +288,7 @@ def train_epoch(
                     "train_turn_loss": running_turn_loss / num_batches,
                     "train_teampreview_loss": running_teampreview_loss / num_batches,
                     "train_win_loss": running_win_loss / num_batches,
+                    "train_brier": (brier_sum / brier_count) if brier_count > 0 else 0.0,
                     "train_entropy": running_entropy / num_batches,
                     "learning_rate": optimizer.param_groups[0]["lr"],
                 }
@@ -290,6 +314,7 @@ def train_epoch(
         "teampreview_loss": running_teampreview_loss / num_batches,
         "win_loss": running_win_loss / num_batches,
         "entropy": running_entropy / num_batches,
+        "brier": (brier_sum / brier_count) if brier_count > 0 else 0.0,
     }
 
 
@@ -399,19 +424,40 @@ def main(train_path, test_path, val_path, config={}, save_best=False):
 
     # Coerce numeric types that YAML may parse as strings (e.g. 3e-5)
     _float_keys = {
-        "learning_rate", "dropout", "weight_decay", "max_grad_norm",
-        "teampreview_head_dropout", "entropy_weight", "focal_gamma",
-        "focal_alpha", "label_smoothing", "value_min", "value_max",
+        "learning_rate",
+        "dropout",
+        "weight_decay",
+        "max_grad_norm",
+        "teampreview_head_dropout",
+        "entropy_weight",
+        "focal_gamma",
+        "focal_alpha",
+        "label_smoothing",
+        "value_min",
+        "value_max",
         "transformer_dropout",
     }
     _int_keys = {
-        "batch_size", "worker_batch_size", "num_workers", "prefetch_factor",
-        "files_per_worker", "num_epochs", "seed", "lstm_layers",
-        "lstm_hidden_size", "num_value_bins", "max_seq_len",
-        "early_attention_heads", "late_attention_heads",
-        "pokemon_attention_heads", "teampreview_attention_heads",
-        "grouped_encoder_hidden_dim", "grouped_encoder_aggregated_dim",
-        "train_topk_k", "transformer_layers", "transformer_heads",
+        "batch_size",
+        "worker_batch_size",
+        "num_workers",
+        "prefetch_factor",
+        "files_per_worker",
+        "num_epochs",
+        "seed",
+        "lstm_layers",
+        "lstm_hidden_size",
+        "num_value_bins",
+        "max_seq_len",
+        "early_attention_heads",
+        "late_attention_heads",
+        "pokemon_attention_heads",
+        "teampreview_attention_heads",
+        "grouped_encoder_hidden_dim",
+        "grouped_encoder_aggregated_dim",
+        "train_topk_k",
+        "transformer_layers",
+        "transformer_heads",
         "transformer_ff_dim",
     }
     for k in _float_keys:
@@ -437,6 +483,9 @@ def main(train_path, test_path, val_path, config={}, save_best=False):
     config["force_switch_indices"] = [
         feature_names[f"MON:{j}:force_switch"] for j in range(6)
     ]
+    # Propagate the model's expected input size; train_epoch and evaluate use this to
+    # slice pre-processed FULL states down to the featureset's actual embedding size.
+    config["state_input_dim"] = embedder.embedding_size
     print(
         f"Embedder initialized. Embedding[{embedder.embedding_size}] on {config['device']}"
     )
@@ -573,9 +622,11 @@ def main(train_path, test_path, val_path, config={}, save_best=False):
             "Train Win Loss": train_metrics["win_loss"],
             "Train Turn Loss": train_metrics["turn_loss"],
             "Train Teampreview Loss": train_metrics["teampreview_loss"],
+            "Train Brier": train_metrics.get("brier", 0.0),
             "Test Loss": test_loss,
             "Test Win Corr": metrics["win_corr"],
             "Test Win MSE": metrics["win_mse"],
+            "Test Brier": metrics.get("brier_score", 0.0),
             "Test Teampreview Top3 Loss": metrics.get("teampreview_top3_loss", 0),
             "Test Teampreview Top1": metrics.get("teampreview_top1_acc", 0),
             "Test Teampreview Top3": metrics.get("teampreview_top3_acc", 0),
@@ -647,6 +698,7 @@ def main(train_path, test_path, val_path, config={}, save_best=False):
         ),
         "Validation Win Corr": metrics["win_corr"],
         "Validation Win MSE": metrics["win_mse"],
+        "Validation Brier": metrics.get("brier_score", 0.0),
         "Validation Teampreview Top3 Loss": metrics.get("teampreview_top3_loss", 0),
         "Validation Teampreview Top1": metrics.get("teampreview_top1_acc", 0),
         "Validation Teampreview Top3": metrics.get("teampreview_top3_acc", 0),
@@ -670,6 +722,7 @@ def main(train_path, test_path, val_path, config={}, save_best=False):
         has_teampreview_head=True,
         teampreview_idx=config["teampreview_idx"],
         force_switch_indices=config["force_switch_indices"],
+        state_input_dim=config.get("state_input_dim"),
     )
 
 

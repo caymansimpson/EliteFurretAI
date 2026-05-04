@@ -8,17 +8,14 @@ from poke_env.player import BattleOrder, DefaultBattleOrder, Player
 
 from elitefurretai.etl.embedder import Embedder
 from elitefurretai.etl.encoder import MDBO
-from elitefurretai.rl.fast_action_mask import fast_get_action_mask
+from elitefurretai.rl.masking import fast_get_action_mask
 from elitefurretai.supervised.model_archs import FlexibleThreeHeadedModel
 
 
 class BCPlayer(Player):
     def __init__(
         self,
-        teampreview_model_filepath: Optional[str] = None,
-        action_model_filepath: Optional[str] = None,
-        win_model_filepath: Optional[str] = None,
-        unified_model_filepath: Optional[str] = None,
+        model_filepath: str,
         battle_format: str = "gen9vgc2023regc",
         probabilistic=True,
         device: str = "cpu",
@@ -41,86 +38,9 @@ class BCPlayer(Player):
         self._device = device
         self._verbose = verbose
 
-        # Validate model configuration
-        has_unified = unified_model_filepath is not None
-        has_separate = all(
-            [
-                teampreview_model_filepath is not None,
-                action_model_filepath is not None,
-                win_model_filepath is not None,
-            ]
-        )
-
-        if not has_unified and not has_separate:
-            raise ValueError(
-                "Must provide either unified_model_filepath OR all three separate model filepaths "
-                "(teampreview_model_filepath, action_model_filepath, win_model_filepath)"
-            )
-
-        if has_unified and has_separate:
-            raise ValueError(
-                "Cannot provide both unified_model_filepath and separate model filepaths. "
-                "Choose one approach."
-            )
-
-        # In the case the user used the same model for all three
-        if (
-            has_separate
-            and teampreview_model_filepath == action_model_filepath == win_model_filepath
-        ):
-            if verbose:
-                print(
-                    "[BCPlayer] Detected identical filepaths for all three models; using unified loading."
-                )
-            has_unified = True
-            unified_model_filepath = teampreview_model_filepath
-
-        # Load models based on configuration
-        if has_unified and isinstance(unified_model_filepath, str):
-            # Load single unified model and point all three attributes to it
-            if verbose:
-                print(f"[BCPlayer] Loading unified model from: {unified_model_filepath}")
-            unified_model, unified_embedder, unified_config = self._load_model(
-                unified_model_filepath, device
-            )
-            self.teampreview_model = unified_model
-            self.action_model = unified_model
-            self.win_model = unified_model
-            self.teampreview_embedder = unified_embedder
-            self.action_embedder = unified_embedder
-            self.win_embedder = unified_embedder
-            self.teampreview_config = unified_config
-            self.action_config = unified_config
-            self.win_config = unified_config
-            if verbose:
-                print("[BCPlayer] Unified model loaded for all predictions")
-        else:
-            # Load three separate models for teampreview, action, and win prediction
-            if verbose:
-                print(
-                    f"[BCPlayer] Loading teampreview model from: {teampreview_model_filepath}"
-                )
-            assert isinstance(teampreview_model_filepath, str)
-            self.teampreview_model, self.teampreview_embedder, self.teampreview_config = (
-                self._load_model(teampreview_model_filepath, device)
-            )
-
-            if verbose:
-                print(f"[BCPlayer] Loading action model from: {action_model_filepath}")
-            assert isinstance(action_model_filepath, str)
-            self.action_model, self.action_embedder, self.action_config = self._load_model(
-                action_model_filepath, device
-            )
-
-            if verbose:
-                print(
-                    f"[BCPlayer] Loading win prediction model from: {win_model_filepath}"
-                )
-            assert isinstance(win_model_filepath, str)
-            self.win_model, self.win_embedder, self.win_config = self._load_model(
-                win_model_filepath, device
-            )
-
+        if verbose:
+            print(f"[BCPlayer] Loading model from: {model_filepath}")
+        self.model, self.embedder, self.config = self._load_model(model_filepath, device)
         if verbose:
             print("[BCPlayer] Initialization complete!")
 
@@ -248,11 +168,10 @@ class BCPlayer(Player):
         return model, embedder, config
 
     def embed_battle_state(self, battle: AbstractBattle) -> List[float]:
-        """Embed battle state using the action model's embedder (used for trajectory building)."""
+        """Embed battle state using the model's embedder (used for trajectory building)."""
         assert isinstance(battle, DoubleBattle)
-        embedder = self.action_embedder
-        assert embedder.embedding_size == len(embedder.embed(battle))
-        return embedder.feature_dict_to_vector(embedder.embed(battle))
+        assert self.embedder.embedding_size == len(self.embedder.embed(battle))
+        return self.embedder.feature_dict_to_vector(self.embedder.embed(battle))
 
     def predict_advantage(self, battle: DoubleBattle) -> float:
         """
@@ -281,12 +200,12 @@ class BCPlayer(Player):
 
         # Move to device and truncate to model's max sequence length
         traj = traj.to(self._device)
-        traj = traj[:, -self.win_model.max_seq_len :, :]  # type: ignore
+        traj = traj[:, -self.model.max_seq_len :, :]  # type: ignore
 
-        self.win_model.eval()
+        self.model.eval()
         with torch.no_grad():
-            # Forward pass through win model
-            _, _, win_logits, _ = self.win_model(traj)
+            # Forward pass through model
+            _, _, win_logits, _ = self.model(traj)
 
             if win_logits.dim() == 2:
                 # Remove batch dimension if present
@@ -357,18 +276,16 @@ class BCPlayer(Player):
                 action_type = MDBO.TURN
 
         if action_type == MDBO.TEAMPREVIEW:
-            model = self.teampreview_model
             max_actions = MDBO.teampreview_space()
         else:
-            model = self.action_model
             max_actions = MDBO.action_space()
 
         # Truncate trajectory to model's max sequence length
-        traj = traj[:, -model.max_seq_len :, :]  # type: ignore
-        model.eval()
+        traj = traj[:, -self.model.max_seq_len :, :]  # type: ignore
+        self.model.eval()
         with torch.no_grad():
             # Forward pass: get logits for all steps in the trajectory
-            turn_action_logits, teampreview_logits, win_logits, _ = model(traj)
+            turn_action_logits, teampreview_logits, win_logits, _ = self.model(traj)
 
             if turn_action_logits.dim() == 3:
                 # Remove batch dimension if present

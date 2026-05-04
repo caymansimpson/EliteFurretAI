@@ -13,13 +13,15 @@ These tests verify:
 Note: Tests use small models for speed. Uses CPU for compatibility.
 """
 
+import copy
+
 import pytest
 import torch
 
 from elitefurretai.etl.embedder import Embedder
 from elitefurretai.etl.encoder import MDBO
 from elitefurretai.rl.config import RNaDConfig
-from elitefurretai.rl.learners import RNaDLearner
+from elitefurretai.rl.learners import PortfolioRNaDLearner
 from elitefurretai.rl.players import RNaDAgent
 from elitefurretai.supervised.model_archs import FlexibleThreeHeadedModel
 
@@ -76,31 +78,25 @@ def ref_agent(small_model, simple_embedder):
 
 @pytest.fixture
 def learner(agent, ref_agent):
-    """Create RNaDLearner for testing."""
-    config = RNaDConfig(
-        lr=1e-4,
-        gamma=0.99,
-        clip_range=0.2,
-        ent_coef=0.01,
-        vf_coef=0.5,
-        rnad_alpha=0.1,
-        device="cpu",
-        use_mixed_precision=False,
-        max_grad_norm=0.5,
-        optimizer={
-            "type": "adamw",
-            "weight_decay": 1e-4,
-            "warmup_steps": 0,
-            "schedule": "constant",
-            "param_groups": {
-                "backbone": {"lr": 1e-4, "weight_decay": 1e-4},
-                "heads": {"lr": 3e-4, "weight_decay": 0.0},
-            },
-        },
-    )
-    return RNaDLearner(
+    """Create PortfolioRNaDLearner for testing."""
+    config = RNaDConfig()
+    config.algorithm.clip_range = 0.2
+    config.algorithm.ent_coef = 0.01
+    config.algorithm.vf_coef = 0.5
+    config.algorithm.rnad_alpha = 0.1
+    config.algorithm.gamma = 0.99
+    config.algorithm.max_grad_norm = 0.5
+    config.hardware.device = "cpu"
+    config.hardware.use_mixed_precision = False
+    config.optimizer.warmup_steps = 0
+    config.optimizer.schedule = "constant"
+    config.optimizer.backbone_lr = 1e-4
+    config.optimizer.backbone_weight_decay = 1e-4
+    config.optimizer.heads_lr = 3e-4
+    config.optimizer.heads_weight_decay = 0.0
+    return PortfolioRNaDLearner(
         model=agent,
-        ref_model=ref_agent,
+        ref_models=[ref_agent],
         config=config,
         device="cpu",
     )
@@ -167,11 +163,7 @@ def sample_batch(simple_embedder):
 
 
 def test_learner_initialization(learner):
-    """
-    Test RNaDLearner initializes correctly.
-
-    Expected: All attributes set properly.
-    """
+    """Test PortfolioRNaDLearner initializes correctly."""
     assert learner.gamma == 0.99
     assert learner.clip_range == 0.2
     assert learner.ent_coef == 0.01
@@ -191,13 +183,10 @@ def test_learner_creates_optimizer(learner):
 
 
 def test_ref_model_frozen(learner):
-    """
-    Test that reference model parameters are frozen.
-
-    Expected: All ref_model params have requires_grad=False.
-    """
-    for param in learner.ref_model.parameters():
-        assert not param.requires_grad, "Reference model should be frozen"
+    """Test that reference model parameters are frozen."""
+    for ref in learner.ref_models:
+        for param in ref.parameters():
+            assert not param.requires_grad, "Reference model should be frozen"
 
 
 def test_main_model_trainable(learner):
@@ -215,39 +204,29 @@ def test_main_model_trainable(learner):
 # =============================================================================
 
 
-def test_update_ref_model(learner):
-    """
-    Test update_ref_model copies weights from main model.
-
-    Expected: After update, ref_model has same weights as model.
-    """
-    # Modify main model weights
+def test_add_reference_model_snapshots_main(learner):
+    """Test add_reference_model snapshots current weights from main model."""
     with torch.no_grad():
         for param in learner.model.parameters():
             param.fill_(1.0)
 
-    # Update reference
-    learner.update_ref_model()
+    learner.add_reference_model(RNaDAgent(copy.deepcopy(learner.model.model)))
 
-    # Verify weights are now the same
     for main_param, ref_param in zip(
-        learner.model.parameters(), learner.ref_model.parameters()
+        learner.model.parameters(), learner.ref_models[-1].parameters()
     ):
         assert torch.allclose(main_param, ref_param), (
-            "Ref model should match main model after update"
+            "New ref model should match main model at snapshot time"
         )
 
 
-def test_update_ref_model_keeps_frozen(learner):
-    """
-    Test that ref model stays frozen after update.
+def test_add_reference_model_keeps_frozen(learner):
+    """Test that ref models stay frozen after add."""
+    learner.add_reference_model(RNaDAgent(copy.deepcopy(learner.model.model)))
 
-    Expected: requires_grad still False after update.
-    """
-    learner.update_ref_model()
-
-    for param in learner.ref_model.parameters():
-        assert not param.requires_grad, "Ref model should stay frozen after update"
+    for ref in learner.ref_models:
+        for param in ref.parameters():
+            assert not param.requires_grad, "Ref model should stay frozen"
 
 
 # =============================================================================
@@ -280,6 +259,8 @@ def test_update_losses_are_finite(learner, sample_batch):
     losses = learner.update(sample_batch)
 
     for key, value in losses.items():
+        if not isinstance(value, (int, float)):
+            continue
         assert not torch.isnan(torch.tensor(value)), f"{key} is NaN"
         assert not torch.isinf(torch.tensor(value)), f"{key} is Inf"
 

@@ -1,22 +1,51 @@
-"""Opponent management for RL training.
+"""opponents.py — Opponent management for RL training.
 
-This module contains two related but intentionally different classes:
+What this file is
+-----------------
+The system that decides "who does the RL agent play against this game?" and
+constructs the actual `Player` objects that show up on the other side of the
+battle. Two cooperating classes:
 
-1) `OpponentPool`
-    - Learner/main-process opponent manager
-    - Samples opponent *types* using curriculum probabilities
-    - Lazily loads/caches models (BC, exploiters, ghost checkpoints)
-    - Creates concrete `Player` instances for evaluation/training contexts
-    - Tracks win rates and can adapt curriculum over time
+1) `OpponentPool` — main-process curriculum manager
+    - Owns the curriculum: a probability distribution over opponent *types*
+      (self-play, BC clone, ghosts, exploiters, MaxDamage, …).
+    - Caches model artifacts so we don't reload from disk every battle.
+    - Tracks per-opponent win rates and can adapt curriculum over time
+      (PFSP-style: focus on opponents we're currently losing to).
+    - Lives in the trainer process; speaks to workers via the broadcast queue.
 
-2) `WorkerOpponentFactory`
-    - Worker-process battle wiring helper
-    - Creates paired `BatchInferencePlayer` instances used by mp workers
-    - Reconfigures opponents each batch (self-play/BC/exploiter/ghost/max-damage)
-    - Handles per-batch team randomization and battle-state cleanup
+2) `WorkerOpponentFactory` — per-worker actor factory
+    - Lives inside each worker process.
+    - When the curriculum says "play self vs BC", this is what actually
+      *constructs* the BatchInferencePlayer / BCPlayer / MaxDamagePlayer
+      instances and connects them to Showdown.
+    - Reuses player objects across battles where possible (each player
+      construction triggers a websocket login, which is expensive).
+    - Handles team randomization per battle.
 
-In short: `OpponentPool` is global/curriculum-focused, while
-`WorkerOpponentFactory` is local/worker-loop-focused.
+Why two classes
+---------------
+OpponentPool answers "what kind of opponent should this battle have?". It's
+about the overall *training plan*. WorkerOpponentFactory answers "given that
+choice, instantiate and wire up the actual websocket-connected battle
+participants". It's about *execution mechanics*. Keeping them separate means
+the curriculum logic doesn't have to know about Showdown account
+configuration, and the websocket wiring code doesn't have to know about
+adaptive PFSP weighting.
+
+Glossary of opponent types
+--------------------------
+- self_play          — A second copy of the current learning policy.
+- bc_player          — Frozen behavior-cloned policy from human data.
+- ghosts             — Past checkpoints of the main agent (from earlier in
+                       this same training run). Prevents catastrophic forgetting.
+- exploiters         — Adversarially-trained policies whose only goal was to
+                       beat a previous version of the agent. Patches blind spots.
+- max_damage         — Fixed heuristic (highest damage move). Sanity baseline.
+- random_baseline    — Random legal action.
+- max_base_power     — Heuristic: highest base-power move regardless of target.
+- simple_heuristic   — poke-env's built-in SimpleHeuristicsPlayer.
+- vgc_bench_baseline — External SB3-trained agent we compare against.
 """
 
 import asyncio
@@ -39,7 +68,7 @@ from poke_env.player import MaxBasePowerPlayer, Player, RandomPlayer
 from poke_env.teambuilder import ConstantTeambuilder
 
 from elitefurretai.etl import Embedder, TeamRepo
-from elitefurretai.rl.model_io import (
+from elitefurretai.rl.learners import (
     build_model_from_config,
     is_checkpoint_compatible_with_model_config,
     load_agent_from_checkpoint,
@@ -62,6 +91,9 @@ except Exception:
     SimpleHeuristicBaselineCls = None
 
 
+# Cached vgc-bench policies keyed by (checkpoint_path, device).
+# Loading a stable_baselines3 PPO checkpoint is slow (hundreds of ms); cache
+# them so swapping vgc-bench opponents in/out of the curriculum is cheap.
 _VGC_BENCH_POLICY_CACHE: Dict[Tuple[str, str], Any] = {}
 
 
@@ -89,8 +121,8 @@ def _create_vgc_bench_player(
     player_config: AccountConfiguration,
     server_config: ServerConfiguration,
     team: str,
-    battle_format: str='gen9vgc2024regg',
-    checkpoint_path: str = 'data/models/vgc-bench-sb3-model.zip',
+    battle_format: str = "gen9vgc2024regg",
+    checkpoint_path: str = "data/models/vgc-bench-sb3-model.zip",
     accept_open_team_sheet: bool = True,
 ) -> Player:
     if not os.path.exists(checkpoint_path):
@@ -129,14 +161,31 @@ class OpponentPool:
     """Main-process opponent sampler and model cache.
 
     Responsibilities:
-    - Own the curriculum distribution over opponent types
-    - Resolve sampled opponent types into concrete `Player` instances
-    - Cache expensive model artifacts (BC/exploiter/ghost models)
-    - Track win rates per opponent type and optionally adapt curriculum
+    - Own the curriculum distribution over opponent types.
+    - Resolve sampled opponent types into concrete `Player` instances.
+    - Cache expensive model artifacts (BC/exploiter/ghost models).
+    - Track win rates per opponent type and (optionally) adapt curriculum.
 
-    Notably different from `WorkerOpponentFactory`:
-    - `OpponentPool` is global and policy-level (sampling + adaptation)
-    - `WorkerOpponentFactory` is per-worker and execution-level
+    Curriculum adaptation (PFSP-style)
+    ----------------------------------
+    "Prioritized Fictitious Self Play" — the basic idea: focus more battles on
+    opponents the agent is currently losing to. After each batch of wins/losses
+    is reported to `record_battle_result()`, we periodically `update_curriculum`
+    to nudge the distribution toward the harder opponents (clamped, smoothed,
+    and gated by sample count to avoid overreacting to noise).
+
+    Win-rate tracking is windowed (default last 100 battles per opponent type)
+    so the curriculum responds to *recent* performance, not lifetime stats.
+
+    Why this is in the main process, not workers
+    --------------------------------------------
+    - Curriculum changes need to be applied uniformly across all workers; the
+      main process is the natural coordinator.
+    - Aggregating per-worker win rates into a single signal is simpler when
+      the aggregator lives in one place.
+    - Loading large model checkpoints (BC, exploiters) repeatedly per worker
+      would be wasteful; the main process loads once and distributes paths
+      to workers, which load themselves on demand.
     """
 
     SELF_PLAY = "self_play"
@@ -154,20 +203,18 @@ class OpponentPool:
         main_model: RNaDAgent,
         device: str,
         battle_format: str = "gen9vgc2023regc",
-        bc_teampreview_path: Optional[str] = None,
-        bc_action_path: Optional[str] = None,
-        bc_win_path: Optional[str] = None,
+        bc_model_path: Optional[str] = None,
         exploiter_models_dir: str = "data/models/exploiters",
-        past_models_dir: str = "data/models/ghosts",
+        ghosts_dir: str = "data/models/ghosts",
         vgc_bench_checkpoint_path: Optional[str] = None,
-        max_past_models: int = 10,
+        max_ghosts: int = 10,
         tracking_window: int = 100,
         curriculum: Optional[Dict[str, float]] = None,
     ):
         self.main_model = main_model
         self.device = device
         self.battle_format = battle_format
-        self.max_past_models = max_past_models
+        self.max_ghosts = max_ghosts
         self.vgc_bench_checkpoint_path = vgc_bench_checkpoint_path
         self.tracking_window = tracking_window
 
@@ -187,17 +234,12 @@ class OpponentPool:
         if not np.isclose(total, 1.0):
             raise ValueError(f"Curriculum weights must sum to 1.0, got {total}")
 
-        self.bc_player_config = None
+        self.bc_model_path: Optional[str] = bc_model_path
         self._cached_bc_model: Optional[Any] = None
         self._cached_bc_embedder: Optional[Any] = None
         self._cached_bc_config: Optional[Dict] = None
 
-        if bc_teampreview_path and bc_action_path and bc_win_path:
-            self.bc_player_config = {
-                "teampreview": bc_teampreview_path,
-                "action": bc_action_path,
-                "win": bc_win_path,
-            }
+        if bc_model_path:
             self._preload_bc_model()
 
         self.exploiter_models_dir = exploiter_models_dir
@@ -206,10 +248,10 @@ class OpponentPool:
         self.loaded_exploiters: Dict[str, RNaDAgent] = {}
         self._load_exploiter_models()
 
-        self.past_models_dir = past_models_dir
-        os.makedirs(past_models_dir, exist_ok=True)
-        self.past_models: List[Tuple[int, str]] = []
-        self._load_past_models()
+        self.ghosts_dir = ghosts_dir
+        os.makedirs(ghosts_dir, exist_ok=True)
+        self.ghosts: List[Tuple[int, str]] = []
+        self._load_ghosts()
 
         self.win_rates: Dict[str, List[float]] = {
             self.SELF_PLAY: [],
@@ -223,12 +265,10 @@ class OpponentPool:
             self.VGC_BENCH_BASELINE: [],
         }
         self.win_rate_tracking: Dict[str, deque[float]] = {
-            opp_type: deque(maxlen=self.tracking_window)
-            for opp_type in self.win_rates
+            opp_type: deque(maxlen=self.tracking_window) for opp_type in self.win_rates
         }
         self.battle_length_tracking: Dict[str, deque[int]] = {
-            opp_type: deque(maxlen=self.tracking_window)
-            for opp_type in self.win_rates
+            opp_type: deque(maxlen=self.tracking_window) for opp_type in self.win_rates
         }
         self.total_battles_tracked = 0
         self.total_forfeits_tracked = 0
@@ -241,11 +281,11 @@ class OpponentPool:
 
     def _opponent_available(self, opponent_type: str) -> bool:
         if opponent_type == self.BC_PLAYER:
-            return self.bc_player_config is not None
+            return self.bc_model_path is not None
         if opponent_type == self.EXPLOITERS:
             return len(self.exploiter_models) > 0
         if opponent_type == self.GHOSTS:
-            return len(self.past_models) > 0
+            return len(self.ghosts) > 0
         return True
 
     def _ensure_tracking_key(self, opponent_type: str) -> None:
@@ -257,13 +297,13 @@ class OpponentPool:
             self.win_rates[opponent_type] = []
 
     def _preload_bc_model(self):
-        if not self.bc_player_config:
+        if not self.bc_model_path:
             return
 
         from elitefurretai.etl.embedder import Embedder
-        from elitefurretai.rl.model_io import build_model_from_config
+        from elitefurretai.rl.learners import build_model_from_config
 
-        filepath = self.bc_player_config["teampreview"]
+        filepath = self.bc_model_path
         logger.info("Pre-loading BC model from %s...", filepath)
 
         checkpoint = torch.load(filepath, map_location=self.device)
@@ -303,10 +343,10 @@ class OpponentPool:
             if os.path.isfile(filepath)
         ]
         models.sort(key=lambda item: item[0], reverse=True)
-        self.exploiter_models = models[: self.max_past_models]
+        self.exploiter_models = models[: self.max_ghosts]
 
-    def _load_past_models(self) -> None:
-        files = self._list_model_checkpoints(self.past_models_dir)
+    def _load_ghosts(self) -> None:
+        files = self._list_model_checkpoints(self.ghosts_dir)
         models: List[Tuple[int, str]] = []
         for filepath in files:
             filename = os.path.basename(filepath)
@@ -317,7 +357,7 @@ class OpponentPool:
             models.append((step, filepath))
 
         models.sort(key=lambda item: item[0], reverse=True)
-        self.past_models = models[: self.max_past_models]
+        self.ghosts = models[: self.max_ghosts]
 
     def _load_exploiter_model(self, filepath: str) -> RNaDAgent:
         if filepath in self.loaded_exploiters:
@@ -355,25 +395,41 @@ class OpponentPool:
             opponent_type = self.SELF_PLAY
 
         if opponent_type == self.SELF_PLAY:
-            return self._create_self_play_opponent(player_config, server_config, team, worker_id)
+            return self._create_self_play_opponent(
+                player_config, server_config, team, worker_id
+            )
         elif opponent_type == self.BC_PLAYER:
             return self._create_bc_opponent(player_config, server_config, team)
         elif opponent_type == self.EXPLOITERS:
-            return self._create_exploiter_opponent(player_config, server_config, team, worker_id)
+            return self._create_exploiter_opponent(
+                player_config, server_config, team, worker_id
+            )
         elif opponent_type == self.GHOSTS:
-            return self._create_past_opponent(player_config, server_config, team, worker_id)
+            return self._create_ghost_opponent(
+                player_config, server_config, team, worker_id
+            )
         elif opponent_type == self.MAX_DAMAGE:
             return self._create_max_damage_opponent(player_config, server_config, team)
         elif opponent_type == self.RANDOM_BASELINE:
-            return self._create_random_baseline_opponent(player_config, server_config, team)
+            return self._create_random_baseline_opponent(
+                player_config, server_config, team
+            )
         elif opponent_type == self.MAX_BASE_POWER_BASELINE:
-            return self._create_max_base_power_baseline_opponent(player_config, server_config, team)
+            return self._create_max_base_power_baseline_opponent(
+                player_config, server_config, team
+            )
         elif opponent_type == self.SIMPLE_HEURISTIC_BASELINE:
-            return self._create_simple_heuristic_baseline_opponent(player_config, server_config, team)
+            return self._create_simple_heuristic_baseline_opponent(
+                player_config, server_config, team
+            )
         elif opponent_type == self.VGC_BENCH_BASELINE:
-            return self._create_vgc_bench_baseline_opponent(player_config, server_config, team)
+            return self._create_vgc_bench_baseline_opponent(
+                player_config, server_config, team
+            )
         else:
-            return self._create_self_play_opponent(player_config, server_config, team, worker_id)
+            return self._create_self_play_opponent(
+                player_config, server_config, team, worker_id
+            )
 
     def _create_max_damage_opponent(
         self,
@@ -454,7 +510,8 @@ class OpponentPool:
             ),
             server_config=server_config,
             team=team,
-            checkpoint_path=self.vgc_bench_checkpoint_path or "data/models/vgc-bench-sb3-model.zip",
+            checkpoint_path=self.vgc_bench_checkpoint_path
+            or "data/models/vgc-bench-sb3-model.zip",
         )
 
     def _create_self_play_opponent(
@@ -480,7 +537,7 @@ class OpponentPool:
         )
 
     def _create_bc_opponent(self, player_config, server_config, team: str) -> Player:
-        if self.bc_player_config is None or self._cached_bc_model is None:
+        if self.bc_model_path is None or self._cached_bc_model is None:
             return self._create_self_play_opponent(player_config, server_config, team)
 
         new_config = AccountConfiguration(
@@ -503,15 +560,9 @@ class OpponentPool:
         bc_player._device = self.device
         bc_player._verbose = False
 
-        bc_player.teampreview_model = self._cached_bc_model
-        bc_player.action_model = self._cached_bc_model
-        bc_player.win_model = self._cached_bc_model
-        bc_player.teampreview_embedder = self._cached_bc_embedder  # type: ignore[assignment]
-        bc_player.action_embedder = self._cached_bc_embedder  # type: ignore[assignment]
-        bc_player.win_embedder = self._cached_bc_embedder  # type: ignore[assignment]
-        bc_player.teampreview_config = self._cached_bc_config  # type: ignore[assignment]
-        bc_player.action_config = self._cached_bc_config  # type: ignore[assignment]
-        bc_player.win_config = self._cached_bc_config  # type: ignore[assignment]
+        bc_player.model = self._cached_bc_model
+        bc_player.embedder = self._cached_bc_embedder  # type: ignore[assignment]
+        bc_player.config = self._cached_bc_config  # type: ignore[assignment]
 
         bc_player._last_message_error = {}
         bc_player._last_message = {}
@@ -529,7 +580,9 @@ class OpponentPool:
     ) -> Player:
         self._load_exploiter_models()
         if not self.exploiter_models:
-            return self._create_self_play_opponent(player_config, server_config, team, worker_id)
+            return self._create_self_play_opponent(
+                player_config, server_config, team, worker_id
+            )
 
         _, exploiter_path = random.choice(self.exploiter_models)
         exploiter_model = self._load_exploiter_model(exploiter_path)
@@ -552,25 +605,27 @@ class OpponentPool:
             worker_id=worker_id,
         )
 
-    def _create_past_opponent(
+    def _create_ghost_opponent(
         self,
         player_config: AccountConfiguration,
         server_config: ServerConfiguration,
         team: str,
         worker_id: Optional[int] = None,
     ) -> Player:
-        if not self.past_models:
-            return self._create_self_play_opponent(player_config, server_config, team, worker_id)
+        if not self.ghosts:
+            return self._create_self_play_opponent(
+                player_config, server_config, team, worker_id
+            )
 
-        step, filepath = self.past_models[np.random.randint(len(self.past_models))]
-        past_model = load_agent_from_checkpoint(filepath, self.device)
+        step, filepath = self.ghosts[np.random.randint(len(self.ghosts))]
+        ghost_model = load_agent_from_checkpoint(filepath, self.device)
 
         new_config = AccountConfiguration(
             f"Ghost_{step}_{player_config.username}", player_config.password
         )
 
         return BatchInferencePlayer(
-            model=past_model,
+            model=ghost_model,
             device=self.device,
             batch_size=16,
             account_configuration=new_config,
@@ -581,10 +636,10 @@ class OpponentPool:
             worker_id=worker_id,
         )
 
-    def add_past_model(self, step: int, filepath: str):
-        self.past_models.append((step, filepath))
-        self.past_models.sort(key=lambda x: x[0], reverse=True)
-        self.past_models = self.past_models[: self.max_past_models]
+    def add_ghost(self, step: int, filepath: str):
+        self.ghosts.append((step, filepath))
+        self.ghosts.sort(key=lambda x: x[0], reverse=True)
+        self.ghosts = self.ghosts[: self.max_ghosts]
 
     def record_battle_result(
         self,
@@ -651,14 +706,17 @@ class OpponentPool:
             metrics["avg_battle_length_overall"] = float(np.mean(all_lengths))
 
         if self.total_battles_tracked > 0:
-            metrics["forfeit_rate"] = self.total_forfeits_tracked / self.total_battles_tracked
+            metrics["forfeit_rate"] = (
+                self.total_forfeits_tracked / self.total_battles_tracked
+            )
 
         for opp_type, weight in self.curriculum.items():
             metrics[f"curriculum_weight_{opp_type}"] = float(weight)
 
         return metrics
 
-    def update_curriculum(self, adaptive: bool = True):
+    # TODO: revisit
+    def update_curriculum(self):
         """Adapt curriculum weights from recent matchup performance.
 
         Hybrid strategy:
@@ -668,12 +726,10 @@ class OpponentPool:
         - Anchor floors preserve self-play/BC/ghost exposure to reduce forgetting
         - Bayesian smoothing + sample gating reduce noisy swings under high-variance battles
         """
-        if not adaptive:
-            return
 
         # Refresh checkpoint-backed pools before scoring availability.
         self._load_exploiter_models()
-        self._load_past_models()
+        self._load_ghosts()
         base = self.curriculum.copy()
 
         # Blend factor between PFSP (learn near decision boundary) and weakness targeting.
@@ -784,6 +840,21 @@ class WorkerOpponentFactory:
     - swap opponent policy per batch
     - randomize teams per batch
     - reset battle state to avoid memory growth
+
+    Why "factory" not "pool"
+    ------------------------
+    OpponentPool decides *which* type of opponent to play; this class actually
+    *constructs* the player objects. They have related responsibilities but
+    different concerns (planning vs. execution), and live in different
+    processes (main vs. worker).
+
+    Account-name mechanics
+    ----------------------
+    Every player needs a unique Showdown account name. We can't reuse names
+    across worker rebuilds because Showdown rejects duplicates with `|nametaken|`
+    until the previous socket fully disconnects. The `_account_name()` helper
+    composes a unique-ish name from worker_id + role + index + run_id +
+    factory_tag + rebuild_generation. See its docstring for the gory details.
     """
 
     SELF_PLAY = "self_play"
@@ -814,10 +885,8 @@ class WorkerOpponentFactory:
         max_battle_steps: int = 40,
         exploiter_models_dir: Optional[str] = None,
         max_exploiter_models: int = 10,
-        max_loaded_exploiter_models: int = 2,
-        ghost_models_dir: Optional[str] = None,
-        max_ghost_models: int = 10,
-        max_loaded_ghost_models: int = 2,
+        ghosts_dir: Optional[str] = None,
+        max_ghosts: int = 10,
         vgc_bench_checkpoint_path: Optional[str] = None,
         external_vgcbench_usernames: Optional[List[str]] = None,
         model_config: Optional[Dict[str, Any]] = None,
@@ -839,10 +908,8 @@ class WorkerOpponentFactory:
         self.max_battle_steps = max_battle_steps
         self.exploiter_models_dir = exploiter_models_dir
         self.max_exploiter_models = max_exploiter_models
-        self.max_loaded_exploiter_models = max_loaded_exploiter_models
-        self.ghost_models_dir = ghost_models_dir
-        self.max_ghost_models = max_ghost_models
-        self.max_loaded_ghost_models = max_loaded_ghost_models
+        self.ghosts_dir = ghosts_dir
+        self.max_ghosts = max_ghosts
         self.vgc_bench_checkpoint_path = vgc_bench_checkpoint_path
         self.model_config = model_config
         self.agent_team_path = agent_team_path
@@ -878,10 +945,8 @@ class WorkerOpponentFactory:
         self.vgc_bench_baseline_opponents: List[Player] = []
         self.active_exploiters: List[Tuple[float, str]] = []
         self.loaded_exploiters: Dict[str, RNaDAgent] = {}
-        self._exploiter_cache_order: List[str] = []
-        self.past_models: List[Tuple[int, str]] = []
+        self.ghosts: List[Tuple[int, str]] = []
         self.loaded_ghosts: Dict[str, RNaDAgent] = {}
-        self._ghost_cache_order: List[str] = []
         self._batch_count = 0
         # Rebuild generation increments every time we recreate runtime agents.
         # Why: Showdown usernames must be unique among currently connected clients,
@@ -891,10 +956,10 @@ class WorkerOpponentFactory:
         # Why: run_id alone can still collide in close launches if stale sockets
         # have not fully disconnected yet.
         cleaned_run_id = "".join(ch for ch in str(self.run_id) if ch.isalnum()).upper()
-        self._run_tag = (cleaned_run_id[-4:] if cleaned_run_id else "0000")
+        self._run_tag = cleaned_run_id[-4:] if cleaned_run_id else "0000"
         self._factory_tag = f"{random.getrandbits(8):02X}"
         self._load_exploiter_models()
-        self._load_past_models()
+        self._load_ghosts()
 
     def _account_name(self, role: str, idx: int) -> str:
         """Create compact, rebuild-unique account names.
@@ -914,9 +979,7 @@ class WorkerOpponentFactory:
             self.curriculum = {self.SELF_PLAY: 1.0}
         else:
             self.curriculum = {
-                key: float(value) / total
-                for key, value in curriculum.items()
-                if value > 0
+                key: float(value) / total for key, value in curriculum.items() if value > 0
             }
             if not self.curriculum:
                 self.curriculum = {self.SELF_PLAY: 1.0}
@@ -960,31 +1023,16 @@ class WorkerOpponentFactory:
         models.sort(key=lambda item: item[0], reverse=True)
         self.active_exploiters = models[: self.max_exploiter_models]
 
-    def _refresh_exploiters_if_needed(self) -> None:
-        if self._batch_count % 10 == 0:
-            self._load_exploiter_models()
-
     def _get_cached_model(
         self,
         filepath: str,
         loaded: Dict[str, RNaDAgent],
-        cache_order: List[str],
-        max_loaded: int,
     ) -> RNaDAgent:
         if filepath in loaded:
-            if filepath in cache_order:
-                cache_order.remove(filepath)
-            cache_order.append(filepath)
             return loaded[filepath]
 
         loaded_model = load_agent_from_checkpoint(filepath, self.device)
         loaded[filepath] = loaded_model
-        cache_order.append(filepath)
-
-        while len(cache_order) > max_loaded:
-            evict_path = cache_order.pop(0)
-            loaded.pop(evict_path, None)
-
         return loaded_model
 
     def _get_exploiter_agent(self) -> Optional[RNaDAgent]:
@@ -992,19 +1040,14 @@ class WorkerOpponentFactory:
             return None
 
         _, filepath = random.choice(self.active_exploiters)
-        return self._get_cached_model(
-            filepath,
-            self.loaded_exploiters,
-            self._exploiter_cache_order,
-            self.max_loaded_exploiter_models,
-        )
+        return self._get_cached_model(filepath, self.loaded_exploiters)
 
-    def _load_past_models(self) -> None:
-        if not self.ghost_models_dir or not os.path.exists(self.ghost_models_dir):
-            self.past_models = []
+    def _load_ghosts(self) -> None:
+        if not self.ghosts_dir or not os.path.exists(self.ghosts_dir):
+            self.ghosts = []
             return
 
-        model_files = self._list_model_checkpoints(self.ghost_models_dir)
+        model_files = self._list_model_checkpoints(self.ghosts_dir)
 
         models: List[Tuple[int, str]] = []
         for filepath in model_files:
@@ -1016,24 +1059,35 @@ class WorkerOpponentFactory:
             models.append((step, filepath))
 
         models.sort(key=lambda x: x[0], reverse=True)
-        self.past_models = models[: self.max_ghost_models]
+        self.ghosts = models[: self.max_ghosts]
 
-    def _refresh_past_models_if_needed(self) -> None:
-        # Periodically refresh to pick up newly saved checkpoints from learner.
-        if self._batch_count % 10 == 0:
-            self._load_past_models()
+    def set_exploiter_paths(self, paths: List[str]) -> None:
+        """Apply explicit exploiter file list from learner broadcast (Option C)."""
+        models = [(os.path.getmtime(p), p) for p in paths if os.path.isfile(p)]
+        models.sort(key=lambda item: item[0], reverse=True)
+        self.active_exploiters = models
+
+    def set_ghost_paths(self, paths: List[str]) -> None:
+        """Apply explicit ghost file list from learner broadcast (Option C)."""
+        models: List[Tuple[int, str]] = []
+        for p in paths:
+            if not os.path.isfile(p):
+                continue
+            filename = os.path.basename(p)
+            try:
+                step = int(filename.split("_step_")[1].split(".pt")[0])
+            except (IndexError, ValueError):
+                step = int(os.path.getmtime(p))
+            models.append((step, p))
+        models.sort(key=lambda item: item[0], reverse=True)
+        self.ghosts = models
 
     def _get_ghost_agent(self) -> Optional[RNaDAgent]:
-        if not self.past_models:
+        if not self.ghosts:
             return None
 
-        _, filepath = self.past_models[np.random.randint(len(self.past_models))]
-        return self._get_cached_model(
-            filepath,
-            self.loaded_ghosts,
-            self._ghost_cache_order,
-            self.max_loaded_ghost_models,
-        )
+        _, filepath = self.ghosts[np.random.randint(len(self.ghosts))]
+        return self._get_cached_model(filepath, self.loaded_ghosts)
 
     def sample_team(self) -> str:
         return self.team_repo.sample_team(
@@ -1110,7 +1164,9 @@ class WorkerOpponentFactory:
         self,
         num_pairs: int,
         local_traj_queue: queue.Queue,
-    ) -> Tuple[List[BatchInferencePlayer], List[BatchInferencePlayer], List[MaxDamagePlayer]]:
+    ) -> Tuple[
+        List[BatchInferencePlayer], List[BatchInferencePlayer], List[MaxDamagePlayer]
+    ]:
         """Create and cache all worker-local battle participants.
 
         This is the high-level setup entrypoint used by worker startup.
@@ -1193,12 +1249,11 @@ class WorkerOpponentFactory:
                 vgc_player = _create_vgc_bench_player(
                     device=self.device,
                     battle_format=self.battle_format,
-                    player_config=AccountConfiguration(
-                        self._account_name("VG", i), None
-                    ),
+                    player_config=AccountConfiguration(self._account_name("VG", i), None),
                     server_config=self.server_config,
                     team=self.sample_team(),
-                    checkpoint_path=self.vgc_bench_checkpoint_path or "data/models/vgc-bench-sb3-model.zip",
+                    checkpoint_path=self.vgc_bench_checkpoint_path
+                    or "data/models/vgc-bench-sb3-model.zip",
                 )
                 self.vgc_bench_baseline_opponents.append(vgc_player)
 
@@ -1272,8 +1327,6 @@ class WorkerOpponentFactory:
             batch_opponent_types: sampled opponent type per player
         """
         self._batch_count += 1
-        self._refresh_exploiters_if_needed()
-        self._refresh_past_models_if_needed()
         self.randomize_all_teams()
 
         tasks: List[Any] = []
@@ -1299,7 +1352,9 @@ class WorkerOpponentFactory:
             target_opponent: Player
 
             if opp_type == self.MAX_DAMAGE and self.max_damage_opponents:
-                target_opponent = self.max_damage_opponents[i % len(self.max_damage_opponents)]
+                target_opponent = self.max_damage_opponents[
+                    i % len(self.max_damage_opponents)
+                ]
             elif opp_type == self.RANDOM_BASELINE and self.random_baseline_opponents:
                 target_opponent = self.random_baseline_opponents[
                     i % len(self.random_baseline_opponents)
@@ -1426,6 +1481,32 @@ class WorkerOpponentFactory:
         return {
             "total_unfinished": total,
             "by_player": by_player,
+        }
+
+    def get_runtime_diagnostics(self) -> Dict[str, Dict[str, float]]:
+        def aggregate(participants: List[Any]) -> Dict[str, float]:
+            aggregated: Dict[str, float] = {}
+            for participant in participants:
+                snapshot_fn = getattr(participant, "get_diagnostics_snapshot", None)
+                if snapshot_fn is None:
+                    continue
+                snapshot = snapshot_fn()
+                if not isinstance(snapshot, dict):
+                    continue
+                for key, value in snapshot.items():
+                    aggregated[key] = aggregated.get(key, 0.0) + float(value)
+            return aggregated
+
+        players_diag = aggregate(self.players)
+        opponents_diag = aggregate(self.opponents)
+        combined = dict(players_diag)
+        for key, value in opponents_diag.items():
+            combined[key] = combined.get(key, 0.0) + value
+
+        return {
+            "players": players_diag,
+            "opponents": opponents_diag,
+            "combined": combined,
         }
 
     def rebuild_runtime_agents(self, local_traj_queue: queue.Queue) -> None:

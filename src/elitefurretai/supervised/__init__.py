@@ -33,7 +33,7 @@ from elitefurretai.supervised.model_archs import (
 )
 
 # Training utilities
-from elitefurretai.supervised.train_utils import (
+from elitefurretai.supervised.utils import (
     analyze,
     evaluate,
     focal_topk_cross_entropy_loss,

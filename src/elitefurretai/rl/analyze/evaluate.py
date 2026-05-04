@@ -16,7 +16,7 @@ from elitefurretai.engine.showdown_server_manager import (
     shutdown_showdown_servers,
 )
 from elitefurretai.etl import TeamRepo
-from elitefurretai.rl.model_io import load_agent_from_checkpoint
+from elitefurretai.rl.learners import load_agent_from_checkpoint
 from elitefurretai.rl.opponents import _create_vgc_bench_player
 from elitefurretai.rl.players import BatchInferencePlayer, MaxDamagePlayer
 

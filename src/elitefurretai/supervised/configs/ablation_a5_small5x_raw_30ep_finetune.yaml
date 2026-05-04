@@ -1,0 +1,51 @@
+# NOTE: this is cool-bee-85-finetune
+# Fine-tune of cool-bee-85 (A5: 30ep, raw featureset, ~5x smaller architecture).
+# Goal: close the value-head gap to curious-darkness-77 (Win Corr 0.77 → ≥0.80,
+# Brier 0.16 → ≤0.14) and pick up a few points of action accuracy.
+#
+# Architecture is loaded from the checkpoint — DO NOT include architecture keys here.
+# Only override training/optimizer/data hyperparameters.
+
+# Quality changes
+learning_rate: 2.5e-5      # was 5.44e-5. Halved for fine-tuning + to match doubled batch.
+lr_schedule: cosine        # was ReduceLROnPlateau. Smoother monotonic decay over fixed horizon.
+num_epochs: 15             # ~5h with the speedups; stop early if Brier plateaus 3 epochs.
+win_loss_weight: 0.5       # was 0.35. Pushes more gradient through the value head — the weakest area.
+max_grad_norm: 1.0
+dropout: 0.2
+
+# Loss config — keep these fixed (proven by Stage 1 sweep)
+turn_loss_weight: 1.0
+move_loss_weight: 1.0
+switch_loss_weight: 1.0
+teampreview_loss_weight: 1.0
+turn_loss_type: topk
+train_topk_k: 2025
+entropy_weight: 0.0
+focal_alpha: 0.25
+focal_gamma: 2.0
+
+# Speedup parameters (your throughput tuning)
+batch_size: 256
+worker_batch_size: 256
+num_workers: 4
+prefetch_factor: 3
+files_per_worker: 4
+persistent_workers: true
+
+# Optimizer
+optimizer: AdamW
+weight_decay: 0.000144
+
+# Data — must match the saved checkpoint's featureset
+embedder_feature_set: raw
+battle_format: gen9vgc2023regc
+max_seq_len: 40
+keep_force_switch: false
+
+# Hardware
+device: cuda
+save_path: data/models/supervised/
+
+# Seed for reproducibility (different from original to avoid replaying same data order)
+seed: 42

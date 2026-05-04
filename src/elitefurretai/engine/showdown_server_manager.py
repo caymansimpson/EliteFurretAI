@@ -8,6 +8,16 @@ from typing import List, Optional, TextIO, Tuple, Union
 
 from elitefurretai.rl.config import RNaDConfig
 
+# External vgc-bench runner constants. Hardcoded because they don't vary
+# across training runs. accept_open_team_sheet must match the main agent's
+# BatchInferencePlayer (currently False) — a mismatched handshake drops battles.
+_VGCBENCH_N_CHALLENGES = 1_000_000
+_VGCBENCH_RUNNER_WAIT_FOR_SERVER_TIMEOUT = 180.0
+_VGCBENCH_RUNNER_SCRIPT = "src/elitefurretai/rl/analyze/vgcbench_external_runner.py"
+_VGCBENCH_LOG_DIR = "data/logs/vgcbench_runners"
+_VGCBENCH_LOG_TO_FILES = True
+_VGCBENCH_ACCEPT_OPEN_TEAM_SHEET = False
+
 
 def derive_external_vgcbench_username(base_username: str, server_port: int) -> str:
     """Generate a server-scoped external runner username (Showdown max length is 18)."""
@@ -16,7 +26,9 @@ def derive_external_vgcbench_username(base_username: str, server_port: int) -> s
     return f"{base_username[:max_base_len]}{suffix}"
 
 
-def launch_showdown_servers(num_servers: int, start_port: int = 8000) -> List[subprocess.Popen]:
+def launch_showdown_servers(
+    num_servers: int, start_port: int = 8000
+) -> List[subprocess.Popen]:
     print(f"\n{'=' * 60}")
     print(f"LAUNCHING {num_servers} SHOWDOWN SERVERS")
     print(f"Ports: {start_port}-{start_port + num_servers - 1}")
@@ -34,7 +46,14 @@ def launch_showdown_servers(num_servers: int, start_port: int = 8000) -> List[su
         port = start_port + i
         try:
             process = subprocess.Popen(
-                ["node", "pokemon-showdown", "start", "--no-security", "--port", str(port)],
+                [
+                    "node",
+                    "pokemon-showdown",
+                    "start",
+                    "--no-security",
+                    "--port",
+                    str(port),
+                ],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 cwd=showdown_dir,
@@ -69,14 +88,18 @@ def shutdown_showdown_servers(server_processes: List[subprocess.Popen]) -> None:
     for i, process in enumerate(server_processes):
         if process.poll() is None:
             try:
-                print(f"Terminating server {i + 1}/{len(server_processes)} (PID: {process.pid})...")
+                print(
+                    f"Terminating server {i + 1}/{len(server_processes)} (PID: {process.pid})..."
+                )
                 os.killpg(os.getpgid(process.pid), signal.SIGTERM)
 
                 try:
                     process.wait(timeout=3)
                     print(f"✓ Server on PID {process.pid} terminated gracefully")
                 except subprocess.TimeoutExpired:
-                    print(f"⚠ Server on PID {process.pid} didn't respond, force killing...")
+                    print(
+                        f"⚠ Server on PID {process.pid} didn't respond, force killing..."
+                    )
                     os.killpg(os.getpgid(process.pid), signal.SIGKILL)
                     process.wait()
             except ProcessLookupError:
@@ -133,17 +156,16 @@ def launch_external_vgcbench_runners(
 ) -> Tuple[List[subprocess.Popen], List[TextIO]]:
     """Launch external vgc-bench runner processes and return (processes, log files)."""
     if (
-        not config.auto_launch_external_vgcbench
-        or not config.external_vgcbench_usernames
-        or len(config.external_vgcbench_usernames) == 0
+        not config.curriculum.auto_launch_external_vgcbench
+        or not config.curriculum.external_vgcbench_usernames
+        or len(config.curriculum.external_vgcbench_usernames) == 0
     ):
         return [], []
 
-    assert config.external_vgcbench_python_executable is not None
+    assert config.curriculum.external_vgcbench_python_executable is not None
 
-    write_logs_to_files = config.external_vgcbench_log_to_files
-    if write_logs_to_files:
-        os.makedirs(config.external_vgcbench_log_dir, exist_ok=True)
+    if _VGCBENCH_LOG_TO_FILES:
+        os.makedirs(_VGCBENCH_LOG_DIR, exist_ok=True)
 
     processes: List[subprocess.Popen] = []
     log_files: List[TextIO] = []
@@ -151,7 +173,7 @@ def launch_external_vgcbench_runners(
     append_port_to_username = len(server_ports) > 1
 
     for port in server_ports:
-        for username in config.external_vgcbench_usernames:
+        for username in config.curriculum.external_vgcbench_usernames:
             actual_username = (
                 derive_external_vgcbench_username(username, port)
                 if append_port_to_username
@@ -160,9 +182,9 @@ def launch_external_vgcbench_runners(
             sanitized_username = actual_username.replace("/", "_")
             log_path = "<disabled>"
             log_handle: Union[TextIO, int]
-            if write_logs_to_files:
+            if _VGCBENCH_LOG_TO_FILES:
                 log_path = os.path.join(
-                    config.external_vgcbench_log_dir,
+                    _VGCBENCH_LOG_DIR,
                     f"runner_{sanitized_username}_{port}.log",
                 )
                 log_handle = open(log_path, "a", encoding="utf-8")
@@ -171,26 +193,24 @@ def launch_external_vgcbench_runners(
                 log_handle = subprocess.DEVNULL
 
             command = [
-                config.external_vgcbench_python_executable,
-                config.external_vgcbench_runner_script,
+                config.curriculum.external_vgcbench_python_executable,
+                _VGCBENCH_RUNNER_SCRIPT,
                 "--username",
                 actual_username,
                 "--server",
                 f"localhost:{port}",
                 "--battle-format",
-                config.battle_format,
+                config.curriculum.battle_format,
                 "--checkpoint-path",
-                config.vgc_bench_checkpoint_path,
+                config.curriculum.vgc_bench_checkpoint_path,
                 "--team-file",
-                config.external_vgcbench_team_file,
+                config.curriculum.external_vgcbench_team_file,
                 "--n-challenges",
-                str(config.external_vgcbench_n_challenges),
+                str(_VGCBENCH_N_CHALLENGES),
                 "--wait-for-server-timeout",
-                str(config.external_vgcbench_runner_wait_for_server_timeout),
+                str(_VGCBENCH_RUNNER_WAIT_FOR_SERVER_TIMEOUT),
             ]
-            if config.external_vgcbench_password:
-                command.extend(["--password", config.external_vgcbench_password])
-            if config.external_vgcbench_accept_open_team_sheet:
+            if _VGCBENCH_ACCEPT_OPEN_TEAM_SHEET:
                 command.append("--accept-open-team-sheet")
 
             process = subprocess.Popen(

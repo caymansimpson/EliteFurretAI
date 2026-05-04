@@ -683,6 +683,7 @@ def test_log_prob_computation():
 
 
 def test_choose_move_drops_same_turn_request_mutation():
+    from collections import defaultdict
     player = BatchInferencePlayer.__new__(BatchInferencePlayer)
     player.max_battle_steps = 40
     player.current_trajectories = {}
@@ -692,6 +693,7 @@ def test_choose_move_drops_same_turn_request_mutation():
     player.queue = asyncio.Queue()
     player.inference_request_timeout_s = 1.0
     player._request_generation = {"battle-1": 1}
+    player._diagnostics = defaultdict(int)
     player._embed_battle_state = lambda battle: np.zeros(4, dtype=np.float32)
 
     initial_request = {

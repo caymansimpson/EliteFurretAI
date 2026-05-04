@@ -34,9 +34,10 @@ from elitefurretai.supervised.model_archs import (
 class ActionDiagnostics:
     """Diagnostic analyzer for action prediction models."""
 
-    def __init__(self, model, device="cuda"):
+    def __init__(self, model, device="cuda", state_input_dim: int = 0):
         self.model = model
         self.device = device
+        self.state_input_dim = state_input_dim  # 0 means no slicing
 
         # Storage for analysis
         self.action_type_pred = defaultdict(int)
@@ -103,6 +104,8 @@ class ActionDiagnostics:
 
         # Extract from batch dictionary
         states = batch["states"].to(torch.float32).to(self.device)
+        if self.state_input_dim > 0 and self.state_input_dim < states.shape[-1]:
+            states = states[..., :self.state_input_dim]
         actions = batch["actions"].to(self.device)
         masks = batch["action_masks"].to(self.device)
         padding_mask = batch["masks"].to(self.device)
@@ -468,9 +471,9 @@ def main(model_path: str, data_path: str, max_batches: Optional[int] = 100):
         files_per_worker=3,
     )
 
-    # Run diagnostics
+    # Run diagnostics — pass embedding size so states are sliced to featureset size
     print("Running diagnostics...")
-    diagnostics = ActionDiagnostics(model, device)
+    diagnostics = ActionDiagnostics(model, device, state_input_dim=embedder.embedding_size)
 
     # Use tqdm for progress bar
     dataloader_iter = enumerate(dataloader)

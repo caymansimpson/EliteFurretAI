@@ -87,13 +87,13 @@ The biggest bottleneck is currently batch size 1 inference on the CPU. The easie
 ## Updates
 
 - 2026-04-08 23:35: Implemented the Python-side subset of this plan that can land inside EliteFurretAI without changing the external `pokemon_showdown_py` binding.
-    - Added `BattleSnapshot` in [src/elitefurretai/engine/battle_snapshot.py](src/elitefurretai/engine/battle_snapshot.py) as the policy-facing observation object for the Rust self-play path.
-    - Updated [src/elitefurretai/engine/rust_battle_engine.py](src/elitefurretai/engine/rust_battle_engine.py) to cache per-side request objects once per drain cycle and to accept future native dict-returning bindings through `get_request_dict()` when that becomes available upstream.
-    - Updated [src/elitefurretai/engine/sync_battle_driver.py](src/elitefurretai/engine/sync_battle_driver.py) to build snapshots, use `embed_to_vector()` on the fast path, retry rejected choices with a fallback action, and batch `SyncPolicyPlayer` inference across concurrent active battles that share a policy.
-    - Added focused regression coverage in [unit_tests/engine/test_rust_battle_engine.py](unit_tests/engine/test_rust_battle_engine.py) and [unit_tests/engine/test_sync_battle_driver.py](unit_tests/engine/test_sync_battle_driver.py) for request caching, snapshot usage, batched inference, and rejected-choice fallback.
+    - Added `BattleSnapshot` in [src/elitefurretai/rl/battle_snapshot.py](src/elitefurretai/rl/battle_snapshot.py) as the policy-facing observation object for the Rust self-play path.
+    - Updated [src/elitefurretai/rl/rust_battle_engine.py](src/elitefurretai/rl/rust_battle_engine.py) to cache per-side request objects once per drain cycle and to accept future native dict-returning bindings through `get_request_dict()` when that becomes available upstream.
+    - Updated [src/elitefurretai/rl/sync_battle_driver.py](src/elitefurretai/rl/sync_battle_driver.py) to build snapshots, use `embed_to_vector()` on the fast path, retry rejected choices with a fallback action, and batch `SyncPolicyPlayer` inference across concurrent active battles that share a policy.
+    - Added focused regression coverage in [unit_tests/rl/test_rust_battle_engine.py](unit_tests/rl/test_rust_battle_engine.py) and [unit_tests/rl/test_sync_battle_driver.py](unit_tests/rl/test_sync_battle_driver.py) for request caching, snapshot usage, batched inference, and rejected-choice fallback.
 
 - 2026-04-08 23:35: Benchmark checkpoints recorded during implementation.
-    - Baseline microbenchmark: `python src/elitefurretai/engine/rust_engine_benchmark.py --max-concurrent 7 --battles 200 --collect-rollouts`
+    - Baseline microbenchmark: `python src/elitefurretai/rl/rust_engine_benchmark.py --max-concurrent 7 --battles 200 --collect-rollouts`
         - `battles_per_second=2.940`
         - `decisions_per_second=140.597`
         - `truncated_battles=53`
@@ -133,16 +133,16 @@ The biggest bottleneck is currently batch size 1 inference on the CPU. The easie
     4. Re-benchmark with a model-backed benchmark path instead of relying primarily on the random-rollout microbenchmark.
 
 - 2026-04-09 08:00: Implemented items 1-3 as far as this workspace allows.
-    - Item 1, practical binding-side step inside this repo: added a repo-owned `CachedRustBattleBinding` plus `RustBattleSideSnapshot` in [src/elitefurretai/engine/rust_battle_engine.py](src/elitefurretai/engine/rust_battle_engine.py).
+    - Item 1, practical binding-side step inside this repo: added a repo-owned `CachedRustBattleBinding` plus `RustBattleSideSnapshot` in [src/elitefurretai/rl/rust_battle_engine.py](src/elitefurretai/rl/rust_battle_engine.py).
         - This does not modify the external compiled PyO3 module directly, because the installed `pokemon_showdown_py.RustBattle` object is still a builtin extension type with no editable Rust source in this workspace.
         - It does provide the interfaces the Python RL path wanted from that binding layer today: `get_request_dict()` and `get_side_snapshot()` without repeated JSON parsing by every consumer.
         - `SyncRustBattleDriver` now wraps the builtin binding in `CachedRustBattleBinding` and threads the resulting side snapshot into `BattleSnapshot.binding_snapshot`.
     - Item 2: raised the benchmark training config concurrency in [src/elitefurretai/rl/configs/rust_multiupdate_benchmark.yaml](src/elitefurretai/rl/configs/rust_multiupdate_benchmark.yaml) from `num_players: 2` to `num_players: 8`, which yields `max_concurrent_battles=4` in the current Rust worker loop.
-    - Item 3: added a new model-backed benchmark entrypoint in [src/elitefurretai/engine/rust_model_benchmark.py](src/elitefurretai/engine/rust_model_benchmark.py) that builds or loads a real `RNaDAgent`, attaches `SyncPolicyPlayer` policies, and measures Rust self-play throughput under actual CPU inference rather than random legal-action sampling.
+    - Item 3: added a new model-backed benchmark entrypoint in [src/elitefurretai/rl/rust_model_benchmark.py](src/elitefurretai/rl/rust_model_benchmark.py) that builds or loads a real `RNaDAgent`, attaches `SyncPolicyPlayer` policies, and measures Rust self-play throughput under actual CPU inference rather than random legal-action sampling.
 
 - 2026-04-09 08:00: Validation and benchmark results for items 1-3.
     - Focused validation:
-        - `pytest unit_tests/engine/test_rust_battle_engine.py unit_tests/engine/test_sync_battle_driver.py -q` -> passed (`11` tests)
+        - `pytest unit_tests/rl/test_rust_battle_engine.py unit_tests/rl/test_sync_battle_driver.py -q` -> passed (`11` tests)
         - `ruff check` on the changed Rust-driver and benchmark files -> passed
     - Random/legal-action benchmark after the wrapper path, using `--max-concurrent 10 --battles 100 --collect-rollouts`:
         - `completed_battles=100`
@@ -150,7 +150,7 @@ The biggest bottleneck is currently batch size 1 inference on the CPU. The easie
         - `battles_per_second=2.247`
         - `decisions_per_second=92.206`
         - `wall_seconds=46.42`
-    - New model-backed benchmark, using [src/elitefurretai/engine/rust_model_benchmark.py](src/elitefurretai/engine/rust_model_benchmark.py) with [src/elitefurretai/rl/configs/rust_multiupdate_benchmark.yaml](src/elitefurretai/rl/configs/rust_multiupdate_benchmark.yaml):
+    - New model-backed benchmark, using [src/elitefurretai/rl/rust_model_benchmark.py](src/elitefurretai/rl/rust_model_benchmark.py) with [src/elitefurretai/rl/configs/rust_multiupdate_benchmark.yaml](src/elitefurretai/rl/configs/rust_multiupdate_benchmark.yaml):
         - `completed_battles=100`
         - `truncated_battles=17`
         - `battles_per_second=0.780`
@@ -168,7 +168,7 @@ The biggest bottleneck is currently batch size 1 inference on the CPU. The easie
     - The remaining high-value work is therefore still outside this repo boundary: a real native binding-side snapshot API and a headless Rust engine mode that suppresses protocol-string generation entirely.
 
 - 2026-04-09 09:10: Turned the Python-side Rust binding contract into the exact benchmark-facing API shape and exposed implementation ablations in the model-backed benchmark.
-    - [src/elitefurretai/engine/rust_battle_engine.py](src/elitefurretai/engine/rust_battle_engine.py) now defines one exact adapter contract for the Python RL path:
+    - [src/elitefurretai/rl/rust_battle_engine.py](src/elitefurretai/rl/rust_battle_engine.py) now defines one exact adapter contract for the Python RL path:
         - `get_request_json(side)`
         - `get_request_dict(side)`
         - `get_side_snapshot(side)`
@@ -184,7 +184,7 @@ The biggest bottleneck is currently batch size 1 inference on the CPU. The easie
     - `SyncPolicyPlayer` now accepts explicit policy-side ablation toggles:
         - `enable_batch_inference`
         - `use_fast_embed_to_vector`
-    - [src/elitefurretai/engine/rust_model_benchmark.py](src/elitefurretai/engine/rust_model_benchmark.py) now exposes all of those as CLI flags so we can benchmark the real model-backed path with or without each optimization.
+    - [src/elitefurretai/rl/rust_model_benchmark.py](src/elitefurretai/rl/rust_model_benchmark.py) now exposes all of those as CLI flags so we can benchmark the real model-backed path with or without each optimization.
 
 - 2026-04-09 09:10: Parameter inventory for the final model-backed throughput sweep.
     - We should use the model-backed benchmark as the primary decision tool because it reflects the actual training bottlenecks much better than the random legal-action benchmark.
@@ -231,15 +231,15 @@ The biggest bottleneck is currently batch size 1 inference on the CPU. The easie
 
 - 2026-04-09 09:10: Immediate benchmark command surface we can now use for those sweeps.
     - Baseline exact-shape model benchmark:
-        - `python src/elitefurretai/engine/rust_model_benchmark.py --config src/elitefurretai/rl/configs/rust_multiupdate_benchmark.yaml --battles 100 --device cpu`
+        - `python src/elitefurretai/rl/rust_model_benchmark.py --config src/elitefurretai/rl/configs/rust_multiupdate_benchmark.yaml --battles 100 --device cpu`
     - Disable batched inference:
-        - `python src/elitefurretai/engine/rust_model_benchmark.py --config src/elitefurretai/rl/configs/rust_multiupdate_benchmark.yaml --battles 100 --device cpu --disable-batched-inference`
+        - `python src/elitefurretai/rl/rust_model_benchmark.py --config src/elitefurretai/rl/configs/rust_multiupdate_benchmark.yaml --battles 100 --device cpu --disable-batched-inference`
     - Disable fast embed path:
-        - `python src/elitefurretai/engine/rust_model_benchmark.py --config src/elitefurretai/rl/configs/rust_multiupdate_benchmark.yaml --battles 100 --device cpu --disable-fast-embed`
+        - `python src/elitefurretai/rl/rust_model_benchmark.py --config src/elitefurretai/rl/configs/rust_multiupdate_benchmark.yaml --battles 100 --device cpu --disable-fast-embed`
     - Disable request cache wrapper:
-        - `python src/elitefurretai/engine/rust_model_benchmark.py --config src/elitefurretai/rl/configs/rust_multiupdate_benchmark.yaml --battles 100 --device cpu --disable-request-cache-wrapper`
+        - `python src/elitefurretai/rl/rust_model_benchmark.py --config src/elitefurretai/rl/configs/rust_multiupdate_benchmark.yaml --battles 100 --device cpu --disable-request-cache-wrapper`
     - Disable binding snapshots:
-        - `python src/elitefurretai/engine/rust_model_benchmark.py --config src/elitefurretai/rl/configs/rust_multiupdate_benchmark.yaml --battles 100 --device cpu --disable-binding-snapshots`
+        - `python src/elitefurretai/rl/rust_model_benchmark.py --config src/elitefurretai/rl/configs/rust_multiupdate_benchmark.yaml --battles 100 --device cpu --disable-binding-snapshots`
 
 - 2026-04-09 09:20: Short model-backed ablation smoke after exposing the new flags.
     - Baseline exact-shape path, `20` battles, CPU, current benchmark config:

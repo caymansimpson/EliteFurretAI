@@ -38,7 +38,7 @@ from elitefurretai.etl import (
 from elitefurretai.etl.system_utils import configure_torch_multiprocessing
 from elitefurretai.supervised.model_archs import TransformerThreeHeadedModel
 from elitefurretai.supervised.train import train_epoch
-from elitefurretai.supervised.train_utils import (
+from elitefurretai.supervised.utils import (
     evaluate,
     format_time,
 )
@@ -57,7 +57,10 @@ FIXED_CONFIG: Dict[str, Any] = {}
 def load_sweep_config(config_path: str) -> None:
     """Load sweep, fixed, and variant configs from a YAML file."""
     global SWEEP_CONFIG, FIXED_CONFIG
-    global LATE_LAYERS_VARIANTS, TURN_HEAD_LAYERS_VARIANTS, TEAMPREVIEW_HEAD_LAYERS_VARIANTS
+    global \
+        LATE_LAYERS_VARIANTS, \
+        TURN_HEAD_LAYERS_VARIANTS, \
+        TEAMPREVIEW_HEAD_LAYERS_VARIANTS
 
     with open(config_path) as f:
         raw = yaml.safe_load(f)
@@ -102,23 +105,42 @@ def _resolve_config(wandb_config: dict) -> Dict[str, Any]:
     )
 
     # Compute gradient accumulation from batch sizes
-    config["accumulation_steps"] = int(
-        config["batch_size"] // config["worker_batch_size"]
-    )
+    config["accumulation_steps"] = int(config["batch_size"] // config["worker_batch_size"])
 
     # Coerce numeric types that YAML/wandb may parse as strings
     _float_keys = {
-        "learning_rate", "dropout", "weight_decay", "max_grad_norm",
-        "teampreview_head_dropout", "entropy_weight", "focal_gamma",
-        "focal_alpha", "label_smoothing", "value_min", "value_max",
-        "transformer_dropout", "move_loss_weight", "switch_loss_weight",
+        "learning_rate",
+        "dropout",
+        "weight_decay",
+        "max_grad_norm",
+        "teampreview_head_dropout",
+        "entropy_weight",
+        "focal_gamma",
+        "focal_alpha",
+        "label_smoothing",
+        "value_min",
+        "value_max",
+        "transformer_dropout",
+        "move_loss_weight",
+        "switch_loss_weight",
     }
     _int_keys = {
-        "batch_size", "worker_batch_size", "num_workers", "prefetch_factor",
-        "files_per_worker", "num_epochs", "seed", "num_value_bins",
-        "max_seq_len", "pokemon_attention_heads", "teampreview_attention_heads",
-        "grouped_encoder_hidden_dim", "grouped_encoder_aggregated_dim",
-        "train_topk_k", "transformer_layers", "transformer_heads",
+        "batch_size",
+        "worker_batch_size",
+        "num_workers",
+        "prefetch_factor",
+        "files_per_worker",
+        "num_epochs",
+        "seed",
+        "num_value_bins",
+        "max_seq_len",
+        "pokemon_attention_heads",
+        "teampreview_attention_heads",
+        "grouped_encoder_hidden_dim",
+        "grouped_encoder_aggregated_dim",
+        "train_topk_k",
+        "transformer_layers",
+        "transformer_heads",
         "transformer_ff_dim",
     }
     for k in _float_keys:
@@ -165,10 +187,10 @@ def sweep_train() -> None:
         allow_val_change=True,
     )
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"Sweep run: {run.name}")  # type: ignore[union-attr]
     print(f"Config: {config}")
-    print(f"{'='*60}\n")
+    print(f"{'=' * 60}\n")
 
     # ---- Data loaders ----
     train_loader = OptimizedBattleDataLoader(
@@ -193,29 +215,29 @@ def sweep_train() -> None:
     model = cast(
         torch.nn.Module,
         TransformerThreeHeadedModel(
-        embedder=embedder,
-        early_layers=config["early_layers"],
-        late_layers=config["late_layers"],
-        dropout=config["dropout"],
-        grouped_encoder_hidden_dim=config["grouped_encoder_hidden_dim"],
-        grouped_encoder_aggregated_dim=config["grouped_encoder_aggregated_dim"],
-        pokemon_attention_heads=config["pokemon_attention_heads"],
-        num_actions=MDBO.action_space(),
-        num_teampreview_actions=MDBO.teampreview_space(),
-        teampreview_head_layers=config["teampreview_head_layers"],
-        teampreview_head_dropout=config["teampreview_head_dropout"],
-        teampreview_attention_heads=config["teampreview_attention_heads"],
-        turn_head_layers=config["turn_head_layers"],
-        max_seq_len=config["max_seq_len"],
-        num_value_bins=config["num_value_bins"],
-        value_min=config["value_min"],
-        value_max=config["value_max"],
-        transformer_layers=config["transformer_layers"],
-        transformer_heads=config["transformer_heads"],
-        transformer_ff_dim=config["transformer_ff_dim"],
-        transformer_dropout=config["transformer_dropout"],
-        use_decision_tokens=config["use_decision_tokens"],
-        use_causal_mask=config["use_causal_mask"],
+            embedder=embedder,
+            early_layers=config["early_layers"],
+            late_layers=config["late_layers"],
+            dropout=config["dropout"],
+            grouped_encoder_hidden_dim=config["grouped_encoder_hidden_dim"],
+            grouped_encoder_aggregated_dim=config["grouped_encoder_aggregated_dim"],
+            pokemon_attention_heads=config["pokemon_attention_heads"],
+            num_actions=MDBO.action_space(),
+            num_teampreview_actions=MDBO.teampreview_space(),
+            teampreview_head_layers=config["teampreview_head_layers"],
+            teampreview_head_dropout=config["teampreview_head_dropout"],
+            teampreview_attention_heads=config["teampreview_attention_heads"],
+            turn_head_layers=config["turn_head_layers"],
+            max_seq_len=config["max_seq_len"],
+            num_value_bins=config["num_value_bins"],
+            value_min=config["value_min"],
+            value_max=config["value_max"],
+            transformer_layers=config["transformer_layers"],
+            transformer_heads=config["transformer_heads"],
+            transformer_ff_dim=config["transformer_ff_dim"],
+            transformer_dropout=config["transformer_dropout"],
+            use_decision_tokens=config["use_decision_tokens"],
+            use_causal_mask=config["use_causal_mask"],
         ).to(config["device"]),
     )
 
@@ -294,6 +316,7 @@ def sweep_train() -> None:
             "Train Turn Loss": train_metrics["turn_loss"],
             "Train Teampreview Loss": train_metrics["teampreview_loss"],
             "Train Win Loss": train_metrics["win_loss"],
+            "Train Brier": train_metrics.get("brier", 0.0),
             "Train Entropy": train_metrics["entropy"],
             # Primary sweep target — Turn Top-3 accuracy
             "Test Turn Top1": metrics.get("turn_top1_acc", 0),
@@ -318,6 +341,7 @@ def sweep_train() -> None:
             # Win prediction
             "Test Win Corr": metrics["win_corr"],
             "Test Win MSE": metrics["win_mse"],
+            "Test Brier": metrics.get("brier_score", 0.0),
             "Test Loss": test_loss,
             "learning_rate": optimizer.param_groups[0]["lr"],
         }

@@ -38,9 +38,10 @@ from elitefurretai.supervised.model_archs import (
 class WinPredictionAnalyzer:
     """Comprehensive analyzer for synthetic win advantage prediction model performance."""
 
-    def __init__(self, model: torch.nn.Module, device: str = "cuda"):
+    def __init__(self, model: torch.nn.Module, device: str = "cuda", state_input_dim: int = 0):
         self.model = model
         self.device = device
+        self.state_input_dim = state_input_dim  # 0 means no slicing
         self.model.eval()
 
         # PRIMARY: Synthetic win advantage analysis (prediction vs training target)
@@ -88,6 +89,8 @@ class WinPredictionAnalyzer:
         """
         with torch.no_grad():
             states = batch["states"].to(torch.float32).to(self.device)
+            if self.state_input_dim > 0 and self.state_input_dim < states.shape[-1]:
+                states = states[..., :self.state_input_dim]
             wins = batch["wins"].to(self.device)
             masks = batch["masks"].to(self.device)
 
@@ -596,8 +599,13 @@ def load_model_from_checkpoint(
     else:
         raise ValueError("Checkpoint missing 'config' key")
 
-    # Create embedder to get input size and group sizes
-    embedder = Embedder(format="gen9vgc2023regc", feature_set="full", omniscient=False)
+    # Create embedder using the SAVED featureset from config — must match training
+    # so that group_embedding_sizes line up with the checkpoint's encoders.
+    embedder = Embedder(
+        format=config.get("battle_format", "gen9vgc2023regc"),
+        feature_set=config.get("embedder_feature_set", "full"),
+        omniscient=False,
+    )
 
     # Strip _orig_mod. prefix from torch.compile'd checkpoints
     state_dict = checkpoint["model_state_dict"]
@@ -723,8 +731,8 @@ def main():
         pin_memory=False,  # WSL2 compatibility
     )
 
-    # Create analyzer
-    analyzer = WinPredictionAnalyzer(model, device=device)
+    # Create analyzer — pass embedding size so states are sliced to featureset size
+    analyzer = WinPredictionAnalyzer(model, device=device, state_input_dim=embedder.embedding_size)
 
     # Process batches
     print("Analyzing predictions...")

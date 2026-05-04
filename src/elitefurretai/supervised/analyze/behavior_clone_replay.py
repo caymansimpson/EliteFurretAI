@@ -9,14 +9,12 @@ and shows model predictions vs. actual actions taken at each decision point.
 Usage:
     python behavior_clone_replay.py \\
         --battle-file data/battles/gen9vgc2023regc_raw/2023-01-gen9vgc2023regc-1500.json \\
-        --teampreview-model-path data/models/teampreview_model.pt \\
-        --action-model-path data/models/action_model.pt \\
-        --win-model-path data/models/win_model.pt \\
+        --model-path data/models/bc_model.pt \\
         --perspective p1 \\
         --verbose
 
 Features:
-    - Uses BCPlayer with three separate models (teampreview, action, win)
+    - Uses BCPlayer with a unified three-headed model
     - Top-5 action predictions with probabilities
     - Win prediction at each turn
     - Highlights when actual action is outside top-5
@@ -314,11 +312,11 @@ def analyze_battle(
                 traj, battle, action_type=iterator.last_input_type
             )  # type: ignore
 
-            # Get win prediction from win model
-            traj_win = traj[:, -player.win_model.max_seq_len :, :]
-            player.win_model.eval()
+            # Get win prediction from model
+            traj_win = traj[:, -player.model.max_seq_len :, :]
+            player.model.eval()
             with torch.no_grad():
-                _, _, win_logits = player.win_model(traj_win)
+                _, _, win_logits = player.model(traj_win)
                 win_pred = float(win_logits[0, -1].item())
 
             # Sort by probability
@@ -437,27 +435,10 @@ def main():
     )
 
     parser.add_argument(
-        "--unified-model-path",
+        "--model-path",
         type=str,
-        help="Path to unified model checkpoint (.pt file with all three heads)",
-    )
-
-    parser.add_argument(
-        "--teampreview-model-path",
-        type=str,
-        help="Path to teampreview model checkpoint (.pt file with embedded config)",
-    )
-
-    parser.add_argument(
-        "--action-model-path",
-        type=str,
-        help="Path to action model checkpoint (.pt file with embedded config)",
-    )
-
-    parser.add_argument(
-        "--win-model-path",
-        type=str,
-        help="Path to win model checkpoint (.pt file with embedded config)",
+        required=True,
+        help="Path to model checkpoint (.pt file with embedded config)",
     )
 
     parser.add_argument(
@@ -489,50 +470,14 @@ def main():
 
     args = parser.parse_args()
 
-    # Validate model path arguments
-    has_unified = args.unified_model_path is not None
-    has_separate = all(
-        [
-            args.teampreview_model_path is not None,
-            args.action_model_path is not None,
-            args.win_model_path is not None,
-        ]
+    print("Loading model...")
+    player = BCPlayer(
+        model_filepath=args.model_path,
+        battle_format=args.battle_format,
+        device=args.device,
+        probabilistic=False,  # Use greedy selection for analysis
+        verbose=True,  # Show initialization progress
     )
-    has_any_separate = any(
-        [
-            args.teampreview_model_path is not None,
-            args.action_model_path is not None,
-            args.win_model_path is not None,
-        ]
-    )
-
-    if has_unified and has_any_separate:
-        parser.error("Cannot specify both --unified-model-path and individual model paths")
-    if not has_unified and not has_separate:
-        parser.error(
-            "Must specify either --unified-model-path or all three individual model paths (--teampreview-model-path, --action-model-path, --win-model-path)"
-        )
-
-    # Create BCPlayer with unified or separate models
-    print("Loading models...")
-    if has_unified:
-        player = BCPlayer(
-            unified_model_filepath=args.unified_model_path,
-            battle_format=args.battle_format,
-            device=args.device,
-            probabilistic=False,  # Use greedy selection for analysis
-            verbose=True,  # Show initialization progress
-        )
-    else:
-        player = BCPlayer(
-            teampreview_model_filepath=args.teampreview_model_path,
-            action_model_filepath=args.action_model_path,
-            win_model_filepath=args.win_model_path,
-            battle_format=args.battle_format,
-            device=args.device,
-            probabilistic=False,  # Use greedy selection for analysis
-            verbose=True,  # Show initialization progress
-        )
 
     # Analyze battle
     analyze_battle(

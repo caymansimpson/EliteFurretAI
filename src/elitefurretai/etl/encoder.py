@@ -17,7 +17,7 @@ It also defines the move_encoder that encodes the move order of pokemon for a cl
 
 import itertools
 import re
-from typing import List, Union
+from typing import List, Optional, Union
 
 from poke_env.battle.double_battle import DoubleBattle
 from poke_env.player.battle_order import (
@@ -175,7 +175,7 @@ class MDBO(BattleOrder):
     def to_double_battle_order(
         self,
         battle: DoubleBattle,
-        request: dict | None = None,
+        request: Optional[dict] = None,
     ) -> Union[DoubleBattleOrder, DefaultBattleOrder]:
         """
         Converts this MDBO to a PyPokéEnv DoubleBattleOrder or DefaultBattleOrder.

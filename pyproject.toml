@@ -80,10 +80,9 @@ minversion = "6.0"
 addopts = "-ra -q"
 testpaths = [
     "unit_tests",
-    "src/elitefurretai/agents",
-    "src/elitefurretai/model_utils",
-    "src/elitefurretai/supervised_models",
-    "src/elitefurretai/utils",
+]
+markers = [
+    "smoke: end-to-end training smoke tests (deselect with '-m not smoke')",
 ]
 
 [tool.setuptools.dynamic]

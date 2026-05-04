@@ -2,22 +2,15 @@
 EliteFurretAI rl: Reinforcement Learning Training System
 
 This module implements RNaD (Regularized Nash Dynamics) for training Pokemon VGC agents.
-See COMPREHENSIVE_GUIDE.md for detailed documentation.
+See RL.md for detailed documentation.
 
 Core Components:
     - RNaDAgent: RL-compatible agent wrapper
-    - RNaDLearner: Standard RNaD learner with single reference model
-    - PortfolioRNaDLearner: Advanced learner with portfolio of reference models
+    - PortfolioRNaDLearner: RNaD learner with portfolio of reference models
+      (set max_portfolio_size=1, portfolio_update_strategy="recent" for standard RNaD)
     - BatchInferencePlayer: High-performance battle worker with batched inference
     - OpponentPool: Manages diverse opponent sampling for training
     - RNaDConfig: Configuration system for all hyperparameters
-
-Usage:
-    from elitefurretai.rl import RNaDConfig, RNaDAgent, RNaDLearner
-
-    config = RNaDConfig.load("config.yaml")
-    agent = RNaDAgent(model)
-    learner = RNaDLearner(agent, ref_agent, lr=config.lr, device="cuda")
 """
 
 from elitefurretai.engine.showdown_server_manager import (
@@ -26,8 +19,8 @@ from elitefurretai.engine.showdown_server_manager import (
     shutdown_showdown_servers,
 )
 from elitefurretai.rl.config import RNaDConfig
-from elitefurretai.rl.learners import PortfolioRNaDLearner, RNaDLearner
-from elitefurretai.rl.model_io import (
+from elitefurretai.rl.learners import (
+    PortfolioRNaDLearner,
     build_model_from_config,
     load_checkpoint,
     load_model_from_checkpoint,
@@ -47,7 +40,6 @@ from elitefurretai.rl.players import (
 __all__ = [
     # Core training components
     "RNaDAgent",
-    "RNaDLearner",
     "PortfolioRNaDLearner",
     # Workers and infrastructure
     "BatchInferencePlayer",

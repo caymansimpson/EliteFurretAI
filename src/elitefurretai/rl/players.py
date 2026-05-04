@@ -1,3 +1,55 @@
+"""players.py — RL battle participants (the "actors" in the IMPALA picture).
+
+What this file is
+-----------------
+Three classes that play Pokemon battles for the RL pipeline:
+
+1. RNaDAgent              — A thin nn.Module wrapper around the trained model.
+                            Hides the LSTM-vs-Transformer difference behind a
+                            uniform `forward()` interface so callers don't care.
+
+2. BatchInferencePlayer   — The high-throughput, async player used during RL
+                            training. Gathers per-turn decisions from many
+                            concurrent battles, *batches* them into one model
+                            forward pass for efficiency, and pushes finished
+                            trajectories to a queue for the learner to consume.
+
+3. MaxDamagePlayer        — A non-learning heuristic player used as a curriculum
+                            opponent. Picks the move with highest damage estimate
+                            via poke-env's calculate_damage. Cheap and consistent.
+
+How this fits the bigger picture
+--------------------------------
+The trainer (train.py) spawns N worker processes (worker.py). Each worker runs
+many battles in parallel. In each battle, every turn is a "decision request":
+the worker needs the model's policy/value for a particular state.
+
+Naive approach: each decision = its own model forward pass. But model forwards
+have meaningful per-call overhead (Python ↔ C++ trampoline, kernel launch,
+cache misses), so doing 100 separate single-state forwards is far slower than
+one batched forward over 100 states.
+
+BatchInferencePlayer solves this by maintaining an asyncio queue of pending
+decisions, running an inference loop that gathers up to `batch_size` requests
+(or waits at most `batch_timeout` seconds) and dispatches them together.
+This is a classic "dynamic batching" pattern.
+
+Why so much state-tracking machinery
+------------------------------------
+Pokemon Showdown is async over websockets. By the time a model decision comes
+back, the battle state may have changed (e.g. opponent forfeited, a force
+switch was triggered, etc.). The fingerprinting + request-generation tracking
+exists to detect those drifts and *drop* stale decisions rather than send
+invalid commands. Without it, we'd see waves of "invalid choice" errors.
+
+Trajectory collection
+---------------------
+Every step that produces a real decision is appended to that battle's trajectory
+buffer. When the battle ends, rewards are filled in (terminal reward = +1 win /
+-1 loss, plus per-step shaping) and the full trajectory is shipped to the
+trajectory_queue for the learner to train on.
+"""
+
 import asyncio
 import concurrent.futures
 import logging
@@ -38,8 +90,24 @@ logger = logging.getLogger("MaxDamagePlayer")
 
 
 def _request_fingerprint(request: Optional[Dict[str, Any]]) -> Optional[tuple]:
-    # Summarize the legality-relevant parts of a Showdown request so we can cheaply
-    # detect same-turn request drift after async batched inference returns.
+    # ── Why this exists ──────────────────────────────────────────────────────
+    # Showdown sends us a fresh "request" payload before every decision point.
+    # The request describes which moves are available, who's active, whether
+    # we must force-switch, whether terastallization is allowed, etc.
+    #
+    # We use this payload to (a) build the action mask and (b) decode the
+    # network's chosen action back into a Showdown command. Both must agree
+    # on what the request looked like.
+    #
+    # But because inference is async, by the time the model answers, Showdown
+    # may have sent a *new* request (e.g. a force-switch was triggered after
+    # an opponent KO'd us). If we mask & decode against different requests,
+    # we'll send invalid commands.
+    #
+    # This function condenses a request into a hashable tuple ("fingerprint").
+    # Compare fingerprints before sending to detect drift; if they don't match,
+    # discard the decision and let the next request handler re-decide.
+    # ─────────────────────────────────────────────────────────────────────────
     if request is None:
         return None
 
@@ -103,11 +171,21 @@ def _request_fingerprint(request: Optional[Dict[str, Any]]) -> Optional[tuple]:
     )
 
 
-# Registry of worker-specific executors: worker_id -> ThreadPoolExecutor
+# ── Inference executor management ────────────────────────────────────────────
+# We run model.forward() in a background thread (via ThreadPoolExecutor) so the
+# main asyncio event loop (which handles all the websocket I/O for poke-env)
+# isn't blocked while a forward pass runs. One executor per worker keeps
+# inference work isolated and makes thread accounting tidy.
+#
+# Why max_workers=1: we WANT serialization here. If we let two threads run
+# forward passes concurrently inside the same worker process, they'd compete
+# for the same model state, the same Python GIL, and the same CPU. Better to
+# queue them and run one at a time.
+# ─────────────────────────────────────────────────────────────────────────────
 _WORKER_EXECUTORS: Dict[int, ThreadPoolExecutor] = {}
 _EXECUTOR_LOCK = Lock()
 
-# Global fallback executor for non-worker contexts (e.g., testing)
+# Global fallback executor for non-worker contexts (e.g., testing or scripts)
 _FALLBACK_EXECUTOR = ThreadPoolExecutor(
     max_workers=1, thread_name_prefix="fallback_inference"
 )
@@ -136,7 +214,34 @@ def cleanup_worker_executors() -> None:
 
 
 class BatchInferencePlayer(Player):
-    """High-performance player with async batched inference."""
+    """High-performance player with async batched inference.
+
+    This is the workhorse of the RL data-collection pipeline. It subclasses
+    poke-env's `Player` (which handles the websocket protocol with Showdown)
+    and adds three things:
+
+      1. **Batched inference**: an asyncio queue + background loop that gathers
+         many simultaneous decision requests, runs ONE batched model forward
+         pass over them, and dispatches the answers. Drastically reduces
+         per-decision overhead.
+
+      2. **Trajectory collection**: every (state, action, log_prob, value, mask)
+         tuple is stashed in a per-battle buffer; when the battle finishes,
+         rewards are filled in and the trajectory is shipped to the learner.
+
+      3. **Stale-decision detection**: because inference is async, the battle
+         state may change while we're waiting. We snapshot the request before
+         queueing, fingerprint it, and drop decisions that no longer match
+         when the answer comes back. Without this, we get cascading invalid
+         choice errors from Showdown.
+
+    Three layers of defense against stale decisions:
+      - request_generation counter: a monotonic per-battle id; if a newer
+        request was issued while we were waiting, drop the old answer.
+      - turn/teampreview/force_switch tuple: detect coarse state changes.
+      - request fingerprint: detect fine-grained legality changes (e.g. a move
+        becoming disabled, terastallization availability changing).
+    """
 
     def __init__(
         self,
@@ -295,6 +400,20 @@ class BatchInferencePlayer(Player):
         )
 
     async def _inference_loop(self):
+        # ── The dynamic-batching heart of this class ─────────────────────────
+        # Loop forever:
+        #   1. Block until at least ONE decision request arrives.
+        #   2. Greedily pull more requests off the queue, but never wait longer
+        #      than `batch_timeout` total and never gather more than `batch_size`.
+        #   3. Run ONE model forward pass over the gathered batch.
+        #   4. Set the result on each pending future so the awaiting coroutines
+        #      can resume.
+        #
+        # The trade-off is throughput vs latency:
+        #   - Big batch_timeout / big batch_size = larger batches, less wasted
+        #     model overhead, but each individual decision waits longer.
+        #   - Small values = snappier per-decision but more wasted forwards.
+        # ─────────────────────────────────────────────────────────────────────
         while True:
             batch: List[Any] = []
             futures: List[Any] = []
@@ -302,9 +421,13 @@ class BatchInferencePlayer(Player):
             is_tps: List[bool] = []
             masks: List[Any] = []
             try:
+                # Step 1: wait for at least one request — no point batching
+                # nothing.
                 item = await self.queue.get()
                 self._add_to_batch(batch, futures, battle_tags, is_tps, masks, item)
 
+                # Step 2: opportunistically gather more, capped by both batch
+                # size and elapsed time since the first item arrived.
                 start_time = asyncio.get_event_loop().time()
                 while len(batch) < self.batch_size:
                     timeout = self.batch_timeout - (
@@ -318,17 +441,22 @@ class BatchInferencePlayer(Player):
                             batch, futures, battle_tags, is_tps, masks, item
                         )
                     except asyncio.TimeoutError:
+                        # No more requests arrived within the window — flush.
                         break
             except asyncio.CancelledError:
+                # Worker shutting down; exit loop cleanly.
                 break
 
             if batch:
+                # Diagnostics: track batch fill quality so we can tell whether
+                # batch_size and batch_timeout are well-tuned.
                 self._diagnostics["inference_batches"] += 1
                 self._diagnostics["inference_batch_items"] += len(batch)
                 self._diagnostics["inference_batch_size_max"] = max(
                     self._diagnostics["inference_batch_size_max"],
                     float(len(batch)),
                 )
+                # Step 3+4: run the batched forward and resolve futures.
                 await self._run_batch(batch, futures, battle_tags, is_tps, masks)
 
     def _add_to_batch(self, batch, futures, battle_tags, is_tps, masks, item):
@@ -361,14 +489,29 @@ class BatchInferencePlayer(Player):
                 hidden_mask=hidden_mask,
             )
 
-        # Temperature-scaled probs for action SELECTION (exploration)
+        # ── Two probability distributions, one for sampling, one for PPO ────
+        # We compute TWO different softmaxes here, and this distinction is
+        # subtle but important.
+        #
+        # `turn_probs` / `tp_probs` (temperature-scaled):
+        #   Used to actually SAMPLE the action. Higher temperature flattens
+        #   the distribution → more exploration. Lower temperature sharpens
+        #   it → more exploitation. We anneal temperature down over training.
+        #
+        # `turn_log_probs` / `tp_log_probs` (T=1, unscaled):
+        #   Recorded into the trajectory for later use as `old_log_prob` in
+        #   PPO's importance ratio. PPO assumes these come from the *true*
+        #   policy distribution. If we used the temperature-scaled log-probs
+        #   here, the importance ratio would be biased and the gradient
+        #   estimate would be wrong.
+        #
+        # In short: temperature is a sampling-time exploration knob; PPO math
+        # always uses the underlying T=1 distribution.
+        # ─────────────────────────────────────────────────────────────────────
         temp = max(self.temperature, 1e-6)
         turn_probs = torch.softmax(turn_logits / temp, dim=-1).cpu().numpy()
         tp_probs = torch.softmax(tp_logits / temp, dim=-1).cpu().numpy()
 
-        # Unscaled (T=1) log-probs for PPO importance ratio computation
-        # Critical: log_probs must come from the policy distribution, not the
-        # temperature-scaled sampling distribution, to avoid biasing PPO ratios.
         turn_log_probs = torch.log_softmax(turn_logits, dim=-1).cpu().numpy()
         tp_log_probs = torch.log_softmax(tp_logits, dim=-1).cpu().numpy()
 
@@ -391,6 +534,21 @@ class BatchInferencePlayer(Player):
         )
 
     async def _run_batch(self, states, futures, battle_tags, is_tps, masks):
+        # ── Where the batched forward pass actually runs ─────────────────────
+        # Inputs are lists, one element per gathered request:
+        #   states       — the embedded battle state vectors
+        #   futures      — the asyncio futures awaited by each requesting battle
+        #   battle_tags  — id of the battle each state came from (used to look
+        #                  up that battle's hidden state / KV context)
+        #   is_tps       — booleans: is this a teampreview decision (90 actions)
+        #                  or a turn decision (2025 actions)?
+        #   masks        — per-state legality masks (for turn decisions only)
+        #
+        # The code splits into two paths because Transformer and LSTM differ
+        # in how they manage the recurrent state across turns:
+        #   - Transformer: a growing context tensor (one row per past turn)
+        #   - LSTM: the classic (h, c) hidden state pair
+        # ─────────────────────────────────────────────────────────────────────
         states_np = np.array(states)
 
         if self._is_transformer:
@@ -948,14 +1106,37 @@ class BatchInferencePlayer(Player):
             return DefaultBattleOrder()
 
     def _battle_finished_callback(self, battle: AbstractBattle):
+        # ── End-of-battle: assign rewards and ship the trajectory ────────────
+        # poke-env calls this hook once per battle when it finishes (win, loss,
+        # draw, or forfeit). This is where we:
+        #   1. Walk the per-step trajectory we've been collecting.
+        #   2. Fill in rewards (we deferred this until the outcome is known).
+        #   3. Push the completed trajectory to the trajectory_queue, where the
+        #      worker will eventually forward it to the learner via mp.Queue.
+        #
+        # Reward shaping (a small but important design choice):
+        #   - per-step penalty   = -0.005   (encourages winning quickly)
+        #   - terminal bonus     = +1 win / -1 loss
+        #   - KO bonus           = +0.05 per opponent fainted *this step*
+        #
+        # The KO bonus is computed by diffing this step's opponent_fainted
+        # count against the previous step's. Why per-step delta and not
+        # "did anyone faint just now": cleanly handles double-KOs and is
+        # robust to multi-turn effects.
+        # ─────────────────────────────────────────────────────────────────────
         self._request_generation.pop(battle.battle_tag, None)
 
+        # If the battle was discarded mid-flight (e.g. trajectory exceeded
+        # max_battle_steps), drop everything — we don't want to train on the
+        # truncated trajectory because the terminal reward is undefined.
         if battle.battle_tag in self._discarded_battles:
             self._discarded_battles.discard(battle.battle_tag)
             self.current_trajectories.pop(battle.battle_tag, None)
             self.hidden_states.pop(battle.battle_tag, None)
             return
 
+        # If trajectory_queue is None this is an opponent-only player (we're
+        # not collecting from this side); just clean up state.
         if self.trajectory_queue is None:
             self.current_trajectories.pop(battle.battle_tag, None)
             self.hidden_states.pop(battle.battle_tag, None)
@@ -982,6 +1163,8 @@ class BatchInferencePlayer(Player):
             filtered_traj = [step for step in traj if step is not None]
             self._diagnostics["completed_trajectories"] += 1
             self._diagnostics["completed_trajectory_steps"] += len(filtered_traj)
+            # Ship to the queue. The worker process picks it up and forwards it
+            # to the learner over mp.Queue (with metadata for opponent tracking).
             self.trajectory_queue.put(
                 {
                     "steps": filtered_traj,
@@ -995,9 +1178,24 @@ class BatchInferencePlayer(Player):
 
 
 class RNaDAgent(torch.nn.Module):
-    """
-    RL Agent wrapper around FlexibleThreeHeadedModel or TransformerThreeHeadedModel.
-    Handles hidden states and value function transformation.
+    """RL Agent wrapper around FlexibleThreeHeadedModel or TransformerThreeHeadedModel.
+
+    Why this exists
+    ---------------
+    The supervised (BC) model has TWO callable interfaces:
+      - LSTM variant: needs an (h, c) hidden state pair threaded across turns.
+      - Transformer variant: maintains a growing context tensor instead.
+
+    Callers shouldn't have to care which architecture is in use. RNaDAgent
+    presents a single uniform `forward(x, hidden_state)` API, and internally
+    routes to whichever forward path the wrapped model needs.
+
+    `get_initial_state(batch_size, device)` is the other half of this — gives
+    callers a "fresh" hidden state to start a battle with, again uniformly.
+    LSTMs return (zeros, zeros); Transformers return None (empty context).
+
+    This is a wrapper, not a model — it has no parameters of its own beyond
+    those of the wrapped model.
     """
 
     def __init__(
@@ -1045,6 +1243,24 @@ class RNaDAgent(torch.nn.Module):
 
 
 class MaxDamagePlayer(Player):
+    """A non-learning, heuristic-only opponent for the curriculum.
+
+    Why we have this
+    ----------------
+    Pure self-play is unstable: the agent can fall into degenerate cycles where
+    it only learns to beat its current self. A diverse curriculum of opponents
+    helps. MaxDamage is one of the simplest useful baselines:
+        - Estimates damage of every legal move against every opponent.
+        - Picks (softmax-sampled, with `temperature`) the highest-damage move.
+        - For switch decisions, scores the switch by how much damage the new
+          mon could do next turn, scaled by `switch_threshold`.
+        - Uses poke-env's calculate_damage, which handles type effectiveness,
+          STAB, abilities, items, and stat boosts.
+
+    This player has *no learnable parameters*. It's just a fixed policy.
+    The RL agent learning to beat MaxDamage at >50% is a basic sanity check.
+    """
+
     def __init__(
         self,
         battle_format: str = "gen9vgc2023regc",

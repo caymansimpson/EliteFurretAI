@@ -82,51 +82,16 @@ def mock_checkpoint(mock_model, mock_config):
 # =============================================================================
 
 
-def test_bcplayer_requires_models():
+def test_bcplayer_requires_model_filepath():
     """
-    Test that BCPlayer raises error without model paths.
+    Test that BCPlayer raises error when model_filepath is missing.
 
-    Must provide either unified_model_filepath or all three separate paths.
+    The constructor takes a single required `model_filepath` argument.
 
-    Expected: ValueError raised with descriptive message.
+    Expected: TypeError raised about missing positional argument.
     """
-    with pytest.raises(ValueError, match="Must provide either unified_model_filepath"):
+    with pytest.raises(TypeError, match="model_filepath"):
         BCPlayer(battle_format="gen9vgc2023regc")
-
-
-def test_bcplayer_rejects_both_model_types():
-    """
-    Test that BCPlayer rejects both unified and separate model paths.
-
-    Cannot mix unified and separate model configuration.
-
-    Expected: ValueError raised with descriptive message.
-    """
-    with pytest.raises(ValueError, match="Cannot provide both"):
-        BCPlayer(
-            unified_model_filepath="unified.pt",
-            teampreview_model_filepath="tp.pt",
-            action_model_filepath="action.pt",
-            win_model_filepath="win.pt",
-            battle_format="gen9vgc2023regc",
-        )
-
-
-def test_bcplayer_requires_all_separate_models():
-    """
-    Test that BCPlayer requires all three separate model paths.
-
-    If using separate models, must provide teampreview, action, and win.
-
-    Expected: ValueError raised.
-    """
-    with pytest.raises(ValueError, match="Must provide either unified_model_filepath"):
-        BCPlayer(
-            teampreview_model_filepath="tp.pt",
-            action_model_filepath="action.pt",
-            # Missing win_model_filepath
-            battle_format="gen9vgc2023regc",
-        )
 
 
 # =============================================================================
@@ -209,7 +174,7 @@ def test_predict_advantage_with_trajectory():
     """
     Test predict_advantage uses model when trajectory exists.
 
-    Should use the win_model to predict advantage from trajectory.
+    Should use the model to predict advantage from trajectory.
 
     Expected: Returns value from model (in [-1, 1]).
     """
@@ -233,7 +198,7 @@ def test_predict_advantage_with_trajectory():
         mock_model.side_effect = mock_forward
         mock_model.eval = MagicMock()
 
-        player.win_model = mock_model
+        player.model = mock_model
         player._device = "cpu"  # Add device attribute
         player._trajectories = {"test-battle": [[0.0] * 100 for _ in range(5)]}
 

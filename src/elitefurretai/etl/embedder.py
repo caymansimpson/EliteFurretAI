@@ -49,6 +49,7 @@ class Embedder:
     SIMPLE = "simple"
     RAW = "raw"
     FULL = "full"
+    FULL_NO_TRANSITION = "full_no_transition"  # FULL minus transition features (engineered kept)
 
     def __init__(
         self, format="gen9vgc2023regc", feature_set: str = "raw", omniscient=False
@@ -63,7 +64,7 @@ class Embedder:
         self._ability_to_id: Dict[str, int] = build_ability_to_id(self._format)
         self._num_abilities: int = len(self._ability_to_id) + 1
 
-        assert feature_set in [self.SIMPLE, self.RAW, self.FULL]
+        assert feature_set in [self.SIMPLE, self.RAW, self.FULL, self.FULL_NO_TRANSITION]
         self._feature_set: str = feature_set
 
         sets = [
@@ -161,10 +162,11 @@ class Embedder:
         group = self.generate_battle_features(battle)
         grouped_names.extend(sorted(group.keys()))
 
-        # Feature engineered + transition (FULL only)
-        if self._feature_set == self.FULL:
+        # Feature engineered + transition (FULL and FULL_NO_TRANSITION)
+        if self._feature_set in (self.FULL, self.FULL_NO_TRANSITION):
             group = self.generate_feature_engineered_features(battle)
             grouped_names.extend(sorted(group.keys()))
+        if self._feature_set == self.FULL:
             group = self.generate_transition_features(battle)
             grouped_names.extend(sorted(group.keys()))
 
@@ -244,8 +246,9 @@ class Embedder:
             + [self._opponent_pokemon_embedding_size] * 6
             + [self._battle_embedding_size]
         )
-        if self.feature_set == self.FULL:
+        if self.feature_set in (self.FULL, self.FULL_NO_TRANSITION):
             group_sizes += [self._feature_engineered_embedding_size]
+        if self.feature_set == self.FULL:
             group_sizes += [self._transition_embedding_size]
         return group_sizes
 
@@ -381,26 +384,6 @@ class Embedder:
         assert battle.player_role is not None and battle.opponent_role is not None
 
         features: Dict[str, float] = {}
-
-        # PRUNED: TYPE_MATCHUP — redundant with EST_DAMAGE_* which incorporates
-        # type effectiveness + STAB + stats + items
-        # # Look at their type matchup against me
-        # for i, mon in enumerate(fill_with_none(battle.teampreview_team, 6)):
-        #     for j, opp_mon in enumerate(
-        #         fill_with_none(battle.teampreview_opponent_team, 6)
-        #     ):
-        #         if mon is None or opp_mon is None:
-        #             features["TYPE_MATCHUP:OPP_MON:" + str(j) + ":MON:" + str(i)] = -1
-        #         else:
-        #             multiplier = max(
-        #                 opp_type.damage_multiplier(
-        #                     *mon.types, type_chart=GenData.from_gen(9).type_chart
-        #                 )
-        #                 for opp_type in opp_mon.types
-        #             )
-        #             features["TYPE_MATCHUP:OPP_MON:" + str(j) + ":MON:" + str(i)] = (
-        #                 multiplier
-        #             )
 
         # Calculate total state
         num_fainted, hp_left, total_hp, num_status, num_revealed = 0, 0, 0, 0, 0
@@ -1221,9 +1204,10 @@ class Embedder:
         # Convert embedding to the specified type
         if self._feature_set == self.SIMPLE:
             emb = self._simplify_features(emb)
-        elif self._feature_set == self.FULL:
+        elif self._feature_set in (self.FULL, self.FULL_NO_TRANSITION):
             emb.update(self.generate_feature_engineered_features(battle, bi))
-            emb.update(self.generate_transition_features(battle))
+            if self._feature_set == self.FULL:
+                emb.update(self.generate_transition_features(battle))
 
         return emb
 

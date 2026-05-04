@@ -1726,6 +1726,7 @@ class TransformerThreeHeadedModel(torch.nn.Module):
         x: torch.Tensor,
         hidden_state: Optional[torch.Tensor] = None,
         mask: Optional[torch.Tensor] = None,
+        hidden_mask: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Online RL forward with context accumulation.
 
@@ -1737,6 +1738,10 @@ class TransformerThreeHeadedModel(torch.nn.Module):
             hidden_state: Previous context ``(batch, T-1, hidden_size)`` or ``None``
                 for the first turn.  **NOTE**: this is a single tensor, not a tuple.
             mask: Optional padding mask.
+            hidden_mask: Optional boolean mask for ``hidden_state`` with shape
+                ``(batch, T-1)`` where ``True`` denotes a valid context position and
+                ``False`` denotes padding. When omitted, all positions in
+                ``hidden_state`` are treated as valid.
 
         Returns:
             turn_action_logits: ``(batch, 1, num_actions)``
@@ -1759,8 +1764,29 @@ class TransformerThreeHeadedModel(torch.nn.Module):
         # Build context: concatenate with previous encoded features
         if hidden_state is not None:
             context = torch.cat([hidden_state, encoded], dim=1)  # (B, T, H)
+            if hidden_mask is not None:
+                current_mask = torch.ones(
+                    batch_size,
+                    1,
+                    device=x.device,
+                    dtype=torch.bool,
+                )
+                context_mask = torch.cat([hidden_mask.to(torch.bool), current_mask], dim=1)
+            else:
+                context_mask = torch.ones(
+                    batch_size,
+                    context.size(1),
+                    device=x.device,
+                    dtype=torch.bool,
+                )
         else:
             context = encoded  # (B, 1, H)
+            context_mask = torch.ones(
+                batch_size,
+                1,
+                device=x.device,
+                dtype=torch.bool,
+            )
 
         # Prepend decision tokens
         if self.use_decision_tokens:
@@ -1784,8 +1810,24 @@ class TransformerThreeHeadedModel(torch.nn.Module):
             self._build_causal_mask(full_seq.size(1), x.device) if self.use_causal_mask else None
         )
 
+        src_key_padding_mask: Optional[torch.Tensor] = None
+        if self.use_decision_tokens:
+            dt_pad = torch.zeros(
+                batch_size,
+                self.NUM_DECISION_TOKENS,
+                device=x.device,
+                dtype=torch.bool,
+            )
+            src_key_padding_mask = torch.cat([dt_pad, ~context_mask], dim=1)
+        elif context_mask is not None:
+            src_key_padding_mask = ~context_mask
+
         # Transformer
-        t_out = self.transformer(full_seq, mask=attn_mask)
+        t_out = self.transformer(
+            full_seq,
+            mask=attn_mask,
+            src_key_padding_mask=src_key_padding_mask,
+        )
 
         # For online play, take the LAST turn position's output
         last_idx = -1

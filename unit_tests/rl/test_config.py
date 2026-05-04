@@ -16,7 +16,7 @@ import tempfile
 import pytest
 import yaml
 
-from elitefurretai.rl.config import RNaDConfig, get_default_config
+from elitefurretai.rl.config import HardwareConfig, RNaDConfig, get_default_config
 
 # =============================================================================
 # DEFAULT CONFIG TESTS
@@ -34,14 +34,14 @@ def test_get_default_config():
     config = get_default_config()
 
     assert isinstance(config, RNaDConfig)
-    assert config.battle_format == "gen9vgc2023regc"
-    assert config.battle_backend == "showdown_websocket"
-    assert config.device in ["cuda", "cpu"]
+    assert config.curriculum.battle_format == "gen9vgc2023regc"
+    assert config.hardware.battle_backend == "showdown_websocket"
+    assert config.hardware.device in ["cuda", "cpu"]
 
 
 def test_invalid_battle_backend_raises_value_error():
     with pytest.raises(ValueError, match="battle_backend"):
-        RNaDConfig(battle_backend="not_a_backend")
+        HardwareConfig(battle_backend="not_a_backend")
 
 
 def test_default_curriculum_sums_to_one():
@@ -50,11 +50,11 @@ def test_default_curriculum_sums_to_one():
 
     Curriculum is a probability distribution over opponent types.
 
-    Expected: sum(curriculum.values()) == 1.0
+    Expected: sum(curriculum_weights.values()) == 1.0
     """
     config = get_default_config()
 
-    total = sum(config.curriculum.values())
+    total = sum(config.curriculum.curriculum_weights.values())
     assert abs(total - 1.0) < 1e-6, f"Curriculum sums to {total}, expected 1.0"
 
 
@@ -66,7 +66,7 @@ def test_default_curriculum_uses_correct_keys():
     - 'self_play': Play against current model
     - 'bc_player': Play against behavioral cloning baseline
     - 'exploiters': Play against trained exploiter agents
-    - 'ghosts': Play against past model checkpoints
+    - 'ghosts': Play against past checkpoint snapshots
 
     BUG PREVENTION: Previously there was a mismatch where config used
     'past_versions' but opponent_pool expected 'ghosts'. This test
@@ -77,7 +77,7 @@ def test_default_curriculum_uses_correct_keys():
     config = get_default_config()
 
     expected_keys = {"self_play", "bc_player", "exploiters", "ghosts"}
-    actual_keys = set(config.curriculum.keys())
+    actual_keys = set(config.curriculum.curriculum_weights.keys())
 
     assert actual_keys == expected_keys, (
         f"Curriculum keys mismatch!\n"
@@ -105,12 +105,11 @@ def test_config_save_and_load():
         config_path = os.path.join(tmpdir, "test_config.yaml")
 
         # Create config with custom values
-        config = RNaDConfig(
-            battle_format="gen9vgc2024regg",
-            lr=0.0005,
-            num_players=4,
-            train_batch_size=64,
-        )
+        config = get_default_config()
+        config.curriculum.battle_format = "gen9vgc2024regg"
+        config.optimizer.lr = 0.0005
+        config.hardware.num_players = 4
+        config.training.train_batch_size = 64
 
         # Save
         config.save(config_path)
@@ -122,10 +121,10 @@ def test_config_save_and_load():
         loaded = RNaDConfig.load(config_path)
 
         # Verify values match
-        assert loaded.battle_format == "gen9vgc2024regg"
-        assert loaded.lr == 0.0005
-        assert loaded.num_players == 4
-        assert loaded.train_batch_size == 64
+        assert loaded.curriculum.battle_format == "gen9vgc2024regg"
+        assert loaded.optimizer.lr == 0.0005
+        assert loaded.hardware.num_players == 4
+        assert loaded.training.train_batch_size == 64
 
 
 def test_config_save_creates_directory():
@@ -146,9 +145,9 @@ def test_config_save_creates_directory():
 
 def test_config_yaml_format():
     """
-    Test that saved config is valid YAML.
+    Test that saved config is valid YAML with nested structure.
 
-    Expected: File can be parsed as YAML with correct structure.
+    Expected: File can be parsed as YAML with nested sub-config keys.
     """
     with tempfile.TemporaryDirectory() as tmpdir:
         config_path = os.path.join(tmpdir, "test_config.yaml")
@@ -161,9 +160,13 @@ def test_config_yaml_format():
             data = yaml.safe_load(f)
 
         assert isinstance(data, dict)
-        assert "battle_format" in data
+        # New nested structure
         assert "curriculum" in data
+        assert "hardware" in data
+        assert "algorithm" in data
         assert isinstance(data["curriculum"], dict)
+        assert "battle_format" in data["curriculum"]
+        assert "curriculum_weights" in data["curriculum"]
 
 
 # =============================================================================
@@ -173,23 +176,29 @@ def test_config_yaml_format():
 
 def test_config_to_dict():
     """
-    Test that config.to_dict returns all configuration values.
+    Test that config.to_dict returns all configuration values in nested form.
 
     This is used for wandb logging and checkpointing.
 
-    Expected: Dictionary contains all config fields.
+    Expected: Dictionary contains nested sub-config keys.
     """
     config = get_default_config()
     d = config.to_dict()
 
     assert isinstance(d, dict)
 
-    # Check some key fields are present
-    assert "battle_format" in d
-    assert "lr" in d
-    assert "num_players" in d
+    # Check nested sub-config keys are present
+    assert "algorithm" in d
+    assert "hardware" in d
     assert "curriculum" in d
-    assert "use_wandb" in d
+    assert "training" in d
+    assert "optimizer" in d
+
+    # Check nested access
+    assert "battle_format" in d["curriculum"]
+    assert "lr" in d["optimizer"]
+    assert "num_players" in d["hardware"]
+    assert "use_wandb" in d["training"]
 
 
 def test_config_str():
@@ -205,7 +214,6 @@ def test_config_str():
 
     assert isinstance(s, str)
     assert "RNaD Training Configuration" in s
-    assert "battle_format" in s
 
 
 # =============================================================================
@@ -221,7 +229,9 @@ def test_default_learning_rate():
     """
     config = get_default_config()
 
-    assert 1e-5 <= config.lr <= 1e-3, f"Learning rate {config.lr} seems unusual"
+    assert 1e-5 <= config.optimizer.lr <= 1e-3, (
+        f"Learning rate {config.optimizer.lr} seems unusual"
+    )
 
 
 def test_default_clip_range():
@@ -232,7 +242,9 @@ def test_default_clip_range():
     """
     config = get_default_config()
 
-    assert 0.1 <= config.clip_range <= 0.5, f"Clip range {config.clip_range} seems unusual"
+    assert 0.1 <= config.algorithm.clip_range <= 0.5, (
+        f"Clip range {config.algorithm.clip_range} seems unusual"
+    )
 
 
 def test_default_gamma():
@@ -243,7 +255,9 @@ def test_default_gamma():
     """
     config = get_default_config()
 
-    assert 0.9 <= config.gamma <= 1.0, f"Gamma {config.gamma} seems unusual"
+    assert 0.9 <= config.algorithm.gamma <= 1.0, (
+        f"Gamma {config.algorithm.gamma} seems unusual"
+    )
 
 
 def test_default_gae_lambda():
@@ -254,7 +268,9 @@ def test_default_gae_lambda():
     """
     config = get_default_config()
 
-    assert 0.9 <= config.gae_lambda <= 1.0, f"GAE lambda {config.gae_lambda} seems unusual"
+    assert 0.9 <= config.algorithm.gae_lambda <= 1.0, (
+        f"GAE lambda {config.algorithm.gae_lambda} seems unusual"
+    )
 
 
 # =============================================================================
@@ -270,10 +286,8 @@ def test_default_paths_are_strings():
     """
     config = get_default_config()
 
-    assert isinstance(config.base_team_path, str)
-    assert isinstance(config.save_dir, str)
-    assert isinstance(config.past_models_dir, str)
-    assert isinstance(config.exploiter_models_dir, str)
+    assert isinstance(config.curriculum.base_team_path, str)
+    assert isinstance(config.training.save_dir, str)
 
 
 def test_team_pool_path_can_be_none():
@@ -288,7 +302,9 @@ def test_team_pool_path_can_be_none():
     config = get_default_config()
 
     # Default should be None or a string
-    assert config.team_pool_path is None or isinstance(config.team_pool_path, str)
+    assert config.curriculum.team_pool_path is None or isinstance(
+        config.curriculum.team_pool_path, str
+    )
 
 
 # =============================================================================
@@ -304,7 +320,7 @@ def test_use_wandb_is_boolean():
     """
     config = get_default_config()
 
-    assert isinstance(config.use_wandb, bool)
+    assert isinstance(config.training.use_wandb, bool)
 
 
 def test_use_mixed_precision_is_boolean():
@@ -315,7 +331,7 @@ def test_use_mixed_precision_is_boolean():
     """
     config = get_default_config()
 
-    assert isinstance(config.use_mixed_precision, bool)
+    assert isinstance(config.hardware.use_mixed_precision, bool)
 
 
 def test_train_exploiters_is_boolean():
@@ -326,11 +342,11 @@ def test_train_exploiters_is_boolean():
     """
     config = get_default_config()
 
-    assert isinstance(config.train_exploiters, bool)
+    assert isinstance(config.training.train_exploiters, bool)
 
 
 # =============================================================================
-# PORTFOLIO REGULARIZATION CONFIG TESTS
+# PORTFOLIO CONFIG TESTS
 # =============================================================================
 
 
@@ -345,10 +361,9 @@ def test_portfolio_config_options():
     """
     config = get_default_config()
 
-    assert isinstance(config.use_portfolio_regularization, bool)
-    assert isinstance(config.max_portfolio_size, int)
-    assert config.max_portfolio_size > 0
-    assert config.portfolio_update_strategy in ["diverse", "best", "recent"]
+    assert isinstance(config.portfolio.max_portfolio_size, int)
+    assert config.portfolio.max_portfolio_size > 0
+    assert config.portfolio.portfolio_update_strategy in ["diverse", "best", "recent"]
 
 
 # =============================================================================
@@ -366,10 +381,10 @@ def test_worker_config():
     """
     config = get_default_config()
 
-    assert config.num_workers >= 1
-    assert config.players_per_worker >= 1
-    assert config.batch_size >= 1
-    assert config.train_batch_size >= 1
+    assert config.hardware.num_workers >= 1
+    assert config.hardware.players_per_worker >= 1
+    assert config.hardware.batch_size >= 1
+    assert config.training.train_batch_size >= 1
 
 
 def test_server_config():
@@ -380,8 +395,8 @@ def test_server_config():
     """
     config = get_default_config()
 
-    assert config.num_servers >= 1
-    assert config.showdown_start_port > 0
+    assert config.hardware.num_servers >= 1
+    assert config.hardware.showdown_start_port > 0
 
 
 # =============================================================================
@@ -391,7 +406,7 @@ def test_server_config():
 
 def test_load_partial_yaml():
     """
-    Test that loading a partial YAML uses defaults for missing fields.
+    Test that loading a partial nested YAML uses defaults for missing fields.
 
     This allows config files to only specify changed values.
 
@@ -400,10 +415,10 @@ def test_load_partial_yaml():
     with tempfile.TemporaryDirectory() as tmpdir:
         config_path = os.path.join(tmpdir, "partial_config.yaml")
 
-        # Write partial config
+        # Write partial nested config
         partial = {
-            "lr": 0.001,
-            "num_players": 8,
+            "optimizer": {"lr": 0.001},
+            "hardware": {"num_players": 8},
         }
         with open(config_path, "w") as f:
             yaml.dump(partial, f)
@@ -412,12 +427,12 @@ def test_load_partial_yaml():
         loaded = RNaDConfig.load(config_path)
 
         # Specified values
-        assert loaded.lr == 0.001
-        assert loaded.num_players == 8
+        assert loaded.optimizer.lr == 0.001
+        assert loaded.hardware.num_players == 8
 
         # Default values for unspecified fields
-        assert loaded.battle_format == "gen9vgc2023regc"
-        assert loaded.gamma == 0.99
+        assert loaded.curriculum.battle_format == "gen9vgc2023regc"
+        assert loaded.algorithm.gamma == 0.99
 
 
 if __name__ == "__main__":

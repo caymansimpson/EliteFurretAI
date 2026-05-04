@@ -18,7 +18,7 @@ from elitefurretai.engine.showdown_server_manager import (
 from elitefurretai.etl import Embedder
 from elitefurretai.etl.team_repo import TeamRepo
 from elitefurretai.rl.config import RNaDConfig
-from elitefurretai.rl.model_io import build_model_from_config, load_agent_from_checkpoint
+from elitefurretai.rl.learners import build_model_from_config, load_agent_from_checkpoint
 from elitefurretai.rl.players import BatchInferencePlayer, RNaDAgent
 
 
@@ -33,8 +33,8 @@ def _build_agent(config: RNaDConfig, device: str, checkpoint: str | None) -> RNa
         return load_agent_from_checkpoint(checkpoint, device)
 
     embedder = Embedder(
-        format=config.battle_format,
-        feature_set=config.embedder_feature_set,
+        format=config.curriculum.battle_format,
+        feature_set=config.training.embedder_feature_set,
         omniscient=False,
     )
     model = build_model_from_config(config.to_dict(), embedder, device, None)
@@ -121,14 +121,14 @@ async def _run_benchmark(args: argparse.Namespace) -> None:
                 raise ValueError("--config is required for --policy model")
 
             config = RNaDConfig.load(args.config)
-            feature_set = args.feature_set or config.embedder_feature_set
+            feature_set = args.feature_set or config.training.embedder_feature_set
             temperature = args.temperature if args.temperature is not None else config.temperature_at_step(0)
-            top_p = args.top_p if args.top_p is not None else config.top_p
+            top_p = args.top_p if args.top_p is not None else config.exploration.top_p
 
             p1_agent = _build_agent(config, args.device, args.checkpoint)
             p2_agent = _build_agent(config, args.device, args.opponent_checkpoint or args.checkpoint)
             embedder = Embedder(
-                format=config.battle_format,
+                format=config.curriculum.battle_format,
                 feature_set=feature_set,
                 omniscient=False,
             )
@@ -140,7 +140,7 @@ async def _run_benchmark(args: argparse.Namespace) -> None:
                 probabilistic=not args.greedy,
                 embedder=embedder,
                 max_battle_steps=args.max_battle_steps,
-                battle_format=config.battle_format,
+                battle_format=config.curriculum.battle_format,
                 team=p1_team,
                 max_concurrent_battles=args.max_concurrent_battles,
                 server_configuration=server_config,
@@ -155,7 +155,7 @@ async def _run_benchmark(args: argparse.Namespace) -> None:
                 probabilistic=not args.greedy,
                 embedder=embedder,
                 max_battle_steps=args.max_battle_steps,
-                battle_format=config.battle_format,
+                battle_format=config.curriculum.battle_format,
                 team=p2_team,
                 max_concurrent_battles=args.max_concurrent_battles,
                 server_configuration=server_config,
@@ -210,7 +210,7 @@ async def _run_benchmark(args: argparse.Namespace) -> None:
             print(f"batch_size={args.batch_size}")
             print(f"batch_timeout={args.batch_timeout}")
             print(f"device={args.device}")
-            print(f"feature_set={args.feature_set or config.embedder_feature_set}")
+            print(f"feature_set={args.feature_set or config.training.embedder_feature_set}")
             print(f"temperature={temperature}")
             print(f"top_p={top_p}")
         print(f"profile_output={args.profile_output or 'disabled'}")

@@ -36,7 +36,7 @@ def _make_factory(curriculum):
         worker_id=0,
         run_id="0000",
         device="cpu",
-        ghost_models_dir=None,
+        ghosts_dir=None,
     )
 
 

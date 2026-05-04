@@ -1,7 +1,8 @@
-""" This file is just to train a non-trajectory model -- eg given a state, predict the next action,
+"""This file is just to train a non-trajectory model -- eg given a state, predict the next action,
 without any RNN or temporal component. This is mostly for benchmarking and ablation purposes to see
 how much the trajectory modeling is actually helping.
 """
+
 import argparse
 import os.path
 import random
@@ -14,7 +15,7 @@ import yaml
 import wandb
 from elitefurretai.etl import Embedder, PreprocessedBattleDataset
 from elitefurretai.supervised.model_archs import DNN
-from elitefurretai.supervised.train_utils import (
+from elitefurretai.supervised.utils import (
     analyze,
     evaluate,
     format_time,

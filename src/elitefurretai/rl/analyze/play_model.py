@@ -17,8 +17,8 @@ from elitefurretai.engine.showdown_server_manager import (
 from elitefurretai.etl import Embedder
 from elitefurretai.etl.encoder import MDBO
 from elitefurretai.inference.inference_utils import battle_to_str
-from elitefurretai.rl.fast_action_mask import fast_get_action_mask
-from elitefurretai.rl.model_io import load_agent_from_checkpoint
+from elitefurretai.rl.masking import fast_get_action_mask
+from elitefurretai.rl.learners import load_agent_from_checkpoint
 from elitefurretai.rl.players import RNaDAgent
 
 

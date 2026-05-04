@@ -1,14 +1,14 @@
 # Rust Model-Backed Throughput Sweep
 
 ## Context
-We have already established that the random legal-action Rust benchmark is a poor proxy for actual RL training throughput. The relevant benchmark is now [src/elitefurretai/engine/rust_model_benchmark.py](src/elitefurretai/engine/rust_model_benchmark.py), because it exercises the real policy path: embedding, action masking, model forward passes, and synchronous battle stepping.
+We have already established that the random legal-action Rust benchmark is a poor proxy for actual RL training throughput. The relevant benchmark is now [src/elitefurretai/rl/rust_model_benchmark.py](src/elitefurretai/rl/rust_model_benchmark.py), because it exercises the real policy path: embedding, action masking, model forward passes, and synchronous battle stepping.
 
 The prior Stage 2 throughput document captured the architectural direction and short ablation smokes. This document is the dedicated record for the first longer 1000-battle sweep using the model-backed benchmark path.
 
 ## Before State
 We had:
-- an exact benchmark-facing Rust adapter contract in [src/elitefurretai/engine/rust_battle_engine.py](src/elitefurretai/engine/rust_battle_engine.py)
-- model-backed benchmark toggles in [src/elitefurretai/engine/rust_model_benchmark.py](src/elitefurretai/engine/rust_model_benchmark.py)
+- an exact benchmark-facing Rust adapter contract in [src/elitefurretai/rl/rust_battle_engine.py](src/elitefurretai/rl/rust_battle_engine.py)
+- model-backed benchmark toggles in [src/elitefurretai/rl/rust_model_benchmark.py](src/elitefurretai/rl/rust_model_benchmark.py)
 - short 20-battle smokes suggesting batched inference matters a lot, while request-cache effects were less obvious
 
 We did not yet have longer runs that were stable enough to support decisions about what to keep, what to simplify away, and what bottlenecks remain after these optimizations.
@@ -61,11 +61,11 @@ The short smokes already suggested that not all optimizations are equally valuab
     - `max_concurrent_6`
 
 - 2026-04-09 09:35: All runs in this document will use the model-backed benchmark entrypoint:
-    - `python src/elitefurretai/engine/rust_model_benchmark.py --config src/elitefurretai/rl/configs/rust_multiupdate_benchmark.yaml --battles 1000 --device cpu`
+    - `python src/elitefurretai/rl/rust_model_benchmark.py --config src/elitefurretai/rl/configs/rust_multiupdate_benchmark.yaml --battles 1000 --device cpu`
 
 - 2026-04-09 10:45: Baseline 1000-battle result recorded.
     - Command:
-        - `python src/elitefurretai/engine/rust_model_benchmark.py --config src/elitefurretai/rl/configs/rust_multiupdate_benchmark.yaml --battles 1000 --device cpu`
+        - `python src/elitefurretai/rl/rust_model_benchmark.py --config src/elitefurretai/rl/configs/rust_multiupdate_benchmark.yaml --battles 1000 --device cpu`
     - Result:
         - `completed_battles=1000`
         - `truncated_battles=482`
@@ -93,7 +93,7 @@ The short smokes already suggested that not all optimizations are equally valuab
 
 - 2026-04-09 11:55: Lower-concurrency 1000-battle result recorded.
     - Command:
-        - `python src/elitefurretai/engine/rust_model_benchmark.py --config src/elitefurretai/rl/configs/rust_multiupdate_benchmark.yaml --battles 1000 --device cpu --max-concurrent 2`
+        - `python src/elitefurretai/rl/rust_model_benchmark.py --config src/elitefurretai/rl/configs/rust_multiupdate_benchmark.yaml --battles 1000 --device cpu --max-concurrent 2`
     - Result:
         - `completed_battles=1000`
         - `truncated_battles=172`
@@ -112,11 +112,11 @@ The short smokes already suggested that not all optimizations are equally valuab
 
 - 2026-04-09 11:55: Higher-concurrency run started.
     - Active command:
-        - `python src/elitefurretai/engine/rust_model_benchmark.py --config src/elitefurretai/rl/configs/rust_multiupdate_benchmark.yaml --battles 1000 --device cpu --max-concurrent 6`
+        - `python src/elitefurretai/rl/rust_model_benchmark.py --config src/elitefurretai/rl/configs/rust_multiupdate_benchmark.yaml --battles 1000 --device cpu --max-concurrent 6`
 
 - 2026-04-09 12:15: Higher-concurrency 1000-battle result recorded.
     - Command:
-        - `python src/elitefurretai/engine/rust_model_benchmark.py --config src/elitefurretai/rl/configs/rust_multiupdate_benchmark.yaml --battles 1000 --device cpu --max-concurrent 6`
+        - `python src/elitefurretai/rl/rust_model_benchmark.py --config src/elitefurretai/rl/configs/rust_multiupdate_benchmark.yaml --battles 1000 --device cpu --max-concurrent 6`
     - Result:
         - `completed_battles=1000`
         - `truncated_battles=292`
@@ -136,13 +136,13 @@ The short smokes already suggested that not all optimizations are equally valuab
 
 - 2026-04-09 12:15: The implementation sweep has been re-anchored onto `max_concurrent=6`.
     - Active command:
-        - `python src/elitefurretai/engine/rust_model_benchmark.py --config src/elitefurretai/rl/configs/rust_multiupdate_benchmark.yaml --battles 1000 --device cpu --max-concurrent 6 --disable-request-cache-wrapper`
+        - `python src/elitefurretai/rl/rust_model_benchmark.py --config src/elitefurretai/rl/configs/rust_multiupdate_benchmark.yaml --battles 1000 --device cpu --max-concurrent 6 --disable-request-cache-wrapper`
     - Rationale:
         - If an optimization does not help under the best tested runtime regime, it should not be treated as throughput-critical.
 
 - 2026-04-09 12:35: Request-cache wrapper ablation recorded at `max_concurrent=6`.
     - Command:
-        - `python src/elitefurretai/engine/rust_model_benchmark.py --config src/elitefurretai/rl/configs/rust_multiupdate_benchmark.yaml --battles 1000 --device cpu --max-concurrent 6 --disable-request-cache-wrapper`
+        - `python src/elitefurretai/rl/rust_model_benchmark.py --config src/elitefurretai/rl/configs/rust_multiupdate_benchmark.yaml --battles 1000 --device cpu --max-concurrent 6 --disable-request-cache-wrapper`
     - Result:
         - `completed_battles=1000`
         - `truncated_battles=203`
@@ -161,11 +161,11 @@ The short smokes already suggested that not all optimizations are equally valuab
 
 - 2026-04-09 12:35: Fast-embed ablation started at `max_concurrent=6`.
     - Active command:
-        - `python src/elitefurretai/engine/rust_model_benchmark.py --config src/elitefurretai/rl/configs/rust_multiupdate_benchmark.yaml --battles 1000 --device cpu --max-concurrent 6 --disable-fast-embed`
+        - `python src/elitefurretai/rl/rust_model_benchmark.py --config src/elitefurretai/rl/configs/rust_multiupdate_benchmark.yaml --battles 1000 --device cpu --max-concurrent 6 --disable-fast-embed`
 
 - 2026-04-09 12:55: Fast-embed ablation recorded at `max_concurrent=6`.
     - Command:
-        - `python src/elitefurretai/engine/rust_model_benchmark.py --config src/elitefurretai/rl/configs/rust_multiupdate_benchmark.yaml --battles 1000 --device cpu --max-concurrent 6 --disable-fast-embed`
+        - `python src/elitefurretai/rl/rust_model_benchmark.py --config src/elitefurretai/rl/configs/rust_multiupdate_benchmark.yaml --battles 1000 --device cpu --max-concurrent 6 --disable-fast-embed`
     - Result:
         - `completed_battles=1000`
         - `truncated_battles=195`
@@ -184,11 +184,11 @@ The short smokes already suggested that not all optimizations are equally valuab
 
 - 2026-04-09 12:55: Binding-snapshot ablation started at `max_concurrent=6`.
     - Active command:
-        - `python src/elitefurretai/engine/rust_model_benchmark.py --config src/elitefurretai/rl/configs/rust_multiupdate_benchmark.yaml --battles 1000 --device cpu --max-concurrent 6 --disable-binding-snapshots`
+        - `python src/elitefurretai/rl/rust_model_benchmark.py --config src/elitefurretai/rl/configs/rust_multiupdate_benchmark.yaml --battles 1000 --device cpu --max-concurrent 6 --disable-binding-snapshots`
 
 - 2026-04-09 13:15: Binding-snapshot ablation recorded at `max_concurrent=6`.
     - Command:
-        - `python src/elitefurretai/engine/rust_model_benchmark.py --config src/elitefurretai/rl/configs/rust_multiupdate_benchmark.yaml --battles 1000 --device cpu --max-concurrent 6 --disable-binding-snapshots`
+        - `python src/elitefurretai/rl/rust_model_benchmark.py --config src/elitefurretai/rl/configs/rust_multiupdate_benchmark.yaml --battles 1000 --device cpu --max-concurrent 6 --disable-binding-snapshots`
     - Result:
         - `completed_battles=1000`
         - `truncated_battles=197`
@@ -207,11 +207,11 @@ The short smokes already suggested that not all optimizations are equally valuab
 
 - 2026-04-09 13:15: Final long-run batched-inference ablation started at `max_concurrent=6`.
     - Active command:
-        - `python src/elitefurretai/engine/rust_model_benchmark.py --config src/elitefurretai/rl/configs/rust_multiupdate_benchmark.yaml --battles 1000 --device cpu --max-concurrent 6 --disable-batched-inference`
+        - `python src/elitefurretai/rl/rust_model_benchmark.py --config src/elitefurretai/rl/configs/rust_multiupdate_benchmark.yaml --battles 1000 --device cpu --max-concurrent 6 --disable-batched-inference`
 
 - 2026-04-09 14:40: Final long-run batched-inference ablation recorded at `max_concurrent=6`.
     - Command:
-        - `python src/elitefurretai/engine/rust_model_benchmark.py --config src/elitefurretai/rl/configs/rust_multiupdate_benchmark.yaml --battles 1000 --device cpu --max-concurrent 6 --disable-batched-inference`
+        - `python src/elitefurretai/rl/rust_model_benchmark.py --config src/elitefurretai/rl/configs/rust_multiupdate_benchmark.yaml --battles 1000 --device cpu --max-concurrent 6 --disable-batched-inference`
     - Result:
         - `completed_battles=1000`
         - `truncated_battles=121`
@@ -255,67 +255,11 @@ The short smokes already suggested that not all optimizations are equally valuab
         - Keep a higher concurrent battle count than the current default benchmark path. Among tested values, `max_concurrent=6` is by far the best raw-throughput point and also the best non-truncated throughput point among the clearly throughput-oriented configurations.
         - Keep the cached request wrapper. Removing it dropped battles/sec from `1.514` to `1.000` at `max_concurrent=6`.
         - Keep the fast `embed_to_vector()` path. Removing it dropped battles/sec from `1.514` to `1.343` at `max_concurrent=6`.
-        - Keep the exact binding adapter contract in [src/elitefurretai/engine/rust_battle_engine.py](src/elitefurretai/engine/rust_battle_engine.py). It gives us a stable surface to compare implementations and will still be the right target shape for the future native PyO3 binding.
+        - Keep the exact binding adapter contract in [src/elitefurretai/rl/rust_battle_engine.py](src/elitefurretai/rl/rust_battle_engine.py). It gives us a stable surface to compare implementations and will still be the right target shape for the future native PyO3 binding.
         - Practical config recommendation from this sweep: move the benchmark and Rust training configs toward `players_per_worker ~= 12`, because current training derives `max_concurrent_battles = players_per_worker // 2`, and the best tested point was `max_concurrent=6`.
     - (b) Optimizations to get rid of or ignore for simplicity:
 
-- 2026-04-10 12:50: Added paired `train.py` backend-comparison configs and reran the comparison after the Showdown commander fix.
-    - New reproducible configs:
-        - [src/elitefurretai/rl/configs/backend_compare_rust.yaml](src/elitefurretai/rl/configs/backend_compare_rust.yaml)
-        - [src/elitefurretai/rl/configs/backend_compare_showdown.yaml](src/elitefurretai/rl/configs/backend_compare_showdown.yaml)
-        - [src/elitefurretai/rl/configs/backend_compare_rust_long.yaml](src/elitefurretai/rl/configs/backend_compare_rust_long.yaml)
-        - [src/elitefurretai/rl/configs/backend_compare_showdown_long.yaml](src/elitefurretai/rl/configs/backend_compare_showdown_long.yaml)
-    - Short one-update comparison artifacts:
-        - Rust: `data/benchmarks/training_throughput_2026_04_10/backend_compare_rust.txt`
-        - Showdown pre-fix: `data/benchmarks/training_throughput_2026_04_10/backend_compare_showdown.txt`
-        - Showdown post-fix smoke: `data/benchmarks/training_throughput_2026_04_10/backend_compare_showdown_post_commander_fix_smoke.txt`
-    - Longer three-update comparison artifacts:
-        - Rust: `data/benchmarks/training_throughput_2026_04_10/backend_compare_rust_long.txt`
-        - Showdown: `data/benchmarks/training_throughput_2026_04_10/backend_compare_showdown_long.txt`
-    - Post-fix short smoke result:
-        - Showdown no longer emits the old commander-specific error `Can't move: Your Dondozo doesn't have a move matching dracometeor`.
-        - Update 1: `0.17 battles/s`, `2.03 learner steps/s`, `47 learner steps over 4 battles`.
-    - Longer three-update result:
-        - Rust update 3 cumulative totals: `12 battles in 44s` (`0.27 battles/s`), `259 learner steps` (`5.79 steps/s`).
-        - Showdown update 3 cumulative totals: `12 battles in 40s` (`0.30 battles/s`), `156 learner steps` (`3.86 steps/s`).
-        - Derived average learner steps per battle:
-            - Rust: `259 / 12 = 21.6`
-            - Showdown: `156 / 12 = 13.0`
-    - Interpretation:
-        - Rust remains materially better on learner-facing throughput even when raw battle throughput looks similar.
-        - The longer run explains why: the Showdown backend still accumulates many invalid-choice events (`276` matching log lines), and its most common surviving error is unrelated to commander (`180` instances of `Terapagos ... terastarstorm`).
-        - Those websocket-side errors shorten or distort battles, which can make `battles/s` look competitive or even slightly better while simultaneously producing fewer learner-ingested steps per battle.
-        - In other words, the current Rust advantage is mostly battle quality and step retention, not just a lower wall-clock cost per finished battle.
-
-- 2026-04-10 13:50: Reran the paired three-update comparison after the transformed-target and request-filter fixes.
-    - New artifacts:
-        - Rust: `data/benchmarks/training_throughput_2026_04_10/backend_compare_rust_long_post_target_fix.txt`
-        - Showdown: `data/benchmarks/training_throughput_2026_04_10/backend_compare_showdown_long_post_target_fix.txt`
-        - Showdown smoke: `data/benchmarks/training_throughput_2026_04_10/backend_compare_showdown_post_target_fix_smoke.txt`
-    - Specific targeted improvement:
-        - pre-fix Showdown longer run had `180` occurrences of `Can't move: Your Terapagos doesn't have a move matching terastarstorm`.
-        - post-fix Showdown longer run had `0` occurrences of that signature.
-        - the post-fix smoke also had `0` combined matches for the targeted transformed-move signatures:
-            - `Terapagos ... terastarstorm`
-            - `... expandingforce`
-    - Updated three-update results:
-        - Rust update 3 cumulative totals: `12 battles in 46s` (`0.26 battles/s`), `290 learner steps` (`6.24 steps/s`).
-        - Showdown update 3 cumulative totals: `12 battles in 35s` (`0.34 battles/s`), `142 learner steps` (`3.97 steps/s`).
-        - Derived learner steps per battle:
-            - Rust: `290 / 12 = 24.2`
-            - Showdown: `142 / 12 = 11.8`
-    - Comparison versus the immediately prior paired run:
-        - Rust learner steps improved from `259 -> 290`.
-        - Showdown targeted `terastarstorm` failures improved from `180 -> 0`.
-        - Showdown total invalid-choice log lines did not improve overall (`276 -> 308`) because different websocket mismatches took over the rejection budget immediately.
-    - Interpretation:
-        - the transformed-target fixes removed a real class of websocket legality bugs, but they did not close the backend throughput gap because the Showdown path is still losing step yield to other request/move mismatches.
-        - Rust remains materially better on learner throughput even when Showdown finishes battles faster in wall-clock terms, because Rust is retaining far more learner-ingested decisions per battle.
-        - updated takeaway:
-            - battle completion rate alone is still not the right proxy for training throughput.
-            - until the websocket path stops leaking rewritten or stale move ids, Rust's main advantage will continue to be trajectory quality and step retention.
-
-- 2026-04-09 16:40: Added structured rejection and truncation diagnostics to [src/elitefurretai/engine/sync_battle_driver.py](src/elitefurretai/engine/sync_battle_driver.py) and threaded them through [src/elitefurretai/engine/rust_model_benchmark.py](src/elitefurretai/engine/rust_model_benchmark.py).
+- 2026-04-09 16:40: Added structured rejection and truncation diagnostics to [src/elitefurretai/rl/sync_battle_driver.py](src/elitefurretai/rl/sync_battle_driver.py) and threaded them through [src/elitefurretai/rl/rust_model_benchmark.py](src/elitefurretai/rl/rust_model_benchmark.py).
     - New benchmark option:
         - `--diagnostic-log-path <jsonl>`
     - Logged event types:
@@ -329,13 +273,13 @@ The short smokes already suggested that not all optimizations are equally valuab
         - During force-switch requests, the sync driver was still enumerating normal move actions for the non-forced slot.
         - This allowed obviously invalid joint actions such as `switch X, move Y` in request phases where the engine only accepts switch/pass semantics.
     - Fix kept:
-        - In [src/elitefurretai/engine/sync_battle_driver.py](src/elitefurretai/engine/sync_battle_driver.py), when any slot is in `forceSwitch`, the non-forced slot is now constrained to `pass` instead of normal move/switch enumeration.
+        - In [src/elitefurretai/rl/sync_battle_driver.py](src/elitefurretai/rl/sync_battle_driver.py), when any slot is in `forceSwitch`, the non-forced slot is now constrained to `pass` instead of normal move/switch enumeration.
         - Healthy forced-switch slots no longer unconditionally receive `pass` as an extra action.
-    - Focused regression coverage added in [unit_tests/engine/test_sync_battle_driver.py](unit_tests/engine/test_sync_battle_driver.py).
+    - Focused regression coverage added in [unit_tests/rl/test_sync_battle_driver.py](unit_tests/rl/test_sync_battle_driver.py).
 
 - 2026-04-09 16:40: Short post-fix diagnostic run recorded for the kept fix set.
     - Command:
-        - `python src/elitefurretai/engine/rust_model_benchmark.py --config src/elitefurretai/rl/configs/rust_multiupdate_benchmark.yaml --battles 200 --device cpu --max-concurrent 6 --diagnostic-log-path data/benchmarks/training_throughput_2026_04_09/rejection_diagnostics_final_kept_fix_200.jsonl`
+        - `python src/elitefurretai/rl/rust_model_benchmark.py --config src/elitefurretai/rl/configs/rust_multiupdate_benchmark.yaml --battles 200 --device cpu --max-concurrent 6 --diagnostic-log-path data/benchmarks/training_throughput_2026_04_09/rejection_diagnostics_final_kept_fix_200.jsonl`
     - Result artifact:
         - `data/benchmarks/training_throughput_2026_04_09/rejection_diagnostics_final_kept_fix_200.txt`
     - Result:
@@ -406,9 +350,9 @@ The short smokes already suggested that not all optimizations are equally valuab
 - 2026-04-09 20:15: Protocol-faithful target-sign fix recorded and kept.
     - Code change kept:
         - [src/elitefurretai/rl/fast_action_mask.py](src/elitefurretai/rl/fast_action_mask.py) now matches poke-env / Showdown target signs in the fast legality path.
-        - [unit_tests/rl/test_fast_action_mask.py](unit_tests/rl/test_fast_action_mask.py) and [unit_tests/engine/test_sync_battle_driver.py](unit_tests/engine/test_sync_battle_driver.py) gained regression coverage for that behavior.
+        - [unit_tests/rl/test_fast_action_mask.py](unit_tests/rl/test_fast_action_mask.py) and [unit_tests/rl/test_sync_battle_driver.py](unit_tests/rl/test_sync_battle_driver.py) gained regression coverage for that behavior.
     - Command:
-        - `python src/elitefurretai/engine/rust_model_benchmark.py --config src/elitefurretai/rl/configs/rust_multiupdate_benchmark.yaml --battles 200 --device cpu --max-concurrent 6 --diagnostic-log-path data/benchmarks/training_throughput_2026_04_09/rejection_diagnostics_target_sign_fix_200.jsonl`
+        - `python src/elitefurretai/rl/rust_model_benchmark.py --config src/elitefurretai/rl/configs/rust_multiupdate_benchmark.yaml --battles 200 --device cpu --max-concurrent 6 --diagnostic-log-path data/benchmarks/training_throughput_2026_04_09/rejection_diagnostics_target_sign_fix_200.jsonl`
     - Result:
         - `completed_battles=200`
         - `truncated_battles=30`
@@ -428,7 +372,7 @@ The short smokes already suggested that not all optimizations are equally valuab
 
 - 2026-04-09 20:15: Narrow active-entry reorder experiment recorded and reverted.
     - Experimental command:
-        - `python src/elitefurretai/engine/rust_model_benchmark.py --config src/elitefurretai/rl/configs/rust_multiupdate_benchmark.yaml --battles 200 --device cpu --max-concurrent 6 --diagnostic-log-path data/benchmarks/training_throughput_2026_04_09/rejection_diagnostics_target_sign_reorder_fix_200.jsonl`
+        - `python src/elitefurretai/rl/rust_model_benchmark.py --config src/elitefurretai/rl/configs/rust_multiupdate_benchmark.yaml --battles 200 --device cpu --max-concurrent 6 --diagnostic-log-path data/benchmarks/training_throughput_2026_04_09/rejection_diagnostics_target_sign_reorder_fix_200.jsonl`
     - Result:
         - `completed_battles=200`
         - `truncated_battles=44`
@@ -448,7 +392,7 @@ The short smokes already suggested that not all optimizations are equally valuab
 - 2026-04-09 14:40: Recommended immediate follow-up sweep order after this document.
     1. Sweep `max_concurrent` above `6` through the actual train-derived config path (`num_players -> players_per_worker -> max_concurrent_battles`) rather than only the benchmark CLI.
     2. Sweep `temperature` and `top_p` using the model-backed benchmark, but score scenarios by both raw battles/sec and non-truncated battles/sec.
-    3. Add truncation-cause counters to [src/elitefurretai/engine/sync_battle_driver.py](src/elitefurretai/engine/sync_battle_driver.py) and report them from [src/elitefurretai/engine/rust_model_benchmark.py](src/elitefurretai/engine/rust_model_benchmark.py).
+    3. Add truncation-cause counters to [src/elitefurretai/rl/sync_battle_driver.py](src/elitefurretai/rl/sync_battle_driver.py) and report them from [src/elitefurretai/rl/rust_model_benchmark.py](src/elitefurretai/rl/rust_model_benchmark.py).
     4. Re-run a short `train.py` smoke with the best candidate config, which currently looks like "batched inference + cached request wrapper + fast embed path + higher concurrency".
 
 - 2026-04-09 15:05: Recommended metric for total training throughput.
@@ -513,7 +457,7 @@ The short smokes already suggested that not all optimizations are equally valuab
 
 - 2026-04-09 15:05: Completed next step #3 by adding and reporting truncation-cause counters in the Rust model benchmark.
     - Best-path benchmark rerun:
-        - `python src/elitefurretai/engine/rust_model_benchmark.py --config src/elitefurretai/rl/configs/rust_multiupdate_benchmark.yaml --battles 1000 --device cpu --max-concurrent 6`
+        - `python src/elitefurretai/rl/rust_model_benchmark.py --config src/elitefurretai/rl/configs/rust_multiupdate_benchmark.yaml --battles 1000 --device cpu --max-concurrent 6`
     - Result highlights:
         - `battles_per_second=1.385`
         - `non_truncated_battles_per_second=0.960`
@@ -524,34 +468,6 @@ The short smokes already suggested that not all optimizations are equally valuab
         - `p1_rejected_choices=9943`
         - `p2_rejected_choices=10253`
         - `p1_fallback_recoveries=4950`
-
-- 2026-04-10 12:10: Re-ran the Rust-vs-Showdown comparison through paired one-update `train.py` smokes using checked-in config files.
-    - New reproducible configs:
-        - `src/elitefurretai/rl/configs/backend_compare_rust.yaml`
-        - `src/elitefurretai/rl/configs/backend_compare_showdown.yaml`
-    - Shared benchmark shape:
-        - one worker
-        - `num_players=12`
-        - `max_updates=1`
-        - `battle_format=gen9vgc2024regg`
-        - `embedder_feature_set=raw`
-        - `battle_backend` is the only intentional backend difference
-    - Artifacts:
-        - Rust log: `data/benchmarks/training_throughput_2026_04_10/backend_compare_rust.txt`
-        - Showdown log: `data/benchmarks/training_throughput_2026_04_10/backend_compare_showdown.txt`
-    - Rust result:
-        - `Update 1: ... Total Battles=4 in 0h 0m 17s (0.23 b/s) | Learner Steps=102 (5.77 steps/s) | Learner Trajectories=4 (0.23 traj/s)`
-    - Showdown result:
-        - `Update 1: ... Total Battles=4 in 0h 0m 17s (0.22 b/s) | Learner Steps=34 (1.90 steps/s) | Learner Trajectories=4 (0.22 traj/s)`
-    - Comparison:
-        - learner-ingested step throughput improved by about `3.04x` (`5.77 / 1.90`)
-        - learner trajectory rate is effectively flat in this one-update smoke (`0.23 / 0.22 ~= 1.05x`)
-        - raw completed battle rate is also nearly flat in this short horizon (`0.23 / 0.22 ~= 1.05x`)
-    - Interpretation:
-        - the backend win is currently showing up primarily as more learner-usable sequence steps per unit time, not as dramatically more completed battles before the first optimizer step.
-        - this is still the metric that matters more for training because the learner consumes padded sequence steps, not just battle count.
-    - Notable websocket-side log evidence:
-        - the Showdown smoke emitted repeated invalid-choice errors of the form `Can't move: Your Dondozo doesn't have a move matching dracometeor`, which is additional evidence that commander-related legality mismatches are still visible in the legacy websocket path as well.
         - `p2_fallback_recoveries=4924`
         - `p1_unrecovered_rejections=4993`
         - `p2_unrecovered_rejections=5329`
@@ -588,7 +504,7 @@ The short smokes already suggested that not all optimizations are equally valuab
 
 - 2026-04-09 15:35: Targeted stall-limit sweep to quantify why stall handling affects throughput.
     - Setup:
-        - `python src/elitefurretai/engine/rust_model_benchmark.py --config src/elitefurretai/rl/configs/rust_multiupdate_benchmark.yaml --battles 200 --device cpu --max-concurrent 6 --max-stalled-steps-per-battle {5,10,25,50}`
+        - `python src/elitefurretai/rl/rust_model_benchmark.py --config src/elitefurretai/rl/configs/rust_multiupdate_benchmark.yaml --battles 200 --device cpu --max-concurrent 6 --max-stalled-steps-per-battle {5,10,25,50}`
     - Result table:
 
 | Stall Limit | Battles/s | Non-Truncated Battles/s | Truncated Battles | p1 Reject Rate | p1 Recovery Given Reject |

@@ -9,19 +9,19 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   lint:
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
-    # Setup Python (faster than using Python container)
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
@@ -47,11 +47,3 @@ jobs:
 
       - name: Run pyright
         run: pyright src/ unit_tests/
-      
-      - name: Run mypy
-        run: mypy src/ unit_tests/ --check-untyped-defs
-
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v5
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}

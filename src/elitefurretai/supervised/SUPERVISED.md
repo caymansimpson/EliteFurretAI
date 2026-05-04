@@ -86,7 +86,7 @@ Replaces raw float inputs for selected numerical features with learned embedding
 *   **Config**: Gated by `use_number_banks` (disabled by default)
 
 #### `TransformerThreeHeadedModel` (Current)
-The primary backbone for Stage I, replacing the bidirectional LSTM with a TransformerEncoder and decision tokens. This is the architecture used for the `curious-darkness-77` handoff model (~125M parameters).
+The primary backbone, replacing the bidirectional LSTM with a TransformerEncoder and decision tokens. The Stage I research baseline is `curious-darkness-77` (~125M params, full featureset). The Stage II RL handoff is the `cool-bee-85-finetune` configuration (~26.7M params, raw featureset, ~5× smaller; same module class, smaller hyperparams).
 *   **Decision tokens**: Three learned parameter vectors `[ACTOR]`, `[CRITIC]`, `[FIELD]` are prepended to the sequence. ACTOR token output feeds the turn head, CRITIC feeds the value head.
 *   **Positional encoding**: Sinusoidal (supports variable-length sequences at inference)
 *   **Causal mask**: Past turns can only attend to themselves and prior turns. Decision tokens can attend to everything.
@@ -116,13 +116,14 @@ Standard sinusoidal positional encoding for the Transformer backbone. Supports v
 **Purpose**: Sweep training script for hyperparameter search. Imports `train_epoch` from `train.py` and supports wandb sweep configs.
 
 ### `fine_tune.py`
-**Purpose**: Adapts a pre-trained model to new data.
+**Purpose**: Adapts a pre-trained `TransformerThreeHeadedModel` to new data or a new training schedule.
 
 **How it works**:
-1.  Loads the model architecture and weights from a `.pt` checkpoint.
-2.  Reads the embedded config to reconstruct the exact model structure.
-3.  Optionally overrides training parameters (LR, batch size) from a config file.
-4.  Freezes early layers (optional) to preserve feature extractors while adapting the decision heads.
+1.  Loads the model architecture and weights from a `.pt` checkpoint, reconstructing the exact `TransformerThreeHeadedModel` structure from the embedded config.
+2.  Optionally overrides training parameters (LR, num_epochs, weight_decay, dropout, lr_schedule, etc.) from a YAML file. Architecture keys must NOT change — they would mismatch the loaded weight shapes.
+3.  Recomputes embedder-derived indices (`teampreview_idx`, `force_switch_indices`, `state_input_dim`) from a fresh embedder so they stay in sync if the feature schema evolved between runs.
+4.  Reuses the same `train_epoch`, `evaluate`, and `analyze` infrastructure as `train.py`, including `torch.compile`, `lr_schedule` choice (`cosine`/`plateau`), mixed precision, and gradient accumulation.
+5.  `--save-best` flag saves the lowest-test-loss checkpoint mid-run.
 
 ### `behavior_clone_player.py`
 **Purpose**: The agent interface for `poke-env`.
@@ -155,24 +156,28 @@ Standard sinusoidal positional encoding for the Transformer backbone. Supports v
 Based on our experiments and analysis (detailed in the [project documentation](https://docs.google.com/document/d/14menCHw8z06KJWZ5F_K-MjgWVo_b7PESR7RlG-em4ic/edit)), here are the key findings that drive our supervised learning strategy:
 
 ### 1. Current Benchmarks
-The `TransformerThreeHeadedModel` (`curious-darkness-77_best`, ~125M parameters) achieves the following on the validation set:
 
-*   **Turn Actions** (from `action_model_diagnostics.py` on val set):
-    *   **Overall Top-1/3/5**: 41.4% / 61.3% / 68.8%
-    *   **MOVE Top-1/3/5**: 26.2% / 51.2% / 61.6%
-    *   **SWITCH Top-1**: 99.1%
-    *   **BOTH Top-1/3/5**: 48.3% / 65.2% / 67.3%
-    *   *Takeaway*: Predicting the *exact* move a human makes is difficult due to playstyle variety and simultaneous decision-making. The high SWITCH accuracy (99.1%) shows the model has strong fundamentals, while the BOTH metric (65.2% Top-3) shows it can coordinate joint actions for two active Pokemon.
+**Production checkpoint for Stage II RL: `cool-bee-85-finetune_best.pt`** — 26.7M params, RAW featureset, transformer (4 layers × 8 heads × ff_dim 1024). Originally trained as A5 (`cool-bee-85`, 30 epochs combining the A3 ~5× smaller architecture with the A2 raw featureset), then fine-tuned for 15 additional epochs with `win_loss_weight=0.5` and a cosine LR (peak 2.5e-5). See `planning/stage2/2026-05-01-bc-ablation-study.md` for the ablation study that motivated this configuration.
 
-*   **Teampreview** (from wandb test set):
-    *   **Top-1/3/5**: 53.8% / 82.2% / 98.9%
-    *   *Takeaway*: The TP head is detached from the shared encoder (gradients don't flow back). TP accuracy is lower than earlier overfit models but this is intentional — it prevents TP from dominating the shared representation.
+**Reference checkpoint (BC research baseline, not used for RL): `curious-darkness-77_best.pt`** — 125M params, FULL featureset, transformer (7 layers × 16 heads × ff_dim 2048). Stronger pure-BC numbers but ~5× slower at inference and uses transition features (which couple inference to `poke-env`'s observations).
 
-*   **Win Advantage** (from `win_model_diagnostics.py` on val set):
-    *   **Synthetic Advantage Correlation**: 0.665
-    *   **Actual Win Correlation**: 0.818
-    *   **Brier Score**: 0.133
-    *   *Takeaway*: The distributional C51 value head provides strong win probability estimates. The high actual win correlation (0.818) means the model reliably distinguishes winning from losing positions.
+| Metric | `cool-bee-85-finetune_best` (production) | `curious-darkness-77_best` (reference) |
+|---|---:|---:|
+| Params | **26.7M** (~5× smaller) | 125M |
+| Featureset | **raw** (5032 dims) | full (5222 dims) |
+| Overall Top-1 | **45.33%** | 41.36% |
+| Overall Top-3 | **62.15%** | 61.27% |
+| Overall Top-5 | 67.56% | 68.77% |
+| MOVE Top-3 | **52.63%** | 51.23% |
+| SWITCH Top-1 | **99.35%** | 99.06% |
+| BOTH Top-1 | 47.66% | 48.27% |
+| BOTH Top-3 | 64.45% | 65.16% |
+| TP Top-1 | 99.9% | 53.8% |
+| **Actual Win Correlation** | 0.7531 | **0.8175** |
+| **Brier Score** | 0.1623 | **0.1329** |
+| Synthetic Win Correlation | 0.5976 | 0.6653 |
+
+*Takeaway*: At ~5× fewer parameters and using the simpler RAW featureset (which removes engineered/transition features and decouples RL inference from `poke-env` observations), `cool-bee-85-finetune` matches or beats the reference on every action metric (Top-1 +4pt, Top-3 +0.9pt, MOVE Top-3 +1.4pt, SWITCH Top-1 +0.3pt) while trading ~0.05 Win Corr / +0.03 Brier on the value head. The action policy is *better* than the reference; the value head is the only area where the larger model retains an edge. r-NaD self-play is expected to recover the value-head gap during RL training.
 
 ### 2. Stage 1 Sweep Learnings
 
@@ -196,20 +201,26 @@ The sweep campaign (see `planning/stage1/`) condensed into the current training 
     *   The **Value Head** (Win Advantage) provides a heuristic evaluation for leaf nodes.
 *   **Search is Necessary**: To bridge the gap between "human-like" (42% Top-5) and "superhuman", we need decision-time planning (MCTS) to handle complex calculations and lookaheads that a static policy network misses.
 
-### 4. Stage I Handoff: `curious-darkness-77_best`
+### 4. Stage II Handoff: `cool-bee-85-finetune_best`
 
-The chosen BC handoff model for Stage II RL is `curious-darkness-77_best.pt`, trained for 30 epochs with the best checkpoint saved at epoch 18. Config: `configs/curious_darkness_77.yaml`.
+The chosen BC handoff model for Stage II RL is `cool-bee-85-finetune_best.pt`. It is the result of two stages:
 
-*   **Final BC model path**: `data/models/supervised/curious-darkness-77_best.pt` (not pushed; ~480 MB)
-*   **Overall Top-1/3/5**: 41.4% / 61.3% / 68.8%
-*   **MOVE Top-3**: 51.2%
-*   **BOTH Top-3**: 65.2%
-*   **SWITCH Top-1**: 99.1%
-*   **Actual Win Correlation**: 0.818
-*   **Synthetic Advantage Correlation**: 0.665
-*   **TP Top-1/3/5**: 53.8% / 82.2% / 98.9%
+1. **Pre-train (`cool-bee-85`)**: 30 epochs with the A3 ~5× smaller transformer architecture and the A2 RAW featureset. Config: `configs/ablation_a5_small5x_raw_30ep.yaml`. (Best at epoch 30.)
+2. **Fine-tune (`cool-bee-85-finetune`)**: 15 additional epochs from `cool-bee-85_best.pt`, with `win_loss_weight=0.5` (was 0.35) to push more gradient through the value head, cosine LR (peak 2.5e-5), and the throughput speedup config (batch 256 / worker_batch 256 / num_workers 4 / pf 3 / fpw 4). Config: `configs/ablation_a5_small5x_raw_30ep_finetune.yaml`. (Best at epoch 8.)
 
-**Why this model?** It has the best balanced action quality (highest BOTH Top-3 among best checkpoints, highest SWITCH accuracy at 99.1%), a strong value head, and competitive TP accuracy. While its entropy is the lowest (0.321), RNaD's entropy bonus and KL regularization address this during RL training.
+*   **Final BC model path**: `data/models/supervised/cool-bee-85-finetune_best.pt` (~100 MB; not pushed)
+*   **Architecture (~26.7M params)**: transformer 4 layers × 8 heads, ff_dim=1024, agg=2048, hidden=256, early=[1024,512,512], late=[512,512], turn_head=[512,256,256], teampreview_head=[256,128]
+*   **Featureset**: `raw` (5032 input dims; drops engineered + transition features → no `poke-env` observation dependency at RL inference time)
+*   **Overall Top-1/3/5**: 45.33% / 62.15% / 67.56%
+*   **MOVE Top-3**: 52.63%
+*   **BOTH Top-3**: 64.45%
+*   **SWITCH Top-1**: 99.35%
+*   **Actual Win Correlation**: 0.7531
+*   **Brier Score**: 0.1623
+*   **Synthetic Advantage Correlation**: 0.5976
+*   **TP Top-1**: 99.9%
+
+**Why this model?** Action policy quality at or above the 125M reference (Top-1 +4pt, Top-3 +0.9pt, MOVE Top-3 +1.4pt, SWITCH Top-1 +0.3pt) while delivering ~5× faster RL forward passes. The RAW featureset removes the `poke-env` observation dependency from the RL inference path, simplifying the worker pipeline. The value-head gap (Win Corr 0.75 vs 0.82, Brier 0.16 vs 0.13) is r-NaD's job to close during self-play. See the ablation study at `planning/stage2/2026-05-01-bc-ablation-study.md` for the full reasoning.
 
 **Alternatives considered**: `elated-dream-72_best` had the highest entropy (0.652) and best win correlation (0.822), but weaker MOVE Top-3 (45.5%). `dark-oath-78` (with `move_loss_weight=1.3`) showed that upweighting move loss trades value head quality for marginal coordination gains.
 

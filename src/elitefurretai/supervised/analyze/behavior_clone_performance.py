@@ -81,22 +81,12 @@ Adamant Nature
     """
 
     parser = argparse.ArgumentParser(
-        description="Evaluate BCPlayer (three separate models) against poke-env baselines."
+        description="Evaluate BCPlayer against poke-env baselines."
     )
     parser.add_argument(
-        "teampreview_model_path",
+        "model_path",
         type=str,
-        help="Path to the teampreview model file (.pt with embedded config)",
-    )
-    parser.add_argument(
-        "action_model_path",
-        type=str,
-        help="Path to the action model file (.pt with embedded config)",
-    )
-    parser.add_argument(
-        "win_model_path",
-        type=str,
-        help="Path to the win model file (.pt with embedded config)",
+        help="Path to the model file (.pt with embedded config)",
     )
     parser.add_argument(
         "--n_battles", type=int, default=100, help="Number of battles per baseline"
@@ -107,9 +97,7 @@ Adamant Nature
     # Configs are now embedded in the .pt files
     mr_mime = BCPlayer(
         account_configuration=AccountConfiguration("elitefurretai", password=""),
-        teampreview_model_filepath=args.teampreview_model_path,
-        action_model_filepath=args.action_model_path,
-        win_model_filepath=args.win_model_path,
+        model_filepath=args.model_path,
         battle_format="gen9vgc2025regi",
         server_configuration=LocalhostServerConfiguration,
         team=pokepaste,
