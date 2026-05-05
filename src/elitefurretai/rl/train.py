@@ -939,11 +939,18 @@ if __name__ == "__main__":
     configure_torch_multiprocessing(use_file_system_sharing=True)
     suppress_third_party_warnings(suppress_pydantic_field_warnings=True)
 
-    # Configure root logger so our logger.info() calls are visible
+    # Root logger at WARNING silences poke-env's per-player loggers (named
+    # by random username e.g. "M00OP00E08ED700") which otherwise echo every
+    # raw Showdown websocket request/response at INFO. On a 200-update run
+    # those add up to ~10+ GB of log — enough to OOM/disk-fill WSL2.
+    # Our own modules sit under "elitefurretai" and stay at INFO so training
+    # progress (Update N: ..., curriculum, checkpoint events) is preserved.
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.WARNING,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
+    logging.getLogger("elitefurretai").setLevel(logging.INFO)
+    logging.getLogger("__main__").setLevel(logging.INFO)
 
     main()

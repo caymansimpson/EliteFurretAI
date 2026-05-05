@@ -22,7 +22,16 @@ echo "log_dir=$LOG_DIR" | tee -a "$LOG_FILE"
 echo "git_head=$(git rev-parse HEAD)" | tee -a "$LOG_FILE"
 echo "" | tee -a "$LOG_FILE"
 
-python -u src/elitefurretai/rl/train.py --config "$CONFIG" 2>&1 | tee -a "$LOG_FILE"
+# Drop poke-env per-player verbose lines as a belt-and-suspenders measure
+# (train.py also silences these at the source by setting root logger to
+# WARNING, but this guards against any third-party future regression that
+# re-enables Showdown stdout chatter). Patterns dropped:
+#   - "[INFO] M\d{2}..."  per-player logger lines (player usernames begin "M\d\d")
+#   - lines starting with "|"  raw Showdown websocket payload continuations
+#   - common ANSI-colored Showdown tags ([93m[1m>>>... etc)
+python -u src/elitefurretai/rl/train.py --config "$CONFIG" 2>&1 \
+    | grep -E --line-buffered -v '^\||\[INFO\] M[0-9]{2}|\[1m(>>>|<<<)' \
+    | tee -a "$LOG_FILE"
 EXIT=${PIPESTATUS[0]}
 
 END=$(date +%s)
