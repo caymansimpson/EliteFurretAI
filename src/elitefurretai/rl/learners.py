@@ -70,6 +70,17 @@ from elitefurretai.rl.players import RNaDAgent
 from elitefurretai.supervised import FlexibleThreeHeadedModel
 from elitefurretai.supervised.model_archs import TransformerThreeHeadedModel, twohot_encode
 
+# Action-mask fill value: large negative number that drives softmax probability
+# to zero on illegal actions, but small enough in magnitude to fit in fp16
+# (max representable ≈ 65504). Using -1e9 (the obvious choice) overflows fp16
+# under torch.amp.autocast(device_type="cuda") and crashes
+# `masked_fill(..., -1e9)` with "value cannot be converted to type at::Half
+# without overflow". -1e4 is a) representable in fp16 with margin,
+# b) softmax(-1e4 + valid_O(1)) underflows to zero in fp32 too,
+# c) finite, so Categorical.kl_divergence's backward is well-defined on
+# fully-masked rows.
+ACTION_MASK_FILL = -1e4
+
 
 def _build_optimizer(
     model: nn.Module,
@@ -349,7 +360,7 @@ class PortfolioRNaDLearner:
             else None
         )
 
-        # Action mask for turn steps. -1e9 (not -inf) avoids NaN in
+        # Action mask for turn steps. ACTION_MASK_FILL (not -inf) avoids NaN in
         # Categorical.kl_divergence backward when applied to fully-masked rows.
         if has_turn:
             flat_masks = action_masks.reshape(-1, action_masks.shape[-1])
@@ -392,7 +403,7 @@ class PortfolioRNaDLearner:
                             assert turn_mask_neg_inf is not None
                             r = ref_turn.reshape(-1, ref_turn.shape[-1])[turn_indices]
                             ref_turn_logits_list.append(
-                                r.masked_fill(turn_mask_neg_inf, -1e9)
+                                r.masked_fill(turn_mask_neg_inf, ACTION_MASK_FILL)
                             )
 
         # ── PPO inner loop ────────────────────────────────────────────────────
@@ -473,7 +484,7 @@ class PortfolioRNaDLearner:
                         turn_indices
                     ]
                     curr_turn_logits = curr_turn_logits.masked_fill(
-                        turn_mask_neg_inf, -1e9
+                        turn_mask_neg_inf, ACTION_MASK_FILL
                     )
                     curr_dist = Categorical(logits=curr_turn_logits)
                     rnad_loss_turn = self._compute_portfolio_kl(
