@@ -3,15 +3,19 @@ import asyncio
 import json
 import random
 import resource
+import signal
 import time
 from copy import deepcopy
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Union, cast
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union, cast
 
+import numpy as np
 from poke_env import AccountConfiguration, ServerConfiguration
 from poke_env.battle import AbstractBattle, DoubleBattle
 from poke_env.battle.observation import Observation
 from poke_env.player import Player
+from poke_env.player.battle_order import BattleOrder, DefaultBattleOrder
 from poke_env.teambuilder.teambuilder import Teambuilder
 
 from elitefurretai.engine.analyze.showdown_benchmark import _build_agent, _load_team_text
@@ -20,8 +24,10 @@ from elitefurretai.engine.showdown_server_manager import (
     shutdown_showdown_servers,
 )
 from elitefurretai.etl import Embedder
+from elitefurretai.etl.encoder import MDBO
 from elitefurretai.etl.team_repo import TeamRepo
 from elitefurretai.rl.config import RNaDConfig
+from elitefurretai.rl.masking import fast_get_action_mask
 from elitefurretai.rl.players import BatchInferencePlayer
 
 
@@ -30,7 +36,21 @@ def build_parser() -> argparse.ArgumentParser:
         description="Capture Showdown websocket invalid choices with source battle/request traces."
     )
     parser.add_argument("--format", default="gen9vgc2024regg")
-    parser.add_argument("--config", required=True)
+    parser.add_argument(
+        "--player",
+        choices=["model", "random-masked"],
+        default="model",
+        help=(
+            "model: existing diagnostic mode using a trained BatchInferencePlayer. "
+            "random-masked: fuzz-test masking.py with two players that sample uniformly "
+            "from legal-mask actions, looping team-resamplings until SIGINT or first failure."
+        ),
+    )
+    parser.add_argument(
+        "--config",
+        required=False,
+        help="Required for --player model; ignored for --player random-masked.",
+    )
     parser.add_argument("--checkpoint")
     parser.add_argument("--opponent-checkpoint")
     parser.add_argument("--battles", type=int, default=60)
@@ -53,9 +73,25 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--team-subdirectory")
     parser.add_argument("--opponent-team-subdirectory")
     parser.add_argument("--no-mirror", action="store_true")
-    parser.add_argument("--output-dir", required=True)
+    parser.add_argument(
+        "--output-dir",
+        required=False,
+        help="Required for --player model. For --player random-masked, defaults to data/fuzz_results/.",
+    )
     parser.add_argument("--render-limit", type=int, default=10)
     parser.add_argument("--max-error-turn", type=int, default=3)
+    parser.add_argument(
+        "--fuzz-concurrent-battles",
+        type=int,
+        default=1,
+        help="(--player random-masked only) Up to N battles in flight per resampling.",
+    )
+    parser.add_argument(
+        "--fuzz-battles-per-pair",
+        type=int,
+        default=100,
+        help="(--player random-masked only) Battles between a sampled team pair before resampling.",
+    )
     return parser
 
 
@@ -393,6 +429,180 @@ class DiagnosticBatchInferencePlayer(BatchInferencePlayer):
         await super()._handle_battle_error(battle, split_message)
 
 
+class MaskedRandomPlayer(Player):
+    """Plays uniformly at random from indices the action mask permits.
+
+    Pure exercise of `masking.py` end-to-end: for each turn (regular or
+    force-switch) it snapshots `battle.last_request`, runs `fast_get_action_mask`,
+    samples one index where mask==1, and decodes via `MDBO.from_int`. Teampreview
+    uses a random `/team {permutation}` since teampreview isn't masked.
+
+    On a Showdown invalid-choice rejection it appends a record to a shared list
+    that the outer fuzz loop drains to write the failure-report artifacts.
+    Empty masks are themselves recorded as failures (a mask that says "no legal
+    moves exist" is by definition a bug here).
+    """
+
+    def __init__(
+        self,
+        *,
+        fuzz_records: List[Dict[str, Any]],
+        rng: Optional[random.Random] = None,
+        **kwargs: Any,
+    ):
+        super().__init__(**kwargs)
+        self._fuzz_records = fuzz_records
+        self._rng = rng if rng is not None else random.Random()
+        # Per-battle scratch state for the most recent decision, consumed by
+        # _handle_battle_error to attribute the rejected command back to the
+        # mask + sampled index that produced it.
+        self._last_messages: Dict[str, Optional[str]] = {}
+        self._last_masks: Dict[str, np.ndarray] = {}
+        self._last_actions: Dict[str, int] = {}
+        self._last_request_snapshots: Dict[str, Optional[Dict[str, Any]]] = {}
+
+    def teampreview(self, battle: AbstractBattle) -> str:  # type: ignore[override]
+        return self.random_teampreview(battle)
+
+    def choose_move(self, battle: AbstractBattle) -> BattleOrder:  # type: ignore[override]
+        if not isinstance(battle, DoubleBattle):
+            return DefaultBattleOrder()
+
+        request_snapshot = (
+            deepcopy(battle.last_request) if battle.last_request is not None else None
+        )
+        mask = fast_get_action_mask(battle, request_override=request_snapshot)
+        legal = np.where(mask > 0.5)[0]
+
+        if len(legal) == 0:
+            self._record_failure(
+                battle=battle,
+                request_snapshot=request_snapshot,
+                mask=mask,
+                sampled_index=-1,
+                attempted_message=None,
+                error_message="[FuzzHarness] EMPTY_MASK: fast_get_action_mask returned no legal actions",
+            )
+            return DefaultBattleOrder()
+
+        action_idx = int(self._rng.choice(legal))
+        action_type = MDBO.FORCE_SWITCH if any(battle.force_switch) else MDBO.TURN
+        try:
+            mdbo = MDBO.from_int(action_idx, type=action_type)
+            order = mdbo.to_double_battle_order(battle, request=request_snapshot)
+            message = order.message
+        except Exception:
+            order = DefaultBattleOrder()
+            message = order.message
+
+        self._last_request_snapshots[battle.battle_tag] = request_snapshot
+        self._last_masks[battle.battle_tag] = mask
+        self._last_actions[battle.battle_tag] = action_idx
+        self._last_messages[battle.battle_tag] = message
+        return order
+
+    def _record_failure(
+        self,
+        *,
+        battle: AbstractBattle,
+        request_snapshot: Optional[Dict[str, Any]],
+        mask: Optional[np.ndarray],
+        sampled_index: int,
+        attempted_message: Optional[str],
+        error_message: str,
+    ) -> None:
+        record: Dict[str, Any] = {
+            "battle_tag": battle.battle_tag,
+            "turn": getattr(battle, "turn", -1),
+            "player_role": getattr(battle, "player_role", None),
+            "player_username": self.username,
+            "error_message": error_message,
+            "attempted_message": attempted_message,
+            "sampled_index": sampled_index,
+            "mask": mask.tolist() if mask is not None else None,
+            "mask_legal_count": int(mask.sum()) if mask is not None else None,
+            "request_type": _request_type_from_request(request_snapshot or {}),
+            "request": deepcopy(request_snapshot or {}),
+            "battle_state": _battle_state_to_string(battle),
+            "request_state": _request_state_to_string(request_snapshot or {}),
+            "observations": _observations_to_string(battle, getattr(battle, "turn", 0)),
+        }
+        self._fuzz_records.append(record)
+
+    async def _handle_battle_error(
+        self, battle: AbstractBattle, split_message: List[str]
+    ) -> None:
+        message = split_message[2] if len(split_message) > 2 else ""
+        if message.startswith("[Invalid choice]"):
+            mask = self._last_masks.get(battle.battle_tag)
+            self._record_failure(
+                battle=battle,
+                request_snapshot=self._last_request_snapshots.get(battle.battle_tag),
+                mask=mask,
+                sampled_index=self._last_actions.get(battle.battle_tag, -1),
+                attempted_message=self._last_messages.get(battle.battle_tag),
+                error_message=message,
+            )
+
+        await super()._handle_battle_error(battle, split_message)
+
+
+def _render_fuzz_failure_report(record: Dict[str, Any]) -> str:
+    """Human-readable failure report for an offline diagnosis pass."""
+    mask_legal_count = record.get("mask_legal_count")
+    sampled = record.get("sampled_index")
+    mask = record.get("mask")
+    mask_at_sampled = (
+        mask[sampled]
+        if mask is not None and sampled is not None and 0 <= sampled < len(mask)
+        else "n/a"
+    )
+
+    lines = [
+        "================ FUZZ FAILURE REPORT ================",
+        f"format:                {record.get('format', '<unknown>')}",
+        f"timestamp:             {record.get('timestamp', '<unknown>')}",
+        f"battle_tag:            {record.get('battle_tag')}",
+        f"failing player:        {record.get('player_role')} (username={record.get('player_username')})",
+        f"resampling_count:      {record.get('resampling_count')}",
+        f"battle_in_round:       {record.get('battle_in_round')}/{record.get('battles_per_pair')}",
+        f"total_battles_so_far:  {record.get('total_battles')}",
+        "",
+        "team_a (p1 source team):",
+        record.get("team_a", "<unknown>"),
+        "",
+        "team_b (p2 source team):",
+        record.get("team_b", "<unknown>"),
+        "",
+        f"attempted command:     {record.get('attempted_message')}",
+        f"sampled action index:  {sampled}",
+        f"mask[sampled]:         {mask_at_sampled}    (1.0 means: mask said legal but Showdown rejected → likely over-permissive)",
+        f"mask legal count:      {mask_legal_count}    (0 means EMPTY_MASK bug)",
+        f"showdown error msg:    {record.get('error_message')}",
+        f"request type:          {record.get('request_type')}",
+        "",
+        "────────── LAST REQUEST PAYLOAD (seen by masking) ──────────",
+        json.dumps(record.get("request", {}), indent=2, default=str),
+        "",
+        "────────── REQUEST STATE SUMMARY ──────────",
+        record.get("request_state", "<no request_state>"),
+        "",
+        "────────── BATTLE STATE AT FAILURE ──────────",
+        record.get("battle_state", "<no battle_state>"),
+        "",
+        "────────── OBSERVATIONS (full event log up to failure) ──────────",
+        record.get("observations", "<no observations>"),
+    ]
+    return "\n".join(lines)
+
+
+def _jsonify_fuzz_record(record: Dict[str, Any]) -> Dict[str, Any]:
+    """Strip non-JSON-serializable bits and produce a clean sidecar dict."""
+    out = dict(record)
+    # mask is already a list (from .tolist()); request is plain JSON
+    return out
+
+
 async def _run(args: argparse.Namespace) -> None:
     repo = TeamRepo(shuffle=False)
     rng = random.Random(args.seed)
@@ -596,10 +806,190 @@ async def _run(args: argparse.Namespace) -> None:
     print(f"summary_path={summary_path}")
 
 
+def _sample_two_distinct_teams(
+    repo: TeamRepo,
+    format_id: str,
+    rng: random.Random,
+) -> Tuple[Tuple[str, str], Tuple[str, str]]:
+    """Returns ((team_a_name, team_a_str), (team_b_name, team_b_str))."""
+    teams_dict = repo.teams.get(format_id, {})
+    if len(teams_dict) < 2:
+        raise RuntimeError(
+            f"Need ≥2 teams for format {format_id}, found {len(teams_dict)}"
+        )
+    items = list(teams_dict.items())
+    pair = rng.sample(items, 2)
+    return pair[0], pair[1]
+
+
+async def _run_fuzz_loop(args: argparse.Namespace) -> None:
+    """Drives the masked-random fuzz harness.
+
+    Loop: sample 2 distinct teams from the format, build two `MaskedRandomPlayer`s,
+    play `--fuzz-battles-per-pair` battles between them. On the first invalid-choice
+    rejection (from either player, including EMPTY_MASK detection in the player
+    itself), write the failure-report artifacts and exit. Otherwise log a clean
+    progress line and resample. Exits cleanly on SIGINT.
+    """
+    output_dir = Path(args.output_dir or "data/fuzz_results")
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    repo = TeamRepo(shuffle=False)
+    rng = random.Random(args.seed)
+
+    sigint_state = {"received": False}
+
+    def _sigint_handler(signum: int, frame: Any) -> None:  # noqa: ARG001 - signal API
+        sigint_state["received"] = True
+        print("\n[fuzz] SIGINT received; will exit after current battle finishes.")
+
+    previous_handler = signal.signal(signal.SIGINT, _sigint_handler)
+
+    server_processes = launch_showdown_servers(1, args.port)
+    server_config = ServerConfiguration(
+        f"ws://localhost:{args.port}/showdown/websocket", ""
+    )
+
+    fuzz_records: List[Dict[str, Any]] = []
+    resampling_count = 0
+    total_battles = 0
+    failure_record: Optional[Dict[str, Any]] = None
+    start_time = time.perf_counter()
+
+    print(
+        f"[fuzz] starting masked-random fuzz on {args.format} "
+        f"(battles_per_pair={args.fuzz_battles_per_pair}, "
+        f"concurrent_battles={args.fuzz_concurrent_battles}, "
+        f"max_battle_steps={args.max_battle_steps})"
+    )
+    print(f"[fuzz] output_dir={output_dir}")
+    print("[fuzz] Ctrl-C to stop")
+
+    try:
+        while not sigint_state["received"] and failure_record is None:
+            resampling_count += 1
+            (team_a_name, team_a_str), (team_b_name, team_b_str) = (
+                _sample_two_distinct_teams(repo, args.format, rng)
+            )
+
+            suffix = rng.randint(100000, 999999)
+            player1: Optional[MaskedRandomPlayer] = None
+            player2: Optional[MaskedRandomPlayer] = None
+            try:
+                player1 = MaskedRandomPlayer(
+                    fuzz_records=fuzz_records,
+                    rng=random.Random(rng.randint(0, 2**31 - 1)),
+                    battle_format=args.format,
+                    team=team_a_str,
+                    max_concurrent_battles=args.fuzz_concurrent_battles,
+                    server_configuration=server_config,
+                    account_configuration=AccountConfiguration(f"fuzzp1{suffix}", None),
+                    log_level=args.log_level,
+                )
+                player2 = MaskedRandomPlayer(
+                    fuzz_records=fuzz_records,
+                    rng=random.Random(rng.randint(0, 2**31 - 1)),
+                    battle_format=args.format,
+                    team=team_b_str,
+                    max_concurrent_battles=args.fuzz_concurrent_battles,
+                    server_configuration=server_config,
+                    account_configuration=AccountConfiguration(f"fuzzp2{suffix}", None),
+                    log_level=args.log_level,
+                )
+
+                # battle_against handles login internally via to_wait on logged_in.
+                await player1.battle_against(player2, n_battles=args.fuzz_battles_per_pair)
+                total_battles += args.fuzz_battles_per_pair
+            finally:
+                # Disconnect this round's clients before next resampling.
+                if player1 is not None:
+                    try:
+                        await player1.ps_client.stop_listening()
+                    except Exception:
+                        pass
+                if player2 is not None:
+                    try:
+                        await player2.ps_client.stop_listening()
+                    except Exception:
+                        pass
+
+            if fuzz_records:
+                # Write the FIRST captured failure (deterministic by record order).
+                # Drop any subsequent failures from the same batch — we'll re-fuzz
+                # after the fix to surface them again if they're independent bugs.
+                first = fuzz_records[0]
+                failure_record = first
+                first["format"] = args.format
+                first["timestamp"] = datetime.now().isoformat(timespec="seconds")
+                first["resampling_count"] = resampling_count
+                first["battles_per_pair"] = args.fuzz_battles_per_pair
+                # battle_in_round is approximate — we only know the round-total
+                # ran; finer attribution would require per-battle hooks.
+                first["battle_in_round"] = "?/?"
+                first["total_battles"] = total_battles
+                first["team_a"] = team_a_str
+                first["team_b"] = team_b_str
+                first["team_a_name"] = team_a_name
+                first["team_b_name"] = team_b_name
+                first["additional_failures_in_same_batch"] = max(0, len(fuzz_records) - 1)
+                break
+
+            print(
+                f"[resample {resampling_count}] still clean after {total_battles} battles "
+                f"(pair: {team_a_name} vs {team_b_name})"
+            )
+    finally:
+        shutdown_showdown_servers(server_processes)
+        signal.signal(signal.SIGINT, previous_handler)
+
+    elapsed = time.perf_counter() - start_time
+
+    if failure_record is not None:
+        battle_tag = failure_record["battle_tag"].replace("/", "_").replace(" ", "_")
+        ts = failure_record["timestamp"].replace(":", "-")
+        stem = f"{ts}-{battle_tag}"
+        txt_path = output_dir / f"{stem}.txt"
+        json_path = output_dir / f"{stem}.artifacts.json"
+        txt_path.write_text(_render_fuzz_failure_report(failure_record), encoding="utf-8")
+        json_path.write_text(
+            json.dumps(_jsonify_fuzz_record(failure_record), indent=2, default=str),
+            encoding="utf-8",
+        )
+
+        print()
+        print("================ FUZZ FAILURE CAPTURED ================")
+        print(f"  resampling:     #{failure_record['resampling_count']}")
+        print(f"  total battles:  {total_battles}")
+        print(f"  elapsed:        {elapsed:.1f}s")
+        print(f"  error:          {failure_record['error_message']}")
+        print(f"  failing player: {failure_record['player_role']}")
+        print(f"  attempted:      {failure_record['attempted_message']}")
+        print(f"  report:         {txt_path}")
+        print(f"  artifacts:      {json_path}")
+        if failure_record.get("additional_failures_in_same_batch", 0) > 0:
+            print(
+                f"  (note: {failure_record['additional_failures_in_same_batch']} "
+                f"additional failures in same batch were dropped; re-fuzz after fix)"
+            )
+    else:
+        print()
+        print(
+            f"[fuzz] interrupted: {resampling_count} resamplings, "
+            f"{total_battles} clean battles in {elapsed:.1f}s"
+        )
+
+
 def main() -> None:
     args = build_parser().parse_args()
     random.seed(args.seed)
-    asyncio.run(_run(args))
+    if args.player == "random-masked":
+        asyncio.run(_run_fuzz_loop(args))
+    else:
+        if args.config is None:
+            raise SystemExit("--config is required for --player model")
+        if args.output_dir is None:
+            raise SystemExit("--output-dir is required for --player model")
+        asyncio.run(_run(args))
 
 
 if __name__ == "__main__":
