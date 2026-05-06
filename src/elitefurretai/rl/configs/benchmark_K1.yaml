@@ -117,7 +117,12 @@ training:
   embedder_feature_set: raw
   initialize_path: data/models/supervised/cool-bee-85-finetune_best.pt
   resume_from: null
-  max_updates: 200
+  # Capped at 100 to bound wall-clock to ~4 hours: the previous K=3 200-update
+  # attempt crashed WSL2 around update 116 (5h+ in) from sustained memory
+  # pressure. K=3 had already produced a clean 116-update curve at 1.516 b/s
+  # ± 0.013; 100 updates here is sufficient for an apples-to-apples K=1 vs K=3
+  # comparison over the same wall-clock window.
+  max_updates: 100
   save_dir: data/benchmarks/2026-05-03-K1
   train_batch_size: 256
   checkpoint_interval: 100

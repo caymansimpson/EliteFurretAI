@@ -29,8 +29,19 @@ echo "" | tee -a "$LOG_FILE"
 #   - "[INFO] M\d{2}..."  per-player logger lines (player usernames begin "M\d\d")
 #   - lines starting with "|"  raw Showdown websocket payload continuations
 #   - common ANSI-colored Showdown tags ([93m[1m>>>... etc)
+# Drop poke-env per-player verbose lines as a belt-and-suspenders measure
+# (train.py also silences these at the source by setting root logger to
+# WARNING, but this guards against any third-party future regression that
+# re-enables Showdown stdout chatter). Patterns dropped:
+#   - "[INFO] M\d{2}..."  per-player logger lines (player usernames begin "M\d\d")
+#   - lines starting with "|"  raw Showdown websocket payload continuations
+#   - common ANSI-colored Showdown tags ([93m[1m>>>... etc)
+#   - PS_ERROR Invalid choice retries (known residual bugs documented in
+#     planning/stage2/2026-04-26-22-00-two-residual-bugs.md; poke-env retries
+#     internally so training succeeds — but they were ~95% of log volume on
+#     the previous K=3 run, contributing to memory pressure that crashed WSL2)
 python -u src/elitefurretai/rl/train.py --config "$CONFIG" 2>&1 \
-    | grep -E --line-buffered -v '^\||\[INFO\] M[0-9]{2}|\[1m(>>>|<<<)' \
+    | grep -E --line-buffered -v '^\||\[INFO\] M[0-9]{2}|\[1m(>>>|<<<)|PS_ERROR|Invalid choice|rejected open team sheets' \
     | tee -a "$LOG_FILE"
 EXIT=${PIPESTATUS[0]}
 
