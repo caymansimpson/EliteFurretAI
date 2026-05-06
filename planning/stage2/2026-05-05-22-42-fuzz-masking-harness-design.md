@@ -173,7 +173,7 @@ Components 1–3 implemented in [src/elitefurretai/engine/analyze/showdown_inval
 
 ```bash
 source ../venv/bin/activate
-python -m elitefurretai.engine.analyze.showdown_invalid_choice_diagnostics \
+python -u -m elitefurretai.engine.analyze.showdown_invalid_choice_diagnostics \
   --player random-masked \
   --format gen9vgc2024regg \
   --port 8765 \
@@ -184,6 +184,8 @@ python -m elitefurretai.engine.analyze.showdown_invalid_choice_diagnostics \
 ```
 
 Long-running. Stops on the first invalid-choice rejection (or empty mask) OR on Ctrl-C.
+
+**Use `python -u`** when redirecting stdout to a log file. Without it Python block-buffers stdout to ~8 KB, so progress lines (one per resampling round) won't appear in the log until the buffer fills or the process exits. This was learned the hard way during the first launch — a 20-minute background run had a 0-byte log because no flush had happened. Failure-report artifacts go directly to disk (independent of stdout buffering) so they always appear in `data/fuzz_results/` immediately.
 
 **Artifact location:** `data/fuzz_results/{ISO timestamp}-{battle_tag}.txt` (human-readable failure report) and `.artifacts.json` (machine-readable sidecar with raw mask, request, observations).
 
