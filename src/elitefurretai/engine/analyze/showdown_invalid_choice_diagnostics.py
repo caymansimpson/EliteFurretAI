@@ -1,3 +1,31 @@
+# -*- coding: utf-8 -*-
+"""Showdown invalid-choice diagnostics + masked-random fuzz harness.
+
+Two modes share this file:
+
+  --player model         (default) — model-driven self-play used to capture
+                                     invalid-choice errors against a trained
+                                     BatchInferencePlayer for ad-hoc analysis.
+
+  --player random-masked            — fuzz-test rl/masking.py end-to-end with
+                                     two masked-random players. Loops team
+                                     resamplings until SIGINT or the first
+                                     invalid-choice rejection (or empty mask),
+                                     then writes a self-contained failure
+                                     report to data/fuzz_results/ and exits.
+
+The masked-random fuzz harness is the entry point of a debug-fix cycle that
+hunts down masking bugs across all of gen9vgc2024regg. The full cycle —
+fuzz → diagnose → synthetic regression test → fix → re-fuzz — is documented
+in:
+
+    planning/stage2/2026-05-05-22-42-fuzz-masking-harness-design.md
+
+Future Claude sessions: when a failure report lands in data/fuzz_results/,
+read both that report AND the design doc above before starting the per-bug
+workflow (Section 4 of the design doc has the exact step-by-step).
+"""
+
 import argparse
 import asyncio
 import json

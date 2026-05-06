@@ -165,4 +165,41 @@ Executed by Claude in a follow-up session, given the failure report:
 
 ## Updates
 
-- (none yet)
+### 2026-05-05 — Implementation landed (commit ea59853)
+
+Components 1–3 implemented in [src/elitefurretai/engine/analyze/showdown_invalid_choice_diagnostics.py](../../src/elitefurretai/engine/analyze/showdown_invalid_choice_diagnostics.py). The file's module docstring now back-links to this design doc.
+
+**How to run the fuzz harness** (invocation Claude or the user can execute):
+
+```bash
+source ../venv/bin/activate
+python -m elitefurretai.engine.analyze.showdown_invalid_choice_diagnostics \
+  --player random-masked \
+  --format gen9vgc2024regg \
+  --port 8765 \
+  --fuzz-battles-per-pair 1000 \
+  --max-battle-steps 80 \
+  --log-level 50 \
+  --seed <int>
+```
+
+Long-running. Stops on the first invalid-choice rejection (or empty mask) OR on Ctrl-C.
+
+**Artifact location:** `data/fuzz_results/{ISO timestamp}-{battle_tag}.txt` (human-readable failure report) and `.artifacts.json` (machine-readable sidecar with raw mask, request, observations).
+
+**Cycle entry point for a future Claude session:**
+
+If `data/fuzz_results/` contains an unprocessed report when you sit down, that means the harness caught a bug and exited cleanly. Process it via the per-bug workflow (Component 4 above):
+
+1. Read the most recent `*.txt` report in `data/fuzz_results/`.
+2. Read this design doc (you are here).
+3. Diagnose, classify (a) representation drift vs (b) masking, document in `planning/stage2/YYYY-MM-DD-hh-mm-fuzz-{short-description}.md`.
+4. Author a `test_fuzz_regression_{short_description}` test in [unit_tests/rl/test_fast_action_mask.py](../../unit_tests/rl/test_fast_action_mask.py) BEFORE the fix. Verify it fails.
+5. Fix narrowly; rerun the test; quality gates.
+6. After all tests are green, archive the report (move it to a `processed/` subdirectory or delete) and re-launch the harness.
+
+**Throughput observed:** ~0.65 sec/battle at `--max-battle-steps 20`; expect ~1.5–2 sec/battle at `--max-battle-steps 80` (random play drags). 1000 battles per pair ≈ 25–35 minutes per resampling round before validating the pair as clean.
+
+**Amendment to Component 4 step 7:** the design doc originally said "Claude does not autonomously launch long-running processes." The user has since asked Claude to launch fuzz runs in the background. So: when the user explicitly asks, Claude may launch the fuzz harness as a background process and monitor it; otherwise prompt the user.
+
+**Smoke-test result:** 92 clean battles in 60 sec at `--max-battle-steps 20` on `gen9vgc2024regg`. No bugs surfaced at this small scale — expected, since the harness is intended to find rare bugs that take many battles to trigger.
