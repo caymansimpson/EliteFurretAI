@@ -818,6 +818,7 @@ class FlexibleThreeHeadedModel(torch.nn.Module):
         num_value_bins: int = 51,
         value_min: float = -1.0,
         value_max: float = 1.0,
+        value_head_layers: Optional[list] = None,
         # Grouped feature expansion hyperparameters (architecture choices, not data)
         number_bank_hp_bins: int = 100,
         number_bank_stat_bins: int = 600,
@@ -846,6 +847,7 @@ class FlexibleThreeHeadedModel(torch.nn.Module):
         self.late_attention_heads = late_attention_heads
         self.teampreview_head_layers = teampreview_head_layers or []
         self.turn_head_layers = turn_head_layers or []
+        self.value_head_layers = value_head_layers or []
         self.num_value_bins = num_value_bins
 
         # Feature encoding: either grouped or simple linear
@@ -1048,27 +1050,46 @@ class FlexibleThreeHeadedModel(torch.nn.Module):
 
         # Win prediction head - C51 distributional value head
         # Outputs logits over num_value_bins bins spanning [value_min, value_max]
-        # Expected value is computed as weighted sum of bin centers
+        # Expected value is computed as weighted sum of bin centers.
+        #
+        # Two modes:
+        #   * value_head_layers empty (legacy): 2-layer MLP win_head
+        #     (output_size -> 128 -> num_value_bins). Shares the late_ff_stack
+        #     output with the policy head.
+        #   * value_head_layers non-empty (deep value head): a stack of
+        #     ResidualBlocks built from value_head_layers feeds a final
+        #     Linear projection to num_value_bins.
         support = torch.linspace(value_min, value_max, num_value_bins)
         self.register_buffer("value_support", support)
 
-        win_linear1 = torch.nn.Linear(output_size, 128)
-        win_linear2 = torch.nn.Linear(128, num_value_bins)
-
-        # Initialize with small values to prevent explosion
-        torch.nn.init.xavier_normal_(win_linear1.weight, gain=0.01)
-        torch.nn.init.constant_(win_linear1.bias, 0)
-        torch.nn.init.xavier_normal_(win_linear2.weight, gain=0.01)
-        torch.nn.init.constant_(win_linear2.bias, 0)
-
-        self.win_head = torch.nn.Sequential(
-            win_linear1,
-            torch.nn.LayerNorm(128),
-            torch.nn.ReLU(),
-            torch.nn.Dropout(dropout),
-            win_linear2,
-            # No activation — raw logits over bins
-        )
+        if self.value_head_layers:
+            value_ff_layers_list: list = []
+            prev_size = output_size
+            for h in self.value_head_layers:
+                value_ff_layers_list.append(ResidualBlock(prev_size, h, dropout=dropout))
+                prev_size = h
+            self.value_ff_stack: torch.nn.Module = torch.nn.Sequential(*value_ff_layers_list)
+            value_output_size = self.value_head_layers[-1]
+            self.win_head: torch.nn.Module = torch.nn.Linear(
+                value_output_size, num_value_bins
+            )
+            torch.nn.init.xavier_normal_(self.win_head.weight, gain=0.01)  # type: ignore[arg-type]
+            torch.nn.init.constant_(self.win_head.bias, 0)  # type: ignore[arg-type]
+        else:
+            self.value_ff_stack = torch.nn.Identity()
+            win_linear1 = torch.nn.Linear(output_size, 128)
+            win_linear2 = torch.nn.Linear(128, num_value_bins)
+            torch.nn.init.xavier_normal_(win_linear1.weight, gain=0.01)
+            torch.nn.init.constant_(win_linear1.bias, 0)
+            torch.nn.init.xavier_normal_(win_linear2.weight, gain=0.01)
+            torch.nn.init.constant_(win_linear2.bias, 0)
+            self.win_head = torch.nn.Sequential(
+                win_linear1,
+                torch.nn.LayerNorm(128),
+                torch.nn.ReLU(),
+                torch.nn.Dropout(dropout),
+                win_linear2,
+            )
 
     def forward(
         self, x: torch.Tensor, mask: Optional[torch.Tensor] = None
@@ -1177,7 +1198,8 @@ class FlexibleThreeHeadedModel(torch.nn.Module):
 
         # Output heads
         turn_action_logits = self.turn_action_head(turn_features)  # (batch, seq_len, 2025)
-        win_dist_logits = self.win_head(out)  # (batch, seq_len, num_value_bins)
+        value_features = self.value_ff_stack(out)
+        win_dist_logits = self.win_head(value_features)  # (batch, seq_len, num_value_bins)
         win_probs = torch.softmax(win_dist_logits, dim=-1)
         win_values = (win_probs * self.value_support).sum(dim=-1)  # type: ignore[operator]  # (batch, seq_len)
 
@@ -1328,7 +1350,8 @@ class FlexibleThreeHeadedModel(torch.nn.Module):
 
         # Output heads (same as forward())
         turn_action_logits = self.turn_action_head(turn_features)
-        win_dist_logits = self.win_head(out)  # (batch, seq, num_value_bins)
+        value_features = self.value_ff_stack(out)
+        win_dist_logits = self.win_head(value_features)  # (batch, seq, num_value_bins)
         win_probs = torch.softmax(win_dist_logits, dim=-1)
         win_values = (win_probs * self.value_support).sum(dim=-1)  # type: ignore[operator]  # (batch, seq)
 
@@ -1416,6 +1439,7 @@ class TransformerThreeHeadedModel(torch.nn.Module):
         num_value_bins: int = 51,
         value_min: float = -1.0,
         value_max: float = 1.0,
+        value_head_layers: Optional[list] = None,
         # Grouped feature expansion hyperparameters (architecture choices, not data)
         number_bank_hp_bins: int = 100,
         number_bank_stat_bins: int = 600,
@@ -1450,6 +1474,7 @@ class TransformerThreeHeadedModel(torch.nn.Module):
         self.num_value_bins = num_value_bins
         self.teampreview_head_layers = teampreview_head_layers or []
         self.turn_head_layers = turn_head_layers or []
+        self.value_head_layers = value_head_layers or []
         self.use_decision_tokens = use_decision_tokens
         self.use_causal_mask = use_causal_mask
 
@@ -1591,22 +1616,46 @@ class TransformerThreeHeadedModel(torch.nn.Module):
         torch.nn.init.constant_(self.turn_action_head.bias, 0)
 
         # ---- Win prediction head (distributional) ----
+        # Two modes:
+        #   * value_head_layers empty (legacy): single 2-layer MLP win_head,
+        #     output_size -> 128 -> num_value_bins. Shared depth with the
+        #     policy head via late_ff_stack only.
+        #   * value_head_layers non-empty (deep value head): a stack of
+        #     ResidualBlocks built from value_head_layers feeds a final
+        #     Linear projection to num_value_bins. Lets the value head do
+        #     its own integrative computation without competing with policy
+        #     for trunk representation capacity.
         support = torch.linspace(value_min, value_max, num_value_bins)
         self.register_buffer("value_support", support)
 
-        win_linear1 = torch.nn.Linear(output_size, 128)
-        win_linear2 = torch.nn.Linear(128, num_value_bins)
-        torch.nn.init.xavier_normal_(win_linear1.weight, gain=0.01)
-        torch.nn.init.constant_(win_linear1.bias, 0)
-        torch.nn.init.xavier_normal_(win_linear2.weight, gain=0.01)
-        torch.nn.init.constant_(win_linear2.bias, 0)
-        self.win_head = torch.nn.Sequential(
-            win_linear1,
-            torch.nn.LayerNorm(128),
-            torch.nn.ReLU(),
-            torch.nn.Dropout(dropout),
-            win_linear2,
-        )
+        if self.value_head_layers:
+            value_ff_layers_list: list = []
+            prev_size = output_size
+            for h in self.value_head_layers:
+                value_ff_layers_list.append(ResidualBlock(prev_size, h, dropout=dropout))
+                prev_size = h
+            self.value_ff_stack: torch.nn.Module = torch.nn.Sequential(*value_ff_layers_list)
+            value_output_size = self.value_head_layers[-1]
+            self.win_head: torch.nn.Module = torch.nn.Linear(
+                value_output_size, num_value_bins
+            )
+            torch.nn.init.xavier_normal_(self.win_head.weight, gain=0.01)  # type: ignore[arg-type]
+            torch.nn.init.constant_(self.win_head.bias, 0)  # type: ignore[arg-type]
+        else:
+            self.value_ff_stack = torch.nn.Identity()
+            win_linear1 = torch.nn.Linear(output_size, 128)
+            win_linear2 = torch.nn.Linear(128, num_value_bins)
+            torch.nn.init.xavier_normal_(win_linear1.weight, gain=0.01)
+            torch.nn.init.constant_(win_linear1.bias, 0)
+            torch.nn.init.xavier_normal_(win_linear2.weight, gain=0.01)
+            torch.nn.init.constant_(win_linear2.bias, 0)
+            self.win_head = torch.nn.Sequential(
+                win_linear1,
+                torch.nn.LayerNorm(128),
+                torch.nn.ReLU(),
+                torch.nn.Dropout(dropout),
+                win_linear2,
+            )
 
     def _build_causal_mask(self, total_len: int, device: torch.device) -> torch.Tensor:
         """Build causal attention mask for TransformerEncoder.
@@ -1715,6 +1764,7 @@ class TransformerThreeHeadedModel(torch.nn.Module):
         turn_action_logits = self.turn_action_head(turn_features)
 
         out_critic = self.late_ff_stack(critic_out)
+        out_critic = self.value_ff_stack(out_critic)
         win_dist_logits = self.win_head(out_critic)
         win_probs = torch.softmax(win_dist_logits, dim=-1)
         win_values = (win_probs * self.value_support).sum(dim=-1)  # type: ignore[operator]
@@ -1844,6 +1894,7 @@ class TransformerThreeHeadedModel(torch.nn.Module):
         turn_action_logits = self.turn_action_head(turn_features)
 
         out_critic = self.late_ff_stack(critic_out)
+        out_critic = self.value_ff_stack(out_critic)
         win_dist_logits = self.win_head(out_critic)
         win_probs = torch.softmax(win_dist_logits, dim=-1)
         win_values = (win_probs * self.value_support).sum(dim=-1)  # type: ignore[operator]

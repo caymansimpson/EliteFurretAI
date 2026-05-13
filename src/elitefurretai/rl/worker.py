@@ -70,7 +70,6 @@ from typing import Any, Dict
 import psutil
 import torch
 
-from elitefurretai.engine.showdown_server_manager import derive_external_vgcbench_username
 from elitefurretai.engine.vgc_environment import VGCEnvironment
 from elitefurretai.etl import Embedder, TeamRepo
 from elitefurretai.etl.system_utils import suppress_third_party_warnings
@@ -130,12 +129,25 @@ def mp_worker_process(
             return f"{mem_bytes / (1024 * 1024 * 1024):.0f}GB"
 
     try:
-        if not logging.getLogger().handlers:
-            logging.basicConfig(
-                level=logging.INFO,
-                format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-                datefmt="%Y-%m-%d %H:%M:%S",
-            )
+        # Match the trainer's setup at train.py:1653-1659. Default root to
+        # WARNING so poke-env's per-player loggers (named by Showdown
+        # username — top-level, not under "elitefurretai") stay quiet —
+        # they echo every `<<<` received and `>>>` sent websocket message
+        # at INFO, including big `request` JSON payloads, which fills the
+        # run.log at ~1.5 GB/hr. Our own modules under "elitefurretai" and
+        # "__main__" stay at INFO so training progress, worker memory
+        # reports, and watchdog events are preserved. `force=True` ensures
+        # this takes effect even if a third-party import already attached
+        # a handler to the root logger (basicConfig is otherwise a no-op
+        # in that case).
+        logging.basicConfig(
+            level=logging.WARNING,
+            format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+            force=True,
+        )
+        logging.getLogger("elitefurretai").setLevel(logging.INFO)
+        logging.getLogger("__main__").setLevel(logging.INFO)
         suppress_third_party_warnings(suppress_pydantic_field_warnings=True)
 
         battle_format = config.curriculum.battle_format
@@ -160,13 +172,6 @@ def mp_worker_process(
                     if k != OpponentPool.VGC_BENCH_BASELINE
                 }
 
-        if external_vgcbench_usernames and config.curriculum.auto_launch_external_vgcbench:
-            if config.hardware.num_servers > 1:
-                external_vgcbench_usernames = [
-                    derive_external_vgcbench_username(username, server_port)
-                    for username in external_vgcbench_usernames
-                ]
-
         if verbose:
             logger.debug(
                 "[MPWorker %d] Starting (PID: %d)... Initial memory: %s",
@@ -189,7 +194,6 @@ def mp_worker_process(
         # Load to CPU first to avoid CUDA re-initialization issues in forked processes,
         # which can cause deadlocks on WSL2. The parent serialized a checkpoint to disk
         # at resolve_worker_model_source(); we read from there.
-
         if verbose:
             logger.debug(
                 "[MPWorker %d] Loading model from %s... Memory: %s",
@@ -205,7 +209,20 @@ def mp_worker_process(
                 get_memory_usage_mb(),
             )
 
-        embedder_feature_set = checkpoint["config"].get("embedder_feature_set", "full")
+        # BC checkpoints store config flat (embedder_feature_set at top level);
+        # RL checkpoints store it nested under `training`. Read either layout —
+        # mirrors the trainer-side logic in train.py:206-213. The previous code
+        # only read the flat layout, which silently fell back to the default
+        # "full" on RL-checkpoint resume and produced a 15-encoder model that
+        # couldn't load the 13-encoder weights.
+        ckpt_cfg = checkpoint["config"]
+        if (
+            isinstance(ckpt_cfg.get("training"), dict)
+            and "embedder_feature_set" in ckpt_cfg["training"]
+        ):
+            embedder_feature_set = ckpt_cfg["training"]["embedder_feature_set"]
+        else:
+            embedder_feature_set = ckpt_cfg.get("embedder_feature_set", "full")
         embedder = Embedder(
             format=battle_format,
             feature_set=embedder_feature_set,
@@ -220,8 +237,18 @@ def mp_worker_process(
                 device,
                 get_memory_usage_mb(),
             )
+        # strict=False matches the trainer side (train.py:306-312) so the
+        # worker tolerates the same partial-load scenarios: e.g. sep_arch's
+        # BC init where the new value_ff_stack and reshaped win_head don't
+        # exist in the checkpoint. Without this, workers crash at startup
+        # with `Missing/Unexpected key(s) in state_dict` while the trainer
+        # itself loads fine — a silent asymmetry.
         model = build_model_from_config(
-            model_config, embedder, device, checkpoint["model_state_dict"]
+            model_config,
+            embedder,
+            device,
+            checkpoint["model_state_dict"],
+            strict=False,
         )
         model.eval()
         agent = RNaDAgent(model)
@@ -242,8 +269,17 @@ def mp_worker_process(
             bc_checkpoint = torch.load(
                 bc_model_path, map_location="cpu", weights_only=False
             )
+            # strict=False for the same partial-load reason as the main
+            # model above. BC opponents drive action selection through the
+            # policy head only, so a partially-loaded value/win head doesn't
+            # affect their behavior — only their (unused-as-opponent) value
+            # predictions are fresh-initialized.
             bc_model = build_model_from_config(
-                model_config, embedder, device, bc_checkpoint["model_state_dict"]
+                model_config,
+                embedder,
+                device,
+                bc_checkpoint["model_state_dict"],
+                strict=False,
             )
             bc_model.eval()
             for param in bc_model.parameters():
@@ -256,6 +292,32 @@ def mp_worker_process(
                     worker_id,
                     get_memory_usage_mb(),
                 )
+
+        # ── Co-training agents (in-process exploiter pipeline) ────────────
+        # When `train_exploiter > 0` in the configured curriculum, build CPU
+        # model copies for the exploiter (live, weights synced from main via
+        # broadcast) and victim (frozen periodically-refreshed copy of main).
+        # Initial weights come from the first broadcast; until then we hold
+        # randomly-initialized models. The warmup gate in train.py prevents
+        # train_exploiter battles from being sampled before the first
+        # broadcast lands.
+        exploiter_agent = None
+        victim_agent = None
+        if curriculum and curriculum.get("train_exploiter", 0) > 0:
+            if verbose:
+                logger.debug(
+                    "[MPWorker %d] Building exploiter and victim agents... Memory: %s",
+                    worker_id,
+                    get_memory_usage_mb(),
+                )
+            exploiter_model = build_model_from_config(model_config, embedder, device)
+            exploiter_model.eval()
+            exploiter_agent = RNaDAgent(exploiter_model)
+            victim_model = build_model_from_config(model_config, embedder, device)
+            victim_model.eval()
+            for param in victim_model.parameters():
+                param.requires_grad = False
+            victim_agent = RNaDAgent(victim_model)
 
         if verbose:
             logger.debug(
@@ -288,6 +350,8 @@ def mp_worker_process(
             server_port=server_port,
             run_id=run_id,
             initial_curriculum=curriculum,
+            exploiter_agent=exploiter_agent,
+            victim_agent=victim_agent,
         )
 
         loop = asyncio.new_event_loop()
@@ -314,7 +378,12 @@ def mp_worker_process(
             consecutive_vgcbench_timeouts = 0
             vgcbench_disabled_locally = False
             consecutive_zero_completion_batches = 0
-            zero_completion_failover_threshold = 5
+            # Raised from 5 to 15 after the 2026-05-06 overnight run crashed at
+            # update 137 from clustered "not in that room" popups in worker 0.
+            # Real fix is the room-state race in poke-env (see planning doc
+            # 2026-05-06-04-50-zero-completion-room-state-race.md); this is the
+            # interim guard so transient clustering doesn't kill multi-hour runs.
+            zero_completion_failover_threshold = 15
 
             # Rolling windows for slowdown diagnostics before hard failures occur.
             batch_duration_window: deque[float] = deque(maxlen=50)
@@ -336,6 +405,10 @@ def mp_worker_process(
                     #   - "temperature" / "top_p": new exploration knobs
                     #   - "exploiter_paths" / "ghost_paths": disk paths the
                     #     worker may need to load if curriculum mentions them
+                    #   - "exploiter_weights" / "victim_weights" (optional):
+                    #     in-process exploiter co-training. Exploiter is
+                    #     pushed every broadcast; victim only on refresh
+                    #     (every victim_refresh_interval main updates).
                     #
                     # We only check once per second (not every iteration) to
                     # avoid lock-contention overhead. Stale weights for ~1 sec
@@ -383,6 +456,14 @@ def mp_worker_process(
                                         temperature=incoming_payload.get("temperature"),
                                         top_p=incoming_payload.get("top_p"),
                                     )
+                                    exploiter_weights = incoming_payload.get(
+                                        "exploiter_weights"
+                                    )
+                                    if exploiter_weights is not None:
+                                        env.update_exploiter_weights(exploiter_weights)
+                                    victim_weights = incoming_payload.get("victim_weights")
+                                    if victim_weights is not None:
+                                        env.update_victim_weights(victim_weights)
                                 else:
                                     env.update_weights(incoming_payload)
                                 if verbose:

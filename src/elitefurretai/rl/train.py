@@ -60,15 +60,16 @@ import queue
 import random
 import signal
 import subprocess
-import sys
 import threading
 import time
+from collections import deque
 from datetime import datetime
 from multiprocessing import Queue as MPQueue
 from multiprocessing.synchronize import Event as MPEvent
 from typing import Any, Dict, List, Optional, TextIO, Tuple
 
 import numpy as np
+import psutil
 import torch
 
 import wandb
@@ -111,6 +112,86 @@ def generate_shutdown_signal():
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
     return shutdown_requested
+
+
+def _sum_process_tree_rss_bytes() -> Tuple[int, Dict[str, int]]:
+    """Sum RSS of the current process and all recursive children.
+
+    Returns (total_bytes, breakdown_by_role_bytes). The breakdown classifies
+    each child by a substring of its command line so the watchdog log can
+    point at which subsystem is dominant.
+    """
+    me = psutil.Process(os.getpid())
+    total = me.memory_info().rss
+    breakdown: Dict[str, int] = {"trainer": total}
+    for child in me.children(recursive=True):
+        try:
+            rss = child.memory_info().rss
+            cmdline = " ".join(child.cmdline())
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+        if "node" in cmdline or "pokemon-showdown" in cmdline:
+            role = "showdown"
+        elif "vgc" in cmdline.lower() or "vgcbench" in cmdline.lower():
+            role = "vgcbench"
+        elif "mp_worker_process" in cmdline or "multiprocessing" in cmdline:
+            role = "workers"
+        else:
+            role = "other"
+        breakdown[role] = breakdown.get(role, 0) + rss
+        total += rss
+    return total, breakdown
+
+
+def start_memory_watchdog(
+    shutdown_requested: threading.Event,
+    threshold_gb: Optional[float],
+    poll_interval_s: float = 30.0,
+) -> Optional[threading.Thread]:
+    """Watch combined RSS and request shutdown if it exceeds the threshold.
+
+    Returns the daemon thread (or None if disabled) so callers can join in
+    tests. The thread exits on its own once `shutdown_requested` fires —
+    the main loop's existing `finally` block handles checkpoint + cleanup.
+    """
+    if threshold_gb is None or threshold_gb <= 0:
+        logger.info("Memory watchdog disabled (threshold_gb=%r)", threshold_gb)
+        return None
+
+    threshold_bytes = int(threshold_gb * 1024**3)
+    logger.info(
+        "Memory watchdog armed at %.1f GB combined RSS (poll every %.0fs)",
+        threshold_gb,
+        poll_interval_s,
+    )
+
+    def _loop() -> None:
+        while not shutdown_requested.is_set():
+            try:
+                total, breakdown = _sum_process_tree_rss_bytes()
+            except psutil.NoSuchProcess:
+                return
+            if total >= threshold_bytes:
+                parts = ", ".join(
+                    f"{role}={rss / 1024**3:.2f}GB" for role, rss in breakdown.items()
+                )
+                logger.critical(
+                    "Memory watchdog: combined RSS %.2f GB >= %.1f GB threshold "
+                    "(%s). Requesting graceful shutdown.",
+                    total / 1024**3,
+                    threshold_gb,
+                    parts,
+                )
+                shutdown_requested.set()
+                return
+            # Use Event.wait so a shutdown from another path wakes us
+            # immediately and the thread exits without a stale 30s delay.
+            if shutdown_requested.wait(timeout=poll_interval_s):
+                return
+
+    thread = threading.Thread(target=_loop, name="memory-watchdog", daemon=True)
+    thread.start()
+    return thread
 
 
 def initialize_learner(
@@ -216,11 +297,18 @@ def initialize_training_state(
             feature_set=ckpt_feature_set,
             omniscient=False,
         )
+        # Build the model from the *runtime* config (so architecture knobs
+        # like value_head_layers take effect) and partial-load the checkpoint
+        # weights via strict=False. Mismatched keys (e.g. an old 2-layer
+        # win_head when the runtime config asks for a deep value head) are
+        # skipped on both sides and logged. When the runtime architecture
+        # matches the checkpoint's, strict=False is a no-op behaviorally.
         base_model = build_model_from_config(
-            checkpoint_cfg,
+            cfg,
             embedder,
             config.hardware.device,
             init_checkpoint["model_state_dict"],
+            strict=False,
         )
         agent = RNaDAgent(base_model)
         learner = initialize_learner(config, agent, base_model)
@@ -414,36 +502,478 @@ def collate_trajectories(trajectories, device, gamma, gae_lambda, max_seq_len=40
     }
 
 
-def train_exploiter_subprocess(victim_checkpoint: str, config: RNaDConfig):
-    """Launch exploiter training as subprocess."""
-    logger.info("EXPLOITER TRAINING TRIGGERED - Victim: %s", victim_checkpoint)
+# ╔═════════════════════════════════════════════════════════════════════════════╗
+# ║ In-process exploiter co-training helpers                                    ║
+# ╠═════════════════════════════════════════════════════════════════════════════╣
+# ║ The exploiter pipeline is a SECOND learner that lives in this same process. ║
+# ║ It optimizes a pure exploitation objective (no RNaD regularization) against ║
+# ║ a frozen copy of the main agent ("the victim"). When it sustains a win-rate ║
+# ║ ≥ threshold over the rolling window, it "graduates" — gets snapshotted to   ║
+# ║ disk (entering the EXPLOITERS curriculum slot for main to defend against)   ║
+# ║ and a fresh generation is initialized from the BC checkpoint.               ║
+# ║                                                                             ║
+# ║ Why in-process and not a separate script (the OLD subprocess pipeline       ║
+# ║ removed in this change):                                                    ║
+# ║   - Reuses the existing worker pool — no extra CPU pressure.                ║
+# ║   - Uses spare GPU capacity for the second learner's gradients.             ║
+# ║   - One run, one config, one wandb stream — no subprocess orchestration.    ║
+# ║                                                                             ║
+# ║ Why graduation instead of fixed-interval snapshots:                         ║
+# ║   - Quality control: every entry in the curriculum is a validated weakness. ║
+# ║   - Diversity: fresh-init each generation finds DIFFERENT exploits (each    ║
+# ║     graduation pushes main to defend against the previous exploit, so the   ║
+# ║     next generation can't rely on the same trick).                          ║
+# ║   - Implicit difficulty curriculum: when main is robust, no exploit can     ║
+# ║     graduate; the pipeline naturally winds down rather than churning the    ║
+# ║     curriculum with weak checkpoints.                                       ║
+# ║                                                                             ║
+# ║ See planning/stage2/2026-05-07-07-58-exploiter-data-plane.md and            ║
+# ║ src/elitefurretai/rl/exploiter_implementation_plan.md for full design.      ║
+# ╚═════════════════════════════════════════════════════════════════════════════╝
 
-    # Launch exploiter_train.py as subprocess
-    cmd = [
-        sys.executable,
-        "src/elitefurretai/rl/exploiter_train.py",
-        "--victim",
-        victim_checkpoint,
-        "--steps",
-        str(config.training.exploiter_updates),
-        "--eval-games",
-        str(config.training.exploiter_eval_games),
-        "--threshold",
-        str(config.training.exploiter_min_win_rate),
-        "--output-dir",
-        os.path.join(str(config.training.run_dir), "exploiters"),
-        "--team-pool",
-        config.training.exploiter_team_pool_path
-        if config.training.exploiter_team_pool_path
-        else "",
-        "--learning-rate",
-        str(config.training.exploiter_lr),
-        "--ent-coef",
-        str(config.training.exploiter_ent_coef),
-    ]
 
-    subprocess.run(cmd, check=True)
-    logger.info("Exploiter training complete")
+def _train_exploiter_weight(config: RNaDConfig) -> float:
+    """Read the curriculum weight that gates the entire pipeline.
+
+    `train_exploiter > 0` is the SINGLE source of truth — there is no
+    separate `exploiter_enabled` flag. A weight-only gate prevents the
+    inconsistent-state bug where a flag and a weight could disagree
+    (e.g., flag off but weight 0.20 → workers sample exploiter battles
+    that get silently dropped because no learner exists to consume them).
+    """
+    return float(config.curriculum.curriculum_weights.get("train_exploiter", 0.0))
+
+
+def _build_exploiter_config(main_config: RNaDConfig) -> RNaDConfig:
+    """Construct a config for the exploiter learner from the main config.
+
+    The exploiter shares almost everything with main (architecture, value
+    head, hardware) but needs algorithmic overrides:
+      - rnad_alpha = 0: the exploiter has no Nash regularizer. Its goal
+        is pure exploitation, not equilibrium. (PortfolioRNaDLearner
+        reduces to plain PPO when rnad_alpha=0 and max_portfolio_size=1.)
+      - ent_coef = ent_coef_end = exploiter_ent_coef: no annealing —
+        exploiter trains for relatively short generations and we want a
+        constant entropy bonus to prevent premature mode collapse onto
+        a single exploit. (Main anneals from ent_coef → ent_coef_end
+        because main trains for 100K+ updates; the exploiter's 5K-cap
+        per generation doesn't justify a schedule.)
+      - backbone_lr = heads_lr = exploiter_lr: a single LR override
+        applied to both parameter groups. The plan calls for one number
+        (`exploiter_lr=1e-4`); the cleanest interpretation is to use it
+        for both groups. Could be split if we later observe one group
+        needs different treatment.
+      - max_portfolio_size = 1: no rolling reference portfolio for the
+        exploiter. With rnad_alpha=0 the references are unused anyway,
+        but reducing portfolio size avoids needless deepcopies.
+
+    Everything else (architecture, value head, hardware) is inherited
+    from main so the exploiter's model has the same shape and the same
+    inference path on workers.
+    """
+    cfg = copy.deepcopy(main_config)
+    cfg.algorithm.rnad_alpha = 0.0
+    cfg.algorithm.ent_coef = main_config.exploiter.ent_coef
+    cfg.algorithm.ent_coef_end = main_config.exploiter.ent_coef
+    cfg.optimizer.backbone_lr = main_config.exploiter.lr
+    cfg.optimizer.heads_lr = main_config.exploiter.lr
+    cfg.optimizer.lr = main_config.exploiter.lr
+    cfg.portfolio.max_portfolio_size = 1
+    return cfg
+
+
+def _load_bc_state_dict(
+    bc_model_path: Optional[str], device: str
+) -> Optional[Dict[str, Any]]:
+    """Load and cache the BC checkpoint's state_dict for fresh-init each generation.
+
+    Cached so we don't re-read from disk every graduation event (which
+    happens up to once per ~15 minutes of wall-clock; not a bottleneck
+    but unnecessary I/O if the file is huge). Returns None when no BC
+    path is configured — caller should validate before reaching here.
+    """
+    if not bc_model_path:
+        return None
+    bc_checkpoint = torch.load(bc_model_path, map_location=device, weights_only=False)
+    return bc_checkpoint["model_state_dict"]
+
+
+def _initialize_exploiter_pipeline(
+    config: RNaDConfig,
+    agent: RNaDAgent,
+    worker_model_config: Dict[str, Any],
+) -> Tuple[
+    Optional[RNaDAgent],
+    Optional[RNaDAgent],
+    Optional[PortfolioRNaDLearner],
+    Optional[Dict[str, Any]],
+]:
+    """Build the exploiter learner stack in the main process.
+
+    Returns (exploiter_agent, victim_agent, exploiter_learner, bc_state_dict).
+    All four are None when `train_exploiter == 0` (the pipeline is dormant
+    and the four state slots aren't allocated, saving GPU memory).
+
+    Generation 0 init source = deepcopy of main_agent (per design decisions
+    confirmed 2026-05-07). The first generation gets a competent starting
+    point that's already trained on the same task. Subsequent generations
+    re-initialize from BC (`bc_state_dict`) to force a *different* basin —
+    if we re-deepcopied main, the exploiter would just chase main's current
+    policy and find the same exploit repeatedly.
+
+    The victim_agent is constructed from BC initially; it'll be overwritten
+    by the first victim_refresh broadcast (which copies main's current
+    weights). Doing it this way keeps the victim_agent shape-compatible
+    with the model architecture even if the warmup gate fires before the
+    first refresh.
+
+    The exploiter_ref_agent is a frozen deepcopy of the initial exploiter.
+    With rnad_alpha=0 it's mathematically unused (the KL-to-ref term zeroes
+    out), but PortfolioRNaDLearner's __init__ requires a non-empty ref list
+    and tracks per-ref selection counts — easier to satisfy that interface
+    than to special-case it.
+    """
+    if _train_exploiter_weight(config) <= 0:
+        return None, None, None, None
+
+    if not config.curriculum.bc_model_path:
+        raise ValueError(
+            "exploiter co-training requires `curriculum.bc_model_path` to be "
+            "set — each new generation re-initializes from BC to find a "
+            "different exploit basin. Set bc_model_path or set "
+            "train_exploiter to 0 in curriculum_weights."
+        )
+
+    device = config.hardware.device
+
+    # ── Generation 0: deepcopy of main ──────────────────────────────────
+    # The first generation inherits main's weights. Main has been trained
+    # via supervised learning + RNaD, so it's a strong starting point.
+    # Using a fresh BC init for gen 0 would waste 200 warmup updates
+    # learning basics the exploiter already knows from main.
+    exploiter_model = copy.deepcopy(agent.model)
+    exploiter_agent = RNaDAgent(exploiter_model)
+
+    # ── Victim: BC-init, will be overwritten by first refresh ───────────
+    # The victim is the frozen target. We init from BC so it has a real
+    # policy (not random) in case warmup ends and a train_exploiter battle
+    # samples before the first victim_refresh fires. Once main process
+    # broadcasts victim_weights, this gets replaced with current main.
+    bc_state_dict = _load_bc_state_dict(config.curriculum.bc_model_path, device)
+    embedder = Embedder(
+        format=config.curriculum.battle_format,
+        feature_set=config.training.embedder_feature_set,
+        omniscient=False,
+    )
+    victim_model = build_model_from_config(
+        worker_model_config, embedder, device, bc_state_dict
+    )
+    victim_model.eval()
+    for param in victim_model.parameters():
+        param.requires_grad = False
+    victim_agent = RNaDAgent(victim_model)
+
+    # ── Reference for the exploiter learner ──────────────────────────────
+    # Frozen copy of the initial exploiter. Mathematically unused under
+    # rnad_alpha=0 but PortfolioRNaDLearner's interface requires it.
+    exploiter_ref_agent = RNaDAgent(copy.deepcopy(exploiter_model))
+
+    exploiter_config = _build_exploiter_config(config)
+    exploiter_learner = PortfolioRNaDLearner(
+        exploiter_agent,
+        [exploiter_ref_agent],
+        config=exploiter_config,
+    )
+
+    logger.info(
+        "Exploiter pipeline initialized | gen 0 from main | victim from BC | "
+        "lr=%g, ent_coef=%g, batch=%d, threshold=%.2f over %d battles, "
+        "max_updates_per_gen=%d, victim_refresh=%d",
+        config.exploiter.lr,
+        config.exploiter.ent_coef,
+        config.exploiter.batch_size,
+        config.exploiter.graduation_threshold,
+        config.exploiter.graduation_window,
+        config.exploiter.max_updates_per_generation,
+        config.exploiter.victim_refresh_interval,
+    )
+    return exploiter_agent, victim_agent, exploiter_learner, bc_state_dict
+
+
+def _mask_curriculum_during_warmup(
+    curriculum: Dict[str, float], in_warmup: bool
+) -> Dict[str, float]:
+    """Zero `train_exploiter` and redistribute its weight proportionally to
+    other slots while in warmup.
+
+    Why warmup masks the curriculum (and doesn't just drop trajectories
+    server-side): if workers sample train_exploiter battles during warmup,
+    we'd burn 20% of CPU on battles whose trajectories we'd then discard.
+    Better to redistribute so all workers spend warmup time generating
+    useful main-learner data.
+
+    Why proportional redistribution rather than dumping into self_play:
+    keeps the BC/ghost/baseline mix during warmup the same as steady
+    state. If the user configured 0.4 self_play / 0.4 train_exploiter
+    / 0.2 ghosts, masking-then-self-play would yield 0.8/0.0/0.2 during
+    warmup (over-weighting self-play). Proportional gives 0.667/0.0/0.333,
+    preserving the relative mix.
+    """
+    if not in_warmup:
+        return dict(curriculum)
+    if "train_exploiter" not in curriculum:
+        return dict(curriculum)
+    masked_weight = curriculum["train_exploiter"]
+    if masked_weight <= 0:
+        return dict(curriculum)
+    remainder_total = sum(v for k, v in curriculum.items() if k != "train_exploiter")
+    if remainder_total <= 0:
+        # Pathological case: only train_exploiter in the curriculum. Fall
+        # back to self_play during warmup so workers still produce data.
+        return {"self_play": 1.0}
+    scale = (remainder_total + masked_weight) / remainder_total
+    masked = {
+        k: (v * scale if k != "train_exploiter" else 0.0) for k, v in curriculum.items()
+    }
+    return masked
+
+
+def _maybe_run_exploiter_update(
+    config: RNaDConfig,
+    updates: int,
+    agent: RNaDAgent,
+    exploiter_learner: Optional[PortfolioRNaDLearner],
+    exploiter_agent: Optional[RNaDAgent],
+    victim_agent: Optional[RNaDAgent],
+    bc_state_dict: Optional[Dict[str, Any]],
+    opponent_pool: OpponentPool,
+    exploiter_trajectories: List[Dict[str, Any]],
+    exploiter_win_buffer: "deque[float]",
+    exploiter_updates_total: int,
+    exploiter_updates_in_generation: int,
+    exploiter_generation: int,
+) -> Dict[str, Any]:
+    """Maybe run one exploiter learner update and handle graduation/reset.
+
+    Fires when (a) pipeline is on, (b) past warmup, and (c) the exploiter
+    buffer has ≥ `exploiter.batch_size` trajectories. Otherwise returns the
+    existing counters unchanged.
+
+    Mutates `exploiter_trajectories` (cleared after a fired update) and
+    `exploiter_win_buffer` (cleared on graduation/timeout) in place so the
+    caller's references see the update without reassignment.
+
+    On graduation or timeout, saves a snapshot under `<run_dir>/exploiters/`,
+    registers it with the opponent pool, reinitializes the exploiter from BC,
+    refreshes the victim from current main, and increments the generation
+    counter. The returned `victim_needs_broadcast` flag tells the caller to
+    include `victim_weights` in the next checkpoint broadcast.
+
+    Returns a dict with keys: `updates_total`, `updates_in_generation`,
+    `generation`, `victim_needs_broadcast`.
+    """
+    # Guard: pipeline off, in warmup, or buffer underfull → no-op. Fires when:
+    #   1. Pipeline is on (exploiter_learner is not None — gated by
+    #      train_exploiter > 0 at startup).
+    #   2. Past warmup (main has settled into RNaD basin; first exploits
+    #      found will target real weaknesses, not BC artifacts).
+    #   3. Exploiter buffer has ≥ exploiter_train_batch_size trajectories.
+    # Independent of main learner update — both can fire in the same outer
+    # iteration, or just one, depending on the 80/20 trajectory split and
+    # the buffer fill rates.
+    if (
+        exploiter_learner is None
+        or updates < config.exploiter.warmup_updates
+        or len(exploiter_trajectories) < config.exploiter.batch_size
+    ):
+        return {
+            "updates_total": exploiter_updates_total,
+            "updates_in_generation": exploiter_updates_in_generation,
+            "generation": exploiter_generation,
+            "victim_needs_broadcast": False,
+        }
+
+    exp_batch = collate_trajectories(
+        exploiter_trajectories,
+        config.hardware.device,
+        config.algorithm.gamma,
+        config.algorithm.gae_lambda,
+        max_seq_len=config.architecture.max_seq_len,
+    )
+    exp_metrics = exploiter_learner.update(exp_batch)
+    exploiter_updates_total += 1
+    exploiter_updates_in_generation += 1
+    exploiter_trajectories.clear()
+
+    # Win rate over the rolling window (only meaningful once the buffer has
+    # filled; before that we'd be reading from too few samples for a robust gate).
+    buffer_full = len(exploiter_win_buffer) >= config.exploiter.graduation_window
+    cur_win_rate = (
+        sum(exploiter_win_buffer) / len(exploiter_win_buffer)
+        if len(exploiter_win_buffer) > 0
+        else 0.0
+    )
+
+    # Log under `exploiter/` namespace to keep the wandb UI uncluttered
+    # (main learner metrics keep the bare names).
+    if config.training.use_wandb:
+        exp_log = {f"exploiter/{k}": v for k, v in exp_metrics.items()}
+        exp_log["exploiter/generation"] = exploiter_generation
+        exp_log["exploiter/updates_total"] = exploiter_updates_total
+        exp_log["exploiter/updates_in_generation"] = exploiter_updates_in_generation
+        exp_log["exploiter/win_rate_rolling"] = cur_win_rate
+        exp_log["exploiter/win_buffer_size"] = len(exploiter_win_buffer)
+        wandb.log(exp_log)
+
+    # ===== GRADUATION CHECK =====
+    # Two paths:
+    #   - graduated: buffer full AND win rate ≥ threshold. The exploiter has
+    #     demonstrated a real exploit and deserves a place in the curriculum.
+    #   - timed_out: this generation hit the per-gen update cap without
+    #     graduating. Either main is robust to this basin OR the exploiter
+    #     is stuck in a local optimum. Either way, save the best-effort
+    #     weights and try a different basin via BC re-init.
+    graduated = buffer_full and cur_win_rate >= config.exploiter.graduation_threshold
+    timed_out = (
+        exploiter_updates_in_generation >= config.exploiter.max_updates_per_generation
+    )
+
+    victim_needs_broadcast = False
+    if graduated or timed_out:
+        snapshot_filename = f"exploiter_gen_{exploiter_generation}_step_{updates}.pt"
+        snapshot_path = os.path.join(
+            str(config.training.run_dir),
+            "exploiters",
+            snapshot_filename,
+        )
+        # Save in the same format checkpoints use (so
+        # is_checkpoint_compatible_with_model_config can validate it for the
+        # curriculum loader).
+        torch.save(
+            {
+                "model_state_dict": exploiter_agent.model.state_dict()
+                if exploiter_agent is not None
+                else {},
+                "config": config.to_dict(),
+                "step": updates,
+                "exploiter_generation": exploiter_generation,
+                "exploiter_win_rate": cur_win_rate,
+                "graduated": graduated,
+                "timed_out": timed_out,
+                "timestamp": datetime.now().isoformat(),
+            },
+            snapshot_path,
+        )
+        opponent_pool.add_exploiter(snapshot_path)
+
+        logger.info(
+            "[Update %d] Exploiter generation %d %s | "
+            "win_rate=%.3f over %d battles | "
+            "exploiter_updates_in_gen=%d | snapshot=%s",
+            updates,
+            exploiter_generation,
+            "GRADUATED" if graduated else "TIMED OUT (force-reset)",
+            cur_win_rate,
+            len(exploiter_win_buffer),
+            exploiter_updates_in_generation,
+            snapshot_path,
+        )
+        if config.training.use_wandb:
+            wandb.log(
+                {
+                    "exploiter/graduation_event": 1.0,
+                    "exploiter/graduation_win_rate": cur_win_rate,
+                    "exploiter/generation_completed": exploiter_generation,
+                    "exploiter/generation_was_timeout": float(timed_out),
+                }
+            )
+
+        # ── Reinitialize for a fresh generation ─────────────────────────────
+        # BC init forces a different starting basin so the next generation
+        # can't just re-learn the exploit main has already defended against
+        # (it would converge to the same weights from the same start).
+        # Refresh victim from CURRENT main so the new exploiter immediately
+        # faces the latest defender rather than a snapshot from the previous
+        # victim refresh tick.
+        if bc_state_dict is not None and exploiter_agent is not None:
+            exploiter_agent.model.load_state_dict(bc_state_dict)
+        if victim_agent is not None:
+            victim_agent.model.load_state_dict(agent.model.state_dict())
+            # Workers must sync to the new victim before the next generation's
+            # first train_exploiter battle.
+            victim_needs_broadcast = True
+
+        exploiter_generation += 1
+        exploiter_updates_in_generation = 0
+        exploiter_win_buffer.clear()
+
+    return {
+        "updates_total": exploiter_updates_total,
+        "updates_in_generation": exploiter_updates_in_generation,
+        "generation": exploiter_generation,
+        "victim_needs_broadcast": victim_needs_broadcast,
+    }
+
+
+def _build_update_metrics(
+    metrics: Dict[str, Any],
+    config: RNaDConfig,
+    opponent_pool: OpponentPool,
+    updates: int,
+    total_time: float,
+    time_per_update: float,
+    total_battles: int,
+    battles_this_update: int,
+    total_received_trajectories: int,
+    total_received_steps: int,
+    total_learner_trajectories: int,
+    total_learner_steps: int,
+    learner_steps_this_update: int,
+    learner_trajectories_this_update: int,
+) -> Dict[str, float]:
+    """Enrich `metrics` in place with throughput/timing/temperature/opponent fields.
+
+    Mutates `metrics` to add all the per-second and total-counter fields the
+    wandb log expects. Returns the three "recent" rates separately because the
+    console `logger.info` call wants them as positional args (they're also
+    stored in `metrics` under `*_per_second_recent` keys for wandb).
+
+    Returns a dict with keys: `battles_per_second`, `learner_steps_per_second`,
+    `learner_trajectories_per_second` (all "recent" — i.e., over the last
+    update interval rather than cumulative since start).
+    """
+    metrics["update_step"] = updates
+    metrics["total_battles"] = total_battles
+    metrics["battles_per_second"] = total_battles / total_time
+    metrics["received_trajectories_per_second"] = total_received_trajectories / total_time
+    metrics["received_steps_per_second"] = total_received_steps / total_time
+    metrics["learner_trajectories_per_second"] = total_learner_trajectories / total_time
+    metrics["learner_steps_per_second"] = total_learner_steps / total_time
+    metrics["learner_steps_this_update"] = learner_steps_this_update
+    metrics["time_per_update_seconds"] = time_per_update
+
+    recent_battles_per_second = (
+        battles_this_update / time_per_update if time_per_update > 0 else 0.0
+    )
+    recent_learner_steps_per_second = (
+        learner_steps_this_update / time_per_update if time_per_update > 0 else 0.0
+    )
+    recent_learner_trajectories_per_second = (
+        learner_trajectories_this_update / time_per_update if time_per_update > 0 else 0.0
+    )
+    metrics["battles_per_second_recent"] = recent_battles_per_second
+    metrics["learner_steps_per_second_recent"] = recent_learner_steps_per_second
+    metrics["learner_trajectories_per_second_recent"] = (
+        recent_learner_trajectories_per_second
+    )
+    metrics["temperature"] = config.temperature_at_step(updates)
+    metrics.update(opponent_pool.get_training_metrics())
+
+    return {
+        "battles_per_second": recent_battles_per_second,
+        "learner_steps_per_second": recent_learner_steps_per_second,
+        "learner_trajectories_per_second": recent_learner_trajectories_per_second,
+    }
 
 
 def main():
@@ -457,6 +987,36 @@ def main():
     # Load config
     config = RNaDConfig.load(args.config)
     config.verify()
+
+    # Memory watchdog: request graceful shutdown if combined RSS approaches
+    # the WSL2 VM ceiling, so we get a clean checkpoint instead of a
+    # Hyper-V supervisor kill. See
+    # planning/stage2/2026-05-12-09-30-second-wsl-crash-and-watchdog.md.
+    start_memory_watchdog(shutdown_requested, config.training.memory_watchdog_threshold_gb)
+
+    # ── Rust backend + exploiter co-training are mutually exclusive ───────
+    # Co-training requires async multi-agent inference: each worker holds
+    # 3 model copies (main, exploiter, victim) driven by independent
+    # BatchInferencePlayers, with weights synced via separate broadcast
+    # keys. The Rust backend uses a synchronous single-model driver and
+    # has no path for this; adding one would duplicate substantial
+    # machinery for what is currently a fallback execution path. This
+    # guard surfaces the requirement loudly rather than silently falling
+    # back to broken behavior (e.g., the Rust backend's update_*_weights
+    # methods are no-ops by design — exploiter weights would never reach
+    # workers, and train_exploiter battles would silently use stale
+    # random-init exploiter/victim weights).
+    if (
+        config.hardware.battle_backend == RUST_ENGINE_BACKEND
+        and _train_exploiter_weight(config) > 0
+    ):
+        raise ValueError(
+            "In-process exploiter co-training (curriculum_weights["
+            "'train_exploiter'] > 0) requires the showdown_websocket "
+            "backend. The Rust backend does not implement the multi-agent "
+            "inference path needed for exploiter/victim. Either set "
+            "battle_backend=showdown_websocket or set train_exploiter=0."
+        )
 
     server_processes: List[subprocess.Popen] = []
     if config.hardware.battle_backend != RUST_ENGINE_BACKEND:
@@ -535,8 +1095,24 @@ def main():
         ghosts_dir=os.path.join(run_dir, "ghosts"),
         vgc_bench_checkpoint_path=config.curriculum.vgc_bench_checkpoint_path,
         max_ghosts=config.curriculum.max_ghosts,
+        max_exploiter_models=config.curriculum.max_exploiter_models,
         curriculum=resume_curriculum or config.curriculum.curriculum_weights,
     )
+
+    # ── Initialize the exploiter co-training pipeline ──────────────────────
+    # All four returned values are None when train_exploiter == 0 (default).
+    # Live state lives in this main process (GPU); workers construct their
+    # own CPU model copies and receive weight updates via broadcasts (the
+    # `exploiter_weights` / `victim_weights` keys). There is no need to
+    # pass agent references to workers — their copies are independent
+    # nn.Module instances synchronized by state_dict broadcasts only.
+    (
+        exploiter_agent,
+        victim_agent,
+        exploiter_learner,
+        bc_state_dict,
+    ) = _initialize_exploiter_pipeline(config, agent, worker_model_config)
+    exploiter_pipeline_on = exploiter_learner is not None
 
     start = time.time()
 
@@ -618,21 +1194,55 @@ def main():
     # The trainer's hot loop. On each iteration:
     #   1. Check for shutdown signal or dead workers.
     #   2. Pop one trajectory from the worker → trainer queue (blocking up to 1s).
-    #   3. Append it to a buffer; record win/loss with the opponent pool.
-    #   4. Once buffer ≥ train_batch_size, collate it into one big padded batch
-    #      and call learner.update(). This is one optimizer step.
-    #   5. Log metrics, periodically: update reference model, snapshot to portfolio,
-    #      save checkpoint, broadcast new weights to workers, maybe spawn an
-    #      exploiter training subprocess.
+    #   3. Route by opponent_type: train_exploiter trajectories feed the
+    #      exploiter learner; everything else feeds main. Both buffers
+    #      record win/loss with the opponent pool for unified logging.
+    #   4. Once a buffer ≥ its batch size, collate and call .update() on
+    #      the corresponding learner. Two learners run independently with
+    #      different cadences (main fires every train_batch_size=256
+    #      trajectories; exploiter every exploiter_train_batch_size=64).
+    #   5. Periodically (per-checkpoint_interval): update reference model,
+    #      save main checkpoint, broadcast new weights + curriculum +
+    #      exploiter/victim weights to workers.
+    #   6. After every exploiter update, check graduation criteria: if
+    #      win-rate ≥ threshold OR per-generation update cap hit, save
+    #      exploiter snapshot to <run_dir>/exploiters/ (entering the
+    #      EXPLOITERS curriculum slot for main to defend against),
+    #      reinitialize the exploiter from BC, refresh victim from current
+    #      main, and increment the generation counter.
     # ─────────────────────────────────────────────────────────────────────────
-    trajectories = []  # Buffer to accumulate trajectories before training
-    updates = start_step  # Current training step (may be >0 if resumed from checkpoint)
-    total_battles = 0  # Track total number of battles completed across all workers
+    trajectories = []  # Main learner buffer
+    updates = start_step  # Main update step (may be >0 if resumed from checkpoint)
+    total_battles = 0  # Total battles completed across all workers
     total_received_trajectories = 0
     total_received_steps = 0
     total_learner_trajectories = 0
     total_learner_steps = 0
     last_update_time = time.time()
+    prev_total_battles = 0  # snapshot at last log for recent b/s
+
+    # ── Exploiter pipeline state (only meaningful when on) ───────────────────
+    # `exploiter_trajectories` is the second buffer for the exploiter learner.
+    # `exploiter_updates_total` counts gradient updates since startup; used
+    #   for global logging.
+    # `exploiter_updates_in_generation` resets on graduation; used to enforce
+    #   the `exploiter_max_updates_per_generation` stall safeguard.
+    # `exploiter_generation` is incremented every time an exploiter graduates
+    #   (or hits the stall cap and is force-reset). 0-indexed, so generation
+    #   0 is the deepcopy-of-main start.
+    # `exploiter_win_buffer` is a rolling deque of 1.0/0.0 wins over the last
+    #   `graduation_window` train_exploiter battles. We don't reuse
+    #   opponent_pool.win_rate_tracking because that uses a fixed
+    #   tracking_window (default 100) sized for live logging — too small
+    #   to be a statistically robust graduation gate.
+    # `victim_needs_broadcast` flags the next broadcast to include refreshed
+    #   victim weights. Cleared after the broadcast fires.
+    exploiter_trajectories: List[Dict[str, Any]] = []
+    exploiter_updates_total = 0
+    exploiter_updates_in_generation = 0
+    exploiter_generation = 0
+    exploiter_win_buffer: "deque[float]" = deque(maxlen=config.exploiter.graduation_window)
+    victim_needs_broadcast = False
 
     try:
         while updates < config.training.max_updates:
@@ -651,24 +1261,49 @@ def main():
                 break
 
             # ===== COLLECT TRAJECTORIES FROM WORKERS =====
-            # Workers push completed battle trajectories to the queue asynchronously
-            # We collect them here until we have enough for a training batch
+            # Workers push completed battle trajectories to the queue asynchronously.
+            # Each trajectory carries an `opponent_type` tag set at battle setup time
+            # (see WorkerOpponentFactory.configure_opponent_for_batch). The tag tells
+            # us which learner the trajectory belongs to:
+            #   - "train_exploiter" → exploiter learner (player WAS the exploiter,
+            #     opponent WAS the frozen victim; trajectory captures exploiter's
+            #     actions, rewards, log probs).
+            #   - everything else → main learner (self_play, bc_player, ghosts,
+            #     exploiters [vs frozen snapshots], baselines).
+            # Routing happens AT INGRESS rather than at update time so the buffers
+            # never get cross-contaminated.
             try:
                 traj = mp_traj_queue.get(timeout=1.0)
 
-                trajectories.append(traj)
                 total_battles += 1  # Each trajectory represents one completed battle
                 total_received_trajectories += 1
                 total_received_steps += len(traj["steps"])
 
                 # Track win rate by opponent type. These rolling results are consumed by
                 # OpponentPool.update_curriculum(). Smoothing/noise handling lives there.
+                # Done for ALL trajectories so logging shows train_exploiter win rates
+                # alongside the others.
                 opponent_pool.record_battle_result(
                     opponent_type=traj["opponent_type"],
                     won=traj["won"],
                     battle_length=traj["battle_length"],
                     forfeited=traj["forfeited"],
                 )
+
+                # Route by opponent_type. The exploiter learner only consumes
+                # battles where the player was the live exploiter; main learner
+                # gets everything else (its existing trajectory shape doesn't
+                # change). Forfeited train_exploiter battles still count for
+                # the win-rate gate (a forfeit is a 0.0, treated like any
+                # other loss).
+                if (
+                    exploiter_pipeline_on
+                    and traj["opponent_type"] == OpponentPool.TRAIN_EXPLOITER
+                ):
+                    exploiter_trajectories.append(traj)
+                    exploiter_win_buffer.append(1.0 if traj["won"] else 0.0)
+                else:
+                    trajectories.append(traj)
             except queue.Empty:
                 # No new trajectories yet, continue waiting
                 continue
@@ -685,8 +1320,11 @@ def main():
                     max_seq_len=config.architecture.max_seq_len,
                 )
                 learner_steps_this_update = int(batch["padding_mask"].sum().item())
+                learner_trajectories_this_update = len(trajectories)
                 total_learner_steps += learner_steps_this_update
-                total_learner_trajectories += len(trajectories)
+                total_learner_trajectories += learner_trajectories_this_update
+                battles_this_update = total_battles - prev_total_battles
+                prev_total_battles = total_battles
 
                 # Execute one RNaD policy update (PPO + KL regularization vs reference)
                 metrics = learner.update(batch)
@@ -699,28 +1337,28 @@ def main():
 
                 # ===== LOG TRAINING METRICS =====
                 total_time = time.time() - start
-                metrics["update_step"] = updates
-                metrics["total_battles"] = total_battles
-                metrics["battles_per_second"] = total_battles / total_time
-                metrics["received_trajectories_per_second"] = (
-                    total_received_trajectories / total_time
+                recent_rates = _build_update_metrics(
+                    metrics=metrics,
+                    config=config,
+                    opponent_pool=opponent_pool,
+                    updates=updates,
+                    total_time=total_time,
+                    time_per_update=time_per_update,
+                    total_battles=total_battles,
+                    battles_this_update=battles_this_update,
+                    total_received_trajectories=total_received_trajectories,
+                    total_received_steps=total_received_steps,
+                    total_learner_trajectories=total_learner_trajectories,
+                    total_learner_steps=total_learner_steps,
+                    learner_steps_this_update=learner_steps_this_update,
+                    learner_trajectories_this_update=learner_trajectories_this_update,
                 )
-                metrics["received_steps_per_second"] = total_received_steps / total_time
-                metrics["learner_trajectories_per_second"] = (
-                    total_learner_trajectories / total_time
-                )
-                metrics["learner_steps_per_second"] = total_learner_steps / total_time
-                metrics["learner_steps_this_update"] = learner_steps_this_update
-                metrics["time_per_update_seconds"] = time_per_update
-                metrics["temperature"] = config.temperature_at_step(updates)
-                metrics.update(opponent_pool.get_training_metrics())
 
                 # Build win rate string for console output
-                win_rate_stats = opponent_pool.get_win_rate_stats()
                 win_rate_str = " | ".join(
                     [
                         f"{opp_type}: {wr * 100:.1f}%"
-                        for opp_type, wr in win_rate_stats.items()
+                        for opp_type, wr in opponent_pool.get_win_rate_stats().items()
                         if len(opponent_pool.win_rate_tracking.get(opp_type, [])) > 0
                     ]
                 )
@@ -729,7 +1367,9 @@ def main():
 
                 logger.info(
                     "Update %d: Loss=%.4f, Policy=%.4f, Value=%.4f, RNaD=%.4f | "
-                    "Total Battles=%d in %s (%.2f b/s) | Learner Steps=%d (%.2f steps/s) | Learner Trajectories=%d (%.2f traj/s)%s",
+                    "Total Battles=%d in %s (%.2f b/s; %.2f overall) | "
+                    "Learner Steps=%d (%.2f steps/s; %.2f overall) | "
+                    "Learner Trajectories=%d (%.2f traj/s; %.2f overall)%s",
                     updates,
                     metrics["loss"],
                     metrics["policy_loss"],
@@ -737,10 +1377,13 @@ def main():
                     metrics["rnad_loss"],
                     total_battles,
                     format_time(total_time),
+                    recent_rates["battles_per_second"],
                     total_battles / total_time,
                     total_learner_steps,
+                    recent_rates["learner_steps_per_second"],
                     total_learner_steps / total_time,
                     total_learner_trajectories,
+                    recent_rates["learner_trajectories_per_second"],
                     total_learner_trajectories / total_time,
                     win_rate_str,
                 )
@@ -817,22 +1460,54 @@ def main():
                     # of one updating curriculum first and another updating
                     # weights first (which could produce inconsistent data).
                     #
-                    # Note: state_dict is moved to CPU before pickling. Workers
-                    # are CPU-only so this both fits their device and is the
-                    # only way to transfer GPU tensors via mp.Queue.
+                    # When the exploiter pipeline is on, the payload is also
+                    # the carrier for `exploiter_weights` (live exploiter,
+                    # included EVERY broadcast — workers' exploiter copies
+                    # need to track gradient updates closely) and
+                    # `victim_weights` (frozen victim, included ONLY when
+                    # refreshed — sending it every broadcast would waste
+                    # bandwidth since the victim is intentionally stale).
+                    #
+                    # The curriculum we send is also masked during warmup so
+                    # workers don't sample train_exploiter battles before the
+                    # exploiter learner has seen any updates (see
+                    # `_mask_curriculum_during_warmup` for the rationale).
+                    #
+                    # Note: state_dicts are moved to CPU before pickling.
+                    # Workers are CPU-only so this both fits their device and
+                    # is the only way to transfer GPU tensors via mp.Queue.
                     logger.info(
                         "[Update %d] Broadcasting weights to worker processes...", updates
                     )
                     cpu_weights = {k: v.cpu() for k, v in agent.model.state_dict().items()}
-                    update_payload = {
+                    in_warmup = updates < config.exploiter.warmup_updates
+                    update_payload: Dict[str, Any] = {
                         "weights": cpu_weights,
-                        "curriculum": opponent_pool.curriculum.copy(),
+                        "curriculum": _mask_curriculum_during_warmup(
+                            opponent_pool.curriculum, in_warmup
+                        ),
                         "temperature": config.temperature_at_step(updates),
                         "top_p": config.exploration.top_p,
                         # Option C: broadcast explicit paths so workers don't scan directories
                         "exploiter_paths": [p for _, p in opponent_pool.exploiter_models],
                         "ghost_paths": [p for _, p in opponent_pool.ghosts],
                     }
+                    if exploiter_pipeline_on and exploiter_agent is not None:
+                        update_payload["exploiter_weights"] = {
+                            k: v.cpu()
+                            for k, v in exploiter_agent.model.state_dict().items()
+                        }
+                    if (
+                        exploiter_pipeline_on
+                        and victim_agent is not None
+                        and victim_needs_broadcast
+                    ):
+                        update_payload["victim_weights"] = {
+                            k: v.cpu() for k, v in victim_agent.model.state_dict().items()
+                        }
+                        # Cleared after queueing: each refresh is broadcast
+                        # exactly once, then we wait for the next refresh tick.
+                        victim_needs_broadcast = False
                     for i, wq in enumerate(weight_queues):
                         try:
                             # Clear old weights to avoid queue overflow
@@ -847,31 +1522,61 @@ def main():
                         except Exception as e:
                             logger.warning("Failed to broadcast to worker %d: %s", i, e)
 
-                # ===== TRAIN EXPLOITER (FIND WEAKNESSES) =====
-                # Periodically train a new exploiter agent to beat current policy
-                # Exploiters are added to opponent pool to patch discovered weaknesses
+                # ===== VICTIM REFRESH =====
+                # The exploiter trains against a stationary target (the
+                # victim) so its gradient signal is stable. But if we never
+                # refreshed, the exploiter would eventually master a stale
+                # main and graduate snapshots irrelevant to the *current*
+                # main. So every `victim_refresh_interval` main updates,
+                # copy main's current state_dict into the victim and queue
+                # a `victim_weights` broadcast so workers sync up.
+                #
+                # Indexed on MAIN updates (not exploiter updates) so the
+                # cadence is independent of `exploiter_train_batch_size`.
+                # Skip update 0 — there's nothing fresh to refresh from at
+                # initialization.
                 if (
-                    config.training.train_exploiters
-                    and updates % config.training.exploiter_interval == 0
+                    exploiter_pipeline_on
+                    and victim_agent is not None
+                    and updates > 0
+                    and updates % config.exploiter.victim_refresh_interval == 0
                 ):
-                    # Save current policy as "victim" for exploiter to train against
-                    victim_path = os.path.join(
-                        str(config.training.run_dir), f"victim_step_{updates}.pt"
-                    )
-                    save_checkpoint(
-                        agent,
-                        learner.optimizer,
-                        updates,
-                        config,
-                        opponent_pool.curriculum,
-                        str(config.training.run_dir),
-                    )
+                    victim_agent.model.load_state_dict(agent.model.state_dict())
+                    # Flag for the NEXT broadcast (which may be this
+                    # iteration if the schedules align, or the next
+                    # checkpoint_interval otherwise).
+                    victim_needs_broadcast = True
+                    logger.info("[Update %d] Refreshed victim from current main", updates)
 
-                    # Launch exploiter training in subprocess (runs independently)
-                    try:
-                        train_exploiter_subprocess(victim_path, config)
-                    except Exception as e:
-                        logger.warning("Exploiter training failed: %s", e)
+                # ===== EXPLOITER LEARNER UPDATE + GRADUATION =====
+                # All exploiter-side logic lives in `_maybe_run_exploiter_update`:
+                # gating on warmup/buffer-fill, the learner step, win-rate
+                # graduation, snapshot save, and BC re-init. Helper mutates the
+                # trajectory/win buffers in place and returns the updated counters.
+                exploiter_result = _maybe_run_exploiter_update(
+                    config=config,
+                    updates=updates,
+                    agent=agent,
+                    exploiter_learner=exploiter_learner,
+                    exploiter_agent=exploiter_agent,
+                    victim_agent=victim_agent,
+                    bc_state_dict=bc_state_dict,
+                    opponent_pool=opponent_pool,
+                    exploiter_trajectories=exploiter_trajectories,
+                    exploiter_win_buffer=exploiter_win_buffer,
+                    exploiter_updates_total=exploiter_updates_total,
+                    exploiter_updates_in_generation=exploiter_updates_in_generation,
+                    exploiter_generation=exploiter_generation,
+                )
+                exploiter_updates_total = exploiter_result["updates_total"]
+                exploiter_updates_in_generation = exploiter_result["updates_in_generation"]
+                exploiter_generation = exploiter_result["generation"]
+                # OR with current flag: a pending victim refresh from earlier this
+                # iteration (the `victim_refresh_interval` block above) must not be
+                # cleared by a no-op exploiter call.
+                victim_needs_broadcast = (
+                    victim_needs_broadcast or exploiter_result["victim_needs_broadcast"]
+                )
 
                 # Clear trajectory buffer after successful update
                 trajectories = []

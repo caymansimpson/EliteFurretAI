@@ -55,6 +55,7 @@ import concurrent.futures
 import logging
 import math
 import random
+import re
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from threading import Lock
@@ -326,9 +327,28 @@ class BatchInferencePlayer(Player):
             "trajectory_steps_buffered": 0.0,
             "completed_trajectories": 0.0,
             "completed_trajectory_steps": 0.0,
+            "room_lost_recoveries": 0.0,
+            "message_handler_timeouts": 0.0,
+            "battle_lock_tasks_cancelled": 0.0,
         }
 
+        # Battles finalized via the "not in that room" popup recovery path
+        # (see _recover_room_lost_battle). Read by _battle_finished_callback so
+        # those trajectories are shipped with forfeited=True and dropped from
+        # opponent win-rate tracking.
+        self._room_lost_battles: set[str] = set()
+
         super().__init__(accept_open_team_sheet=accept_open_team_sheet, **kwargs)
+
+        # Install popup-recovery hook on the ps_client. Showdown emits
+        # |popup|...not in that room... when we send /choose to a battle whose
+        # room has already been closed server-side (because |win| was processed
+        # but our local state hadn't flipped yet). poke-env's default popup
+        # handling is just a logger.warning — the affected battle stays
+        # "in progress" forever locally and stalls the worker. This hook
+        # detects the popup, parses the battle tag, and finalizes the battle.
+        self._original_handle_message = self.ps_client._handle_message
+        self.ps_client._handle_message = self._handle_message_with_popup_recovery
 
     def _embed_battle_state(self, battle: Any) -> np.ndarray:
         embed_start = asyncio.get_running_loop().time()
@@ -1105,6 +1125,109 @@ class BatchInferencePlayer(Player):
         except (ValueError, KeyError, AttributeError, IndexError, AssertionError):
             return DefaultBattleOrder()
 
+    # Compiled once: matches the body of the popup Showdown emits when a
+    # /choose lands on a closed room, e.g.
+    #   |popup|You tried to send "/choose move ..." to the room
+    #   "battle-gen9vgc2024regg-12345" but it failed because you were not in
+    #   that room.
+    _ROOM_LOST_POPUP_RE = re.compile(
+        r'\|popup\|.*to the room "(battle-[^"]+)".*not in that room'
+    )
+
+    # Hard cap on time spent in any single ps_client message handler. Used to
+    # bound the per-message wrapper task lifetime so a hung `_handle_battle_message`
+    # cannot pile up indefinite waiters on the per-battle lock in ps_client.
+    # No legitimate handler runs longer than a few seconds; 60s is conservative.
+    _MESSAGE_HANDLER_TIMEOUT_S: float = 60.0
+
+    async def _handle_message_with_popup_recovery(self, message: str) -> None:
+        """Wrap the underlying ps_client._handle_message to (1) recover from
+        "not in that room" popups and (2) bound handler runtime.
+
+        Without (1), the popup is a logger warning only — the affected battle
+        keeps `finished=False` locally even though the room is gone server-side,
+        so its `send_challenges` task hangs in `_battle_count_queue.join()` and
+        the worker eventually trips the zero-completion safety guard. See
+        `planning/stage2/2026-05-06-04-50-zero-completion-room-state-race.md`.
+
+        Without (2), a single hung `_handle_battle_message` call (holding the
+        per-battle lock in ps_client._battle_locks) causes every subsequent
+        message for the same battle to stack up as a lock waiter, leaking
+        ~30 tasks per stuck battle and forcing a WSL OOM after ~12 hours.
+        """
+        try:
+            await asyncio.wait_for(
+                self._original_handle_message(message),
+                timeout=self._MESSAGE_HANDLER_TIMEOUT_S,
+            )
+        except asyncio.TimeoutError:
+            self._diagnostics["message_handler_timeouts"] += 1
+            self.logger.warning(
+                "Message handler exceeded %.0fs timeout; preview=%s",
+                self._MESSAGE_HANDLER_TIMEOUT_S,
+                message[:200],
+            )
+            return
+        match = self._ROOM_LOST_POPUP_RE.search(message)
+        if match is not None:
+            await self._recover_room_lost_battle(match.group(1))
+
+    async def _recover_room_lost_battle(self, battle_tag: str) -> None:
+        """Mark a battle as forfeit-by-us and run the standard finished path.
+
+        Pairs with the `if not battle.finished` guard added in poke-env's
+        Player._handle_battle_message |win|/|tie| branch, which prevents a
+        later |win| from double-decrementing _battle_count_queue.
+        """
+        battle = self._battles.get(battle_tag)
+        if battle is None or battle.finished:
+            return
+
+        self._diagnostics["room_lost_recoveries"] += 1
+        self._room_lost_battles.add(battle_tag)
+
+        # Outcome is unknown (we lost the room); record as a loss for reward
+        # shaping but flag forfeited=True so the curriculum drops it from
+        # opponent win-rate tracking (per the adaptive-curriculum overhaul
+        # plan, Change 1).
+        battle._won = False
+        battle._finish_battle()
+
+        # Balance _battle_count_queue so send_challenges()'s join() can
+        # release. The poke-env-side guard skips a second decrement if |win|
+        # later arrives for this same battle.
+        try:
+            self._battle_count_queue.get_nowait()
+            self._battle_count_queue.task_done()
+        except asyncio.QueueEmpty:
+            # Already balanced (|win| beat us to it). Nothing to do.
+            pass
+
+        # Free the per-battle lock in ps_client. If `_handle_battle_message`
+        # for this battle is hung, every subsequent message for the same
+        # battle is queued as a lock waiter and pinned forever — observed
+        # leaking ~30 tasks per stuck battle. Cancelling all ps_client
+        # tasks whose repr mentions this battle tag releases both the holder
+        # (via `async with` finalizer) and the waiters (via their acquire()
+        # raising CancelledError). Then drop the lock entry so future
+        # messages for the same tag get a fresh, unowned lock.
+        ps_client = self.ps_client
+        battle_lock_map = getattr(ps_client, "_battle_locks", None)
+        if battle_lock_map is not None and battle_tag in battle_lock_map:
+            cancelled = 0
+            for task in list(getattr(ps_client, "_active_tasks", ())):
+                if not task.done() and battle_tag in repr(task):
+                    task.cancel()
+                    cancelled += 1
+            if cancelled:
+                self._diagnostics["battle_lock_tasks_cancelled"] += cancelled
+            battle_lock_map.pop(battle_tag, None)
+
+        self._battle_finished_callback(battle)
+
+        async with self._battle_end_condition:
+            self._battle_end_condition.notify_all()
+
     def _battle_finished_callback(self, battle: AbstractBattle):
         # ── End-of-battle: assign rewards and ship the trajectory ────────────
         # poke-env calls this hook once per battle when it finishes (win, loss,
@@ -1163,6 +1286,11 @@ class BatchInferencePlayer(Player):
             filtered_traj = [step for step in traj if step is not None]
             self._diagnostics["completed_trajectories"] += 1
             self._diagnostics["completed_trajectory_steps"] += len(filtered_traj)
+            # Battles finalized via the room-lost popup recovery path have an
+            # unknown true outcome, so flag forfeited=True; the curriculum
+            # drops these from opponent win-rate tracking.
+            forfeited = battle.battle_tag in self._room_lost_battles
+            self._room_lost_battles.discard(battle.battle_tag)
             # Ship to the queue. The worker process picks it up and forwards it
             # to the learner over mp.Queue (with metadata for opponent tracking).
             self.trajectory_queue.put(
@@ -1171,7 +1299,7 @@ class BatchInferencePlayer(Player):
                     "opponent_type": self.opponent_type,
                     "won": battle.won,
                     "battle_length": len(filtered_traj),
-                    "forfeited": False,
+                    "forfeited": forfeited,
                 }
             )
             self.hidden_states.pop(battle.battle_tag, None)

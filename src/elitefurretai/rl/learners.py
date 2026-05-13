@@ -111,6 +111,7 @@ def _build_optimizer(
         "win_head",
         "turn_ff_stack",
         "teampreview_ff_stack",
+        "value_ff_stack",
     ]
 
     head_params = []
@@ -642,6 +643,7 @@ MODEL_ARCH_CONFIG_KEYS = (
     "teampreview_head_dropout",
     "teampreview_attention_heads",
     "turn_head_layers",
+    "value_head_layers",
     "max_seq_len",
     "num_value_bins",
     "value_min",
@@ -711,8 +713,16 @@ def build_model_from_config(
     embedder: Embedder,
     device: str,
     state_dict: Optional[Dict[str, Any]] = None,
+    strict: bool = True,
 ) -> Union[FlexibleThreeHeadedModel, TransformerThreeHeadedModel]:
-    """Construct a model from a config dict (flat or nested) and optionally load weights."""
+    """Construct a model from a config dict (flat or nested) and optionally load weights.
+
+    When ``strict=True`` (default), state_dict keys must match the model exactly.
+    When ``strict=False``, mismatched keys are skipped and missing/unexpected
+    keys are logged — used by the ``initialize_path`` flow when the runtime
+    architecture diverges from the checkpoint's architecture (e.g. a deep
+    value head being added on top of a BC-trained trunk).
+    """
     model_config = _config_to_flat_arch(model_config)
     use_transformer = model_config.get("use_transformer", False)
 
@@ -730,6 +740,7 @@ def build_model_from_config(
         teampreview_head_dropout=model_config.get("teampreview_head_dropout", 0.1),
         teampreview_attention_heads=model_config.get("teampreview_attention_heads", 4),
         turn_head_layers=model_config.get("turn_head_layers", []),
+        value_head_layers=model_config.get("value_head_layers", []),
         num_actions=MDBO.action_space(),
         num_teampreview_actions=MDBO.teampreview_space(),
         max_seq_len=model_config.get("max_seq_len", 17),
@@ -778,7 +789,20 @@ def build_model_from_config(
         cleaned_state_dict = {
             k.removeprefix("_orig_mod."): v for k, v in state_dict.items()
         }
-        model.load_state_dict(cleaned_state_dict)
+        load_result = model.load_state_dict(cleaned_state_dict, strict=strict)
+        if not strict:
+            missing = list(load_result.missing_keys)
+            unexpected = list(load_result.unexpected_keys)
+            if missing:
+                print(
+                    f"Partial state_dict load: {len(missing)} missing keys "
+                    f"(fresh-initialized): {missing[:20]}"
+                )
+            if unexpected:
+                print(
+                    f"Partial state_dict load: {len(unexpected)} unexpected keys "
+                    f"(dropped): {unexpected[:20]}"
+                )
 
     return model
 

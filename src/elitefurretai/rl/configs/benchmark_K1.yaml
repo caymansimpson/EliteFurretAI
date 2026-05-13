@@ -81,6 +81,10 @@ hardware:
   device: cuda
   max_battle_steps: 30
   num_battles_per_pair: 32
+  # null = poke-env's default of 1 (battles serialise behind the previous
+  # battle's duration). Set to num_battles_per_pair to remove the 5-30s
+  # slow-handler tax diagnosed in Track C of the 2026-05-12 planning doc.
+  max_concurrent_battles_per_player: null
   num_players: 12
   num_servers: 4
   num_workers: 4
@@ -103,6 +107,7 @@ curriculum:
     max_base_power_baseline: 0
     simple_heuristic_baseline: 0.05
     vgc_bench_baseline: 0.0
+    train_exploiter: 0.0  # benchmark: exploiter co-training off (controlled comparison)
   adaptive_curriculum: false
   max_exploiter_models: 5
   max_ghosts: 5
@@ -130,4 +135,3 @@ training:
   use_wandb: false
   wandb_project: elitefurretai-benchmark
   wandb_run_name: bench-K1
-  train_exploiters: false

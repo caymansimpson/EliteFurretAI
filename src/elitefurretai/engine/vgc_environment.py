@@ -26,6 +26,9 @@ from typing import Any, Dict, List, Optional, Tuple
 from poke_env import AccountConfiguration, ServerConfiguration
 from poke_env.player import MaxBasePowerPlayer, RandomPlayer
 
+from elitefurretai.engine.showdown_server_manager import (
+    derive_external_vgcbench_username,
+)
 from elitefurretai.engine.sync_battle_driver import (
     SyncBaselineController,
     SyncPolicyPlayer,
@@ -397,6 +400,8 @@ class VGCEnvironment:
         server_port: Optional[int] = None,
         run_id: str = "",
         initial_curriculum: Optional[Dict[str, float]] = None,
+        exploiter_agent: Optional[RNaDAgent] = None,
+        victim_agent: Optional[RNaDAgent] = None,
     ) -> "VGCEnvironment":
         """Create a VGCEnvironment for the given config and worker."""
         if config.hardware.battle_backend == RUST_ENGINE_BACKEND:
@@ -425,6 +430,8 @@ class VGCEnvironment:
                 server_port=server_port,
                 run_id=run_id,
                 initial_curriculum=initial_curriculum,
+                exploiter_agent=exploiter_agent,
+                victim_agent=victim_agent,
             )
         return cls(backend)
 
@@ -456,6 +463,14 @@ class VGCEnvironment:
     ) -> None:
         """Update exploration temperature and nucleus-sampling threshold."""
         self._backend.update_sampling(temperature, top_p)
+
+    def update_exploiter_weights(self, state_dict: Dict) -> None:
+        """Apply new exploiter weights to the worker-local exploiter agent."""
+        self._backend.update_exploiter_weights(state_dict)
+
+    def update_victim_weights(self, state_dict: Dict) -> None:
+        """Apply new victim weights to the worker-local victim agent."""
+        self._backend.update_victim_weights(state_dict)
 
     def get_curriculum(self) -> Dict[str, float]:
         """Return current curriculum weights (copy)."""
@@ -510,6 +525,16 @@ class _BackendBase:
     ) -> None:
         raise NotImplementedError
 
+    def update_exploiter_weights(self, state_dict: Dict) -> None:
+        """Apply broadcasted exploiter weights. No-op by default; backends
+        that support in-process exploiter co-training override this."""
+        pass
+
+    def update_victim_weights(self, state_dict: Dict) -> None:
+        """Apply broadcasted victim weights. No-op by default; backends
+        that support in-process exploiter co-training override this."""
+        pass
+
     def get_curriculum(self) -> Dict[str, float]:
         return {}
 
@@ -555,6 +580,8 @@ class _ShowdownBackend(_BackendBase):
         server_port: int,
         run_id: str,
         initial_curriculum: Optional[Dict[str, float]] = None,
+        exploiter_agent: Optional[RNaDAgent] = None,
+        victim_agent: Optional[RNaDAgent] = None,
     ) -> None:
         self._config = config
         self._worker_id = worker_id
@@ -563,6 +590,8 @@ class _ShowdownBackend(_BackendBase):
         self._embedder = embedder
         self._team_repo = team_repo
         self._bc_agent = bc_agent
+        self._exploiter_agent = exploiter_agent
+        self._victim_agent = victim_agent
         self._server_port = server_port
         self._run_id = run_id
         self._model_config = model_config
@@ -592,6 +621,16 @@ class _ShowdownBackend(_BackendBase):
         server_config = ServerConfiguration(
             f"ws://localhost:{self._server_port}/showdown/websocket", ""
         )
+        external_vgcbench_usernames = cur.external_vgcbench_usernames
+        if (
+            external_vgcbench_usernames
+            and cur.auto_launch_external_vgcbench
+            and hw.num_servers > 1
+        ):
+            external_vgcbench_usernames = [
+                derive_external_vgcbench_username(username, self._server_port)
+                for username in external_vgcbench_usernames
+            ]
         self._factory = WorkerOpponentFactory(
             team_repo=self._team_repo,
             battle_format=cur.battle_format,
@@ -614,9 +653,12 @@ class _ShowdownBackend(_BackendBase):
             ghosts_dir=os.path.join(str(self._config.training.run_dir), "ghosts"),
             max_ghosts=cur.max_ghosts,
             vgc_bench_checkpoint_path=cur.vgc_bench_checkpoint_path,
-            external_vgcbench_usernames=cur.external_vgcbench_usernames,
+            external_vgcbench_usernames=external_vgcbench_usernames,
             model_config=self._model_config,
             agent_team_path=cur.agent_team_path,
+            exploiter_agent=self._exploiter_agent,
+            victim_agent=self._victim_agent,
+            max_concurrent_battles_per_player=hw.max_concurrent_battles_per_player,
         )
         self._factory.create_agents(self._num_pairs, self._local_traj_queue)
         self._factory.start_inference_loops()
@@ -706,6 +748,14 @@ class _ShowdownBackend(_BackendBase):
                     p.temperature = temperature
                 if top_p is not None:
                     p.top_p = top_p
+
+    def update_exploiter_weights(self, state_dict: Dict) -> None:
+        if self._factory is not None:
+            self._factory.update_exploiter_weights(state_dict)
+
+    def update_victim_weights(self, state_dict: Dict) -> None:
+        if self._factory is not None:
+            self._factory.update_victim_weights(state_dict)
 
     def get_curriculum(self) -> Dict[str, float]:
         if self._factory is not None:

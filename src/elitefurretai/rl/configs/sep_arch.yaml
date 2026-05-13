@@ -1,3 +1,33 @@
+# sep_arch.yaml — ablation: deep value head on top of a BC-initialized trunk.
+#
+# Why this config exists
+# ----------------------
+# Background: the 2026-05-11 single_team run at update 657 had value loss
+# dominating policy loss 3:1 through the shared transformer backbone
+# (policy=0.91, vf_coef * value = 1.0 * 2.87 = 2.87). single_team.yaml
+# subsequently dropped vf_coef to 0.5 as a quick rebalance, but value
+# gradients still flow through the same shared trunk and continue to shape
+# representation alongside policy.
+#
+# This config tests a more decoupled approach: deepen the value head with
+# its own ResidualBlock stack so the value head can do its return-prediction
+# work *after* the shared trunk, rather than asking the trunk to encode
+# return-prediction features alongside discriminative policy features.
+# Trunk depth (transformer_layers=4) is held constant so we can attribute
+# any observed delta to the head split alone, not a confounded trunk
+# change. The BC checkpoint loads partially: encoder + trunk + policy head
+# from cool-bee-85-finetune, value head fresh-initialized (its old shape
+# doesn't match).
+#
+# What to compare against
+# -----------------------
+# Run this side-by-side with single_team.yaml (same vf_coef=0.5, same
+# everything else). If policy loss starts moving meaningfully sooner here
+# than in the baseline, the deep value head is doing useful decoupling
+# work. If value loss converges similarly but policy stays flat, value
+# capacity wasn't the bottleneck — gradient dominance was, and the next
+# experiment should be stop-gradient from value into the trunk.
+
 algorithm:
   clip_range: 0.2
   ent_coef: 0.005
@@ -5,7 +35,6 @@ algorithm:
   gae_lambda: 0.95
   gamma: 1
   max_grad_norm: 0.5
-  ppo_epochs: 3
   rnad_alpha: 0.05
   vf_coef: 0.5
 
@@ -37,8 +66,8 @@ value_head:
   value_max: 1.0
 
 architecture:
-  # Transformer backbone (matching cool-bee-85-finetune: ~26.7M params, ~5x smaller than
-  # curious-darkness-77; trained with raw featureset; finetuned for 15 additional epochs).
+  # Transformer backbone (matching cool-bee-85-finetune for clean BC load
+  # of the trunk).
   use_transformer: true
   transformer_layers: 4
   transformer_heads: 8
@@ -46,9 +75,6 @@ architecture:
   transformer_dropout: 0.1
   use_decision_tokens: true
   use_causal_mask: true
-  # LSTM (fallback, unused)
-  lstm_layers: 4
-  lstm_hidden_size: 512
   # Encoder
   early_layers: [1024, 512, 512]
   late_layers: [512, 512]
@@ -63,6 +89,15 @@ architecture:
   teampreview_head_dropout: 0.15
   teampreview_attention_heads: 2
   turn_head_layers: [512, 256, 256]
+  # Deep value head — the central change vs single_team.yaml. Three
+  # ResidualBlocks ([512, 512, 256]) sit between late_ff_stack output
+  # (512-dim) and the final Linear projection to num_value_bins. This
+  # gives the value head its own integrative depth and pushes
+  # return-prediction computation out of the shared trunk. The legacy
+  # 2-layer win_head from the BC checkpoint won't strict-load and is
+  # fresh-initialized; everything else (encoder, trunk, policy head)
+  # loads from cool-bee-85-finetune.
+  value_head_layers: [512, 512, 256]
   max_seq_len: 40
   # Number bank embeddings
   number_bank_hp_bins: 100
@@ -79,7 +114,7 @@ hardware:
   # null = poke-env's default of 1 (battles serialise behind the previous
   # battle's duration). Set to num_battles_per_pair to remove the 5-30s
   # slow-handler tax diagnosed in Track C of the 2026-05-12 planning doc.
-  max_concurrent_battles_per_player: null
+  max_concurrent_battles_per_player: 32
   num_players: 12
   num_servers: 4
   num_workers: 4
@@ -93,17 +128,15 @@ curriculum:
   agent_team_path: data/teams/gen9vgc2024regg/constrained/naicchampion.txt
   bc_model_path: data/models/supervised/cool-bee-85-finetune_best.pt
   curriculum_weights:
-    self_play: 0.4
+    self_play: 0.3
     bc_player: 0.1
     exploiters: 0.0
     ghosts: 0.1
-    max_damage: 0.05
+    max_damage: 0.1
     random_baseline: 0
     max_base_power_baseline: 0
-    simple_heuristic_baseline: 0.05
+    simple_heuristic_baseline: 0.1
     vgc_bench_baseline: 0.3
-    # In-process exploiter co-training. Set to 0.20 to activate (recommended
-    # default when on). Off by default; pipeline lies dormant when 0.0.
     train_exploiter: 0.0
   adaptive_curriculum: false
   max_exploiter_models: 5
@@ -118,14 +151,9 @@ curriculum:
 
 training:
   embedder_feature_set: raw
-  # Resume from the periodic ghost-pool checkpoint at step 875 of run
-  # bright-pine-189 (the last checkpoint produced before the 2026-05-12
-  # 02:06 WSL crash). save_checkpoint writes the same full state dict to
-  # <run_dir>/ghosts/ and <run_dir>/ — the "ghosts/" prefix is about
-  # opponent-pool membership, not file format — so this file has model
-  # weights AND optimizer state AND step counter. Using resume_from
-  # preserves Adam moments and step=875. See
-  # planning/stage2/2026-05-12-09-30-second-wsl-crash-and-watchdog.md.
+  # BC partial-load: trunk/encoder/policy head load from cool-bee-85; the
+  # new value_ff_stack + reshaped win_head are fresh-initialized. Strict
+  # load is bypassed in train.py's initialize_path branch for sep_arch.
   initialize_path: data/models/supervised/cool-bee-85-finetune_best.pt
   resume_from: null
   max_updates: 100000
@@ -136,26 +164,16 @@ training:
   use_wandb: true
   wandb_project: elitefurretai-instruct
   wandb_run_name: null
-  # WSL2 has 23 GiB; 20 GB threshold leaves ~3 GiB headroom for the
-  # in-flight learner step + checkpoint save when the watchdog trips.
-  # See planning/stage2/2026-05-12-09-30-second-wsl-crash-and-watchdog.md.
   memory_watchdog_threshold_gb: 20.0
 
-# ── Exploiter co-training (in-process, league-style graduation) ─────────────
-# Off by default — curriculum.curriculum_weights.train_exploiter == 0.0 is
-# the single gate. Bump that to 0.20 to activate; the knobs below take effect
-# automatically once the pipeline is live.
-#
-# Each generation trains until win_rate > graduation_threshold over the last
-# graduation_window battles, OR max_updates_per_generation hits. On graduation:
-# snapshot saved to <run_dir>/exploiters/, fresh exploiter initialized from
-# bc_model_path, victim refreshed from current main.
+# Exploiter co-training disabled for this ablation — keeps the comparison
+# against single_team.yaml on equal footing.
 exploiter:
-  batch_size: 64                       # smaller than main's 256 (sees ~20% of trajectories)
-  graduation_threshold: 0.65           # win-rate gate for snapshotting
-  graduation_window: 1000              # rolling window for win-rate calc
-  max_updates_per_generation: 5000     # stall safeguard
-  victim_refresh_interval: 1000        # main updates between victim weight refreshes
-  warmup_updates: 200                  # main updates before exploiter starts (let main settle)
-  lr: 0.0001                           # slow chase for stability (main's heads_lr is 3e-5 here)
-  ent_coef: 0.02                       # entropy bonus for the exploiter learner
+  batch_size: 64
+  graduation_threshold: 0.65
+  graduation_window: 1000
+  max_updates_per_generation: 5000
+  victim_refresh_interval: 1000
+  warmup_updates: 200
+  lr: 0.0001
+  ent_coef: 0.02

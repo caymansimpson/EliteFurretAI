@@ -197,6 +197,10 @@ class OpponentPool:
     MAX_BASE_POWER_BASELINE = "max_base_power_baseline"
     SIMPLE_HEURISTIC_BASELINE = "simple_heuristic_baseline"
     VGC_BENCH_BASELINE = "vgc_bench_baseline"
+    # Exploiter-vs-victim battles whose trajectories feed the in-process
+    # exploiter learner (separate from EXPLOITERS, which is main fighting
+    # frozen exploiter snapshots from disk).
+    TRAIN_EXPLOITER = "train_exploiter"
 
     def __init__(
         self,
@@ -208,6 +212,7 @@ class OpponentPool:
         ghosts_dir: str = "data/models/ghosts",
         vgc_bench_checkpoint_path: Optional[str] = None,
         max_ghosts: int = 10,
+        max_exploiter_models: int = 10,
         tracking_window: int = 100,
         curriculum: Optional[Dict[str, float]] = None,
     ):
@@ -215,6 +220,11 @@ class OpponentPool:
         self.device = device
         self.battle_format = battle_format
         self.max_ghosts = max_ghosts
+        # Cap on the number of graduated exploiter snapshots kept in the
+        # curriculum pool. Older ones get evicted when new ones graduate.
+        # Mirrors max_ghosts semantics; was previously implicit (the list
+        # got trimmed by max_ghosts due to a typo, fixed in this change).
+        self.max_exploiter_models = max_exploiter_models
         self.vgc_bench_checkpoint_path = vgc_bench_checkpoint_path
         self.tracking_window = tracking_window
 
@@ -228,6 +238,7 @@ class OpponentPool:
             self.MAX_BASE_POWER_BASELINE: 0.0,
             self.SIMPLE_HEURISTIC_BASELINE: 0.0,
             self.VGC_BENCH_BASELINE: 0.0,
+            self.TRAIN_EXPLOITER: 0.0,
         }
 
         total = sum(self.curriculum.values())
@@ -263,6 +274,7 @@ class OpponentPool:
             self.MAX_BASE_POWER_BASELINE: [],
             self.SIMPLE_HEURISTIC_BASELINE: [],
             self.VGC_BENCH_BASELINE: [],
+            self.TRAIN_EXPLOITER: [],
         }
         self.win_rate_tracking: Dict[str, deque[float]] = {
             opp_type: deque(maxlen=self.tracking_window) for opp_type in self.win_rates
@@ -343,7 +355,7 @@ class OpponentPool:
             if os.path.isfile(filepath)
         ]
         models.sort(key=lambda item: item[0], reverse=True)
-        self.exploiter_models = models[: self.max_ghosts]
+        self.exploiter_models = models[: self.max_exploiter_models]
 
     def _load_ghosts(self) -> None:
         files = self._list_model_checkpoints(self.ghosts_dir)
@@ -641,6 +653,25 @@ class OpponentPool:
         self.ghosts.sort(key=lambda x: x[0], reverse=True)
         self.ghosts = self.ghosts[: self.max_ghosts]
 
+    def add_exploiter(self, filepath: str):
+        """Register a newly-graduated exploiter snapshot.
+
+        Used by the in-process exploiter pipeline (train.py): after an
+        exploiter generation graduates and its weights are saved to disk,
+        this records the file in the pool so the next broadcast's
+        `exploiter_paths` key includes it. Sorted by mtime descending so
+        the newest snapshots stay if we exceed `max_exploiter_models`.
+
+        Mirrors `add_ghost` for symmetry. The startup-only directory scan
+        in `_load_exploiter_models` still handles initial population
+        (e.g., on resume); this method handles in-flight additions.
+        """
+        if not os.path.isfile(filepath):
+            return
+        self.exploiter_models.append((os.path.getmtime(filepath), filepath))
+        self.exploiter_models.sort(key=lambda x: x[0], reverse=True)
+        self.exploiter_models = self.exploiter_models[: self.max_exploiter_models]
+
     def record_battle_result(
         self,
         opponent_type: str,
@@ -866,6 +897,10 @@ class WorkerOpponentFactory:
     MAX_BASE_POWER_BASELINE = "max_base_power_baseline"
     SIMPLE_HEURISTIC_BASELINE = "simple_heuristic_baseline"
     VGC_BENCH_BASELINE = "vgc_bench_baseline"
+    # Exploiter-vs-victim battles whose trajectories train the in-process
+    # exploiter learner. Distinct from EXPLOITERS (main fights frozen
+    # exploiter snapshots from disk).
+    TRAIN_EXPLOITER = "train_exploiter"
 
     def __init__(
         self,
@@ -891,6 +926,9 @@ class WorkerOpponentFactory:
         external_vgcbench_usernames: Optional[List[str]] = None,
         model_config: Optional[Dict[str, Any]] = None,
         agent_team_path: Optional[str] = None,
+        exploiter_agent: Optional[RNaDAgent] = None,
+        victim_agent: Optional[RNaDAgent] = None,
+        max_concurrent_battles_per_player: Optional[int] = None,
     ):
         self.team_repo = team_repo
         self.battle_format = battle_format
@@ -898,6 +936,17 @@ class WorkerOpponentFactory:
         self.server_config = server_config
         self.main_agent = main_agent
         self.bc_agent = bc_agent
+        # poke-env Player's `max_concurrent_battles` kwarg. None preserves
+        # the library default of 1. See Track C in
+        # planning/stage2/2026-05-12-09-30-second-wsl-crash-and-watchdog.md.
+        self.max_concurrent_battles_per_player = max_concurrent_battles_per_player
+        # Co-training agents (None until train_exploiter > 0). exploiter_agent
+        # is the live policy being optimized to beat main; victim_agent is a
+        # frozen, periodically-refreshed copy of main that the exploiter
+        # trains against. Both are CPU model copies in the worker — main
+        # process owns the GPU originals and broadcasts state_dicts.
+        self.exploiter_agent = exploiter_agent
+        self.victim_agent = victim_agent
         self.curriculum = curriculum or {self.SELF_PLAY: 1.0}
         self.embedder = embedder
         self.worker_id = worker_id
@@ -1082,6 +1131,26 @@ class WorkerOpponentFactory:
         models.sort(key=lambda item: item[0], reverse=True)
         self.ghosts = models
 
+    def update_exploiter_weights(self, state_dict: Dict) -> None:
+        """Apply broadcasted exploiter weights to the worker-local exploiter agent.
+
+        No-op if `exploiter_agent` is None (co-training disabled). Loading is
+        in-place so any BatchInferencePlayer holding a reference to the same
+        nn.Module picks up the new weights without rewiring.
+        """
+        if self.exploiter_agent is not None:
+            self.exploiter_agent.model.load_state_dict(state_dict)
+
+    def update_victim_weights(self, state_dict: Dict) -> None:
+        """Apply broadcasted victim weights to the worker-local victim agent.
+
+        Refreshed less frequently than exploiter weights (typically every
+        `victim_refresh_interval` main updates) — the victim is the
+        stationary target the exploiter optimizes against.
+        """
+        if self.victim_agent is not None:
+            self.victim_agent.model.load_state_dict(state_dict)
+
     def _get_ghost_agent(self) -> Optional[RNaDAgent]:
         if not self.ghosts:
             return None
@@ -1120,6 +1189,14 @@ class WorkerOpponentFactory:
         self.players = []
         self.opponents = []
 
+        # Conditionally pass `max_concurrent_battles` so when the config
+        # leaves it None we don't override poke-env's default of 1.
+        extra_player_kwargs: Dict[str, Any] = {}
+        if self.max_concurrent_battles_per_player is not None:
+            extra_player_kwargs["max_concurrent_battles"] = (
+                self.max_concurrent_battles_per_player
+            )
+
         for i in range(num_pairs):
             player = BatchInferencePlayer(
                 model=self.main_agent,
@@ -1137,6 +1214,7 @@ class WorkerOpponentFactory:
                 embedder=self.embedder,
                 max_battle_steps=self.max_battle_steps,
                 opponent_type=self.SELF_PLAY,
+                **extra_player_kwargs,
             )
             self.players.append(player)
 
@@ -1155,6 +1233,7 @@ class WorkerOpponentFactory:
                 worker_id=self.worker_id,
                 embedder=self.embedder,
                 max_battle_steps=self.max_battle_steps,
+                **extra_player_kwargs,
             )
             self.opponents.append(opponent)
 
@@ -1277,6 +1356,8 @@ class WorkerOpponentFactory:
 
         - `max_damage` is handled by separate MaxDamagePlayer instances
         - `bc_player` swaps opponent.model to the frozen BC agent
+        - `train_exploiter` swaps player→exploiter, opponent→victim (the
+          trajectory feeds the in-process exploiter learner)
         - fallback is self-play against `main_agent`
         """
         selected_type = self.sample_opponent_type()
@@ -1290,6 +1371,19 @@ class WorkerOpponentFactory:
             if exploiter_agent is not None:
                 opponent.model = exploiter_agent
             else:
+                selected_type = self.SELF_PLAY
+                opponent.model = self.main_agent
+        elif selected_type == self.TRAIN_EXPLOITER:
+            # Exploiter (player) vs. frozen victim (opponent). Trajectory is
+            # tagged "train_exploiter" so the main process routes it to the
+            # exploiter learner instead of the main learner.
+            if self.exploiter_agent is not None and self.victim_agent is not None:
+                player.model = self.exploiter_agent
+                opponent.model = self.victim_agent
+            else:
+                # Co-training agents not provisioned (e.g., curriculum slot
+                # ramped up before main process built them). Fall back to
+                # self-play; trajectory will be routed as main.
                 selected_type = self.SELF_PLAY
                 opponent.model = self.main_agent
         elif selected_type == self.GHOSTS:

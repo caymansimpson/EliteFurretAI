@@ -26,7 +26,8 @@ Big-picture map of the sub-configs
 - ArchitectureConfig — Model shape: transformer vs LSTM, layer sizes, heads
 - HardwareConfig     — Worker topology, device, battle backend, batching
 - CurriculumConfig   — Opponent mix, team pools, BC model paths, ghosts
-- TrainingConfig     — Loop limits, checkpoint intervals, wandb, exploiters
+- ExploiterConfig    — In-process exploiter co-training (graduation-based)
+- TrainingConfig     — Loop limits, checkpoint intervals, wandb
 
 The two annealing helpers (`temperature_at_step`, `ent_coef_at_step`) and the
 LR scheduler (`lr_lambda`) live on the top-level RNaDConfig because they need
@@ -113,6 +114,128 @@ class PortfolioConfig:
 
 
 @dataclass
+class ExploiterConfig:
+    """In-process exploiter co-training (league-style graduation).
+
+    The exploiter is a *second learner* that runs in the same process as
+    main training. It optimizes a pure exploitation objective (no RNaD
+    regularization) against a frozen copy of the main agent ("the
+    victim"). Snapshots are NOT taken on a fixed schedule — the live
+    exploiter must "graduate" by sustaining a win rate above
+    `graduation_threshold` over the last `graduation_window` battles
+    against the victim. On graduation, the exploiter is saved to disk
+    (entering the EXPLOITERS curriculum slot for main to defend against)
+    and a new generation begins, fresh-initialized from the BC checkpoint
+    to find a *different* exploit.
+
+    Why graduation instead of fixed-interval snapshots:
+        - Quality control: every entry in the curriculum is a validated
+          weakness, not an arbitrary checkpoint.
+        - Diversity: fresh-init each generation forces convergence to a
+          different basin (next gen finds a different exploit because
+          main has learned to defend the previous one).
+        - Implicit difficulty curriculum: as main improves, hitting the
+          threshold gets harder. When main is robust enough that no
+          exploiter can graduate, the pipeline naturally winds down
+          rather than polluting the curriculum with weak exploits.
+
+    Why in-process (and not a separate script as in the previous
+    subprocess pipeline):
+        - Reuses the existing worker pool — no extra CPU pressure.
+        - Uses spare GPU capacity for the second learner's gradients.
+        - One run, one config, one wandb stream — no orchestration.
+
+    Required collaborators:
+        - `curriculum.curriculum_weights["train_exploiter"]` is the
+          single gate: > 0 activates the entire pipeline. Default 0.0
+          keeps it inert. Typical when on: 0.20 (20% to exploiter,
+          80% to main).
+        - `curriculum.bc_model_path` is the init source for each new
+          generation (must be set when train_exploiter > 0).
+
+    Schedule:
+
+        update     0 ────── 200 ──────────────── 1200 ──────────────── ???
+                   │         │                     │                    │
+                   │         └─ warmup ends        └─ victim refresh #1 └─ generation N
+                   └─ training start                                       graduates when
+                      (main only)                                          win_rate > threshold
+                                                                           over graduation_window
+                                                                           OR max_updates_per_gen
+    """
+
+    # Per-update batch size for the exploiter learner. Smaller than main's
+    # `training.train_batch_size` (256) because the exploiter sees only
+    # ~20% of trajectories — at 64, gradient updates fire at a similar
+    # wall-clock cadence to main. Tune jointly with the curriculum weight.
+    batch_size: int = 64
+
+    # Win-rate threshold for graduating an exploiter (saving it to the
+    # curriculum and starting a fresh generation). Computed over the last
+    # `graduation_window` train_exploiter battles. At 0.65 with
+    # window=1000, SE ≈ 1.5% — so a graduating exploiter has true win rate
+    # ≥ 62% with high confidence. Tighter thresholds (0.70+) catch only
+    # strong exploits but risk pipeline stall once main is robust; looser
+    # thresholds (0.60) churn the pool with borderline cases.
+    graduation_threshold: float = 0.65
+
+    # Number of recent train_exploiter battles to compute the rolling win
+    # rate over. Larger = more confident graduation gate (lower variance)
+    # but slower pool growth. 1000 ≈ ~5–10 min wall-clock — fast enough
+    # to keep generations turning over, slow enough to filter noise.
+    graduation_window: int = 1000
+
+    # Stall safeguard. If a generation can't graduate within this many
+    # exploiter updates, force a reset — main is likely robust against
+    # this basin and we should try a different one. Without this, an
+    # exploiter that's stuck at 60% would train forever, wasting compute
+    # and never adding to the curriculum.
+    max_updates_per_generation: int = 5000
+
+    # Updates between victim weight refreshes. The victim is the frozen
+    # opponent the exploiter trains *against* — refreshed by copying
+    # `main_agent.state_dict()` into `victim_agent` and broadcasting.
+    #
+    # Why freezing matters: an exploiter needs a stationary target to
+    # converge. Pointing it at live main creates a non-stationary RL
+    # problem (gradients chase a moving distribution → oscillation, not
+    # exploitation). Freezing turns each refresh window into a clean
+    # ~1000-update RL problem with a fixed reward landscape.
+    #
+    # Why not freeze forever: target would represent an outdated main;
+    # the exploit becomes irrelevant by the time it lands in the
+    # curriculum.
+    #
+    # Indexed on *main* updates (not exploiter updates) so the schedule
+    # is independent of `batch_size`. At a 20% trajectory share, 1000
+    # main updates ≈ ~200 exploiter updates of stable target.
+    victim_refresh_interval: int = 1000
+
+    # Initial main updates during which the exploiter learner is skipped
+    # and `train_exploiter` is excluded from curriculum sampling. Without
+    # this, the exploiter would train against a barely-trained (or
+    # BC-init) main — learning trivial exploits that vanish once main
+    # improves, and poisoning the first snapshot fed into the curriculum.
+    # Warmup gives main time to settle into the RNaD basin before
+    # adversarial co-training begins.
+    warmup_updates: int = 200
+
+    # Single LR override applied to BOTH backbone and heads parameter
+    # groups in the exploiter's optimizer. Slower than main's heads_lr
+    # (3e-4 typical) to keep the adversarial chase stable — the
+    # exploiter has a shorter generation budget than main, so we can't
+    # afford instability from too-aggressive updates.
+    lr: float = 1e-4
+
+    # Constant entropy bonus for the exploiter (no annealing — main
+    # anneals because main trains for 100K+ updates, but the exploiter's
+    # 5K-cap per generation doesn't justify a schedule). Matches the
+    # warmup-phase main entropy and prevents premature mode collapse
+    # onto a single exploit.
+    ent_coef: float = 0.02
+
+
+@dataclass
 class ExplorationConfig:
     """Temperature annealing and nucleus sampling for action selection."""
 
@@ -172,6 +295,12 @@ class ArchitectureConfig:
     teampreview_head_dropout: float = 0.3
     teampreview_head_layers: List[int] = field(default_factory=lambda: [512, 256])
     turn_head_layers: List[int] = field(default_factory=lambda: [2048, 1024, 1024, 1024])
+    # Optional deep value head: if non-empty, a ResidualBlock stack with these
+    # widths is inserted between late_ff_stack and the final value linear,
+    # giving the value head its own integrative depth instead of sharing all
+    # representation capacity with the policy head. When empty, the legacy
+    # 2-layer MLP (output_size -> 128 -> num_value_bins) is used.
+    value_head_layers: List[int] = field(default_factory=lambda: [])
     # Number bank embeddings
     number_bank_embedding_dim: int = 16
     number_bank_hp_bins: int = 100
@@ -231,6 +360,16 @@ class HardwareConfig:
     showdown_start_port: int = 8000
     use_mixed_precision: bool = True
     use_multiprocessing: bool = False
+    # Per-player concurrent-battle cap (poke-env's `max_concurrent_battles`
+    # kwarg on Player). None = poke-env's default of 1, which serialises
+    # battle setup behind the previous battle's full duration via
+    # `_battle_count_queue.put(None)` — see Track C in
+    # planning/stage2/2026-05-12-09-30-second-wsl-crash-and-watchdog.md.
+    # Set to `num_battles_per_pair` to let a player run all its pair's
+    # battles concurrently without queue-blocking. Only flows to
+    # `BatchInferencePlayer` constructions in `WorkerOpponentFactory`
+    # (Showdown training path); analysis scripts are unaffected.
+    max_concurrent_battles_per_player: Optional[int] = None
 
     def __post_init__(self) -> None:
         if self.battle_backend not in SUPPORTED_BATTLE_BACKENDS:
@@ -280,13 +419,21 @@ class CurriculumConfig:
     team_pool_path: Optional[str] = None
     # Behavior cloning model used as opponent
     bc_model_path: Optional[str] = "data/models/bc_model.pt"
-    # Opponent sampling distribution (must sum to 1.0)
+    # Opponent sampling distribution (must sum to 1.0).
+    #
+    # `exploiters` = main fights *frozen snapshots* of past exploiters from
+    #   `<run_dir>/exploiters/`. Always available (snapshots may be empty).
+    # `train_exploiter` = exploiter-vs-victim battles whose trajectories feed
+    #   the in-process exploiter learner. Only sampled when
+    #   `train_exploiter > 0` AND the warmup window has passed.
+    #   Default 0.0 so the slot exists but stays inert until enabled.
     curriculum_weights: Dict[str, float] = field(
         default_factory=lambda: {
             "self_play": 0.40,
             "bc_player": 0.20,
             "exploiters": 0.20,
             "ghosts": 0.20,
+            "train_exploiter": 0.0,
         }
     )
     adaptive_curriculum: bool = True
@@ -295,7 +442,9 @@ class CurriculumConfig:
     max_ghosts: int = 10
     # VGC bench external runner
     auto_launch_external_vgcbench: bool = False
-    dedicated_vgcbench_workers: int = 0
+    dedicated_vgcbench_workers: int = (
+        0  # TODO: i think this is a default at 0 and can remove
+    )
     external_vgcbench_python_executable: Optional[str] = None
     external_vgcbench_startup_wait_s: float = 5.0
     external_vgcbench_team_file: str = "data/teams/gen9vgc2024regg/vgcbench.txt"
@@ -305,17 +454,14 @@ class CurriculumConfig:
 
 @dataclass
 class TrainingConfig:
-    """Training loop, checkpointing, logging, and exploiter pipeline settings."""
+    """Training loop, checkpointing, and logging settings.
+
+    Exploiter co-training settings live in `ExploiterConfig` and are
+    accessed at `config.exploiter.*` rather than `config.training.*`.
+    """
 
     checkpoint_interval: int = 1000
     embedder_feature_set: str = "full"
-    exploiter_ent_coef: float = 0.02
-    exploiter_eval_games: int = 100
-    exploiter_interval: int = 10000
-    exploiter_lr: float = 1e-4
-    exploiter_min_win_rate: float = 0.55
-    exploiter_team_pool_path: Optional[str] = None
-    exploiter_updates: int = 50000
     initialize_path: Optional[str] = None
     log_interval: int = 1
     max_updates: int = 100000
@@ -325,11 +471,16 @@ class TrainingConfig:
     # Layout: <save_dir>/<run_name>/{ghosts,exploiters,*.pt}
     run_dir: Optional[str] = None
     train_batch_size: int = 32
-    train_exploiters: bool = False
     use_wandb: bool = True
     wandb_project: str = "elitefurretai-rnad"
     wandb_run_name: Optional[str] = None
     wandb_tags: Optional[List[str]] = None
+    # Combined RSS ceiling (trainer + all child processes) at which the
+    # memory watchdog requests a graceful shutdown. On WSL2 with 23 GiB of
+    # memory, 20 GB leaves ~3 GiB headroom for the in-flight learner step,
+    # checkpoint save, and wandb flush before Hyper-V would otherwise kill
+    # the VM. Set to None or 0 to disable.
+    memory_watchdog_threshold_gb: Optional[float] = 20.0
 
 
 def _make_sub(klass: Any, d: Dict[str, Any]) -> Any:
@@ -352,6 +503,7 @@ class RNaDConfig:
     algorithm: AlgorithmConfig = field(default_factory=AlgorithmConfig)
     architecture: ArchitectureConfig = field(default_factory=ArchitectureConfig)
     curriculum: CurriculumConfig = field(default_factory=CurriculumConfig)
+    exploiter: ExploiterConfig = field(default_factory=ExploiterConfig)
     exploration: ExplorationConfig = field(default_factory=ExplorationConfig)
     hardware: HardwareConfig = field(default_factory=HardwareConfig)
     optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
@@ -439,6 +591,7 @@ class RNaDConfig:
             algorithm=_make_sub(AlgorithmConfig, data.get("algorithm", {})),
             architecture=_make_sub(ArchitectureConfig, data.get("architecture", {})),
             curriculum=_make_sub(CurriculumConfig, data.get("curriculum", {})),
+            exploiter=_make_sub(ExploiterConfig, data.get("exploiter", {})),
             exploration=_make_sub(ExplorationConfig, data.get("exploration", {})),
             hardware=_make_sub(HardwareConfig, data.get("hardware", {})),
             optimizer=_make_sub(OptimizerConfig, data.get("optimizer", {})),

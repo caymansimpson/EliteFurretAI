@@ -65,18 +65,25 @@ def test_default_curriculum_uses_correct_keys():
     This is CRITICAL: The curriculum keys must match what OpponentPool expects:
     - 'self_play': Play against current model
     - 'bc_player': Play against behavioral cloning baseline
-    - 'exploiters': Play against trained exploiter agents
+    - 'exploiters': Play against frozen exploiter snapshots from <run_dir>/exploiters/
     - 'ghosts': Play against past checkpoint snapshots
+    - 'train_exploiter': Exploiter-vs-victim battles whose trajectories feed
+      the in-process exploiter learner (gated by train_exploiter > 0 +
+      exploiter.warmup_updates).
 
     BUG PREVENTION: Previously there was a mismatch where config used
     'past_versions' but opponent_pool expected 'ghosts'. This test
     ensures they stay aligned.
-
-    Expected: Keys are exactly {'self_play', 'bc_player', 'exploiters', 'ghosts'}
     """
     config = get_default_config()
 
-    expected_keys = {"self_play", "bc_player", "exploiters", "ghosts"}
+    expected_keys = {
+        "self_play",
+        "bc_player",
+        "exploiters",
+        "ghosts",
+        "train_exploiter",
+    }
     actual_keys = set(config.curriculum.curriculum_weights.keys())
 
     assert actual_keys == expected_keys, (
@@ -125,6 +132,48 @@ def test_config_save_and_load():
         assert loaded.optimizer.lr == 0.0005
         assert loaded.hardware.num_players == 4
         assert loaded.training.train_batch_size == 64
+
+
+def test_max_concurrent_battles_per_player_default_and_roundtrip():
+    """The new hardware knob defaults to None (so poke-env's library
+    default of 1 stays in force without explicit opt-in) and survives a
+    YAML round-trip both as an int and as None."""
+    config = get_default_config()
+    assert config.hardware.max_concurrent_battles_per_player is None
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config_path = os.path.join(tmpdir, "concurrency.yaml")
+        config.hardware.max_concurrent_battles_per_player = 16
+        config.save(config_path)
+        assert (
+            RNaDConfig.load(config_path).hardware.max_concurrent_battles_per_player == 16
+        )
+
+        config.hardware.max_concurrent_battles_per_player = None
+        config.save(config_path)
+        assert (
+            RNaDConfig.load(config_path).hardware.max_concurrent_battles_per_player is None
+        )
+
+
+def test_memory_watchdog_threshold_default_and_roundtrip():
+    """Memory watchdog threshold defaults to 20.0 GB and round-trips through YAML.
+
+    Disabling (None) must also survive the round-trip — the trainer treats
+    None or 0 as "disabled" and that pathway has to be configurable.
+    """
+    config = get_default_config()
+    assert config.training.memory_watchdog_threshold_gb == 20.0
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config_path = os.path.join(tmpdir, "watchdog.yaml")
+        config.training.memory_watchdog_threshold_gb = 14.5
+        config.save(config_path)
+        assert RNaDConfig.load(config_path).training.memory_watchdog_threshold_gb == 14.5
+
+        config.training.memory_watchdog_threshold_gb = None
+        config.save(config_path)
+        assert RNaDConfig.load(config_path).training.memory_watchdog_threshold_gb is None
 
 
 def test_config_save_creates_directory():
@@ -334,17 +383,6 @@ def test_use_mixed_precision_is_boolean():
     assert isinstance(config.hardware.use_mixed_precision, bool)
 
 
-def test_train_exploiters_is_boolean():
-    """
-    Test that train_exploiters is a boolean.
-
-    Expected: train_exploiters is True or False.
-    """
-    config = get_default_config()
-
-    assert isinstance(config.training.train_exploiters, bool)
-
-
 # =============================================================================
 # PORTFOLIO CONFIG TESTS
 # =============================================================================
@@ -364,6 +402,53 @@ def test_portfolio_config_options():
     assert isinstance(config.portfolio.max_portfolio_size, int)
     assert config.portfolio.max_portfolio_size > 0
     assert config.portfolio.portfolio_update_strategy in ["diverse", "best", "recent"]
+
+
+# =============================================================================
+# EXPLOITER CONFIG TESTS
+# =============================================================================
+
+
+def test_exploiter_config_defaults():
+    """ExploiterConfig holds all in-process exploiter co-training knobs.
+
+    Defaults must produce a sensible (if conservative) configuration
+    even when train_exploiter == 0 — the dataclass is always constructed
+    regardless of whether the pipeline is active.
+    """
+    config = get_default_config()
+
+    # Schedule knobs — must be positive ints with sane ranges
+    assert isinstance(config.exploiter.batch_size, int)
+    assert config.exploiter.batch_size > 0
+    assert isinstance(config.exploiter.graduation_window, int)
+    assert config.exploiter.graduation_window > 0
+    assert isinstance(config.exploiter.max_updates_per_generation, int)
+    assert config.exploiter.max_updates_per_generation > 0
+    assert isinstance(config.exploiter.victim_refresh_interval, int)
+    assert config.exploiter.victim_refresh_interval > 0
+    assert isinstance(config.exploiter.warmup_updates, int)
+    assert config.exploiter.warmup_updates >= 0  # 0 disables warmup
+
+    # Threshold is a probability
+    assert 0.0 <= config.exploiter.graduation_threshold <= 1.0
+
+    # Optimizer knobs
+    assert config.exploiter.lr > 0
+    assert config.exploiter.ent_coef >= 0
+
+
+def test_exploiter_config_round_trip():
+    """ExploiterConfig survives to_dict/from_dict round-trip."""
+    config = get_default_config()
+    config.exploiter.graduation_threshold = 0.70
+    config.exploiter.batch_size = 128
+
+    d = config.to_dict()
+    restored = type(config).from_dict(d)
+
+    assert restored.exploiter.graduation_threshold == 0.70
+    assert restored.exploiter.batch_size == 128
 
 
 # =============================================================================
