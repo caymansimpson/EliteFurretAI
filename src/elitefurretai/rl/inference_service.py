@@ -117,9 +117,9 @@ class InferenceService:
         # first request, then opportunistically gather more up to either
         # batch_size or batch_timeout since the first arrived.
         #
-        # D3-alt: the queue carries InferenceRequest AND EvictRequest. We
-        # process EvictRequests inline (they're cheap dict-pops) and only
-        # pack InferenceRequests into batches.
+        # The queue carries InferenceRequest AND EvictRequest. We
+        # process EvictRequests inline (they're cheap dict-pops) and
+        # only pack InferenceRequests into batches.
         while not self._stop.is_set():
             try:
                 first = self._request_queue.get(timeout=0.1)
@@ -233,7 +233,7 @@ class InferenceService:
 # ─────────────────────────────────────────────────────────────────────
 # M1 helper: deterministic echo handler used by the round-trip test.
 # Returns action_idx=0 for every request. Doesn't manage hidden state
-# (D3-alt makes that the real handler's job); tests using this handler
+# (RealModelBatchHandler manages it); tests using this echo handler
 # don't exercise hidden-state correctness.
 # ─────────────────────────────────────────────────────────────────────
 

@@ -8,7 +8,7 @@ One per InferenceService. The client owns:
   - a request_id → asyncio.Future mapping (in-flight requests)
 
 Players call `await client.submit(state=..., battle_tag=..., ...)` and
-get back the response. Hidden state is NOT shipped on the wire (D3-alt);
+get back the response. Hidden state is NOT shipped on the wire;
 the trainer-side handler keeps it keyed by (worker_id, battle_tag) and
 the worker just sends the lightweight battle_tag.
 

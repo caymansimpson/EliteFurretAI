@@ -271,12 +271,12 @@ class BatchInferencePlayer(Player):
         embedder: Optional[Embedder] = None,
         max_battle_steps: int = 40,
         opponent_type: str = "self_play",
-        # Centralized-inference (M4): when set, the player submits requests
-        # to a shared trainer-side InferenceService instead of running a
-        # per-player inference loop. Mutually exclusive with `model`. When
-        # `inference_client` is provided, `is_transformer` must also be
-        # supplied (the player needs it to know the shape of hidden_states
-        # entries; without `model` we can't introspect).
+        # Centralized-inference: when set, the player submits requests
+        # to a shared trainer-side InferenceService instead of running
+        # a per-player inference loop. Mutually exclusive with `model`.
+        # When `inference_client` is provided, `is_transformer` must
+        # also be supplied (the player needs it to know the shape of
+        # hidden_states entries; without `model` we can't introspect).
         inference_client: Optional["InferenceClient"] = None,
         is_transformer: Optional[bool] = None,
         **kwargs,
@@ -1107,8 +1107,8 @@ class BatchInferencePlayer(Player):
                 # Centralized path: trainer-side InferenceService runs the
                 # forward + sampling AND owns the hidden state, keyed by
                 # (worker_id, battle_tag). The wire payload only carries
-                # the lightweight battle_tag (D3-alt). Player no longer
-                # tracks hidden_states locally in this mode.
+                # the lightweight battle_tag. Player no longer tracks
+                # hidden_states locally in this mode.
                 response = await asyncio.wait_for(
                     self.inference_client.submit(
                         state=state,
@@ -1391,10 +1391,10 @@ class BatchInferencePlayer(Player):
         # ─────────────────────────────────────────────────────────────────────
         self._request_generation.pop(battle.battle_tag, None)
 
-        # Centralized inference (D3-alt): trainer-side handler keeps a
-        # hidden_states dict keyed by (worker_id, battle_tag). Tell it
-        # to free the slot so the dict doesn't grow monotonically over
-        # the run. Cheap fire-and-forget IPC message.
+        # Centralized inference: trainer-side handler keeps a
+        # hidden_states dict keyed by (worker_id, player_id,
+        # battle_tag). Tell it to free this side's slot so the dict
+        # doesn't grow monotonically. Cheap fire-and-forget IPC message.
         if self.inference_client is not None:
             self.inference_client.evict(self.username, battle.battle_tag)
 

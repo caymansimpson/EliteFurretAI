@@ -380,11 +380,13 @@ class HardwareConfig:
     # subsequent calls reuse the cached graph.
     compile_inference_model: Optional[str] = None
 
-    # Centralized inference (M4 of the centralized-inference plan): when
-    # True, the trainer process owns a single InferenceService for the
-    # main agent and workers submit requests via mp.Queue instead of
-    # holding their own model copies. Unlocks bigger batch sizes (F8)
-    # and re-enables torch.compile (single process compile cost).
+    # Centralized inference: when True, the trainer process owns a
+    # ModelRegistry of InferenceServices (one per registered model
+    # name) and workers submit requests via mp.Queue instead of holding
+    # their own model copies. Unlocks bigger batch sizes (combines all
+    # workers' main requests into one forward) and lets torch.compile
+    # be applied once trainer-side instead of N times worker-side.
+    # See src/elitefurretai/rl/RL.md section 8b for the full design.
     enable_centralized_inference: bool = False
 
     def __post_init__(self) -> None:

@@ -102,12 +102,12 @@ def mp_worker_process(
     main_inference_request_queue: Optional[MPQueue] = None,
     main_inference_response_queue: Optional[MPQueue] = None,
     main_is_transformer: Optional[bool] = None,
-    # Step 3+: bundle of (req_q, resp_q) keyed by model name for ALL
-    # registered models in the trainer's ModelRegistry. Workers wrap
-    # this in WorkerInferenceClients so the factory can hot-swap
+    # Bundle of (req_q, resp_q) keyed by model name for ALL registered
+    # models in the trainer's ModelRegistry. Workers wrap this in
+    # WorkerInferenceClients so the factory can hot-swap
     # opponent.inference_client between main / bc / ghost slots / etc.
-    # When None (legacy mode or step-2 config), only the singular
-    # main_inference_request_queue path is used.
+    # When None (legacy mode), only the singular
+    # main_inference_request_queue path is used (back-compat shim).
     queues_by_model: Optional[Dict[str, Any]] = None,
 ):
     """
@@ -259,7 +259,7 @@ def mp_worker_process(
         # exist in the checkpoint. Without this, workers crash at startup
         # with `Missing/Unexpected key(s) in state_dict` while the trainer
         # itself loads fine — a silent asymmetry.
-        # Centralized-inference (M4) skips loading the main model into
+        # Centralized inference skips loading the main model into
         # this worker's process — the trainer-side InferenceService owns
         # it. We still need `embedder` (built above) for featurization
         # and `model_config` for ghost loading paths. Detected from
@@ -285,7 +285,7 @@ def mp_worker_process(
             )
             from poke_env.concurrency import POKE_LOOP
 
-            # Step 3+: when the trainer passed a per-model queues bundle,
+            # When the trainer passed a per-model queues bundle,
             # wrap it in WorkerInferenceClients (one InferenceClient per
             # registered model). When only legacy main queues were passed,
             # construct a single main client.

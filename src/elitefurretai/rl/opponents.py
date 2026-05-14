@@ -933,19 +933,21 @@ class WorkerOpponentFactory:
         exploiter_agent: Optional[RNaDAgent] = None,
         victim_agent: Optional[RNaDAgent] = None,
         max_concurrent_battles_per_player: Optional[int] = None,
-        # Centralized-inference (M4): when set, the factory wires
+        # Centralized inference: when set, the factory wires
         # BatchInferencePlayers to submit through the trainer-side
         # InferenceService instead of holding a model copy. `main_agent`
         # may be None when this is set; `main_is_transformer` is then
         # required because the player needs hidden-state shape info.
         main_inference_client: Optional["InferenceClient"] = None,
         main_is_transformer: Optional[bool] = None,
-        # Step 3+: full bundle of inference clients (one per registered
-        # model name in the trainer's ModelRegistry). When set, takes
+        # Full bundle of inference clients (one per registered model
+        # name in the trainer's ModelRegistry). When set, takes
         # precedence over the singular `main_inference_client` —
         # `configure_opponent_for_batch` uses bundle.get("main") /
-        # bundle.get("bc") / bundle.get(f"ghost_{n}") to hot-swap
-        # opponent.inference_client per curriculum pick.
+        # bundle.get("bc") / etc. to hot-swap opponent.inference_client
+        # per curriculum pick. `main_inference_client` is retained as
+        # a fallback for callers that haven't been updated to the
+        # bundle interface.
         worker_inference_clients: Optional["WorkerInferenceClients"] = None,
     ):
         if main_agent is None and main_inference_client is None:
@@ -963,8 +965,8 @@ class WorkerOpponentFactory:
         self.server_config = server_config
         self.main_agent = main_agent
         # The bundle is the source of truth in centralized mode (step 3+).
-        # `main_inference_client` is kept for back-compat with the step-2
-        # call site that didn't yet know about the bundle.
+        # `main_inference_client` is kept as a back-compat fallback for
+        # callers that haven't switched to the bundle interface.
         self.worker_inference_clients = worker_inference_clients
         self.main_inference_client = main_inference_client
         self.main_is_transformer = main_is_transformer
@@ -1230,12 +1232,12 @@ class WorkerOpponentFactory:
                 self.max_concurrent_battles_per_player
             )
 
-        # Centralized vs legacy: in centralized mode (M4) the player owns
+        # Centralized vs legacy: in centralized mode the player owns
         # an `inference_client` and submits requests to the trainer-side
         # InferenceService; in legacy mode it owns a model copy and runs
         # its own inference loop. Same constructor accepts either.
-        # Step 3+: prefer the bundle (worker_inference_clients.get("main"))
-        # so that the same player can be re-pointed at "bc" / ghost slots
+        # Prefer the bundle (worker_inference_clients.get("main")) so
+        # that the same player can be re-pointed at "bc" / ghost slots
         # later by configure_opponent_for_batch.
         main_client = self._resolve_centralized_client("main")
         main_kwargs: Dict[str, Any]
@@ -1492,10 +1494,11 @@ class WorkerOpponentFactory:
                 self._swap_to(player, "main", self.main_agent)
         elif selected_type == self.GHOSTS:
             ghost_agent = self._get_ghost_agent()
-            # Ghost slots in centralized mode use names like "ghost_0".
-            # Step 5 will add slot rotation; for now ghosts only work in
-            # legacy mode (passing None centralized_name forces fallback
-            # to ghost_agent legacy swap).
+            # Ghost slot rotation through the registry isn't wired yet
+            # (see model-registry-plan.md "Future work"). Passing None
+            # as centralized_name forces _swap_to to take the legacy
+            # ghost_agent path — workers still lazy-load ghost
+            # checkpoints from disk via _get_ghost_agent().
             opponent_swapped = self._swap_to(opponent, None, ghost_agent)
             if not opponent_swapped:
                 selected_type = self.SELF_PLAY

@@ -1157,13 +1157,14 @@ def main():
     mp_error_queue: MPQueue = MPQueue(maxsize=100)
     mp_stop_event: MPEvent = mp.Event()
 
-    # ── Centralized inference (M4) ───────────────────────────────────────────
-    # When enabled, build a trainer-side InferenceService for the main
-    # agent and per-worker mp.Queues that workers will use to submit
-    # inference requests. The service holds an independent CPU copy of
-    # the agent model so the learner can update without racing with
-    # inference; we sync weights into it at the same cadence as the
-    # legacy per-worker broadcast.
+    # ── Centralized inference ────────────────────────────────────────────
+    # When enabled, build a trainer-side ModelRegistry of
+    # InferenceServices (main always, BC if curriculum uses it,
+    # exploiter/victim if train_exploiter is on). Workers submit
+    # inference requests via mp.Queues. Each service holds an
+    # independent copy of its model so the learner can update without
+    # racing with inference; we sync weights into them at the same
+    # cadence as the legacy per-worker broadcast.
     centralized = config.hardware.enable_centralized_inference
     registry: Optional[ModelRegistry] = None
     main_is_transformer: Optional[bool] = None
@@ -1175,9 +1176,11 @@ def main():
         )
 
         # ModelRegistry owns one InferenceService per registered model.
-        # For step 2 (this commit) we register only "main"; later steps
-        # add bc / victim / exploiter / ghost slots without changing the
-        # surrounding plumbing.
+        # We always register "main"; BC / victim / exploiter are
+        # conditionally registered below if the curriculum uses them.
+        # Ghost slot rotation isn't wired into the registry yet — see
+        # model-registry-plan.md "Future work" — so ghosts continue to
+        # use the legacy on-demand worker-side loading path.
         inference_device = config.hardware.device
         inference_embedder = Embedder(
             format=config.curriculum.battle_format,
@@ -1279,10 +1282,10 @@ def main():
                 # produces updates.
                 registry.register(slot_name, RNaDAgent(slot_base), compile=False)
 
-        # Pull out main's queues for the existing per-worker spawn-args
-        # interface. Step 3+ also passes the full bundle so workers can
-        # construct WorkerInferenceClients with one client per registered
-        # model.
+        # Pull out main's queues for the back-compat per-worker
+        # spawn-args interface. The full bundle is also passed below so
+        # workers can construct WorkerInferenceClients with one client
+        # per registered model.
         all_queues = registry.queues_for_workers()
         main_request_queue, main_response_qs = all_queues["main"]
         main_response_queues = list(main_response_qs)

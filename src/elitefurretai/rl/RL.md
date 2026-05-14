@@ -41,6 +41,11 @@ This document is the **comprehensive, one-stop guide** to EliteFurretAI's reinfo
     -   Mixed Precision Training (2x speedup)
     -   Why Multiprocessing? GIL Limitations
     -   Multi-Server Showdown Architecture
+8b. [**Centralized Inference (May 2026)**](#8b-centralized-inference-may-2026)
+    -   ModelRegistry + WorkerInferenceClients architecture
+    -   Hot-swap opponent.inference_client between named models
+    -   +34% throughput on full curriculum
+    -   torch.compile multi-thread caveat
 9.  [**Scaling Experiments & Benchmarks**](#9-scaling-experiments--benchmarks)
     -   Baseline Measurements
     -   Multi-Server Scaling Results
@@ -133,11 +138,22 @@ The system uses an **IMPALA-style multiprocessing architecture** with separate P
 ```
 
 **Key Characteristics:**
-- Each actor is a **separate Python process** with its own model copy
-- Actors use **CPU inference** (GPU reserved for learner)
-- **Bypasses GIL** for true parallelism and 2-3x throughput improvement
-- Learner periodically **broadcasts updated weights** to all actors
-- Actors send completed trajectories via `multiprocessing.Queue`
+- Each actor is a **separate Python process** (still true — bypasses GIL).
+- **Centralized inference (post-2026-05-14, the default):** actors no
+  longer hold their own model copies. A trainer-side `ModelRegistry`
+  owns one `InferenceService` per model name; actors construct a
+  `WorkerInferenceClients` bundle and submit via mp.Queue. The inference
+  forward runs on GPU in the trainer process. See "Centralized
+  Inference" section below for details.
+- **Legacy mode** (set `enable_centralized_inference: false` in
+  config): each actor holds a CPU model copy and runs its own batched
+  inference loop. The diagram above shows this mode.
+- **Bypasses GIL** for true parallelism — featurization + battle
+  stepping in actor processes, inference on the trainer's GPU.
+- Learner periodically **broadcasts updated weights** to all actors.
+  Under centralized inference, the trainer also syncs the inference
+  service's model copy from the learner at the same cadence.
+- Actors send completed trajectories via `multiprocessing.Queue`.
 
 ---
 
@@ -586,6 +602,104 @@ Each actor connects to a different server, distributing load across CPU cores.
 
 ---
 
+## 8b. Centralized Inference (May 2026)
+
+Shipped on `main` 2026-05-14 (commit `3ead76c`). The full design + measurement
+history is in `planning/stage2/2026-05-13-18-00-centralized-inference-implementation-plan.md`
+and `planning/stage2/2026-05-14-00-15-model-registry-plan.md`.
+
+### What changed
+
+Pre-merge architecture: each actor process held its own CPU copy of the
+main agent, ran its own per-player `BatchInferencePlayer` queue +
+inference loop, and pulled weight updates from the learner via mp.Queue
+broadcasts. With `num_workers=4` and a 27M-param transformer, that's
+4 model copies in worker memory and 4 separate, CPU-bound inference
+loops.
+
+Post-merge architecture (opt-in via `enable_centralized_inference: true`):
+
+- Trainer owns a `ModelRegistry` with one `InferenceService` per model
+  name. Currently registered: `main` (torch.compile'd), optionally
+  `bc` / `exploiter` / `victim` (gated on curriculum weight).
+- Each service runs as a daemon thread in the trainer process. The
+  service drains an `mp.Queue` of `InferenceRequest`s, batches up to
+  `batch_size` (or until `batch_timeout` elapses), runs ONE batched
+  forward, and dispatches `InferenceResponse`s to per-worker response
+  queues.
+- Workers no longer hold model copies. Each constructs a
+  `WorkerInferenceClients` bundle from per-worker mp.Queue handles.
+  Players in the worker call `client.submit(...)` and await a future.
+- Hidden state lives on the trainer side, in
+  `RealModelBatchHandler.hidden_states` keyed by
+  `(worker_id, player_id, battle_tag)`. Wire payloads carry only the
+  lightweight battle_tag, not the (1, T, hidden_size) tensor.
+- Eviction: workers send an `EvictRequest` on battle completion so the
+  trainer can free its hidden-state slot. Cleanup also fires on every
+  stale-request / timeout / send-failure path
+  (`BatchInferencePlayer._reset_battle_hidden_state`).
+
+### Hot-swap (multi-model curriculum)
+
+`WorkerOpponentFactory.configure_opponent_for_batch` chooses an
+opponent type per battle pair. In centralized mode, it re-points
+`opponent.inference_client` to the right client by name:
+`clients.get("main")`, `clients.get("bc")`, etc.
+`WorkerOpponentFactory._swap_to(slot, name, legacy_agent)` resolves
+"centralized client by name, falling back to legacy `slot.model = X`."
+
+### What's NOT centralized
+
+- **Ghost models**: each worker still loads ghost checkpoints from
+  disk lazily (`_get_ghost_agent`). Ghost rotation through the registry
+  is a deferred follow-up — see the registry plan's "Future work".
+- **OpponentPool's main-process eval battles**: still use legacy
+  per-call inference. Cheap enough that centralizing them isn't
+  motivated.
+
+### Throughput
+
+Measured on sep_arch.yaml, full original curriculum (self_play 0.3 /
+bc 0.1 / ghosts 0.1 / max_damage 0.1 / simple_heuristic 0.1 /
+vgc_bench 0.3), post-warmup updates:
+
+| Variant | Throughput | Learner steps/s |
+|---|---|---|
+| Per-player baseline (pre-merge) | 3.7 traj/s | ~60 |
+| Centralized (post-merge) | **4.98 traj/s** | **~87** |
+| Δ | **+34%** | **+45%** |
+
+Plus two collateral improvements landed in the same commit:
+- Vectorized `GroupedFeatureEncoder._dual_expand` (was 32% of worker
+  py-spy OwnTime — per-position Python loop calling `nn.Embedding`
+  N times; vectorized version batches per-bank lookups). ~1.9× CUDA
+  microbenchmark speedup.
+- F9 legacy bug fix: `RealModelBatchHandler._slice_next_hidden`
+  correctly handles mixed-length batches. Pre-fix legacy code sliced a
+  padding-derived position instead of the real new-state position,
+  corrupting next-turn hidden state for any battle that started in a
+  heterogeneous batch.
+
+### Caveats / known issues
+
+- **torch.compile + multi-threaded service calls**: `mode='default',
+  dynamic=True` is not thread-safe across multiple compiled services
+  in concurrent threads. Symptom: `RuntimeError: Detected that you are
+  using FX to symbolically trace a dynamo-optimized function`.
+  Workaround: `registry.register(name, agent, compile=False)` for any
+  non-main model. Documented in `ModelRegistry.register`'s docstring.
+- **Memory watchdog**: bumped from 20 GB → 22 GB in sep_arch.yaml.
+  VGCBench external runners (~5.5 GB) + 4 Showdown servers + workers
+  + trainer combined RSS edges over 20 GB on the 24 GB WSL2.
+
+### How to revert (escape hatch)
+
+`enable_centralized_inference: false` in your config. The dual-mode
+`BatchInferencePlayer` keeps the legacy per-player path fully intact;
+this is one config knob away.
+
+---
+
 ## 9. Scaling Experiments & Benchmarks
 
 ### Baseline Measurements
@@ -898,19 +1012,21 @@ Tested on forward pass (5.85ms baseline):
 
 | File | Purpose |
 |------|---------|
-| `agent.py` | RNaDAgent wrapper for step-by-step RL (supports LSTM + Transformer) |
-| `learner.py` | RNaDLearner with PPO + KL regularization + distributional value |
-| `multiprocess_actor.py` | IMPALA-style multiprocessing actors and trainer |
-| `config.py` | RNaDConfig dataclass (exploration, optimizer, architecture flags) |
-| `fast_action_mask.py` | Optimized action mask generation |
-| `model_io.py` | Model construction, checkpoint save/load, config key management |
-| `opponent_pool.py` | Opponent sampling (self, BC, exploiters) |
-| `portfolio_learner.py` | Portfolio regularization extension |
-| `players.py` | BatchInferencePlayer with LSTM/Transformer hidden state management |
-| `train.py` | Main training coordinator |
-| `exploiter_train.py` | Exploiter training subprocess |
-| `launch_servers.py` | Multi-server Showdown launcher |
-| `evaluate.py` | Model evaluation utilities |
+| `players.py` | `RNaDAgent` wrapper (model adapter) + `BatchInferencePlayer` (poke-env Player that bridges battles → inference). Dual-mode: legacy per-player batcher OR centralized via `inference_client`. |
+| `learners.py` | `PortfolioRNaDLearner` with PPO + KL regularization + distributional value (C51). Model construction lives here too (`build_model_from_config`, `load_agent_from_checkpoint`). |
+| `worker.py` | `mp_worker_process` — the actor subprocess body. Spawns once per `num_workers`; sets up VGCEnvironment, runs battles, ships trajectories. In centralized mode skips loading the main model and constructs `WorkerInferenceClients` from spawn args. |
+| `train.py` | Main training coordinator. Owns the learner, the `ModelRegistry` (centralized inference), worker spawn, weight broadcast, checkpointing. |
+| `config.py` | `RNaDConfig` dataclass. Knobs: hardware (num_workers, batch_size, enable_centralized_inference, compile_inference_model, max_concurrent_battles_per_player, ...), algorithm (PPO/RNaD), curriculum, etc. |
+| `opponents.py` | `OpponentPool` (trainer-side curriculum manager) + `WorkerOpponentFactory` (worker-side player builder, opponent hot-swap via `_swap_to`). |
+| `masking.py` | `fast_get_action_mask` and helpers (the optimized action-mask path). |
+| `model_registry.py` | Trainer-side `ModelRegistry`: one `InferenceService` per registered model name. Used in centralized inference mode (post-2026-05-14). |
+| `worker_inference_clients.py` | Worker-side bundle of `InferenceClient` instances, keyed by model name. Counterpart to `ModelRegistry`. |
+| `inference_service.py` | Trainer-side batched inference loop. Runs as a daemon thread per registered model. |
+| `inference_handlers.py` | `RealModelBatchHandler` — the actual model-forward path called by the service. Owns `hidden_states` keyed by `(worker_id, player_id, battle_tag)`. |
+| `inference_client.py` | Worker-side client: submits `InferenceRequest`, awaits response via per-request asyncio future. |
+| `inference_ipc.py` | `InferenceRequest` / `InferenceResponse` / `EvictRequest` dataclasses (the wire protocol). |
+| `launch_servers.py` | Multi-server Showdown launcher. |
+| `analyze/` | Evaluation utilities, plotters, VGCBench external runner. |
 
 ---
 

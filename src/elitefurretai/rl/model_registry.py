@@ -9,10 +9,10 @@ API for adding / weight-syncing / shutting down model-driven services.
 
 Why this exists
 ---------------
-Centralized inference (D3-alt) ships per-model services (one for main,
-one for BC, one per ghost slot, etc.). Doing this manually means
-threading a `<name>_inference_client` parameter through several files
-per model type. The registry collapses that into:
+Centralized inference ships per-model services (one for main, one for
+BC, optionally one per exploiter/victim/ghost). Doing this manually
+would mean threading a `<name>_inference_client` parameter through
+several files per model type. The registry collapses that into:
 
     registry.register("main", main_agent)
     registry.register("bc", bc_agent)

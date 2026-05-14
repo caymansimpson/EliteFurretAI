@@ -7,14 +7,16 @@ and returns a list of `InferenceResponse`, doing the same work that
 loop do today. M2 ships the real-model variant; M1 has an echo handler
 for plumbing tests.
 
-D3-alt: hidden state lives here
--------------------------------
-After the M4e measurement showed shipping per-turn hidden tensors over
-mp.Queue dominated wire cost, the handler now owns a `hidden_states`
-dict keyed by (worker_id, battle_tag). The wire payload only carries
-the lightweight battle_tag; the handler looks up the prior context,
-runs the forward, and stores the updated context back in its own dict.
-The wire response no longer carries `next_hidden`.
+Hidden state lives here (not on the wire)
+-----------------------------------------
+The handler owns a `hidden_states` dict keyed by
+(worker_id, player_id, battle_tag). The wire payload only carries the
+lightweight battle_tag; the handler looks up the prior context, runs
+the forward, and stores the updated context back in its own dict.
+The wire response carries action / log_prob / value but NOT
+next_hidden. This is the design that survived measurement after the
+initial "ship hidden in every request" version proved to be IPC-bound
+(~120 KB per request; the trainer-side dict shrinks payloads ~40x).
 
 Memory hygiene: callers MUST send an `EvictRequest` when a battle ends
 or the dict grows monotonically over the run. The handler exposes
@@ -25,7 +27,7 @@ What this handler owns
 - The model (an `RNaDAgent` wrapping a transformer or LSTM model).
 - The device (typically "cpu" today; "cuda" once we move worker inference
   to GPU).
-- The `hidden_states` dict (D3-alt).
+- The `hidden_states` dict (keyed by worker_id + player_id + battle_tag).
 - Per-request sampling math: temperature scaling, mask + renormalize,
   top-p nucleus filter, multinomial draw OR argmax, masked T=1 log-prob.
 """
@@ -64,15 +66,15 @@ class RealModelBatchHandler:
         self._is_transformer = isinstance(
             getattr(agent, "model", agent), TransformerThreeHeadedModel
         )
-        # D3-alt: hidden state lives on the trainer side, keyed by
-        # (worker_id, battle_tag). Service calls __call__ on a single
-        # thread, so no lock needed for normal request processing.
-        # `evict` is called from the same thread (service drains evict
+        # Hidden state lives here, keyed by (worker_id, player_id,
+        # battle_tag). The service calls __call__ on a single thread,
+        # so no lock is needed for normal request processing. `evict`
+        # is also called from that thread (the service drains evict
         # requests off the same queue), so still no lock needed.
-        # Key: (worker_id, player_id, battle_tag). player_id is required
-        # because both sides of a self-play battle share the same
-        # battle_tag — keying without it would collide and double-grow
-        # the hidden tensor.
+        #
+        # player_id is required in the key because both sides of a
+        # self-play battle share the same battle_tag — keying without
+        # it would collide and double-grow the hidden tensor.
         self.hidden_states: Dict[Tuple[int, str, str], torch.Tensor] = {}
 
     def __call__(self, batch: List[InferenceRequest]) -> List[InferenceResponse]:
@@ -88,8 +90,10 @@ class RealModelBatchHandler:
             for r in batch
         ]
         # Diagnostic: catch overgrown contexts before they crash inside
-        # the model. Useful while D3-alt eviction policy is still being
-        # validated.
+        # the model's positional encoder (max_seq_len bound). This fires
+        # if eviction-on-stale (BatchInferencePlayer._reset_battle_hidden_state)
+        # somehow misses a cleanup site, since each in-flight request
+        # for the same battle would otherwise grow hidden by 1.
         for ph, req in zip(prior_hiddens, batch):
             if ph is not None and ph.shape[1] > 35:
                 logger.warning(

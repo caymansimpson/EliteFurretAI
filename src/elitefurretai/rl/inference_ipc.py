@@ -11,14 +11,14 @@ torch.multiprocessing auto-shares torch.Tensor payloads via /dev/shm; numpy
 arrays and primitives go through pickle. Dataclasses are picklable as long
 as all fields are picklable.
 
-D3-alt: hidden state lives in trainer
--------------------------------------
-After the M4e measurement showed that shipping the (1, T, hidden_size)
-context with every request was the dominant IPC cost (~120 KB/request,
-~14 MB/sec total), the wire payload was redesigned: the trainer-side
-handler keeps a `hidden_states` dict keyed by (worker_id, battle_tag)
-and looks it up per request. The wire only carries the small ID
-(battle_tag string) instead of the bulky tensor.
+Hidden state lives in trainer, not on the wire
+----------------------------------------------
+The trainer-side handler keeps a `hidden_states` dict keyed by
+(worker_id, player_id, battle_tag) and looks it up per request. The
+wire only carries the small battle_tag string instead of a bulky
+(1, T, hidden_size) tensor — this shrinks per-request IPC payload by
+~40x and was the design that beat the initial "ship hidden in every
+request" version (~120 KB/request, ~14 MB/sec total, IPC-bound).
 
 Shape conventions
 -----------------
@@ -65,8 +65,9 @@ class InferenceResponse:
     The model's distributional `win_dist_logits` output is also dropped
     — the learner recomputes it during training and the trajectory format
     doesn't store it. `next_hidden` was previously here for the worker
-    to store back into its `hidden_states` dict; under D3-alt the trainer
-    keeps the dict, so the worker no longer needs it on the wire.
+    to store back into its `hidden_states` dict; the trainer-side
+    handler keeps the dict now, so the worker no longer needs it on
+    the wire.
     """
 
     request_id: int
