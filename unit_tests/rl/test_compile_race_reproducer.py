@@ -167,3 +167,70 @@ def test_two_real_rnad_agents_concurrent_calls_no_race():
     t1.join()
     t2.join()
     assert errors == [], f"compile race triggered: {errors[0]!r}"
+
+
+@pytest.mark.timeout(180)
+def test_two_real_rnad_agents_with_per_model_lock():
+    """Same as test_two_real_rnad_agents_concurrent_calls_no_race but
+    each compiled model has its own threading.Lock serializing entry.
+
+    Tests whether serializing dynamo trace-entry per-model bypasses the
+    race. Locks are per-model (lock1 for agent1, lock2 for agent2) so
+    the two models can still run concurrently with each other — only
+    simultaneous re-entries into the SAME model are blocked.
+    """
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    agent1_raw, emb_size, hidden_size = _make_small_rnad_agent(device)
+    agent2_raw, _, _ = _make_small_rnad_agent(device)
+
+    agent1 = torch.compile(agent1_raw, mode="default", dynamic=True)
+    agent2 = torch.compile(agent2_raw, mode="default", dynamic=True)
+
+    def _warmup(agent: Any) -> None:
+        with torch.no_grad():
+            x0 = torch.zeros(1, 1, emb_size, device=device)
+            _, _, _, _, h0 = agent(x0, None, mask=None, hidden_mask=None)
+            ctx1 = h0[:1, :1, :].clone()
+            hmask1 = torch.ones(1, 1, dtype=torch.bool, device=device)
+            x1 = torch.zeros(1, 1, emb_size, device=device)
+            agent(x1, ctx1, mask=None, hidden_mask=hmask1)
+
+    _warmup(agent1)
+    _warmup(agent2)
+
+    lock1 = threading.Lock()
+    lock2 = threading.Lock()
+
+    errors: List[BaseException] = []
+
+    def loop_locked(agent: Any, lock: threading.Lock) -> None:
+        rng = random.Random()
+        try:
+            with torch.no_grad():
+                for _ in range(200):
+                    ctx_len = rng.randint(0, 10)
+                    batch_size = rng.randint(1, 8)
+                    x = torch.randn(batch_size, 1, emb_size, device=device)
+                    if ctx_len == 0:
+                        hidden: Optional[torch.Tensor] = None
+                        hmask: Optional[torch.Tensor] = None
+                    else:
+                        hidden = torch.randn(
+                            batch_size, ctx_len, hidden_size, device=device
+                        )
+                        hmask = torch.ones(
+                            batch_size, ctx_len, dtype=torch.bool, device=device
+                        )
+                    with lock:
+                        agent(x, hidden, mask=None, hidden_mask=hmask)
+        except BaseException as exc:
+            errors.append(exc)
+
+    t1 = threading.Thread(target=loop_locked, args=(agent1, lock1))
+    t2 = threading.Thread(target=loop_locked, args=(agent2, lock2))
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+    assert errors == [], f"compile race triggered with per-model lock: {errors[0]!r}"
