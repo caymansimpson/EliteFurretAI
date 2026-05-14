@@ -11,12 +11,17 @@ goal of Task 2.2-2.4 is to find a wrapper that makes it pass.
 """
 from __future__ import annotations
 
+import random
 import threading
-from typing import List
+from typing import Any, List, Optional
 
 import pytest
 import torch
 import torch.nn as nn
+
+from elitefurretai.etl.embedder import Embedder
+from elitefurretai.rl.players import RNaDAgent
+from elitefurretai.supervised.model_archs import TransformerThreeHeadedModel
 
 
 class TinyAgent(nn.Module):
@@ -58,6 +63,105 @@ def test_two_compiled_models_concurrent_calls_no_race():
 
     t1 = threading.Thread(target=loop, args=(m1,))
     t2 = threading.Thread(target=loop, args=(m2,))
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+    assert errors == [], f"compile race triggered: {errors[0]!r}"
+
+
+def _make_small_rnad_agent(device: str) -> tuple[nn.Module, int, int]:
+    """Construct a small but real TransformerThreeHeadedModel-backed RNaDAgent.
+
+    Uses transformer_layers=2 (vs production's 4) to keep the test fast,
+    but still exercises the same Transformer + growing hidden-state path
+    that triggers the dynamo race in production.
+
+    Returns (agent_module, embedding_size, hidden_size).
+    """
+    embedder = Embedder(feature_set="simple")
+    # early_layers[-1] == hidden_size for context tensors
+    early_layers = [64, 32]
+    late_layers = [64, 32]
+    model = TransformerThreeHeadedModel(
+        embedder=embedder,
+        early_layers=early_layers,
+        late_layers=late_layers,
+        transformer_layers=2,
+        transformer_heads=4,
+        transformer_ff_dim=64,
+        dropout=0.0,
+        max_seq_len=40,
+    )
+    model.eval().to(device)
+    agent: nn.Module = RNaDAgent(model)
+    return agent, embedder.embedding_size, early_layers[-1]
+
+
+@pytest.mark.timeout(180)
+def test_two_real_rnad_agents_concurrent_calls_no_race():
+    """Two distinct compiled RNaDAgent instances called from two threads
+    should not raise.
+
+    Mirrors the production scenario: sep_arch compiles BOTH main and bc
+    RNaDAgent instances (TransformerThreeHeadedModel backbone). Each
+    InferenceService daemon thread calls one compiled agent; growing
+    hidden-state context (turn 0 → turn 1 → ...) forces dynamo to
+    recompile on shape changes, which is exactly when the race fires.
+
+    Expected to FAIL before Task 2.2/2.3/2.4 fix; the fix should make
+    it pass.
+    """
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    agent1_raw, emb_size, hidden_size = _make_small_rnad_agent(device)
+    agent2_raw, _, _ = _make_small_rnad_agent(device)
+
+    agent1 = torch.compile(agent1_raw, mode="default", dynamic=True)
+    agent2 = torch.compile(agent2_raw, mode="default", dynamic=True)
+
+    # Warm up each agent single-threaded on (turn 0, no context) and
+    # (turn 1, 1-step context) to seed the dynamo cache before racing.
+    def _warmup(agent: Any) -> None:
+        with torch.no_grad():
+            # Turn 0: no hidden state
+            x0 = torch.zeros(1, 1, emb_size, device=device)
+            _, _, _, _, h0 = agent(x0, None, mask=None, hidden_mask=None)
+            # Turn 1: 1-step context (shape (1, 1, hidden_size))
+            ctx1 = h0[:1, :1, :].clone()
+            hmask1 = torch.ones(1, 1, dtype=torch.bool, device=device)
+            x1 = torch.zeros(1, 1, emb_size, device=device)
+            agent(x1, ctx1, mask=None, hidden_mask=hmask1)
+
+    _warmup(agent1)
+    _warmup(agent2)
+
+    errors: List[BaseException] = []
+
+    def loop(agent: Any) -> None:
+        rng = random.Random()
+        try:
+            with torch.no_grad():
+                for _ in range(200):
+                    ctx_len = rng.randint(0, 10)
+                    batch_size = rng.randint(1, 8)
+                    x = torch.randn(batch_size, 1, emb_size, device=device)
+                    if ctx_len == 0:
+                        hidden: Optional[torch.Tensor] = None
+                        hmask: Optional[torch.Tensor] = None
+                    else:
+                        hidden = torch.randn(
+                            batch_size, ctx_len, hidden_size, device=device
+                        )
+                        hmask = torch.ones(
+                            batch_size, ctx_len, dtype=torch.bool, device=device
+                        )
+                    agent(x, hidden, mask=None, hidden_mask=hmask)
+        except BaseException as exc:
+            errors.append(exc)
+
+    t1 = threading.Thread(target=loop, args=(agent1,))
+    t2 = threading.Thread(target=loop, args=(agent2,))
     t1.start()
     t2.start()
     t1.join()
