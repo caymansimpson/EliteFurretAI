@@ -247,7 +247,7 @@ class InferenceService:
                 items = self._diagnostics["inference_batch_items"]
                 filled = self._diagnostics["inference_batches_filled_to_max"]
                 timeout = self._diagnostics["inference_batches_flushed_timeout"]
-                logger.info(
+                logger.debug(
                     "[batch-fill svc=%s] n=%d avg=%.2f max=%d filled%%=%.1f "
                     "timeout%%=%.1f cap=%d",
                     self.name,
