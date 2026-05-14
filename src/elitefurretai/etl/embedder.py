@@ -102,6 +102,11 @@ class Embedder:
         # This dramatically speeds up embedding since move features are mostly static
         self._move_cache: Dict[str, Dict[str, float]] = {}
 
+        # Cache for null-move features keyed by prefix. Values are fully static
+        # (depend only on self._knowledge), so a shared reference is safe — callers
+        # consume via dict.update(), which copies items rather than retaining the dict.
+        self._null_move_cache: Dict[str, Dict[str, float]] = {}
+
         # Generate embedding size and feature names programmatically upon instantiation
         dummy_battle = self._generate_dummy_battle()
         self._embedding_size = len(self.embed(dummy_battle))
@@ -617,9 +622,16 @@ class Embedder:
 
         return emb
 
-    # TODO: speed up
     def _generate_null_move_features(self, prefix: str = "") -> Dict[str, float]:
         """Generate features for a null move (all -1s)."""
+        cached = self._null_move_cache.get(prefix)
+        if cached is not None:
+            return cached
+        emb = self._build_null_move_features(prefix)
+        self._null_move_cache[prefix] = emb
+        return emb
+
+    def _build_null_move_features(self, prefix: str) -> Dict[str, float]:
         emb: Dict[str, float] = {}
 
         # Scalar features
