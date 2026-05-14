@@ -369,7 +369,6 @@ def mp_worker_process(
         #      - model weights (env.update_weights)
         #      - curriculum distribution (env.update_curriculum)
         #      - temperature / top_p (env.update_sampling)
-        #      - exploiter_paths (Option C: explicit model file lists)
         #   2. env.run_battle_batch(battles_per_task) → BatchResult
         #   3. Forward trajectories to traj_queue (Phase 4)
         #   4. Handle timeout recovery (env.rebuild()) or reset (env.reset_battles())
@@ -409,8 +408,6 @@ def mp_worker_process(
                     #   - "weights": the new model state_dict (CPU tensors)
                     #   - "curriculum": new opponent-mix probabilities
                     #   - "temperature" / "top_p": new exploration knobs
-                    #   - "exploiter_paths": disk paths the worker may need
-                    #     to load if curriculum mentions exploiters
                     #   - "exploiter_weights" / "victim_weights" (optional):
                     #     in-process exploiter co-training. Exploiter is
                     #     pushed every broadcast; victim only on refresh
@@ -431,12 +428,7 @@ def mp_worker_process(
                                     env.update_weights(incoming_payload["weights"])
                                     new_curriculum = incoming_payload.get("curriculum")
                                     if isinstance(new_curriculum, dict):
-                                        env.update_curriculum(
-                                            new_curriculum,
-                                            exploiter_paths=incoming_payload.get(
-                                                "exploiter_paths"
-                                            ),
-                                        )
+                                        env.update_curriculum(new_curriculum)
                                     if "active_ghost_slots" in incoming_payload or \
                                             "active_exploiter_slots" in incoming_payload:
                                         _backend = getattr(env, "_backend", None)

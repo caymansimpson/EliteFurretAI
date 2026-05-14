@@ -11,7 +11,7 @@ Lifecycle:
   while training:
       result = await env.run_battle_batch(n_battles)
       env.update_weights(state_dict)
-      env.update_curriculum(curriculum, exploiter_paths)
+      env.update_curriculum(curriculum)
   await env.teardown()
 """
 
@@ -356,12 +356,6 @@ class _RustPolicyOpponentPool:
             self._ghost_policies[filepath] = self._build_policy(agent, OpponentPool.GHOSTS)
         return self._ghost_policies[filepath]
 
-    def set_exploiter_paths(self, paths: List[str]) -> None:
-        """Apply explicit exploiter file list from learner broadcast (Option C)."""
-        models = [(os.path.getmtime(p), p) for p in paths if os.path.isfile(p)]
-        models.sort(key=lambda item: item[0], reverse=True)
-        self._active_exploiters = models
-
     def set_ghost_paths(self, paths: List[str]) -> None:
         """Apply explicit ghost file list from learner broadcast (Option C)."""
         models: List[Tuple[int, str]] = []
@@ -468,10 +462,9 @@ class VGCEnvironment:
     def update_curriculum(
         self,
         curriculum: Dict[str, float],
-        exploiter_paths: Optional[List[str]] = None,
     ) -> None:
-        """Update opponent sampling distribution and explicit model file lists."""
-        self._backend.update_curriculum(curriculum, exploiter_paths or [])
+        """Update opponent sampling distribution."""
+        self._backend.update_curriculum(curriculum)
 
     def update_sampling(
         self, temperature: Optional[float], top_p: Optional[float]
@@ -530,7 +523,6 @@ class _BackendBase:
     def update_curriculum(
         self,
         curriculum: Dict[str, float],
-        exploiter_paths: List[str],
     ) -> None:
         raise NotImplementedError
 
@@ -664,10 +656,6 @@ class _ShowdownBackend(_BackendBase):
             batch_size=hw.batch_size,
             batch_timeout=hw.batch_timeout,
             max_battle_steps=hw.max_battle_steps,
-            exploiter_models_dir=os.path.join(
-                str(self._config.training.run_dir), "exploiters"
-            ),
-            max_exploiter_models=cur.max_exploiter_models,
             vgc_bench_checkpoint_path=cur.vgc_bench_checkpoint_path,
             external_vgcbench_usernames=external_vgcbench_usernames,
             model_config=self._model_config,
@@ -751,13 +739,10 @@ class _ShowdownBackend(_BackendBase):
     def update_curriculum(
         self,
         curriculum: Dict[str, float],
-        exploiter_paths: List[str],
     ) -> None:
         self._curriculum = curriculum
         if self._factory is not None:
             self._factory.update_curriculum(curriculum)
-            if exploiter_paths:
-                self._factory.set_exploiter_paths(exploiter_paths)
 
     def update_sampling(
         self, temperature: Optional[float], top_p: Optional[float]
@@ -948,12 +933,9 @@ class _RustBackend(_BackendBase):
     def update_curriculum(
         self,
         curriculum: Dict[str, float],
-        exploiter_paths: List[str],
     ) -> None:
         if self._pool is not None:
             self._pool.update_curriculum(curriculum)
-            if exploiter_paths:
-                self._pool.set_exploiter_paths(exploiter_paths)
 
     def update_sampling(
         self, temperature: Optional[float], top_p: Optional[float]

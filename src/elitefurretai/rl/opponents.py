@@ -725,8 +725,6 @@ class WorkerOpponentFactory:
         batch_size: int = 16,
         batch_timeout: float = 0.01,
         max_battle_steps: int = 40,
-        exploiter_models_dir: Optional[str] = None,
-        max_exploiter_models: int = 10,
         vgc_bench_checkpoint_path: Optional[str] = None,
         external_vgcbench_usernames: Optional[List[str]] = None,
         model_config: Optional[Dict[str, Any]] = None,
@@ -784,8 +782,6 @@ class WorkerOpponentFactory:
         self.batch_size = batch_size
         self.batch_timeout = batch_timeout
         self.max_battle_steps = max_battle_steps
-        self.exploiter_models_dir = exploiter_models_dir
-        self.max_exploiter_models = max_exploiter_models
         self.vgc_bench_checkpoint_path = vgc_bench_checkpoint_path
         self.model_config = model_config
         self.agent_team_path = agent_team_path
@@ -819,8 +815,6 @@ class WorkerOpponentFactory:
         self.max_base_power_baseline_opponents: List[MaxBasePowerPlayer] = []
         self.simple_heuristic_baseline_opponents: List[Player] = []
         self.vgc_bench_baseline_opponents: List[Player] = []
-        self.active_exploiters: List[Tuple[float, str]] = []
-        self.loaded_exploiters: Dict[str, RNaDAgent] = {}
         self._active_ghost_slots: Set[int] = set()
         self._active_exploiter_slots: Set[int] = set()
         self._batch_count = 0
@@ -834,7 +828,6 @@ class WorkerOpponentFactory:
         cleaned_run_id = "".join(ch for ch in str(self.run_id) if ch.isalnum()).upper()
         self._run_tag = cleaned_run_id[-4:] if cleaned_run_id else "0000"
         self._factory_tag = f"{random.getrandbits(8):02X}"
-        self._load_exploiter_models()
 
     def _account_name(self, role: str, idx: int) -> str:
         """Create compact, rebuild-unique account names.
@@ -883,38 +876,6 @@ class WorkerOpponentFactory:
                 compatible_paths.append(model_path)
 
         return compatible_paths
-
-    def _load_exploiter_models(self) -> None:
-        files = self._list_model_checkpoints(self.exploiter_models_dir)
-        if not files:
-            self.active_exploiters = []
-            return
-
-        models = [
-            (os.path.getmtime(filepath), filepath)
-            for filepath in files
-            if os.path.isfile(filepath)
-        ]
-        models.sort(key=lambda item: item[0], reverse=True)
-        self.active_exploiters = models[: self.max_exploiter_models]
-
-    def _get_cached_model(
-        self,
-        filepath: str,
-        loaded: Dict[str, RNaDAgent],
-    ) -> RNaDAgent:
-        if filepath in loaded:
-            return loaded[filepath]
-
-        loaded_model = load_agent_from_checkpoint(filepath, self.device)
-        loaded[filepath] = loaded_model
-        return loaded_model
-
-    def set_exploiter_paths(self, paths: List[str]) -> None:
-        """Apply explicit exploiter file list from learner broadcast (Option C)."""
-        models = [(os.path.getmtime(p), p) for p in paths if os.path.isfile(p)]
-        models.sort(key=lambda item: item[0], reverse=True)
-        self.active_exploiters = models
 
     def set_active_ghost_slots(self, slots: List[int]) -> None:
         """Update the set of populated ghost slots from a trainer broadcast.
