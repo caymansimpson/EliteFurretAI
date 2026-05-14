@@ -23,9 +23,12 @@ class _DummyPlayer:
 class _DummyOpponent:
     def __init__(self, model):
         self.model = model
+        self.inference_client: object = None
 
 
-def _make_factory(curriculum, exploiter_agent=None, victim_agent=None):
+def _make_factory(
+    curriculum, exploiter_agent=None, victim_agent=None, worker_inference_clients=None
+):
     return WorkerOpponentFactory(
         team_repo=cast(TeamRepo, _DummyTeamRepo()),
         battle_format="gen9vgc2023regc",
@@ -41,42 +44,8 @@ def _make_factory(curriculum, exploiter_agent=None, victim_agent=None):
         ghosts_dir=None,
         exploiter_agent=cast(RNaDAgent, exploiter_agent) if exploiter_agent else None,
         victim_agent=cast(RNaDAgent, victim_agent) if victim_agent else None,
+        worker_inference_clients=worker_inference_clients,
     )
-
-
-def test_configure_opponent_for_batch_supports_ghosts(monkeypatch):
-    factory = _make_factory({"ghosts": 1.0})
-    ghost_agent = SimpleNamespace(name="ghost")
-    monkeypatch.setattr(factory, "_get_ghost_agent", lambda: ghost_agent)
-
-    player = _DummyPlayer()
-    opponent = _DummyOpponent(model=factory.main_agent)
-
-    selected = factory.configure_opponent_for_batch(
-        cast(BatchInferencePlayer, player),
-        cast(BatchInferencePlayer, opponent),
-    )
-
-    assert selected == factory.GHOSTS
-    assert player.opponent_type == factory.GHOSTS
-    assert opponent.model is ghost_agent
-
-
-def test_configure_opponent_for_batch_ghosts_fallback_to_self_play(monkeypatch):
-    factory = _make_factory({"ghosts": 1.0})
-    monkeypatch.setattr(factory, "_get_ghost_agent", lambda: None)
-
-    player = _DummyPlayer()
-    opponent = _DummyOpponent(model=SimpleNamespace(name="other"))
-
-    selected = factory.configure_opponent_for_batch(
-        cast(BatchInferencePlayer, player),
-        cast(BatchInferencePlayer, opponent),
-    )
-
-    assert selected == factory.SELF_PLAY
-    assert player.opponent_type == factory.SELF_PLAY
-    assert opponent.model is factory.main_agent
 
 
 def test_configure_opponent_for_batch_supports_exploiters(monkeypatch):
@@ -262,3 +231,61 @@ def test_set_active_ghost_slots_updates_state():
     assert factory._active_ghost_slots == {0, 2, 4}
     factory.set_active_ghost_slots([])
     assert factory._active_ghost_slots == set()
+
+
+def test_configure_opponent_for_batch_ghosts_routes_via_active_slot():
+    """When GHOSTS is sampled and slots are active, opponent gets a
+    ghost_<slot> InferenceClient from the bundle."""
+    from unittest.mock import MagicMock
+
+    ghost_clients = {f"ghost_{i}": MagicMock(name=f"ghost_client_{i}") for i in range(3)}
+    main_client = MagicMock(name="main_client")
+
+    clients = MagicMock()
+    clients.has = MagicMock(
+        side_effect=lambda n: n in {"main", "ghost_0", "ghost_1", "ghost_2"}
+    )
+    clients.get = MagicMock(side_effect=lambda n: ghost_clients.get(n, main_client))
+
+    factory = _make_factory({"ghosts": 1.0})
+    factory.worker_inference_clients = clients
+    factory.set_active_ghost_slots([0, 1, 2])
+
+    player = _DummyPlayer()
+    opponent = _DummyOpponent(model=factory.main_agent)
+
+    selected = factory.configure_opponent_for_batch(
+        cast(BatchInferencePlayer, player),
+        cast(BatchInferencePlayer, opponent),
+    )
+
+    assert selected == factory.GHOSTS
+    assert player.opponent_type == factory.GHOSTS
+    # opponent.inference_client should now point to one of the ghost clients
+    assigned = opponent.inference_client
+    assert assigned in ghost_clients.values()
+
+
+def test_configure_opponent_for_batch_ghosts_falls_back_when_no_active_slots():
+    """When GHOSTS is sampled but no slots are active, fall back to self-play.
+    (Curriculum normally guards this via _opponent_available; this test pins
+    the defensive fallback inside _swap_to.)"""
+    from unittest.mock import MagicMock
+
+    clients = MagicMock()
+    clients.has = MagicMock(side_effect=lambda n: n == "main")
+    main_client = MagicMock(name="main_client")
+    clients.get = MagicMock(return_value=main_client)
+
+    factory = _make_factory({"ghosts": 1.0}, worker_inference_clients=clients)
+    # Note: deliberately NOT calling set_active_ghost_slots — empty by default.
+
+    player = _DummyPlayer()
+    opponent = _DummyOpponent(model=factory.main_agent)
+
+    selected = factory.configure_opponent_for_batch(
+        cast(BatchInferencePlayer, player),
+        cast(BatchInferencePlayer, opponent),
+    )
+
+    assert selected == factory.SELF_PLAY

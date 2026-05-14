@@ -1488,15 +1488,17 @@ class WorkerOpponentFactory:
                 selected_type = self.SELF_PLAY
                 self._swap_to(player, "main", self.main_agent)
         elif selected_type == self.GHOSTS:
-            ghost_agent = self._get_ghost_agent()
-            # Ghost slot rotation through the registry isn't wired yet
-            # (see model-registry-plan.md "Future work"). Passing None
-            # as centralized_name forces _swap_to to take the legacy
-            # ghost_agent path — workers still lazy-load ghost
-            # checkpoints from disk via _get_ghost_agent().
-            opponent_swapped = self._swap_to(opponent, None, ghost_agent)
-            if not opponent_swapped:
+            if not self._active_ghost_slots:
+                # Curriculum sampled GHOSTS but no slots are populated —
+                # treat as a desync bug and fall back to self-play loudly
+                # via the standard path. (The curriculum's
+                # _opponent_available guard should prevent this.)
                 selected_type = self.SELF_PLAY
+            else:
+                slot = random.choice(tuple(self._active_ghost_slots))
+                opponent_swapped = self._swap_to(opponent, f"ghost_{slot}", None)
+                if not opponent_swapped:
+                    selected_type = self.SELF_PLAY
         else:
             if selected_type not in (
                 self.SELF_PLAY,
