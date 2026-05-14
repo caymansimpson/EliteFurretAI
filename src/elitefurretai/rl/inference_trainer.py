@@ -53,6 +53,17 @@ from elitefurretai.rl.players import RNaDAgent
 
 logger = logging.getLogger(__name__)
 
+# Single process-wide lock around compiled-model forward calls. torch.dynamo's
+# trace state is global across model instances of the same class, so a
+# per-model lock doesn't help — only this global lock prevents the
+# "Detected that you are using FX to symbolically trace a dynamo-optimized
+# function" race when multiple compiled models run on concurrent service
+# threads. Lock contention is negligible because (a) compiled forwards
+# release the GIL during GPU work, and (b) the GIL already serializes
+# Python-level dynamo code. See reproducer at
+# unit_tests/rl/test_compile_race_reproducer.py.
+_COMPILE_LOCK = threading.Lock()
+
 
 # Type alias for the "model" hook the service uses to produce responses
 # from a list of requests. Swappable for testing (echo, deterministic
@@ -236,7 +247,7 @@ class InferenceService:
                 items = self._diagnostics["inference_batch_items"]
                 filled = self._diagnostics["inference_batches_filled_to_max"]
                 timeout = self._diagnostics["inference_batches_flushed_timeout"]
-                logger.warning(
+                logger.info(
                     "[batch-fill svc=%s] n=%d avg=%.2f max=%d filled%%=%.1f "
                     "timeout%%=%.1f cap=%d",
                     self.name,
@@ -311,7 +322,7 @@ class RealModelBatchHandler:
                 )
 
         hidden_batch, hidden_mask = self._pad_transformer_context(prior_hiddens)
-        with torch.no_grad():
+        with torch.no_grad(), _COMPILE_LOCK:
             turn_logits, tp_logits, values, _, next_hidden = self.agent(
                 states, hidden_batch, mask=None, hidden_mask=hidden_mask
             )

@@ -1232,21 +1232,22 @@ def main():
             bc_inference_base.eval()
             for param in bc_inference_base.parameters():
                 param.requires_grad = False
-            # compile=False: with multiple compiled models in concurrent
-            # InferenceService threads, dynamo throws "FX symbolic trace
-            # of dynamo-optimized function" mid-flight (~0.5% of
-            # batches). Compile only main (highest traffic); secondary
-            # models stay eager. See planning/stage2/2026-05-14-00-15-
-            # model-registry-plan.md for the trade-off.
-            registry.register("bc", RNaDAgent(bc_inference_base), compile=False)
+            # compile=True: safe now that RealModelBatchHandler holds
+            # _COMPILE_LOCK (a global process-wide threading.Lock) around
+            # every compiled forward call. The lock serializes dynamo's
+            # global trace state across concurrent InferenceService threads,
+            # eliminating the "FX symbolic trace of dynamo-optimized function"
+            # race. See unit_tests/rl/test_compile_race_reproducer.py.
+            registry.register("bc", RNaDAgent(bc_inference_base), compile=True)
             del bc_checkpoint
 
         # Step 4: register exploiter (live-trained adversary) + victim
         # (frozen periodically-refreshed copy of main) if the curriculum
         # gates the train_exploiter pipeline ON. exploiter is sync'd from
         # the exploiter learner each update; victim is sync'd from main
-        # at victim_refresh_interval. Both registered with compile=False
-        # for the same dynamo-race reason as BC.
+        # at victim_refresh_interval. Both registered with compile=True
+        # now that the global _COMPILE_LOCK in RealModelBatchHandler
+        # serializes dynamo's trace state across concurrent threads.
         train_exploiter_weight = config.curriculum.curriculum_weights.get(
             OpponentPool.TRAIN_EXPLOITER, 0.0
         )
@@ -1274,17 +1275,18 @@ def main():
                 # gave us (BC init if `initialize_path` is set, else
                 # fresh). It'll be sync'd as the exploiter learner
                 # produces updates.
-                registry.register(slot_name, RNaDAgent(slot_base), compile=False)
+                registry.register(slot_name, RNaDAgent(slot_base), compile=True)
 
         # Ghost slots: pre-register max_ghosts services so the slot pool is
         # fixed-size and the registration plumbing never happens mid-run.
         # Slots start with main-agent weights as placeholders; only slots
         # listed in `opponent_pool.active_ghost_slots()` are valid routing
-        # targets (workers filter on that set). compile=False per the known
+        # targets (workers filter on that set). compile=True now that the
+        # global _COMPILE_LOCK in RealModelBatchHandler eliminates the
         # torch.compile multi-thread race (see registry plan).
         for slot in range(config.curriculum.max_ghosts):
             ghost_agent = copy.deepcopy(registry._raw_agents["main"])
-            registry.register(f"ghost_{slot}", ghost_agent, compile=False)
+            registry.register(f"ghost_{slot}", ghost_agent, compile=True)
         # Load weights for any pre-existing ghost checkpoints onto their
         # assigned slots. `slot_for_ghost_path` was populated by
         # OpponentPool._load_ghosts.
