@@ -9,7 +9,6 @@
 #   - 4-5x faster RL forward pass (A3 size)
 
 # Architecture — same as A3 (~26.7M params, 4.7x smaller than baseline)
-use_transformer: true
 transformer_layers: 4
 transformer_heads: 8
 transformer_ff_dim: 1024

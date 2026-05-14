@@ -445,12 +445,8 @@ def main(train_path, test_path, val_path, config={}, save_best=False):
         "files_per_worker",
         "num_epochs",
         "seed",
-        "lstm_layers",
-        "lstm_hidden_size",
         "num_value_bins",
         "max_seq_len",
-        "early_attention_heads",
-        "late_attention_heads",
         "pokemon_attention_heads",
         "teampreview_attention_heads",
         "grouped_encoder_hidden_dim",
@@ -546,9 +542,6 @@ def main(train_path, test_path, val_path, config={}, save_best=False):
         use_causal_mask=config.get("use_causal_mask", True),
     ).to(config["device"])
     model = cast(torch.nn.Module, raw_model)
-
-    # Auto-detect model class for RL checkpoint compatibility before compile wraps it
-    config["use_transformer"] = isinstance(model, TransformerThreeHeadedModel)
 
     # torch.compile fuses GPU kernels for ~15-30% speedup on GPU-bound training.
     # First batch is slow (compilation), but all subsequent batches are faster.

@@ -15,35 +15,7 @@ from elitefurretai.engine.sync_battle_driver import (
 
 
 class FakeAgent:
-    _is_transformer = False
-
-    def get_initial_state(self, batch_size: int, device: str):
-        hidden = torch.zeros(1, batch_size, 4, device=device)
-        return hidden, hidden.clone()
-
-    def __call__(self, state_tensor, hidden):
-        batch_size = state_tensor.shape[0]
-        turn_logits = torch.full((batch_size, 1, 2025), -1000.0)
-        turn_logits[:, 0, 7] = 1.0
-        turn_logits[:, 0, 11] = 3.0
-        tp_logits = torch.full((batch_size, 1, 90), -1000.0)
-        tp_logits[:, 0, 4] = 2.0
-        values = torch.full((batch_size, 1, 1), 0.25, dtype=torch.float32)
-        next_hidden = (hidden[0] + 1.0, hidden[1] + 1.0)
-        return turn_logits, tp_logits, values, None, next_hidden
-
-
-class CountingAgent(FakeAgent):
-    def __init__(self):
-        self.batch_sizes = []
-
-    def __call__(self, state_tensor, hidden):
-        self.batch_sizes.append(int(state_tensor.shape[0]))
-        return super().__call__(state_tensor, hidden)
-
-
-class FakeTransformerAgent:
-    _is_transformer = True
+    """Mock transformer agent for SyncPolicyPlayer tests."""
 
     def __init__(self, max_seq_len: int = 4):
         self.model = SimpleNamespace(max_seq_len=max_seq_len)
@@ -56,6 +28,7 @@ class FakeTransformerAgent:
         batch_size = state_tensor.shape[0]
         hidden_len = 0 if hidden is None else int(hidden.size(1))
         turn_logits = torch.full((batch_size, 1, 2025), -1000.0)
+        turn_logits[:, 0, 7] = 1.0
         turn_logits[:, 0, 11] = 3.0
         tp_logits = torch.full((batch_size, 1, 90), -1000.0)
         tp_logits[:, 0, 4] = 2.0
@@ -64,7 +37,7 @@ class FakeTransformerAgent:
         return turn_logits, tp_logits, values, None, next_hidden
 
 
-class CountingTransformerAgent(FakeTransformerAgent):
+class CountingAgent(FakeAgent):
     def __init__(self, max_seq_len: int = 4):
         super().__init__(max_seq_len=max_seq_len)
         self.batch_sizes: list[int] = []
@@ -74,6 +47,11 @@ class CountingTransformerAgent(FakeTransformerAgent):
         self.batch_sizes.append(int(state_tensor.shape[0]))
         self.hidden_lengths.append(0 if hidden is None else int(hidden.size(1)))
         return super().__call__(state_tensor, hidden)
+
+
+# Back-compat aliases for tests that referenced these names.
+FakeTransformerAgent = FakeAgent
+CountingTransformerAgent = CountingAgent
 
 
 def test_sync_policy_player_emits_learner_trajectory(monkeypatch):
@@ -91,7 +69,11 @@ def test_sync_policy_player_emits_learner_trajectory(monkeypatch):
         "feature_dict_to_vector",
         lambda _: [0.1, 0.2, 0.3],
     )
-    monkeypatch.setattr(player.embedder, "embed_to_array", lambda battle: np.asarray([0.1, 0.2, 0.3], dtype=np.float32))
+    monkeypatch.setattr(
+        player.embedder,
+        "embed_to_array",
+        lambda battle: np.asarray([0.1, 0.2, 0.3], dtype=np.float32),
+    )
     monkeypatch.setattr(player.embedder, "embed_to_vector", lambda battle: [0.1, 0.2, 0.3])
     battle = SimpleNamespace(
         teampreview=False,
@@ -166,7 +148,11 @@ def test_sync_policy_player_keeps_playing_past_trajectory_cap(monkeypatch):
         "feature_dict_to_vector",
         lambda _: [0.1, 0.2, 0.3],
     )
-    monkeypatch.setattr(player.embedder, "embed_to_array", lambda battle: np.asarray([0.1, 0.2, 0.3], dtype=np.float32))
+    monkeypatch.setattr(
+        player.embedder,
+        "embed_to_array",
+        lambda battle: np.asarray([0.1, 0.2, 0.3], dtype=np.float32),
+    )
     monkeypatch.setattr(player.embedder, "embed_to_vector", lambda battle: [0.1, 0.2, 0.3])
     battle = SimpleNamespace(
         teampreview=False,
@@ -270,7 +256,7 @@ def test_sync_policy_player_builds_mask_from_snapshot_legal_actions():
     assert rollout_step.mask[11] == 1
 
 
-def test_sync_policy_player_batches_snapshot_inference():
+def test_sync_policy_player_routes_per_snapshot_inference():
     counting_agent = CountingAgent()
     player = SyncPolicyPlayer(
         agent=cast(Any, counting_agent),
@@ -321,7 +307,8 @@ def test_sync_policy_player_batches_snapshot_inference():
     assert [choice for choice, _ in results] == ["move 2, move 1", "move 2, move 1"]
     assert all(step is not None for _, step in results)
     assert set(player.hidden_states) == {"batch-a", "batch-b"}
-    assert counting_agent.batch_sizes == [2]
+    # Transformer contexts vary per battle, so per-snapshot dispatch.
+    assert counting_agent.batch_sizes == [1, 1]
 
 
 def test_sync_policy_player_trims_transformer_context_to_model_limit():
@@ -335,7 +322,9 @@ def test_sync_policy_player_trims_transformer_context_to_model_limit():
     snapshot = BattleSnapshot(
         battle_tag="transformer-context",
         side="p1",
-        battle=SimpleNamespace(teampreview=False, battle_tag="transformer-context", opponent_team={}),
+        battle=SimpleNamespace(
+            teampreview=False, battle_tag="transformer-context", opponent_team={}
+        ),
         request={"active": [{}, {}]},
         legal_actions=[(11, "move 2, move 1")],
         action_mask=None,
@@ -368,7 +357,9 @@ def test_sync_policy_player_processes_transformer_snapshots_sequentially():
         BattleSnapshot(
             battle_tag="transformer-batch-a",
             side="p1",
-            battle=SimpleNamespace(teampreview=False, battle_tag="transformer-batch-a", opponent_team={}),
+            battle=SimpleNamespace(
+                teampreview=False, battle_tag="transformer-batch-a", opponent_team={}
+            ),
             request={"active": [{}, {}]},
             legal_actions=[(11, "move 2, move 1")],
             action_mask=None,
@@ -380,7 +371,9 @@ def test_sync_policy_player_processes_transformer_snapshots_sequentially():
         BattleSnapshot(
             battle_tag="transformer-batch-b",
             side="p1",
-            battle=SimpleNamespace(teampreview=False, battle_tag="transformer-batch-b", opponent_team={}),
+            battle=SimpleNamespace(
+                teampreview=False, battle_tag="transformer-batch-b", opponent_team={}
+            ),
             request={"active": [{}, {}]},
             legal_actions=[(11, "move 2, move 1")],
             action_mask=None,
@@ -415,7 +408,9 @@ def test_sync_policy_player_separates_transformer_batches_with_different_context
         BattleSnapshot(
             battle_tag="transformer-mixed-a",
             side="p1",
-            battle=SimpleNamespace(teampreview=False, battle_tag="transformer-mixed-a", opponent_team={}),
+            battle=SimpleNamespace(
+                teampreview=False, battle_tag="transformer-mixed-a", opponent_team={}
+            ),
             request={"active": [{}, {}]},
             legal_actions=[(11, "move 2, move 1")],
             action_mask=None,
@@ -427,7 +422,9 @@ def test_sync_policy_player_separates_transformer_batches_with_different_context
         BattleSnapshot(
             battle_tag="transformer-mixed-b",
             side="p1",
-            battle=SimpleNamespace(teampreview=False, battle_tag="transformer-mixed-b", opponent_team={}),
+            battle=SimpleNamespace(
+                teampreview=False, battle_tag="transformer-mixed-b", opponent_team={}
+            ),
             request={"active": [{}, {}]},
             legal_actions=[(11, "move 2, move 1")],
             action_mask=None,
@@ -488,7 +485,9 @@ def test_sync_rust_battle_driver_retries_rejected_choice_with_fallback():
                 "opponent_type": "self_play",
             }
 
-        def _build_choice_context(self, engine, side: str, policy=None, opponent_type: str = "self_play"):
+        def _build_choice_context(
+            self, engine, side: str, policy=None, opponent_type: str = "self_play"
+        ):
             del engine, side, policy, opponent_type
             return {"choice": "bad", "fallback_choice": "good", "rollout_step": None}
 
@@ -554,13 +553,18 @@ def test_sync_rust_battle_driver_writes_rejection_diagnostics(tmp_path):
                 "opponent_type": "self_play",
             }
 
-        def _build_choice_context(self, engine, side: str, policy=None, opponent_type: str = "self_play"):
+        def _build_choice_context(
+            self, engine, side: str, policy=None, opponent_type: str = "self_play"
+        ):
             del engine, side, policy, opponent_type
             snapshot = BattleSnapshot(
                 battle_tag="fallback-battle",
                 side="p1",
                 battle=SimpleNamespace(teampreview=False, opponent_team={}),
-                request={"forceSwitch": [True, False], "active": [{"trapped": False, "canTerastallize": None}]},
+                request={
+                    "forceSwitch": [True, False],
+                    "active": [{"trapped": False, "canTerastallize": None}],
+                },
                 legal_actions=[(40, "good")],
                 action_mask=None,
                 action_to_choice={},
@@ -620,7 +624,10 @@ def test_sync_rust_battle_driver_records_first_error_battle(tmp_path):
                     {"moves": [{"target": "normal", "pp": 8, "disabled": False}]},
                     {"moves": [{"target": "normal", "pp": 8, "disabled": False}]},
                 ],
-                "side": {"id": side, "pokemon": [{"active": True, "condition": "100/100"}]},
+                "side": {
+                    "id": side,
+                    "pokemon": [{"active": True, "condition": "100/100"}],
+                },
             }
 
         def protocol_history(self, side: str, limit: int = 5):
@@ -628,7 +635,10 @@ def test_sync_rust_battle_driver_records_first_error_battle(tmp_path):
             return [{"raw": f"|turn|{self.turn}", "normalized": f"|turn|{self.turn}"}]
 
         def protocol_log(self, side: str):
-            return [{"raw": f"|turn|{self.turn}", "normalized": f"|turn|{self.turn}"}, {"raw": f"|side|{side}", "normalized": f"|side|{side}"}]
+            return [
+                {"raw": f"|turn|{self.turn}", "normalized": f"|turn|{self.turn}"},
+                {"raw": f"|side|{side}", "normalized": f"|side|{side}"},
+            ]
 
         def step(self, p1_choice=None, p2_choice=None):
             del p2_choice
@@ -664,7 +674,9 @@ def test_sync_rust_battle_driver_records_first_error_battle(tmp_path):
                 "battle_trace": [],
             }
 
-        def _build_choice_context(self, engine, side: str, policy=None, opponent_type: str = "self_play"):
+        def _build_choice_context(
+            self, engine, side: str, policy=None, opponent_type: str = "self_play"
+        ):
             del engine, side, policy, opponent_type
             snapshot = BattleSnapshot(
                 battle_tag="recorded-battle",
@@ -675,7 +687,10 @@ def test_sync_rust_battle_driver_records_first_error_battle(tmp_path):
                         {"moves": [{"target": "normal", "pp": 8, "disabled": False}]},
                         {"moves": [{"target": "normal", "pp": 8, "disabled": False}]},
                     ],
-                    "side": {"id": "p1", "pokemon": [{"active": True, "condition": "100/100"}]},
+                    "side": {
+                        "id": "p1",
+                        "pokemon": [{"active": True, "condition": "100/100"}],
+                    },
                 },
                 legal_actions=[(0, "bad"), (1, "good")],
                 action_mask=None,
@@ -683,7 +698,12 @@ def test_sync_rust_battle_driver_records_first_error_battle(tmp_path):
                 is_teampreview=False,
                 opponent_fainted=0,
                 state_vector=[0.1],
-                binding_snapshot=cast(Any, SimpleNamespace(raw_request='{"raw": true}', pending_messages=("|turn|0",))),
+                binding_snapshot=cast(
+                    Any,
+                    SimpleNamespace(
+                        raw_request='{"raw": true}', pending_messages=("|turn|0",)
+                    ),
+                ),
             )
             return {
                 "choice": "bad",
@@ -780,7 +800,12 @@ def test_double_force_switch_does_not_offer_pass_when_enough_replacements_exist(
 
     assert "pass" not in {action["choice"] for action in slot0_actions}
     assert "pass" not in {action["choice"] for action in slot1_actions}
-    assert {action["choice"] for action in slot0_actions} == {"switch 1", "switch 2", "switch 4", "switch 5"}
+    assert {action["choice"] for action in slot0_actions} == {
+        "switch 1",
+        "switch 2",
+        "switch 4",
+        "switch 5",
+    }
 
 
 def test_switch_actions_preserve_original_request_indices_after_sanitization():
@@ -866,7 +891,12 @@ def test_commanding_slot_only_returns_pass():
             "pokemon": [
                 {"active": True, "condition": "225/225", "commanding": False},
                 {"active": True, "condition": "175/175", "commanding": True},
-                {"active": False, "condition": "100/100", "commanding": False, "_request_index": 2},
+                {
+                    "active": False,
+                    "condition": "100/100",
+                    "commanding": False,
+                    "_request_index": 2,
+                },
             ]
         },
     }
@@ -881,8 +911,6 @@ def test_commanding_slot_only_returns_pass():
             "switch_target": None,
         }
     ]
-
-
 
 
 def test_sync_rust_battle_driver_reports_stall_truncation_cause():
@@ -920,7 +948,9 @@ def test_sync_rust_battle_driver_reports_stall_truncation_cause():
                 "opponent_type": "self_play",
             }
 
-        def _build_choice_context(self, engine, side: str, policy=None, opponent_type: str = "self_play"):
+        def _build_choice_context(
+            self, engine, side: str, policy=None, opponent_type: str = "self_play"
+        ):
             del engine, side, policy, opponent_type
             return {"choice": "good", "fallback_choice": "good", "rollout_step": None}
 

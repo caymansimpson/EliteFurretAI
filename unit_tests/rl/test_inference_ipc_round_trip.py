@@ -24,11 +24,11 @@ import numpy as np
 import pytest
 from torch import multiprocessing as torch_mp
 
-from elitefurretai.rl.inference_client import InferenceClient
-from elitefurretai.rl.inference_service import (
+from elitefurretai.rl.inference_trainer import (
     InferenceService,
     echo_batch_handler,
 )
+from elitefurretai.rl.inference_worker import InferenceClient
 
 
 @pytest.fixture

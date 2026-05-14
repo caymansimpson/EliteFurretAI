@@ -97,11 +97,9 @@ def mp_worker_process(
     # skips loading the main model into its process and submits inference
     # requests to the trainer-side InferenceService instead. `model_path`
     # is then unused for the main agent (still used for ghost loading
-    # etc.). `main_is_transformer` is required so BatchInferencePlayer
-    # knows hidden-state shapes without a model to introspect.
+    # etc.).
     main_inference_request_queue: Optional[MPQueue] = None,
     main_inference_response_queue: Optional[MPQueue] = None,
-    main_is_transformer: Optional[bool] = None,
     # Bundle of (req_q, resp_q) keyed by model name for ALL registered
     # models in the trainer's ModelRegistry. Workers wrap this in
     # WorkerInferenceClients so the factory can hot-swap
@@ -275,15 +273,12 @@ def mp_worker_process(
         main_inference_client = None
         worker_inference_clients = None  # set in centralized mode (step 3+)
         if centralized_main:
-            from elitefurretai.rl.inference_client import InferenceClient
-            from elitefurretai.rl.worker_inference_clients import (
+            from poke_env.concurrency import POKE_LOOP
+
+            from elitefurretai.rl.inference_worker import (
+                InferenceClient,
                 WorkerInferenceClients,
             )
-
-            assert main_is_transformer is not None, (
-                "main_is_transformer must be set in centralized mode"
-            )
-            from poke_env.concurrency import POKE_LOOP
 
             # When the trainer passed a per-model queues bundle,
             # wrap it in WorkerInferenceClients (one InferenceClient per
@@ -298,8 +293,7 @@ def mp_worker_process(
                 main_inference_client = worker_inference_clients.get("main")
                 if verbose:
                     logger.debug(
-                        "[MPWorker %d] Centralized inference (bundle) enabled; "
-                        "models=%s",
+                        "[MPWorker %d] Centralized inference (bundle) enabled; models=%s",
                         worker_id,
                         worker_inference_clients.names(),
                     )
@@ -475,7 +469,6 @@ def mp_worker_process(
             exploiter_agent=exploiter_agent,
             victim_agent=victim_agent,
             main_inference_client=main_inference_client,
-            main_is_transformer=main_is_transformer,
             worker_inference_clients=worker_inference_clients,
         )
 

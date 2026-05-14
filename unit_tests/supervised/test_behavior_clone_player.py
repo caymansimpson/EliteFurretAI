@@ -19,7 +19,7 @@ import torch
 
 from elitefurretai.etl.encoder import MDBO
 from elitefurretai.supervised.behavior_clone_player import BCPlayer
-from elitefurretai.supervised.model_archs import FlexibleThreeHeadedModel
+from elitefurretai.supervised.model_archs import TransformerThreeHeadedModel
 
 # =============================================================================
 # FIXTURES
@@ -29,11 +29,11 @@ from elitefurretai.supervised.model_archs import FlexibleThreeHeadedModel
 @pytest.fixture
 def mock_model():
     """
-    Create a mock FlexibleThreeHeadedModel.
+    Create a mock TransformerThreeHeadedModel.
 
     Returns a model that outputs deterministic values for testing.
     """
-    model = MagicMock(spec=FlexibleThreeHeadedModel)
+    model = MagicMock(spec=TransformerThreeHeadedModel)
     model.max_seq_len = 17
 
     # Mock forward pass - returns (turn_logits, tp_logits, win_value, win_dist_logits)
@@ -60,11 +60,10 @@ def mock_config():
     return {
         "early_layers": [512, 256],
         "late_layers": [256, 128],
-        "lstm_layers": 2,
-        "lstm_hidden_size": 256,
         "dropout": 0.1,
-        "early_attention_heads": 4,
-        "late_attention_heads": 4,
+        "transformer_layers": 2,
+        "transformer_heads": 4,
+        "transformer_ff_dim": 512,
     }
 
 

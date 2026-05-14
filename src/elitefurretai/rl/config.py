@@ -23,7 +23,7 @@ Big-picture map of the sub-configs
 - ExplorationConfig  — Action-sampling: temperature anneal, top-p (nucleus)
 - OptimizerConfig    — AdamW / Adam, per-group LRs, schedule (cosine/linear)
 - ValueHeadConfig    — C51 distributional value head bin layout
-- ArchitectureConfig — Model shape: transformer vs LSTM, layer sizes, heads
+- ArchitectureConfig — Model shape: transformer layer sizes, heads
 - HardwareConfig     — Worker topology, device, battle backend, batching
 - CurriculumConfig   — Opponent mix, team pools, BC model paths, ghosts
 - ExploiterConfig    — In-process exploiter co-training (graduation-based)
@@ -37,7 +37,7 @@ Battle backends
 ---------------
 There are two ways to actually play battles during training:
   - "showdown_websocket": a real local Pokemon Showdown server, talked to over
-    websockets. The current primary path. Slower per-battle but battle-tested.
+    websockets. The current primary path, as proven faster w/ optimizations.
   - "rust_engine": an in-process Rust simulator. Faster but less production-
     proven. Kept available for fallback and parity checks.
 """
@@ -101,16 +101,21 @@ class AlgorithmConfig:
 
 @dataclass
 class PortfolioConfig:
-    """Portfolio of reference models used for RNaD regularization.
+    """Portfolio of reference models used for RNaD regularization. Different
+    from curriculum which creates trajectories by playing the agent.
 
     To replicate standard RNaD (single fixed reference, no portfolio),
     set max_portfolio_size=1 and portfolio_update_strategy="recent".
     PortfolioRNaDLearner reduces to the base algorithm in that configuration.
+
+    TODO: enumerate that we want to be able to only accept: recent, best
+    and diverse; implement all of these, and add an explanation on what they
+    are
     """
 
     max_portfolio_size: int = 5
-    portfolio_add_interval: int = 1000
-    portfolio_update_strategy: str = "diverse"
+    portfolio_add_interval: int = 500
+    portfolio_update_strategy: str = "recent"
 
 
 @dataclass
@@ -177,7 +182,7 @@ class ExploiterConfig:
     # ≥ 62% with high confidence. Tighter thresholds (0.70+) catch only
     # strong exploits but risk pipeline stall once main is robust; looser
     # thresholds (0.60) churn the pool with borderline cases.
-    graduation_threshold: float = 0.65
+    graduation_threshold: float = 0.70
 
     # Number of recent train_exploiter battles to compute the rolling win
     # rate over. Larger = more confident graduation gate (lower variance)
@@ -232,13 +237,15 @@ class ExploiterConfig:
     # 5K-cap per generation doesn't justify a schedule). Matches the
     # warmup-phase main entropy and prevents premature mode collapse
     # onto a single exploit.
-    ent_coef: float = 0.02
+    ent_coef: float = 0.005
 
 
 @dataclass
 class ExplorationConfig:
     """Temperature annealing and nucleus sampling for action selection."""
 
+    # TODO: add comments here on what these are, the implications of raising/
+    # lowering them are, and where they're used
     temperature_anneal_steps: int = 50000
     temperature_end: float = 0.5
     temperature_start: float = 1.5
@@ -275,7 +282,7 @@ class ValueHeadConfig:
 
 @dataclass
 class ArchitectureConfig:
-    """Model architecture hyperparameters for FlexibleThreeHeadedModel."""
+    """Model architecture hyperparameters for TransformerThreeHeadedModel."""
 
     # Core encoder
     dropout: float = 0.15
@@ -287,9 +294,6 @@ class ArchitectureConfig:
     late_layers: List[int] = field(default_factory=lambda: [2048, 2048, 1024, 1024])
     max_seq_len: int = 40
     pokemon_attention_heads: int = 16
-    # LSTM backbone (default)
-    lstm_hidden_size: int = 512
-    lstm_layers: int = 4
     # Decision heads
     teampreview_attention_heads: int = 8
     teampreview_head_dropout: float = 0.3
@@ -306,14 +310,15 @@ class ArchitectureConfig:
     number_bank_hp_bins: int = 100
     number_bank_power_bins: int = 250
     number_bank_stat_bins: int = 600
-    # Transformer backbone (optional)
+    # Transformer backbone
     transformer_dropout: float = 0.1
     transformer_ff_dim: int = 2048
     transformer_heads: int = 16
     transformer_layers: int = 6
+
+    # TODO: treat these all as constants; they shouldnt be configs
     use_causal_mask: bool = True
     use_decision_tokens: bool = True
-    use_transformer: bool = False
 
 
 @dataclass
@@ -356,6 +361,12 @@ class HardwareConfig:
     num_players: int = 3
     num_servers: int = 3
     num_workers: int = 3
+    # TODO: is this necessary? what does this do?
+    # Wondering if we should remove, especially
+    # given we are moving away from Rust; don't want this extra
+    # complexity. Feels we can add a comment in the rust engine part
+    # of this codebase that this is a potential configurable parameter
+    # if we ever want to revisit
     rust_max_concurrent_battles_override: Optional[int] = None
     showdown_start_port: int = 8000
     use_mixed_precision: bool = True
@@ -363,14 +374,14 @@ class HardwareConfig:
     # Per-player concurrent-battle cap (poke-env's `max_concurrent_battles`
     # kwarg on Player). None = poke-env's default of 1, which serialises
     # battle setup behind the previous battle's full duration via
-    # `_battle_count_queue.put(None)` — see Track C in
-    # planning/stage2/2026-05-12-09-30-second-wsl-crash-and-watchdog.md.
+    # `_battle_count_queue.put(None)`
     # Set to `num_battles_per_pair` to let a player run all its pair's
     # battles concurrently without queue-blocking. Only flows to
     # `BatchInferencePlayer` constructions in `WorkerOpponentFactory`
     # (Showdown training path); analysis scripts are unaffected.
-    max_concurrent_battles_per_player: Optional[int] = None
+    max_concurrent_battles_per_player: Optional[int] = 20
 
+    # TODO: revisit. Shouldnt this be a constant?
     # torch.compile the inference model in workers. The 2026-05-13 profile
     # showed model forward (linear + transformer + layer_norm) was the
     # dominant useful work (~36% OwnTime); compile should fuse small
@@ -380,6 +391,7 @@ class HardwareConfig:
     # subsequent calls reuse the cached graph.
     compile_inference_model: Optional[str] = None
 
+    # TODO: I think this should be a default, and set to true?
     # Centralized inference: when True, the trainer process owns a
     # ModelRegistry of InferenceServices (one per registered model
     # name) and workers submit requests via mp.Queue instead of holding
@@ -447,22 +459,28 @@ class CurriculumConfig:
     #   Default 0.0 so the slot exists but stays inert until enabled.
     curriculum_weights: Dict[str, float] = field(
         default_factory=lambda: {
-            "self_play": 0.40,
-            "bc_player": 0.20,
-            "exploiters": 0.20,
-            "ghosts": 0.20,
-            "train_exploiter": 0.0,
+            "self_play": 0.30,
+            "bc_player": 0.10,
+            "exploiters": 0.10,
+            "ghosts": 0.15,
+            "train_exploiter": 0.10,
+            "max_damage": 0.05,
+            "vgc_bench_baseline": 0.05,
+            "simple_heuristic_baseline": 0.05,
+            "max_base_power_baseline": 0.05,
+            "random_baseline": 0.05,
         }
     )
+    # TODO: add comment on the algorithm
     adaptive_curriculum: bool = True
     # Exploiter and ghost model pool sizes (paths are derived from training.run_dir)
     max_exploiter_models: int = 10
     max_ghosts: int = 10
+    # TODO: are there any of these vgcbench that can just be constants?
+    # like usernames are not valuable at all, and many of these will never change
     # VGC bench external runner
     auto_launch_external_vgcbench: bool = False
-    dedicated_vgcbench_workers: int = (
-        0  # TODO: i think this is a default at 0 and can remove
-    )
+    dedicated_vgcbench_workers: int = 0  # TODO: i think this is old, and we can remove
     external_vgcbench_python_executable: Optional[str] = None
     external_vgcbench_startup_wait_s: float = 5.0
     external_vgcbench_team_file: str = "data/teams/gen9vgc2024regg/vgcbench.txt"
@@ -478,8 +496,10 @@ class TrainingConfig:
     accessed at `config.exploiter.*` rather than `config.training.*`.
     """
 
+    # TODO: probably helpful to talka bout what this does
     checkpoint_interval: int = 1000
-    embedder_feature_set: str = "full"
+    # TODO: valuable to comment on all the possibilities here
+    embedder_feature_set: str = "raw"
     initialize_path: Optional[str] = None
     log_interval: int = 1
     max_updates: int = 100000
@@ -501,6 +521,7 @@ class TrainingConfig:
     memory_watchdog_threshold_gb: Optional[float] = 20.0
 
 
+# TODO: is this necessary or used at all?
 def _make_sub(klass: Any, d: Dict[str, Any]) -> Any:
     """Construct a dataclass from a dict, ignoring unknown keys."""
     known = {f for f in klass.__dataclass_fields__}

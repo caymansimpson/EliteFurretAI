@@ -19,7 +19,7 @@ import argparse
 import json
 import os
 from collections import defaultdict
-from typing import Any, Dict, List, Tuple, Union
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
 import torch
@@ -29,16 +29,15 @@ from elitefurretai.etl import (
     Embedder,
     OptimizedBattleDataLoader,
 )
-from elitefurretai.supervised.model_archs import (
-    FlexibleThreeHeadedModel,
-    TransformerThreeHeadedModel,
-)
+from elitefurretai.supervised.model_archs import TransformerThreeHeadedModel
 
 
 class WinPredictionAnalyzer:
     """Comprehensive analyzer for synthetic win advantage prediction model performance."""
 
-    def __init__(self, model: torch.nn.Module, device: str = "cuda", state_input_dim: int = 0):
+    def __init__(
+        self, model: torch.nn.Module, device: str = "cuda", state_input_dim: int = 0
+    ):
         self.model = model
         self.device = device
         self.state_input_dim = state_input_dim  # 0 means no slicing
@@ -90,7 +89,7 @@ class WinPredictionAnalyzer:
         with torch.no_grad():
             states = batch["states"].to(torch.float32).to(self.device)
             if self.state_input_dim > 0 and self.state_input_dim < states.shape[-1]:
-                states = states[..., :self.state_input_dim]
+                states = states[..., : self.state_input_dim]
             wins = batch["wins"].to(self.device)
             masks = batch["masks"].to(self.device)
 
@@ -614,51 +613,29 @@ def load_model_from_checkpoint(
         new_key = k.replace("_orig_mod.", "") if k.startswith("_orig_mod.") else k
         stripped_state_dict[new_key] = v
 
-    # Reconstruct model (detect architecture from config)
-    model: Union[FlexibleThreeHeadedModel, TransformerThreeHeadedModel]
-    if config.get("use_transformer", False):
-        model = TransformerThreeHeadedModel(
-            embedder=embedder,
-            early_layers=config["early_layers"],
-            late_layers=config["late_layers"],
-            dropout=0.0,
-            grouped_encoder_hidden_dim=config.get("grouped_encoder_hidden_dim", 128),
-            grouped_encoder_aggregated_dim=config.get("grouped_encoder_aggregated_dim", 1024),
-            pokemon_attention_heads=config.get("pokemon_attention_heads", 2),
-            teampreview_head_layers=config.get("teampreview_head_layers", []),
-            teampreview_head_dropout=0.0,
-            teampreview_attention_heads=config.get("teampreview_attention_heads", 4),
-            turn_head_layers=config.get("turn_head_layers", []),
-            max_seq_len=config.get("max_seq_len", 40),
-            num_value_bins=config.get("num_value_bins", 51),
-            value_min=config.get("value_min", -1.0),
-            value_max=config.get("value_max", 1.0),
-            transformer_layers=config.get("transformer_layers", 6),
-            transformer_heads=config.get("transformer_heads", 16),
-            transformer_ff_dim=config.get("transformer_ff_dim", 2048),
-            transformer_dropout=0.0,
-            use_decision_tokens=config.get("use_decision_tokens", True),
-            use_causal_mask=config.get("use_causal_mask", True),
-        )
-    else:
-        model = FlexibleThreeHeadedModel(
-            embedder=embedder,
-            early_layers=config["early_layers"],
-            late_layers=config["late_layers"],
-            lstm_layers=config["lstm_layers"],
-            lstm_hidden_size=config["lstm_hidden_size"],
-            dropout=config["dropout"],
-            early_attention_heads=config.get("early_attention_heads", 8),
-            late_attention_heads=config.get("late_attention_heads", 8),
-            grouped_encoder_hidden_dim=config.get("grouped_encoder_hidden_dim", 128),
-            grouped_encoder_aggregated_dim=config.get("grouped_encoder_aggregated_dim", 1024),
-            pokemon_attention_heads=config.get("pokemon_attention_heads", 2),
-            teampreview_head_layers=config.get("teampreview_head_layers", []),
-            teampreview_head_dropout=config.get("teampreview_head_dropout", 0.1),
-            teampreview_attention_heads=config.get("teampreview_attention_heads", 4),
-            turn_head_layers=config.get("turn_head_layers", []),
-            max_seq_len=config.get("max_seq_len", 17),
-        )
+    model = TransformerThreeHeadedModel(
+        embedder=embedder,
+        early_layers=config["early_layers"],
+        late_layers=config["late_layers"],
+        dropout=0.0,
+        grouped_encoder_hidden_dim=config.get("grouped_encoder_hidden_dim", 128),
+        grouped_encoder_aggregated_dim=config.get("grouped_encoder_aggregated_dim", 1024),
+        pokemon_attention_heads=config.get("pokemon_attention_heads", 2),
+        teampreview_head_layers=config.get("teampreview_head_layers", []),
+        teampreview_head_dropout=0.0,
+        teampreview_attention_heads=config.get("teampreview_attention_heads", 4),
+        turn_head_layers=config.get("turn_head_layers", []),
+        max_seq_len=config.get("max_seq_len", 40),
+        num_value_bins=config.get("num_value_bins", 51),
+        value_min=config.get("value_min", -1.0),
+        value_max=config.get("value_max", 1.0),
+        transformer_layers=config.get("transformer_layers", 6),
+        transformer_heads=config.get("transformer_heads", 16),
+        transformer_ff_dim=config.get("transformer_ff_dim", 2048),
+        transformer_dropout=0.0,
+        use_decision_tokens=config.get("use_decision_tokens", True),
+        use_causal_mask=config.get("use_causal_mask", True),
+    )
 
     # Load state dict
     model.load_state_dict(stripped_state_dict)
@@ -732,7 +709,9 @@ def main():
     )
 
     # Create analyzer — pass embedding size so states are sliced to featureset size
-    analyzer = WinPredictionAnalyzer(model, device=device, state_input_dim=embedder.embedding_size)
+    analyzer = WinPredictionAnalyzer(
+        model, device=device, state_input_dim=embedder.embedding_size
+    )
 
     # Process batches
     print("Analyzing predictions...")

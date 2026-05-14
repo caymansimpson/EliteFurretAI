@@ -24,8 +24,10 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 if TYPE_CHECKING:
-    from elitefurretai.rl.inference_client import InferenceClient
-    from elitefurretai.rl.worker_inference_clients import WorkerInferenceClients
+    from elitefurretai.rl.inference_worker import (
+        InferenceClient,
+        WorkerInferenceClients,
+    )
 
 from poke_env import AccountConfiguration, ServerConfiguration
 from poke_env.player import MaxBasePowerPlayer, RandomPlayer
@@ -406,12 +408,11 @@ class VGCEnvironment:
         initial_curriculum: Optional[Dict[str, float]] = None,
         exploiter_agent: Optional[RNaDAgent] = None,
         victim_agent: Optional[RNaDAgent] = None,
-        # M4 centralized inference: when both are set, the Showdown
-        # backend wires BatchInferencePlayers to the trainer-side
-        # InferenceService instead of the in-worker model. The Rust
-        # backend ignores them (centralization not yet implemented there).
+        # M4 centralized inference: when set, the Showdown backend wires
+        # BatchInferencePlayers to the trainer-side InferenceService
+        # instead of the in-worker model. The Rust backend ignores it
+        # (centralization not yet implemented there).
         main_inference_client: Optional["InferenceClient"] = None,
-        main_is_transformer: Optional[bool] = None,
         # Step 3+: full bundle of per-model inference clients. Threaded
         # through to WorkerOpponentFactory so it can hot-swap
         # opponent.inference_client between main / bc / ghost slots.
@@ -448,7 +449,6 @@ class VGCEnvironment:
                 exploiter_agent=exploiter_agent,
                 victim_agent=victim_agent,
                 main_inference_client=main_inference_client,
-                main_is_transformer=main_is_transformer,
                 worker_inference_clients=worker_inference_clients,
             )
         return cls(backend)
@@ -601,7 +601,6 @@ class _ShowdownBackend(_BackendBase):
         exploiter_agent: Optional[RNaDAgent] = None,
         victim_agent: Optional[RNaDAgent] = None,
         main_inference_client: Optional["InferenceClient"] = None,
-        main_is_transformer: Optional[bool] = None,
         worker_inference_clients: Optional["WorkerInferenceClients"] = None,
     ) -> None:
         self._config = config
@@ -619,7 +618,6 @@ class _ShowdownBackend(_BackendBase):
         self._local_traj_queue: queue.Queue = queue.Queue()
         self._factory: Optional[WorkerOpponentFactory] = None
         self._main_inference_client = main_inference_client
-        self._main_is_transformer = main_is_transformer
         self._worker_inference_clients = worker_inference_clients
 
         cur = config.curriculum
@@ -684,7 +682,6 @@ class _ShowdownBackend(_BackendBase):
             victim_agent=self._victim_agent,
             max_concurrent_battles_per_player=hw.max_concurrent_battles_per_player,
             main_inference_client=self._main_inference_client,
-            main_is_transformer=self._main_is_transformer,
             worker_inference_clients=self._worker_inference_clients,
         )
         self._factory.create_agents(self._num_pairs, self._local_traj_queue)

@@ -6,7 +6,6 @@
 # Data: data/battles/regc_final_v4/ (Gen9 VGC Reg C, ~450K filtered battles, ELO >1500)
 
 # Architecture
-use_transformer: true
 transformer_layers: 7
 transformer_heads: 16
 transformer_ff_dim: 2048

@@ -89,15 +89,6 @@ def test_batch_inference_player_init_rejects_both_model_and_client():
         BatchInferencePlayer(model=fake_model, inference_client=fake_client)
 
 
-def test_batch_inference_player_init_requires_is_transformer_for_client():
-    """When `inference_client` is provided, `is_transformer` is required
-    (the player needs to know hidden-state shape without a model to
-    introspect)."""
-    fake_client = MagicMock()
-    with pytest.raises(ValueError, match="is_transformer"):
-        BatchInferencePlayer(inference_client=fake_client)
-
-
 def test_start_inference_loop_is_noop_in_centralized_mode():
     """In centralized mode the trainer-side InferenceService runs the
     loop; the player must not start its own (it has no queue)."""

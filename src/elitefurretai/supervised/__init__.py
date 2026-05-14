@@ -24,7 +24,6 @@ from elitefurretai.supervised.behavior_clone_player import BCPlayer
 # Model architectures
 from elitefurretai.supervised.model_archs import (
     DNN,
-    FlexibleThreeHeadedModel,
     GroupedFeatureEncoder,
     NumberBankEncoder,
     ResidualBlock,
@@ -50,7 +49,6 @@ __all__ = [
     "GroupedFeatureEncoder",
     "NumberBankEncoder",
     "DNN",
-    "FlexibleThreeHeadedModel",
     "TransformerThreeHeadedModel",
     # Training utilities
     "evaluate",

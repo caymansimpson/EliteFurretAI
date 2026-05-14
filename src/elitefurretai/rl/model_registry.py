@@ -52,9 +52,8 @@ from typing import Any, Dict, List, Optional, Tuple, cast
 import torch
 from torch import multiprocessing as torch_mp
 
-from elitefurretai.rl.inference_handlers import RealModelBatchHandler
 from elitefurretai.rl.inference_ipc import InferenceResponse
-from elitefurretai.rl.inference_service import InferenceService
+from elitefurretai.rl.inference_trainer import InferenceService, RealModelBatchHandler
 from elitefurretai.rl.players import RNaDAgent
 
 logger = logging.getLogger(__name__)

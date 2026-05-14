@@ -61,14 +61,9 @@ _SMOKE_YAML = textwrap.dedent("""\
       value_max: 1.0
 
     architecture:
-      use_transformer: false
-      lstm_layers: 1
-      lstm_hidden_size: 64
       early_layers: [64]
       late_layers: [64]
       dropout: 0.0
-      early_attention_heads: 1
-      late_attention_heads: 1
       grouped_encoder_hidden_dim: 64
       grouped_encoder_aggregated_dim: 64
       pokemon_attention_heads: 1

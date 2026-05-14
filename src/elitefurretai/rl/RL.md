@@ -17,12 +17,13 @@ This document is the **comprehensive, one-stop guide** to EliteFurretAI's reinfo
     -   The RNaD Loss Function
     -   Inspiration from Ataraxos
 5.  [**Core Components and Files**](#5-core-components)
-    -   `agent.py`: The RL-Compatible Agent Wrapper
-    -   `learner.py`: The Standard RNaD Learner
-    -   `multiprocess_actor.py`: Actor Processes and Trainer
-    -   `config.py`: The Configuration System
-    -   `fast_action_mask.py`: Optimized Action Masking
-    -   `utils/team_repo.py`: The Team Repository System
+    -   `players.py`: Actor-side player + agent wrapper
+    -   `learners.py`: RNaD learner + model construction
+    -   `worker.py`: Actor process body
+    -   `train.py`: Trainer entrypoint and coordinator
+    -   `config.py`: Configuration system
+    -   `masking.py`: Optimized action masking
+    -   Team management lives in `etl/`, not here
 6.  [**Training Workflow & Features**](#6-training-workflow--features)
     -   The Multi-Stage Training Process
     -   Configuration-Driven Training
@@ -79,9 +80,9 @@ This document is the **comprehensive, one-stop guide** to EliteFurretAI's reinfo
 - **OS**: Linux via WSL2
 
 ### Model Specifications
-- **Model**: `FlexibleThreeHeadedModel` (LSTM backbone) or `TransformerThreeHeadedModel` (Transformer backbone) with FULL embedder
-- **Parameters**: ~138.8M (LSTM variant)
-- **Weights Size**: ~529 MB
+- **Model**: `TransformerThreeHeadedModel` (Transformer backbone) with FULL embedder
+- **Parameters**: ~26.7M (cool-bee-85-finetune; raw featureset)
+- **Weights Size**: ~100 MB
 - **Embedding Dimensions**: 9,223
 - **Value Head**: C51 distributional (51 bins over [-1, 1]) — richer gradients than scalar MSE
 - **Action Space**: 2,025 turn actions + 90 teampreview actions
@@ -139,20 +140,24 @@ The system uses an **IMPALA-style multiprocessing architecture** with separate P
 
 **Key Characteristics:**
 - Each actor is a **separate Python process** (still true — bypasses GIL).
-- **Centralized inference (post-2026-05-14, the default):** actors no
+- **Legacy mode** (the dataclass default, `enable_centralized_inference: false`):
+  each actor holds a CPU model copy and runs its own batched inference
+  loop. The diagram above shows this mode.
+- **Centralized inference** (opt-in via `enable_centralized_inference: true`,
+  enabled in the production configs like `sep_arch.yaml`): actors no
   longer hold their own model copies. A trainer-side `ModelRegistry`
   owns one `InferenceService` per model name; actors construct a
   `WorkerInferenceClients` bundle and submit via mp.Queue. The inference
-  forward runs on GPU in the trainer process. See "Centralized
-  Inference" section below for details.
-- **Legacy mode** (set `enable_centralized_inference: false` in
-  config): each actor holds a CPU model copy and runs its own batched
-  inference loop. The diagram above shows this mode.
+  forward runs on `config.hardware.device` (typically the trainer's GPU)
+  in the trainer process. See "Centralized Inference" section below for
+  details.
 - **Bypasses GIL** for true parallelism — featurization + battle
-  stepping in actor processes, inference on the trainer's GPU.
-- Learner periodically **broadcasts updated weights** to all actors.
-  Under centralized inference, the trainer also syncs the inference
-  service's model copy from the learner at the same cadence.
+  stepping in actor processes, inference either CPU-per-actor (legacy)
+  or batched on the trainer's GPU (centralized).
+- In legacy mode the learner **broadcasts updated weights** to actors
+  via mp.Queue. In centralized mode actors don't hold the model;
+  instead the trainer calls `registry.sync_weights(...)` to update the
+  inference service's copy at the same cadence.
 - Actors send completed trajectories via `multiprocessing.Queue`.
 
 ---
@@ -236,8 +241,8 @@ Actor 2: [===RUN===][===RUN===][===RUN===][===RUN===]
 
 1.  **Trajectories are the Currency**: Actors collect `(state, action, reward, log_prob, value)` tuples and send them to the learner via queue. The Learner computes gradients from these trajectories.
 2.  **Bidirectional Communication**: Actors send actions to Pokémon Showdown and receive state updates via WebSocket.
-3.  **CPU Actors, GPU Learner**: Actors run inference on CPU (fast enough for individual battles), freeing the GPU entirely for gradient computation.
-4.  **Periodic Weight Sync**: Learner broadcasts updated weights every N trajectories, keeping actors reasonably up-to-date without constant synchronization overhead.
+3.  **Inference placement is mode-dependent**: Legacy mode runs inference on per-actor CPU model copies, freeing the GPU entirely for gradient computation. Centralized mode runs batched inference on the trainer's GPU (`config.hardware.device`), trading some GPU contention with the learner for much higher inference batch sizes and one model copy total.
+4.  **Periodic Weight Sync**: Every N trajectories, fresh weights propagate from the learner — to the actors' model copies in legacy mode, or to the trainer-side `InferenceService`'s model copy in centralized mode (`registry.sync_weights`).
 
 ---
 
@@ -288,120 +293,125 @@ Our design is inspired by DeepMind's Ataraxos (superhuman Stratego AI):
 
 ## 5. Core Components
 
-### `agent.py`: The RL-Compatible Agent Wrapper
+The full file inventory lives in the "Files in This Module" table near
+the bottom of this doc. This section walks the main concepts in the
+order data flows through them.
 
-**Purpose**: Wraps the BC-trained `FlexibleThreeHeadedModel` or `TransformerThreeHeadedModel` for step-by-step RL inference.
+### `players.py`: Actor-side player + agent wrapper
 
-The BC model expects full trajectories, but RL requires one decision at a time. `RNaDAgent` manages hidden state between turns:
-- **LSTM variant**: Manages `(h, c)` hidden state tuple
-- **Transformer variant**: Manages a growing context tensor (previous turns' encoded features); returns `None` for initial state
+Two classes co-locate here because they pair with each other inside the
+actor:
 
-```python
-class RNaDAgent(torch.nn.Module):
-    def __init__(self, model: Union[FlexibleThreeHeadedModel, TransformerThreeHeadedModel]):
-        self._is_transformer = isinstance(model, TransformerThreeHeadedModel)
-    
-    def get_initial_state(self, batch_size, device):
-        if self._is_transformer:
-            return None  # Context starts empty
-        return (h_zeros, c_zeros)  # LSTM hidden state
-```
+`RNaDAgent` wraps the BC-trained `TransformerThreeHeadedModel` for
+step-by-step RL inference. The BC model expects full trajectories, but
+RL requires one decision at a time; `RNaDAgent` carries the growing
+transformer context between turns. `get_initial_state` returns `None`
+so the first turn starts with an empty context.
 
-### `learner.py`: The Standard RNaD Learner
+`BatchInferencePlayer` is the poke-env `Player` subclass each actor
+runs. It is **dual-mode**:
 
-**Purpose**: Heart of training. Holds `main_model` (learning) and `ref_model` (frozen anchor).
+- **Legacy mode**: owns a CPU `RNaDAgent`, runs its own per-player
+  batched inference loop (`_inference_loop` thread + per-request
+  asyncio futures) over actions taken across concurrent battles.
+- **Centralized mode**: receives an `InferenceClient` instead of a
+  model and `await client.submit(...)`s every action. Hidden state
+  lives on the trainer side and is not held here.
 
-- Pulls trajectories from queue
-- Computes RNaD loss (PPO policy + distributional value + entropy + KL)
-- Uses **C51 distributional value loss** (cross-entropy against two-hot encoded targets) instead of scalar MSE
-- Updates `main_model` via backpropagation with **topology-aware optimizer** (AdamW with separate param groups for backbone vs heads)
-- Applies **LR scheduler** (linear warmup + cosine/linear decay)
-- Periodically copies weights to `ref_model`
-- Broadcasts updated weights to actors
+It also accumulates per-step `(state, action, log_prob, value, mask, …)`
+tuples during each battle and pushes a completed-battle dict onto
+`trajectory_queue` (keys: `steps`, `opponent_type`, `won`,
+`battle_length`, `forfeited`) when a battle ends.
 
-### `multiprocess_actor.py`: Actor Processes and Trainer
+### `learners.py`: RNaD learner + model construction
 
-**Purpose**: IMPALA-style multiprocessing architecture for high-throughput training.
+`PortfolioRNaDLearner` is the heart of training: holds `main_model`
+(learning) and one or more frozen reference models (portfolio
+regularization), pulls trajectories from the queue, and:
 
-**Key Classes:**
+- Computes the RNaD loss (PPO policy + distributional value + entropy + KL)
+- Uses **C51 distributional value loss** (cross-entropy against two-hot
+  encoded targets) instead of scalar MSE
+- Updates `main_model` via backprop with a **topology-aware optimizer**
+  (AdamW with separate param groups for backbone vs heads)
+- Applies an **LR scheduler** (linear warmup + cosine/linear decay)
+- Periodically copies weights to the reference model(s)
 
-#### `ActorConfig`
-Configuration dataclass for actor processes:
-```python
-@dataclass
-class ActorConfig:
-    actor_id: int           # Unique identifier
-    server_port: int        # Showdown server port
-    model_path: str         # Path to model checkpoint
-    model_config: Dict      # Model architecture config
-    battle_format: str      # e.g., "gen9vgc2023regc"
-    num_battles: int        # Battles before sending trajectory
-    device: str = "cpu"     # Always CPU for actors
-    probabilistic: bool = True  # Sample from policy vs argmax
-```
+The same module also owns model-construction helpers used by both the
+trainer and the workers:
+`build_model_from_config`, `load_model_from_checkpoint`,
+`load_agent_from_checkpoint`, `save_checkpoint`, `load_checkpoint`,
+`is_checkpoint_compatible_with_model_config`.
 
-#### `Trajectory`
-Data container sent from actor to learner:
-```python
-@dataclass
-class Trajectory:
-    states: np.ndarray        # (T, state_dim) - embedded observations
-    actions: np.ndarray       # (T,) - action indices taken
-    rewards: np.ndarray       # (T,) - per-step rewards
-    action_masks: np.ndarray  # (T, action_dim) - valid action masks
-    is_teampreview: np.ndarray  # (T,) - teampreview vs turn steps
-    values: np.ndarray        # (T,) - value predictions for GAE
-    win: float                # 1.0=win, 0.0=loss, 0.5=draw
-```
+Weight propagation is mode-dependent:
+- **Legacy**: the trainer broadcasts state dicts to each worker via
+  per-worker `weight_queue`s; each worker calls `agent.model.load_state_dict`.
+- **Centralized**: the trainer calls `registry.sync_weights(name, sd)`
+  to update the inference service's model copy in-place. Workers never
+  touch model weights.
 
-#### `ActorPlayer`
-A `Player` subclass that runs in an actor process:
-- Performs CPU inference using its local model copy
-- Accumulates trajectory data during battles
-- Sends completed trajectories to the learner's queue
-- Supports both deterministic (argmax) and probabilistic (sampling) action selection
+### `worker.py`: Actor process body
 
-#### `MultiprocessingTrainer`
-The coordinator class that:
-- Spawns actor processes using `mp.Process`
-- Manages the trajectory queue
-- Broadcasts updated weights to actors at configurable intervals
-- Collects and batches trajectories for the learner
+`mp_worker_process` is the function each actor subprocess runs (spawned
+from `train.py` via `mp.Process`). Lifecycle:
 
-### `config.py`: The Configuration System
+1. **Model loading** (legacy only): build/load `RNaDAgent` from
+   checkpoint on CPU. In centralized mode this is skipped — workers
+   build a `WorkerInferenceClients` bundle from spawn-time mp.Queue
+   handles instead.
+2. **Environment setup**: build a `VGCEnvironment` over the configured
+   backend (Showdown websocket or Rust in-process).
+3. **Battle loop**: repeatedly poll for new weights (legacy) → run a
+   batch of battles → push completed trajectories to the learner via
+   `mp_traj_queue`.
 
-**Purpose**: `RNaDConfig` dataclass holding all hyperparameters.
+There is no `MultiprocessingTrainer` class — the trainer-side
+orchestration (spawning workers, draining trajectories, weight
+broadcast, checkpointing) lives directly in `train.py`'s `main()`.
 
-Centralizes all tunable parameters in YAML files for reproducibility. Includes:
+### `train.py`: Trainer entrypoint and coordinator
 
-- **Exploration**: `temperature_start/end`, `temperature_anneal_steps`, `top_p`, `ent_coef_end`
-- **Optimizer**: `optimizer` dict with `type` (adam/adamw), `weight_decay`, `lr_backbone`, `lr_heads`, `lr_warmup_steps`, `lr_schedule`
+`main()` owns the full trainer side: builds the learner, optionally
+the `ModelRegistry` (centralized inference), spawns
+`config.hardware.num_workers` worker processes, runs the trajectory
+collection loop, calls `learner.update(...)`, periodically broadcasts
+weights / `registry.sync_weights(...)`, and writes checkpoints.
+
+Notable helpers in this module: `initialize_learner`,
+`initialize_training_state`, `collate_trajectories`, `start_memory_watchdog`,
+`_maybe_run_exploiter_update`, `get_dead_workers`.
+
+### `config.py`: Configuration system
+
+`RNaDConfig` dataclass holds all hyperparameters. Tunable knob groups
+(non-exhaustive):
+
+- **Exploration**: `temperature_start/end`, `temperature_anneal_steps`,
+  `top_p`, `ent_coef_end`
+- **Optimizer**: `optimizer` dict with `type` (adam/adamw),
+  `weight_decay`, `lr_backbone`, `lr_heads`, `lr_warmup_steps`,
+  `lr_schedule`
 - **Distributional Value**: `num_value_bins`, `value_min`, `value_max`
-- **Number Banks**: `use_number_banks`, `number_bank_embedding_dim`, `number_bank_hp/stat/power_bins`
-- **Transformer**: `use_transformer`, `transformer_layers/heads/ff_dim/dropout`, `use_decision_tokens`, `use_causal_mask`
+- **Number Banks**: `use_number_banks`, `number_bank_embedding_dim`,
+  `number_bank_hp/stat/power_bins`
+- **Transformer**: `transformer_layers/heads/ff_dim/dropout`,
+  `use_decision_tokens`, `use_causal_mask`
+- **Hardware**: `num_workers`, `batch_size`, `batch_timeout`,
+  `battle_backend`, `device`, `max_concurrent_battles_per_player`,
+  `enable_centralized_inference`, `compile_inference_model`
 
-### `fast_action_mask.py`: Optimized Action Masking
+### `masking.py`: Optimized action masking
 
-**Purpose**: Fast generation of valid action masks (52,000x faster than naive approach).
+`fast_get_action_mask(battle: DoubleBattle) -> np.ndarray` is the fast
+path for valid-action masking (≈52,000× faster than the naive
+2025-action enumeration). It reads `battle.last_request` and directly
+enumerates valid (move, target) and switch pairs.
 
-Instead of iterating over all 2,025 actions, directly enumerates valid actions from `battle.last_request`:
-```python
-def fast_get_action_mask(battle: DoubleBattle) -> np.ndarray:
-    """Generate action mask in O(moves × targets) instead of O(2025)."""
-    # Parse request JSON directly
-    # Build valid action sets
-    # Return boolean mask
-```
+### Team management lives in `etl/`, not here
 
-### `utils/team_repo.py`: The Team Repository System
-
-**Purpose**: Manages Pokémon teams in PokePaste format.
-
-```python
-team_repo.sample_team("gen9vgc2023regc")  # Random team
-team_repo.sample_n_teams(format, "trickroom")  # Teams from subfolder
-team_repo.save_team(team, format, path, name)  # Save new team
-```
+Pokémon team sampling and management uses `etl.TeamRepo`
+(`elitefurretai.etl.team_repo`), not anything under `rl/`. The RL
+modules import it from `elitefurretai.etl import TeamRepo`.
 
 ---
 
@@ -530,7 +540,7 @@ This section documents the optimization journey from **540 battles/hr to 2,750 b
 
 **Problem**: `_get_action_mask()` iterated over all 2,025 actions, calling `is_valid_order()` for each.
 
-**Solution**: `fast_action_mask.py` directly enumerates valid actions from `battle.last_request`:
+**Solution**: `masking.py` directly enumerates valid actions from `battle.last_request`:
 
 | Metric | Old Method | Fast Method | Improvement |
 |--------|-----------|-------------|-------------|
@@ -1004,8 +1014,7 @@ Tested on forward pass (5.85ms baseline):
 2. **Multi-Format Training**: Single agent across Reg C, D, E, F
 3. **Team Generation**: Generate novel teams instead of sampling
 4. **Native Battle Engine**: Port Showdown to Python/Rust to eliminate WebSocket overhead
-5. **Transformer Evaluation**: Benchmark `TransformerThreeHeadedModel` vs LSTM backbone on full training runs
-6. **Number Bank Tuning**: Optimize bin counts and embedding dimensions for production training
+5. **Number Bank Tuning**: Optimize bin counts and embedding dimensions for production training
 7. **Batched Transformer Inference**: Pad variable-length contexts for true batched inference in actors (currently sequential per-battle)
 
 ### Files in This Module
@@ -1020,10 +1029,8 @@ Tested on forward pass (5.85ms baseline):
 | `opponents.py` | `OpponentPool` (trainer-side curriculum manager) + `WorkerOpponentFactory` (worker-side player builder, opponent hot-swap via `_swap_to`). |
 | `masking.py` | `fast_get_action_mask` and helpers (the optimized action-mask path). |
 | `model_registry.py` | Trainer-side `ModelRegistry`: one `InferenceService` per registered model name. Used in centralized inference mode (post-2026-05-14). |
-| `worker_inference_clients.py` | Worker-side bundle of `InferenceClient` instances, keyed by model name. Counterpart to `ModelRegistry`. |
-| `inference_service.py` | Trainer-side batched inference loop. Runs as a daemon thread per registered model. |
-| `inference_handlers.py` | `RealModelBatchHandler` — the actual model-forward path called by the service. Owns `hidden_states` keyed by `(worker_id, player_id, battle_tag)`. |
-| `inference_client.py` | Worker-side client: submits `InferenceRequest`, awaits response via per-request asyncio future. |
+| `inference_trainer.py` | Trainer-side: `InferenceService` (batched inference daemon thread, one per registered model) + `RealModelBatchHandler` (the model-forward path; owns `hidden_states` keyed by `(worker_id, player_id, battle_tag)`) + `echo_batch_handler` for plumbing tests. |
+| `inference_worker.py` | Worker-side: `InferenceClient` (submits `InferenceRequest`, awaits response via per-request asyncio future) + `WorkerInferenceClients` (per-worker bundle of clients keyed by model name; counterpart to `ModelRegistry`). |
 | `inference_ipc.py` | `InferenceRequest` / `InferenceResponse` / `EvictRequest` dataclasses (the wire protocol). |
 | `launch_servers.py` | Multi-server Showdown launcher. |
 | `analyze/` | Evaluation utilities, plotters, VGCBench external runner. |
@@ -1060,12 +1067,11 @@ Five architectural and training improvements inspired by the ps-ppo project have
 - **Requires**: Fresh training when enabled (changes model input dimensions)
 
 ### 5. Transformer Architecture
-- **What**: `TransformerThreeHeadedModel` replaces LSTM backbone with TransformerEncoder + decision tokens
-- **Config**: `use_transformer=false` (disabled by default), `transformer_layers=6`, `transformer_heads=16`, `transformer_ff_dim=2048`, `use_decision_tokens=true`, `use_causal_mask=true`
+- **What**: `TransformerThreeHeadedModel` — TransformerEncoder + decision tokens (the only supported backbone)
+- **Config**: `transformer_layers=6`, `transformer_heads=16`, `transformer_ff_dim=2048`, `use_decision_tokens=true`, `use_causal_mask=true`
 - **Decision tokens**: Learned [ACTOR], [CRITIC], [FIELD] vectors prepended to the sequence; ACTOR → turn head, CRITIC → value head
-- **Hidden state**: Context tensor (growing sequence of past encoded features) instead of LSTM `(h, c)`. Each turn appends to context.
-- **Inference**: Per-battle sequential inference in actors (contexts differ in length across battles). LSTM batched path preserved.
-- **Requires**: Fresh training when enabled
+- **Hidden state**: Context tensor (growing sequence of past encoded features). Each turn appends to context.
+- **Inference**: Per-battle sequential inference in actors (contexts differ in length across battles).
 
 ---
 

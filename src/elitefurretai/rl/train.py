@@ -1167,14 +1167,9 @@ def main():
     # cadence as the legacy per-worker broadcast.
     centralized = config.hardware.enable_centralized_inference
     registry: Optional[ModelRegistry] = None
-    main_is_transformer: Optional[bool] = None
     main_request_queue: Optional[MPQueue] = None
     main_response_queues: List[Optional[MPQueue]] = [None] * config.hardware.num_workers
     if centralized:
-        from elitefurretai.supervised.model_archs import (
-            TransformerThreeHeadedModel,
-        )
-
         # ModelRegistry owns one InferenceService per registered model.
         # We always register "main"; BC / victim / exploiter are
         # conditionally registered below if the curriculum uses them.
@@ -1209,7 +1204,6 @@ def main():
         main_inference_base.eval()
         main_inference_base.load_state_dict(agent.model.state_dict())
         registry.register("main", RNaDAgent(main_inference_base))
-        main_is_transformer = isinstance(main_inference_base, TransformerThreeHeadedModel)
 
         # Step 3: register BC if a BC checkpoint is configured AND the
         # curriculum will actually use it. Wasting a service slot on an
@@ -1292,15 +1286,13 @@ def main():
 
         logger.info(
             "ModelRegistry initialized; %d models registered (%s). "
-            "device=%s batch_size=%d batch_timeout=%.4f compile=%s "
-            "is_transformer=%s",
+            "device=%s batch_size=%d batch_timeout=%.4f compile=%s",
             len(registry.names()),
             ", ".join(registry.names()),
             inference_device,
             config.hardware.batch_size,
             config.hardware.batch_timeout,
             config.hardware.compile_inference_model,
-            main_is_transformer,
         )
 
     # Per-worker bundle of (request_q, response_q) pairs keyed by model
@@ -1336,7 +1328,6 @@ def main():
                 False,  # verbose
                 main_request_queue,
                 main_response_queues[i],
-                main_is_transformer,
                 queues_by_worker[i],
             ),
             daemon=True,

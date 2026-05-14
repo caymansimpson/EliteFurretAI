@@ -28,13 +28,13 @@ import torch
 from torch import multiprocessing as torch_mp
 
 from elitefurretai.etl.embedder import Embedder
-from elitefurretai.rl.inference_client import InferenceClient
-from elitefurretai.rl.inference_handlers import RealModelBatchHandler
 from elitefurretai.rl.inference_ipc import InferenceRequest
-from elitefurretai.rl.inference_service import (
+from elitefurretai.rl.inference_trainer import (
     InferenceService,
+    RealModelBatchHandler,
     echo_batch_handler,
 )
+from elitefurretai.rl.inference_worker import InferenceClient
 from elitefurretai.rl.players import RNaDAgent
 from elitefurretai.supervised.model_archs import TransformerThreeHeadedModel
 

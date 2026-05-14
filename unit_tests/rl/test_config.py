@@ -17,6 +17,7 @@ import pytest
 import yaml
 
 from elitefurretai.rl.config import HardwareConfig, RNaDConfig, get_default_config
+from elitefurretai.rl.opponents import OpponentPool
 
 # =============================================================================
 # DEFAULT CONFIG TESTS
@@ -60,38 +61,46 @@ def test_default_curriculum_sums_to_one():
 
 def test_default_curriculum_uses_correct_keys():
     """
-    Test that default curriculum uses keys matching opponent_pool.py.
+    Test that default curriculum keys are aligned with OpponentPool slots.
 
-    This is CRITICAL: The curriculum keys must match what OpponentPool expects:
-    - 'self_play': Play against current model
-    - 'bc_player': Play against behavioral cloning baseline
-    - 'exploiters': Play against frozen exploiter snapshots from <run_dir>/exploiters/
-    - 'ghosts': Play against past checkpoint snapshots
-    - 'train_exploiter': Exploiter-vs-victim battles whose trajectories feed
-      the in-process exploiter learner (gated by train_exploiter > 0 +
-      exploiter.warmup_updates).
+    Two checks:
+      1. Every key in `curriculum_weights` must correspond to a real
+         OpponentPool slot — extra/typo keys would silently never sample.
+      2. The default config exposes the *full* set of valid slots so
+         operators can dial any of them up via YAML without first having
+         to add the key. Today this is a perfect match; if a new slot is
+         added to OpponentPool, the default config must register it.
 
     BUG PREVENTION: Previously there was a mismatch where config used
     'past_versions' but opponent_pool expected 'ghosts'. This test
     ensures they stay aligned.
     """
     config = get_default_config()
-
-    expected_keys = {
-        "self_play",
-        "bc_player",
-        "exploiters",
-        "ghosts",
-        "train_exploiter",
-    }
     actual_keys = set(config.curriculum.curriculum_weights.keys())
+    valid_keys = {
+        OpponentPool.SELF_PLAY,
+        OpponentPool.BC_PLAYER,
+        OpponentPool.EXPLOITERS,
+        OpponentPool.GHOSTS,
+        OpponentPool.TRAIN_EXPLOITER,
+        OpponentPool.MAX_DAMAGE,
+        OpponentPool.RANDOM_BASELINE,
+        OpponentPool.MAX_BASE_POWER_BASELINE,
+        OpponentPool.SIMPLE_HEURISTIC_BASELINE,
+        OpponentPool.VGC_BENCH_BASELINE,
+    }
 
-    assert actual_keys == expected_keys, (
-        f"Curriculum keys mismatch!\n"
-        f"  Expected: {expected_keys}\n"
-        f"  Got: {actual_keys}\n"
-        f"  Missing: {expected_keys - actual_keys}\n"
-        f"  Extra: {actual_keys - expected_keys}"
+    extra = actual_keys - valid_keys
+    assert not extra, (
+        f"curriculum_weights contains keys that don't match any OpponentPool "
+        f"slot (will silently never sample): {extra}"
+    )
+
+    missing = valid_keys - actual_keys
+    assert not missing, (
+        f"Default curriculum should register every OpponentPool slot so "
+        f"operators can tune it via YAML without adding keys. Missing: "
+        f"{missing}"
     )
 
 
@@ -135,11 +144,10 @@ def test_config_save_and_load():
 
 
 def test_max_concurrent_battles_per_player_default_and_roundtrip():
-    """The new hardware knob defaults to None (so poke-env's library
-    default of 1 stays in force without explicit opt-in) and survives a
-    YAML round-trip both as an int and as None."""
+    """The hardware knob defaults to 20 and survives a YAML round-trip
+    both as an int and as None."""
     config = get_default_config()
-    assert config.hardware.max_concurrent_battles_per_player is None
+    assert config.hardware.max_concurrent_battles_per_player == 20
 
     with tempfile.TemporaryDirectory() as tmpdir:
         config_path = os.path.join(tmpdir, "concurrency.yaml")

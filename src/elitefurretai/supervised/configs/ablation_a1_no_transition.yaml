@@ -3,7 +3,6 @@
 # Hypothesis: minimal BC accuracy drop, negligible speed gain, riskier for RL
 
 # Architecture (identical to curious-darkness-77)
-use_transformer: true
 transformer_layers: 7
 transformer_heads: 16
 transformer_ff_dim: 2048

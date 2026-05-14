@@ -72,7 +72,7 @@ from typing import (
 )
 
 if TYPE_CHECKING:
-    from elitefurretai.rl.inference_client import InferenceClient
+    from elitefurretai.rl.inference_worker import InferenceClient
 
 import numpy as np
 import torch

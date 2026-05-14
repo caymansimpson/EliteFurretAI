@@ -2,7 +2,6 @@
 # Hypothesis: moderate BC drop (~3-6% action, ~0.02-0.05 Win Corr), ~3-5x RL speedup
 
 # Architecture — scaled down ~5x
-use_transformer: true
 transformer_layers: 4
 transformer_heads: 8
 transformer_ff_dim: 1024

@@ -55,7 +55,7 @@ train.py main loop:
 
 import os
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -67,7 +67,6 @@ from torch.optim.lr_scheduler import LambdaLR
 from elitefurretai.etl import MDBO, Embedder
 from elitefurretai.rl.config import RNaDConfig
 from elitefurretai.rl.players import RNaDAgent
-from elitefurretai.supervised import FlexibleThreeHeadedModel
 from elitefurretai.supervised.model_archs import TransformerThreeHeadedModel, twohot_encode
 
 # Action-mask fill value: large negative number that drives softmax probability
@@ -324,20 +323,6 @@ class PortfolioRNaDLearner:
                 valid_advantages.std() + 1e-8
             )
 
-        initial_hidden = batch.get("initial_hidden", None)
-        is_transformer = getattr(self.model, "_is_transformer", False)
-        if is_transformer:
-            initial_hidden_state = None
-        elif initial_hidden is None:
-            initial_hidden_state = self.model.get_initial_state(
-                states.shape[0], self.device
-            )
-        else:
-            initial_hidden_state = (
-                initial_hidden[0].to(self.device),
-                initial_hidden[1].to(self.device),
-            )
-
         # ── Pre-compute everything that's constant across PPO epochs ─────────
         flat_actions = actions.reshape(-1)
         flat_old_log_probs = old_log_probs.reshape(-1)
@@ -390,12 +375,7 @@ class PortfolioRNaDLearner:
             ):
                 with torch.no_grad():
                     for ref_model in self.ref_models:
-                        if is_transformer:
-                            ref_turn, ref_tp, _, _ = ref_model.model.forward(states)
-                        else:
-                            ref_turn, ref_tp, _, _, _ = ref_model(
-                                states, initial_hidden_state
-                            )
+                        ref_turn, ref_tp, _, _ = ref_model.model.forward(states)
                         if has_tp:
                             ref_tp_logits_list.append(
                                 ref_tp.reshape(-1, ref_tp.shape[-1])[tp_indices]
@@ -426,14 +406,9 @@ class PortfolioRNaDLearner:
             with torch.amp.autocast(  # pyright: ignore[reportPrivateImportUsage]
                 device_type=self.device, enabled=self.use_mixed_precision
             ):
-                if is_transformer:
-                    turn_logits, tp_logits, values, win_dist_logits = (
-                        self.model.model.forward(states)
-                    )
-                else:
-                    turn_logits, tp_logits, values, win_dist_logits, _ = self.model(
-                        states, initial_hidden_state
-                    )
+                turn_logits, tp_logits, values, win_dist_logits = self.model.model.forward(
+                    states
+                )
 
                 policy_loss_tp = torch.tensor(0.0, device=self.device)
                 policy_loss_turn = torch.tensor(0.0, device=self.device)
@@ -631,11 +606,7 @@ MODEL_ARCH_CONFIG_KEYS = (
     "embedder_feature_set",
     "early_layers",
     "late_layers",
-    "lstm_layers",
-    "lstm_hidden_size",
     "dropout",
-    "early_attention_heads",
-    "late_attention_heads",
     "grouped_encoder_hidden_dim",
     "grouped_encoder_aggregated_dim",
     "pokemon_attention_heads",
@@ -652,8 +623,6 @@ MODEL_ARCH_CONFIG_KEYS = (
     "number_bank_stat_bins",
     "number_bank_power_bins",
     "number_bank_embedding_dim",
-    # Transformer
-    "use_transformer",
     "transformer_layers",
     "transformer_heads",
     "transformer_ff_dim",
@@ -714,8 +683,9 @@ def build_model_from_config(
     device: str,
     state_dict: Optional[Dict[str, Any]] = None,
     strict: bool = True,
-) -> Union[FlexibleThreeHeadedModel, TransformerThreeHeadedModel]:
-    """Construct a model from a config dict (flat or nested) and optionally load weights.
+) -> TransformerThreeHeadedModel:
+    """Construct a TransformerThreeHeadedModel from a config dict (flat or nested) and
+    optionally load weights.
 
     When ``strict=True`` (default), state_dict keys must match the model exactly.
     When ``strict=False``, mismatched keys are skipped and missing/unexpected
@@ -724,9 +694,8 @@ def build_model_from_config(
     value head being added on top of a BC-trained trunk).
     """
     model_config = _config_to_flat_arch(model_config)
-    use_transformer = model_config.get("use_transformer", False)
 
-    common_kwargs: Dict[str, Any] = dict(
+    model = TransformerThreeHeadedModel(
         embedder=embedder,
         early_layers=model_config["early_layers"],
         late_layers=model_config["late_layers"],
@@ -761,28 +730,13 @@ def build_model_from_config(
         item_embed_dim=model_config.get("item_embed_dim", 16),
         species_embed_dim=model_config.get("species_embed_dim", 32),
         move_embed_dim=model_config.get("move_embed_dim", 16),
-    )
-
-    if use_transformer:
-        model: Union[FlexibleThreeHeadedModel, TransformerThreeHeadedModel] = (
-            TransformerThreeHeadedModel(
-                **common_kwargs,
-                transformer_layers=model_config.get("transformer_layers", 6),
-                transformer_heads=model_config.get("transformer_heads", 16),
-                transformer_ff_dim=model_config.get("transformer_ff_dim", 2048),
-                transformer_dropout=model_config.get("transformer_dropout", 0.1),
-                use_decision_tokens=model_config.get("use_decision_tokens", True),
-                use_causal_mask=model_config.get("use_causal_mask", True),
-            ).to(device)
-        )
-    else:
-        model = FlexibleThreeHeadedModel(
-            **common_kwargs,
-            lstm_layers=model_config.get("lstm_layers", 2),
-            lstm_hidden_size=model_config.get("lstm_hidden_size", 512),
-            early_attention_heads=model_config.get("early_attention_heads", 8),
-            late_attention_heads=model_config.get("late_attention_heads", 8),
-        ).to(device)
+        transformer_layers=model_config.get("transformer_layers", 6),
+        transformer_heads=model_config.get("transformer_heads", 16),
+        transformer_ff_dim=model_config.get("transformer_ff_dim", 2048),
+        transformer_dropout=model_config.get("transformer_dropout", 0.1),
+        use_decision_tokens=model_config.get("use_decision_tokens", True),
+        use_causal_mask=model_config.get("use_causal_mask", True),
+    ).to(device)
 
     if state_dict:
         # Strip _orig_mod. prefix left by torch.compile() before loading
@@ -811,9 +765,7 @@ def load_model_from_checkpoint(
     checkpoint_path: str,
     device: str,
     embedder: Optional[Embedder] = None,
-) -> Tuple[
-    Union[FlexibleThreeHeadedModel, TransformerThreeHeadedModel], Embedder, Dict[str, Any]
-]:
+) -> Tuple[TransformerThreeHeadedModel, Embedder, Dict[str, Any]]:
     """Load a model + embedder from a checkpoint file. Returns (model, embedder, config_dict)."""
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     config_dict = checkpoint["config"]

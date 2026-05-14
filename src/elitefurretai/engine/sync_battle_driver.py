@@ -182,11 +182,10 @@ class SyncPolicyPlayer:
         self.completed_trajectories: List[Dict[str, Any]] = []
         self._battle_opponent_types: Dict[str, str] = {}
         self._discarded_battles: set[str] = set()
-        self._is_transformer = getattr(agent, "_is_transformer", False)
         self.profile = SyncPolicyProfile()
 
     def _trim_transformer_context(self, hidden_state: Any) -> Any:
-        if not self._is_transformer or hidden_state is None:
+        if hidden_state is None:
             return hidden_state
 
         max_seq_len = getattr(self.agent.model, "max_seq_len", None)
@@ -319,146 +318,12 @@ class SyncPolicyPlayer:
         if opponent_types is None:
             opponent_types = [None] * len(snapshots)
 
-        if len(snapshots) == 1:
-            return [
-                self.choose_action_from_snapshot(snapshot, opponent_type=opponent_type)
-                for snapshot, opponent_type in zip(snapshots, opponent_types)
-            ]
-
-        if self._is_transformer:
-            return [
-                self.choose_action_from_snapshot(snapshot, opponent_type=opponent_type)
-                for snapshot, opponent_type in zip(snapshots, opponent_types)
-            ]
-
-        prepared: List[Dict[str, Any]] = []
-        results: List[Tuple[str, Optional[RolloutStep]]] = [("default", None)] * len(
-            snapshots
-        )
-
-        for index, (snapshot, opponent_type) in enumerate(zip(snapshots, opponent_types)):
-            if opponent_type is not None:
-                self._battle_opponent_types[snapshot.battle_tag] = opponent_type
-            current_steps = len(self.current_trajectories.get(snapshot.battle_tag, []))
-            record_trajectory = current_steps < self.max_battle_steps
-
-            state: Any = snapshot.state_vector
-            if state is None:
-                embed_start = time.perf_counter()
-                try:
-                    state = self._embed_battle_state(snapshot.battle)
-                except Exception:
-                    continue
-                finally:
-                    self.profile.embed_seconds += time.perf_counter() - embed_start
-
-            if snapshot.is_teampreview:
-                prepared.append(
-                    {
-                        "index": index,
-                        "snapshot": snapshot,
-                        "state": state,
-                        "record_trajectory": record_trajectory,
-                        "mask": None,
-                        "action_to_choice": {},
-                        "is_teampreview": True,
-                    }
-                )
-                continue
-
-            valid_actions = [action for action, _ in snapshot.legal_actions if action >= 0]
-            if not valid_actions:
-                continue
-
-            mask = snapshot.action_mask
-            action_to_choice = snapshot.action_to_choice
-            if mask is None:
-                mask = np.zeros(MDBO.action_space(), dtype=np.int8)
-                action_to_choice = {}
-                for action, choice in snapshot.legal_actions:
-                    if action < 0:
-                        continue
-                    mask[action] = 1
-                    action_to_choice.setdefault(action, choice)
-
-            prepared.append(
-                {
-                    "index": index,
-                    "snapshot": snapshot,
-                    "state": state,
-                    "record_trajectory": record_trajectory,
-                    "mask": mask,
-                    "action_to_choice": action_to_choice,
-                    "is_teampreview": False,
-                }
-            )
-
-        if not prepared:
-            return results
-
-        states_np = np.asarray([entry["state"] for entry in prepared], dtype=np.float32)
-        state_tensor = torch.as_tensor(
-            states_np, dtype=torch.float32, device=self.device
-        ).unsqueeze(1)
-
-        hidden_states: List[Tuple[torch.Tensor, torch.Tensor]] = []
-        for entry in prepared:
-            battle_tag = entry["snapshot"].battle_tag
-            hidden = self.hidden_states.get(battle_tag)
-            if hidden is None:
-                hidden = self.agent.get_initial_state(1, self.device)
-            hidden_states.append(cast(Tuple[torch.Tensor, torch.Tensor], hidden))
-
-        hidden = (
-            torch.cat([state[0] for state in hidden_states], dim=1),
-            torch.cat([state[1] for state in hidden_states], dim=1),
-        )
-
-        inference_start = time.perf_counter()
-        with torch.no_grad():
-            turn_logits, tp_logits, values, _, next_hidden = self.agent(
-                state_tensor, hidden
-            )
-        self.profile.inference_seconds += time.perf_counter() - inference_start
-
-        next_hidden = cast(Tuple[torch.Tensor, torch.Tensor], next_hidden)
-        for batch_index, entry in enumerate(prepared):
-            snapshot = cast(BattleSnapshot, entry["snapshot"])
-            logits = (
-                tp_logits[batch_index, 0]
-                if entry["is_teampreview"]
-                else turn_logits[batch_index, 0]
-            )
-            mask = cast(Optional[np.ndarray], entry["mask"])
-            decode_start = time.perf_counter()
-            action_idx, log_prob = self._select_action_from_logits(logits, mask)
-            choice = (
-                MDBO.from_int(action_idx, type=MDBO.TEAMPREVIEW).message
-                if entry["is_teampreview"]
-                else cast(Dict[int, str], entry["action_to_choice"]).get(
-                    action_idx, "default"
-                )
-            )
-            if entry["is_teampreview"]:
-                choice = _normalize_choice_message(choice)
-            self.profile.action_decode_seconds += time.perf_counter() - decode_start
-
-            self.hidden_states[snapshot.battle_tag] = (
-                next_hidden[0][:, batch_index : batch_index + 1, :].cpu(),
-                next_hidden[1][:, batch_index : batch_index + 1, :].cpu(),
-            )
-            rollout_step = self._build_rollout_step(
-                battle=snapshot.battle,
-                state=cast(List[float], entry["state"]),
-                action=action_idx,
-                log_prob=log_prob,
-                value=float(values[batch_index, 0].item()),
-                mask=mask,
-                record_trajectory=bool(entry["record_trajectory"]),
-            )
-            results[cast(int, entry["index"])] = (choice, rollout_step)
-
-        return results
+        # Transformer contexts vary in length per battle, so we fan out to
+        # per-snapshot inference rather than trying to batch mixed lengths.
+        return [
+            self.choose_action_from_snapshot(snapshot, opponent_type=opponent_type)
+            for snapshot, opponent_type in zip(snapshots, opponent_types)
+        ]
 
     def finish_battle(self, battle_tag: str, won: bool, truncated: bool = False) -> None:
         if battle_tag in self._discarded_battles or truncated:
@@ -592,13 +457,10 @@ class SyncPolicyPlayer:
         action, log_prob = self._select_action_from_logits(logits, mask)
         self.profile.action_decode_seconds += time.perf_counter() - decode_start
 
-        if self._is_transformer:
-            next_hidden = self._trim_transformer_context(next_hidden)
-            self.hidden_states[battle_tag] = (
-                next_hidden.cpu() if next_hidden is not None else None
-            )
-        else:
-            self.hidden_states[battle_tag] = (next_hidden[0].cpu(), next_hidden[1].cpu())
+        next_hidden = self._trim_transformer_context(next_hidden)
+        self.hidden_states[battle_tag] = (
+            next_hidden.cpu() if next_hidden is not None else None
+        )
 
         return action, log_prob, float(values[0, 0].item())
 

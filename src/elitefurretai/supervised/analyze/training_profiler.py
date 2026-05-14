@@ -13,7 +13,7 @@ from torch.profiler import ProfilerActivity, profile, record_function
 from torch.utils.data import DataLoader, Dataset
 
 from elitefurretai.etl import MDBO, Embedder, OptimizedBattleDataLoader, load_compressed
-from elitefurretai.supervised.model_archs import FlexibleThreeHeadedModel
+from elitefurretai.supervised.model_archs import TransformerThreeHeadedModel
 from elitefurretai.supervised.train_utils import (
     flatten_and_filter,
     topk_cross_entropy_loss,
@@ -796,16 +796,12 @@ def main(data_path):
     print("=" * 60)
     assert embedder is not None, "Embedder must be initialized"
 
-    # Use a simplified config for profiling (similar to three_headed_transformer.py)
-    model = FlexibleThreeHeadedModel(
+    # Use a simplified config for profiling
+    model = TransformerThreeHeadedModel(
         embedder=embedder,
         early_layers=[1024, 512],
         late_layers=[512, 256],
-        lstm_layers=2,
-        lstm_hidden_size=256,
         dropout=0.1,
-        early_attention_heads=4,
-        late_attention_heads=4,
         teampreview_head_layers=[256],
         teampreview_head_dropout=0.1,
         teampreview_attention_heads=4,
@@ -813,6 +809,10 @@ def main(data_path):
         num_actions=MDBO.action_space(),
         num_teampreview_actions=MDBO.teampreview_space(),
         max_seq_len=17,
+        transformer_layers=2,
+        transformer_heads=4,
+        transformer_ff_dim=512,
+        transformer_dropout=0.1,
     ).to("cuda")
     print(
         f"Finished loading data and model! for a total of {sum(p.numel() for p in model.parameters() if p.requires_grad):,} trainable parameters"

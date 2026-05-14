@@ -13,7 +13,7 @@ These tests verify:
 Note: These tests use mock models to avoid loading full supervised models.
 """
 
-from typing import Optional, Tuple
+from typing import Optional
 
 import pytest
 import torch
@@ -24,121 +24,78 @@ import torch.nn as nn
 # =============================================================================
 
 
-class MockFlexibleThreeHeadedModel(nn.Module):
-    """
-    Mock model that simulates FlexibleThreeHeadedModel interface.
+class MockTransformerThreeHeadedModel(nn.Module):
+    """Mock model that simulates the TransformerThreeHeadedModel interface.
 
-    Used for testing without loading full model weights or having
-    all the dependencies of the supervised module.
+    Hidden state is the growing context tensor (batch, T, hidden_dim) rather
+    than an LSTM (h, c) pair. ``forward_with_hidden`` accepts the prior
+    context and returns ``next_hidden`` of shape (batch, T_prev + seq, H).
     """
 
     def __init__(
         self,
         input_dim: int = 100,
-        hidden_dim: int = 64,
+        hidden_dim: int = 32,
         num_turn_actions: int = 2025,
         num_tp_actions: int = 90,
-        lstm_hidden_size: int = 32,
-        num_layers: int = 1,
     ):
         super().__init__()
-
-        # Simple architecture for testing
         self.embedding = nn.Linear(input_dim, hidden_dim)
+        self.hidden_dim = hidden_dim
+        self.max_seq_len = 40
 
-        # LSTM for sequence processing
-        self.lstm = nn.LSTM(
-            input_size=hidden_dim,
-            hidden_size=lstm_hidden_size,
-            num_layers=num_layers,
-            batch_first=True,
-            bidirectional=True,
-        )
-        self.lstm_hidden_size = lstm_hidden_size
-
-        # Output heads
-        lstm_output_dim = lstm_hidden_size * 2  # Bidirectional
-        self.turn_head = nn.Linear(lstm_output_dim, num_turn_actions)
-        self.tp_head = nn.Linear(lstm_output_dim, num_tp_actions)
-        self.value_head = nn.Linear(lstm_output_dim, 1)
+        self.turn_head = nn.Linear(hidden_dim, num_turn_actions)
+        self.tp_head = nn.Linear(hidden_dim, num_tp_actions)
+        self.value_head = nn.Linear(hidden_dim, 1)
 
     def forward_with_hidden(
         self,
         x: torch.Tensor,
-        hidden_state: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        hidden_state: Optional[torch.Tensor] = None,
         mask: Optional[torch.Tensor] = None,
+        hidden_mask: Optional[torch.Tensor] = None,
     ):
-        """
-        Forward pass with explicit hidden state handling.
+        """Forward with growing context tensor.
 
         Args:
-            x: Input features (batch, seq, input_dim)
-            hidden_state: Optional (h, c) tuple from previous step
-            mask: Optional action mask (not used in mock)
+            x: (batch, seq, input_dim)
+            hidden_state: (batch, T_prev, hidden_dim) or None
 
         Returns:
             turn_logits: (batch, seq, num_turn_actions)
-            tp_logits: (batch, seq, num_tp_actions)
-            value: (batch, seq)
-            next_hidden: (h, c) tuple
+            tp_logits:   (batch, seq, num_tp_actions)
+            value:       (batch, seq)
+            win_dist_logits: (batch, seq, 1)
+            next_hidden: (batch, T_prev + seq, hidden_dim)
         """
-
-        # Embed input
-        embedded = self.embedding(x)  # (batch, seq, hidden_dim)
-
-        # LSTM forward
+        encoded = self.embedding(x)  # (batch, seq, hidden_dim)
         if hidden_state is None:
-            lstm_out, next_hidden = self.lstm(embedded)
+            next_hidden = encoded
         else:
-            lstm_out, next_hidden = self.lstm(embedded, hidden_state)
+            next_hidden = torch.cat([hidden_state, encoded], dim=1)
 
-        # Output heads
-        turn_logits = self.turn_head(lstm_out)
-        tp_logits = self.tp_head(lstm_out)
-        win_dist_logits = self.value_head(lstm_out)  # (batch, seq, 1) used as distributional logits
-
-        # Compute scalar value via distributional expectation (mock: just use tanh of mean)
-        value = torch.tanh(win_dist_logits.squeeze(-1))  # (batch, seq)
+        turn_logits = self.turn_head(encoded)
+        tp_logits = self.tp_head(encoded)
+        win_dist_logits = self.value_head(encoded)
+        value = torch.tanh(win_dist_logits.squeeze(-1))
 
         return turn_logits, tp_logits, value, win_dist_logits, next_hidden
 
 
 class MockRNaDAgent(nn.Module):
-    """
-    Mock RNaDAgent for testing.
+    """Mock RNaDAgent wrapping the mock transformer."""
 
-    Wraps MockFlexibleThreeHeadedModel with the same interface as RNaDAgent.
-    """
-
-    def __init__(self, model: MockFlexibleThreeHeadedModel):
+    def __init__(self, model: MockTransformerThreeHeadedModel):
         super().__init__()
         self.model = model
 
     def get_initial_state(self, batch_size: int, device: str):
-        """
-        Create initial LSTM hidden state.
+        """Transformer has no initial hidden state — context starts as None."""
+        return None
 
-        Returns:
-            (h, c) tuple with zero-initialized hidden states
-        """
-        num_directions = 2  # Bidirectional
-        num_layers = self.model.lstm.num_layers
-        hidden_size = self.model.lstm_hidden_size
-
-        h = torch.zeros(
-            num_layers * num_directions, batch_size, hidden_size, device=device
-        )
-        c = torch.zeros(
-            num_layers * num_directions, batch_size, hidden_size, device=device
-        )
-        return (h, c)
-
-    def forward(self, x, hidden_state=None, mask=None):
-        """
-        Forward pass matching RNaDAgent interface.
-        """
+    def forward(self, x, hidden_state=None, mask=None, hidden_mask=None):
         turn_logits, tp_logits, value, win_dist_logits, next_hidden = (
-            self.model.forward_with_hidden(x, hidden_state, mask)
+            self.model.forward_with_hidden(x, hidden_state, mask, hidden_mask)
         )
         return turn_logits, tp_logits, value, win_dist_logits, next_hidden
 
@@ -153,13 +110,11 @@ def mock_model():
     """
     Create a mock model with default dimensions.
     """
-    return MockFlexibleThreeHeadedModel(
+    return MockTransformerThreeHeadedModel(
         input_dim=100,
-        hidden_dim=64,
+        hidden_dim=32,
         num_turn_actions=2025,
         num_tp_actions=90,
-        lstm_hidden_size=32,
-        num_layers=1,
     )
 
 
@@ -234,53 +189,18 @@ def test_agent_forward_pass(mock_agent):
     assert turn_logits.shape == (batch_size, seq_len, 2025)
     assert tp_logits.shape == (batch_size, seq_len, 90)
     assert value.shape == (batch_size, seq_len)
-    assert len(next_hidden) == 2  # (h, c)
+    # Transformer context: (batch, T_prev + seq, hidden_dim). Here T_prev=0.
+    assert next_hidden.shape == (batch_size, seq_len, 32)
 
 
-def test_agent_initial_state_shape(mock_agent):
-    """
-    Test that initial hidden state has correct shape.
-
-    For bidirectional LSTM with 1 layer, hidden should be:
-        (num_layers * 2, batch, hidden_size)
-
-    Expected: Correct hidden state dimensions.
-    """
-    batch_size = 8
-    hidden = mock_agent.get_initial_state(batch_size, "cpu")
-
-    h, c = hidden
-
-    # Bidirectional (2) * num_layers (1) = 2
-    assert h.shape[0] == 2
-    assert h.shape[1] == batch_size
-    assert h.shape[2] == 32  # lstm_hidden_size
-
-    assert c.shape == h.shape
-
-
-def test_agent_initial_state_zeros(mock_agent):
-    """
-    Test that initial hidden state is zeros.
-
-    Expected: Both h and c are zero tensors.
-    """
-    hidden = mock_agent.get_initial_state(4, "cpu")
-    h, c = hidden
-
-    assert torch.allclose(h, torch.zeros_like(h))
-    assert torch.allclose(c, torch.zeros_like(c))
+def test_agent_initial_state_is_none(mock_agent):
+    """Transformer has no initial hidden state — it starts as None."""
+    hidden = mock_agent.get_initial_state(8, "cpu")
+    assert hidden is None
 
 
 def test_agent_value_bounded(mock_agent):
-    """
-    Test that value output is bounded in [-1, 1].
-
-    Value represents win probability/expected outcome, so should
-    be bounded. We use tanh activation.
-
-    Expected: All values in [-1, 1].
-    """
+    """Value output should be bounded in [-1, 1] (tanh head)."""
     x = torch.randn(4, 3, 100)
     hidden = mock_agent.get_initial_state(4, "cpu")
 
@@ -291,35 +211,24 @@ def test_agent_value_bounded(mock_agent):
 
 
 def test_agent_sequential_forward(mock_agent):
-    """
-    Test agent processes sequences correctly with hidden state carry.
-
-    Hidden state from step 1 should be passed to step 2.
-
-    Expected: Sequential processing maintains state.
-    """
+    """Context should grow when fed back across sequential calls."""
     batch_size = 2
     input_dim = 100
 
     hidden = mock_agent.get_initial_state(batch_size, "cpu")
 
-    # Process first step
     x1 = torch.randn(batch_size, 1, input_dim)
     _, _, _, _, hidden1 = mock_agent(x1, hidden)
 
-    # Process second step with hidden from first
     x2 = torch.randn(batch_size, 1, input_dim)
     _, _, _, _, hidden2 = mock_agent(x2, hidden1)
 
-    # Hidden states should change between steps
-    h0, c0 = hidden
-    h1, c1 = hidden1
-    h2, c2 = hidden2
-
-    # After processing, hidden should differ from zeros
-    assert not torch.allclose(h1, torch.zeros_like(h1))
-    # Hidden should change after each step
-    assert not torch.allclose(h1, h2)
+    # First call: context grew to length 1.
+    assert hidden1.shape[1] == 1
+    # Second call: context grew to length 2.
+    assert hidden2.shape[1] == 2
+    # The first position of hidden2 must match hidden1 (history is preserved).
+    assert torch.allclose(hidden1, hidden2[:, :1, :])
 
 
 # =============================================================================
@@ -367,7 +276,7 @@ def mock_learner(mock_agent):
     Create mock learner with separate model and ref_model.
     """
     model = mock_agent
-    ref_model = MockRNaDAgent(MockFlexibleThreeHeadedModel())
+    ref_model = MockRNaDAgent(MockTransformerThreeHeadedModel())
     return MockRNaDLearner(model, ref_model, device="cpu")
 
 
@@ -570,30 +479,17 @@ def test_kl_asymmetry():
 
 
 def test_hidden_state_detach_between_updates():
+    """The growing transformer context carries gradients through the
+    embedding op; detaching is the convention used between episodes.
     """
-    Test that hidden states should be detached between updates.
-
-    LSTM hidden states carry gradients. For RL, we typically
-    detach between environment steps to prevent backprop through time
-    across episode boundaries.
-
-    Expected: Detached hidden doesn't require grad.
-    """
-    model = MockFlexibleThreeHeadedModel()
+    model = MockTransformerThreeHeadedModel()
     x = torch.randn(1, 1, 100, requires_grad=True)
-    hidden = (torch.zeros(2, 1, 32), torch.zeros(2, 1, 32))
+    hidden = torch.zeros(1, 0, 32)  # empty context
 
     _, _, _, _, next_hidden = model.forward_with_hidden(x, hidden)
 
-    # Next hidden has gradients connected to input
-    h, c = next_hidden
-
-    # Detach for next episode
-    detached_h = h.detach()
-    detached_c = c.detach()
-
-    assert not detached_h.requires_grad
-    assert not detached_c.requires_grad
+    detached = next_hidden.detach()
+    assert not detached.requires_grad
 
 
 # =============================================================================

@@ -154,7 +154,7 @@ def load_model_and_config(model_path: str, device: str):
     # carries this prefix; the un-compiled model we just built does not).
     raw_state_dict = checkpoint["model_state_dict"]
     state_dict = {
-        (k[len("_orig_mod."):] if k.startswith("_orig_mod.") else k): v
+        (k[len("_orig_mod.") :] if k.startswith("_orig_mod.") else k): v
         for k, v in raw_state_dict.items()
     }
 
@@ -286,9 +286,6 @@ def finetune(
         prefetch_factor=2,
         files_per_worker=1,
     )
-
-    # Record that we're using the transformer (RL checkpoint compatibility flag)
-    config["use_transformer"] = isinstance(raw_model, TransformerThreeHeadedModel)
 
     # torch.compile fuses GPU kernels for ~15-30% speedup on CUDA. Apply AFTER
     # load_state_dict so we don't have to deal with _orig_mod-prefixed keys.

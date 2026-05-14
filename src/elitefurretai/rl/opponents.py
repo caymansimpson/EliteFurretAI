@@ -62,8 +62,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, cast
 
 if TYPE_CHECKING:
-    from elitefurretai.rl.inference_client import InferenceClient
-    from elitefurretai.rl.worker_inference_clients import WorkerInferenceClients
+    from elitefurretai.rl.inference_worker import (
+        InferenceClient,
+        WorkerInferenceClients,
+    )
 
 import numpy as np
 import torch
@@ -935,10 +937,8 @@ class WorkerOpponentFactory:
         # Centralized inference: when set, the factory wires
         # BatchInferencePlayers to submit through the trainer-side
         # InferenceService instead of holding a model copy. `main_agent`
-        # may be None when this is set; `main_is_transformer` is then
-        # required because the player needs hidden-state shape info.
+        # may be None when this is set.
         main_inference_client: Optional["InferenceClient"] = None,
-        main_is_transformer: Optional[bool] = None,
         # Full bundle of inference clients (one per registered model
         # name in the trainer's ModelRegistry). When set, takes
         # precedence over the singular `main_inference_client` —
@@ -954,10 +954,6 @@ class WorkerOpponentFactory:
                 "WorkerOpponentFactory requires either main_agent (legacy "
                 "per-player inference) or main_inference_client (centralized)"
             )
-        if main_inference_client is not None and main_is_transformer is None:
-            raise ValueError(
-                "main_is_transformer must be set when main_inference_client is provided"
-            )
         self.team_repo = team_repo
         self.battle_format = battle_format
         self.team_subdirectory = team_subdirectory
@@ -968,7 +964,6 @@ class WorkerOpponentFactory:
         # callers that haven't switched to the bundle interface.
         self.worker_inference_clients = worker_inference_clients
         self.main_inference_client = main_inference_client
-        self.main_is_transformer = main_is_transformer
         self.bc_agent = bc_agent
         # poke-env Player's `max_concurrent_battles` kwarg. None preserves
         # the library default of 1. See Track C in
@@ -1241,10 +1236,7 @@ class WorkerOpponentFactory:
         main_client = self._resolve_centralized_client("main")
         main_kwargs: Dict[str, Any]
         if main_client is not None:
-            main_kwargs = {
-                "inference_client": main_client,
-                "is_transformer": self.main_is_transformer,
-            }
+            main_kwargs = {"inference_client": main_client}
         else:
             main_kwargs = {"model": self.main_agent}
 
@@ -1398,9 +1390,7 @@ class WorkerOpponentFactory:
 
         return self.SELF_PLAY
 
-    def _resolve_centralized_client(
-        self, model_name: str
-    ) -> Optional["InferenceClient"]:
+    def _resolve_centralized_client(self, model_name: str) -> Optional["InferenceClient"]:
         """Return the centralized InferenceClient for `model_name` if
         available. Order of precedence:
           1. `worker_inference_clients` bundle (step 3+ canonical path)
@@ -1408,9 +1398,8 @@ class WorkerOpponentFactory:
              only — kept so step 2 callers continue to work)
           3. None — caller falls back to legacy `model = X` swap
         """
-        if (
-            self.worker_inference_clients is not None
-            and self.worker_inference_clients.has(model_name)
+        if self.worker_inference_clients is not None and self.worker_inference_clients.has(
+            model_name
         ):
             return self.worker_inference_clients.get(model_name)
         if model_name == "main" and self.main_inference_client is not None:
@@ -1479,12 +1468,8 @@ class WorkerOpponentFactory:
             # Exploiter (player) vs. frozen victim (opponent). Trajectory
             # is tagged "train_exploiter" so the main process routes it
             # to the exploiter learner instead of the main learner.
-            player_swapped = self._swap_to(
-                player, "exploiter", self.exploiter_agent
-            )
-            opponent_swapped = self._swap_to(
-                opponent, "victim", self.victim_agent
-            )
+            player_swapped = self._swap_to(player, "exploiter", self.exploiter_agent)
+            opponent_swapped = self._swap_to(opponent, "victim", self.victim_agent)
             if not (player_swapped and opponent_swapped):
                 # Co-training agents not provisioned (e.g., curriculum
                 # slot ramped up before main process built them). Fall

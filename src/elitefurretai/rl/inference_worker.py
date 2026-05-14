@@ -1,24 +1,28 @@
 # -*- coding: utf-8 -*-
-"""Worker-side inference client.
+"""Worker-side inference: client + per-worker bundle.
 
-One per InferenceService. The client owns:
+Two units live here because they pair tightly: one `InferenceClient`
+talks to one `InferenceService`, and `WorkerInferenceClients` bundles
+N clients per worker so players can hot-swap between registered models.
 
-  - the request mp.Queue (shared with trainer's service)
-  - this worker's response mp.Queue (drained by a daemon thread)
-  - a request_id → asyncio.Future mapping (in-flight requests)
+  - `InferenceClient`: one per (worker × InferenceService). Owns the
+      request mp.Queue (shared with trainer's service), this worker's
+      response mp.Queue (drained by a daemon thread), and the
+      request_id → asyncio.Future mapping for in-flight requests.
+      Players call `await client.submit(...)` and get back the response;
+      `client.evict(...)` is fire-and-forget when a battle ends.
+  - `WorkerInferenceClients`: one per worker. Counterpart to the
+      trainer's `ModelRegistry`. Players read from this bundle via
+      `clients.get("main")` / `clients.get("bc")` / `clients.get("ghost_2")`.
 
-Players call `await client.submit(state=..., battle_tag=..., ...)` and
-get back the response. Hidden state is NOT shipped on the wire;
-the trainer-side handler keeps it keyed by (worker_id, battle_tag) and
-the worker just sends the lightweight battle_tag.
-
-Players also call `client.evict(battle_tag)` when a battle ends so the
-trainer can free its hidden-state slot.
+Hidden state is NOT shipped on the wire; the trainer-side handler keeps
+it keyed by (worker_id, player_id, battle_tag) and the worker just
+sends the lightweight battle_tag.
 
 Design notes
 ------------
-- We keep request_id allocation per-client (per worker × per service).
-  Trainer is oblivious to id collisions across workers because it just
+- request_id allocation is per-client (per worker × per service). The
+  trainer is oblivious to id collisions across workers because it just
   echoes back whatever id arrived.
 - We store the asyncio loop at construction time and use
   call_soon_threadsafe — this assumes the client is created on the same
@@ -34,7 +38,7 @@ import itertools
 import logging
 import queue
 import threading
-from typing import Dict, Optional, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
 from torch import multiprocessing as torch_mp
@@ -46,6 +50,11 @@ from elitefurretai.rl.inference_ipc import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Single-service client
+# ─────────────────────────────────────────────────────────────────────
 
 
 class InferenceClient:
@@ -175,3 +184,68 @@ class InferenceClient:
     def _resolve_future(future: asyncio.Future, resp: InferenceResponse) -> None:
         if not future.done():
             future.set_result(resp)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Per-worker bundle (counterpart of trainer-side ModelRegistry)
+# ─────────────────────────────────────────────────────────────────────
+
+
+class WorkerInferenceClients:
+    """One per worker. Holds an InferenceClient per registered model name."""
+
+    def __init__(
+        self,
+        worker_id: int,
+        queues_by_model: Dict[str, Tuple["torch_mp.Queue", "torch_mp.Queue"]],
+        loop: asyncio.AbstractEventLoop,
+    ):
+        """`queues_by_model` should be the per-worker slice produced by
+        the trainer:
+
+            all_queues = registry.queues_for_workers()
+            per_worker = {
+                name: (req_q, resp_qs[worker_id])
+                for name, (req_q, resp_qs) in all_queues.items()
+            }
+        """
+        self.worker_id = worker_id
+        self._clients: Dict[str, InferenceClient] = {}
+        for name, (req_q, resp_q) in queues_by_model.items():
+            client = InferenceClient(
+                worker_id=worker_id,
+                request_queue=req_q,
+                response_queue=resp_q,
+                loop=loop,
+            )
+            client.start()
+            self._clients[name] = client
+        logger.debug(
+            "WorkerInferenceClients[w=%d]: %d clients (%s)",
+            worker_id,
+            len(self._clients),
+            ", ".join(self._clients.keys()),
+        )
+
+    def get(self, model_name: str) -> InferenceClient:
+        """Return the InferenceClient for `model_name`. Raises KeyError
+        if the model wasn't registered (catches typos and missing
+        opt-in registrations early)."""
+        if model_name not in self._clients:
+            raise KeyError(
+                f"No inference client for '{model_name}' in worker "
+                f"{self.worker_id}. Registered: {sorted(self._clients)}"
+            )
+        return self._clients[model_name]
+
+    def has(self, model_name: str) -> bool:
+        return model_name in self._clients
+
+    def names(self) -> List[str]:
+        return list(self._clients.keys())
+
+    def stop_all(self, timeout_s: float = 2.0) -> None:
+        """Stop every client's dispatcher thread. Idempotent."""
+        for name, client in list(self._clients.items()):
+            client.stop(timeout_s=timeout_s)
+        self._clients.clear()

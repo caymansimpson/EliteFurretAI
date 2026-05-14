@@ -23,7 +23,7 @@ from elitefurretai.etl.encoder import MDBO
 from elitefurretai.rl.config import RNaDConfig
 from elitefurretai.rl.learners import PortfolioRNaDLearner
 from elitefurretai.rl.players import RNaDAgent
-from elitefurretai.supervised.model_archs import FlexibleThreeHeadedModel
+from elitefurretai.supervised.model_archs import TransformerThreeHeadedModel
 
 # =============================================================================
 # FIXTURES
@@ -38,17 +38,19 @@ def simple_embedder():
 
 @pytest.fixture
 def small_model(simple_embedder):
-    """Create a small FlexibleThreeHeadedModel for testing."""
-    return FlexibleThreeHeadedModel(
+    """Create a small TransformerThreeHeadedModel for testing."""
+    return TransformerThreeHeadedModel(
         embedder=simple_embedder,
         early_layers=[32, 16],
         late_layers=[32, 16],
-        lstm_layers=1,
-        lstm_hidden_size=16,
         num_actions=MDBO.action_space(),
         num_teampreview_actions=MDBO.teampreview_space(),
         max_seq_len=10,
         dropout=0.0,
+        transformer_layers=1,
+        transformer_heads=2,
+        transformer_ff_dim=32,
+        transformer_dropout=0.0,
     )
 
 
@@ -62,16 +64,18 @@ def agent(small_model):
 def ref_agent(small_model, simple_embedder):
     """Create reference RNaDAgent from small model."""
     # Create a separate instance with same architecture
-    ref_model = FlexibleThreeHeadedModel(
+    ref_model = TransformerThreeHeadedModel(
         embedder=simple_embedder,
         early_layers=[32, 16],
         late_layers=[32, 16],
-        lstm_layers=1,
-        lstm_hidden_size=16,
         num_actions=MDBO.action_space(),
         num_teampreview_actions=MDBO.teampreview_space(),
         max_seq_len=10,
         dropout=0.0,
+        transformer_layers=1,
+        transformer_heads=2,
+        transformer_ff_dim=32,
+        transformer_dropout=0.0,
     )
     return RNaDAgent(ref_model)
 
@@ -443,51 +447,33 @@ def test_gradient_clipping_applied(learner, sample_batch):
 
 
 def test_rnad_agent_forward(agent, simple_embedder):
-    """
-    Test RNaDAgent forward pass.
-
-    Expected: Returns turn_logits, tp_logits, value, hidden.
-    """
+    """RNaDAgent.forward delegates to ``model.forward_with_hidden`` which is
+    single-step (seq_len == 1) for online RL inference."""
     batch_size = 4
-    seq_len = 5
 
-    x = torch.randn(batch_size, seq_len, simple_embedder.embedding_size)
+    x = torch.randn(batch_size, 1, simple_embedder.embedding_size)
     hidden = agent.get_initial_state(batch_size, "cpu")
 
     turn_logits, tp_logits, value, win_dist_logits, next_hidden = agent(x, hidden)
 
-    assert turn_logits.shape == (batch_size, seq_len, MDBO.action_space())
-    assert tp_logits.shape == (batch_size, seq_len, MDBO.teampreview_space())
-    assert value.shape == (batch_size, seq_len)
-    assert isinstance(next_hidden, tuple)
-    assert len(next_hidden) == 2
+    assert turn_logits.shape == (batch_size, 1, MDBO.action_space())
+    assert tp_logits.shape == (batch_size, 1, MDBO.teampreview_space())
+    assert value.shape == (batch_size, 1)
+    # Transformer next_hidden is the accumulated context tensor.
+    assert isinstance(next_hidden, torch.Tensor)
+    assert next_hidden.shape[0] == batch_size
+    assert next_hidden.shape[1] == 1
 
 
-def test_rnad_agent_initial_state_shape(agent):
-    """
-    Test get_initial_state returns correct shapes.
-
-    Expected: Hidden states have correct dimensions for bidirectional LSTM.
-    """
-    batch_size = 8
-    h, c = agent.get_initial_state(batch_size, "cpu")
-
-    # Shape: (num_layers * num_directions, batch, hidden_size)
-    num_layers = 1
-    num_directions = 2
-    hidden_size = 16
-
-    assert h.shape == (num_layers * num_directions, batch_size, hidden_size)
-    assert c.shape == (num_layers * num_directions, batch_size, hidden_size)
+def test_rnad_agent_initial_state_is_none(agent):
+    """Transformer has no initial hidden state — context starts as None."""
+    hidden = agent.get_initial_state(8, "cpu")
+    assert hidden is None
 
 
 def test_rnad_agent_value_range(agent, simple_embedder):
-    """
-    Test that RNaDAgent value output is in [-1, 1].
-
-    Expected: Value uses tanh activation.
-    """
-    x = torch.randn(4, 5, simple_embedder.embedding_size)
+    """Value output is in [-1, 1] via the C51 distributional head."""
+    x = torch.randn(4, 1, simple_embedder.embedding_size)
     hidden = agent.get_initial_state(4, "cpu")
 
     _, _, value, _, _ = agent(x, hidden)

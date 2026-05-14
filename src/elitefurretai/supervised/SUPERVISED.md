@@ -55,29 +55,6 @@ await player.battle_against(opponent, n_battles=1)
 
 **Key Classes**:
 
-#### `FlexibleThreeHeadedModel` (Legacy)
-This was the initial architecture for the project, using a bidirectional LSTM backbone. Superseded by `TransformerThreeHeadedModel` for the Stage I handoff.
-*   **Design Choice (Grouped Encoder)**: Instead of a flat input vector, features are split into semantic groups (Player Mon 1-6, Opponent Mon 1-6, Global State). Each group is encoded separately. This allows the model to learn "Pokemon" representations that are invariant to slot position.
-*   **Design Choice (Cross-Attention)**: After encoding, an attention mechanism allows Pokemon to "look at" each other. This explicitly models synergy (teammate-teammate attention) and matchups (player-opponent attention).
-*   **Design Choice (Three Heads)**:
-    1.  **Turn Head**: Predicts the next move (0-2024).
-        *   **Why 2025 actions?** In VGC Doubles, you control 2 Pokemon. The action space is the Cartesian product of all possible legal moves for the active Pokemon.
-            *   Moves: 4 moves * 2 targets (opponent 1/2) + 1 target (ally) = ~9 options per move slot.
-            *   Switches: Switch to slot 3, 4, 5, or 6.
-            *   Terastallization: Can happen with any move.
-            *   We also include empty options like pass/default as well.
-            *   The `MDBO` class flattens all valid combinations of these into 2025 discrete integers. This allows us to use standard classification loss instead of complex multi-output regression.
-    2.  **Teampreview Head**: Predicts the lead 4 Pokemon (0-89).
-        *   **Why 90 actions?** You must choose 4 Pokemon out of 6. In VGC, the *order* of the two leads doesn't matter (Lead A+B is same as B+A), and the order of the two back Pokemon doesn't matter.
-            *   Ways to pick 2 leads from 6: $\binom{6}{2} = 15$
-            *   Ways to pick 2 back from remaining 4: $\binom{4}{2} = 6$
-            *   Total combinations: $15 \times 6 = 90$.
-    3.  **Win Head (Distributional)**: Predicts win probability via C51 distributional head.
-        *   **C51 Distribution**: Instead of a scalar in [-1, 1], outputs logits over 51 bins spanning [-1, 1]. The expected value is computed as `(softmax(logits) * support).sum(-1)`.
-        *   **Two-hot encoding**: Target values are encoded as soft distributions via `twohot_encode()` — interpolating between the two nearest bin centers.
-        *   **Why distributional?** Captures the full return distribution (win/loss is bimodal). Provides richer gradients than scalar MSE. Stabilizes RL training significantly.
-        *   **Forward return change**: `forward()` returns 4 values: `(turn_logits, tp_logits, win_values, win_dist_logits)`. `forward_with_hidden()` returns 5: adds hidden state.
-
 #### `NumberBankEncoder`
 Replaces raw float inputs for selected numerical features with learned embedding lookups.
 *   **Feature types**: HP% → `hp_bank` (100 bins), stats → `stat_bank` (600 bins), base power → `power_bank` (250 bins)
@@ -85,15 +62,18 @@ Replaces raw float inputs for selected numerical features with learned embedding
 *   **Integration**: Applied inside `GroupedFeatureEncoder` — the Embedder output format is unchanged
 *   **Config**: Gated by `use_number_banks` (disabled by default)
 
-#### `TransformerThreeHeadedModel` (Current)
-The primary backbone, replacing the bidirectional LSTM with a TransformerEncoder and decision tokens. The Stage I research baseline is `curious-darkness-77` (~125M params, full featureset). The Stage II RL handoff is the `cool-bee-85-finetune` configuration (~26.7M params, raw featureset, ~5× smaller; same module class, smaller hyperparams).
+#### `TransformerThreeHeadedModel`
+The model architecture for all supervised + RL training. The Stage I research baseline is `curious-darkness-77` (~125M params, full featureset). The Stage II RL handoff is the `cool-bee-85-finetune` configuration (~26.7M params, raw featureset, ~5× smaller; same module class, smaller hyperparams).
 *   **Decision tokens**: Three learned parameter vectors `[ACTOR]`, `[CRITIC]`, `[FIELD]` are prepended to the sequence. ACTOR token output feeds the turn head, CRITIC feeds the value head.
 *   **Positional encoding**: Sinusoidal (supports variable-length sequences at inference)
 *   **Causal mask**: Past turns can only attend to themselves and prior turns. Decision tokens can attend to everything.
-*   **Hidden state**: Instead of LSTM `(h, c)`, uses a growing context tensor of past encoded features. Each turn appends to the context.
+*   **Hidden state**: A growing context tensor of past encoded features. Each turn appends to the context.
 *   **Detached TP head**: The teampreview head uses `encoded.detach()` so TP gradients do not flow back into the shared encoder, preventing harmful gradient interference with the action/value trunk.
-*   **Config**: Gated by `use_transformer`. Key params: `transformer_layers=7`, `transformer_heads=16`, `transformer_ff_dim=2048`
-*   **Same three heads**: Identical turn/teampreview/win head structure as `FlexibleThreeHeadedModel`
+*   **Config**: Key params: `transformer_layers=7`, `transformer_heads=16`, `transformer_ff_dim=2048`
+*   **Three heads**:
+    1.  **Turn Head**: Predicts the next move (0-2024). 2025 actions = the Cartesian product of all possible legal moves for the two active Pokemon (move/target/switch/tera combinations flattened by `MDBO`).
+    2.  **Teampreview Head**: Predicts the lead 4 Pokemon (0-89). 90 actions = $\binom{6}{2}\binom{4}{2}$ unordered lead/back selections.
+    3.  **Win Head (Distributional, C51)**: Logits over 51 bins spanning [-1, 1]; expected value = `(softmax(logits) * support).sum(-1)`. Targets encoded as soft two-hot distributions via `twohot_encode()`. `forward()` returns `(turn_logits, tp_logits, win_values, win_dist_logits)`; `forward_with_hidden()` adds the next context tensor.
 
 #### `GroupedFeatureEncoder`
 Encodes features by semantic groups with optional number bank integration and cross-attention for Pokemon synergies.
@@ -102,7 +82,7 @@ Encodes features by semantic groups with optional number bank integration and cr
 Standard sinusoidal positional encoding for the Transformer backbone. Supports variable-length sequences up to `max_len`.
 
 ### `train.py`
-**Purpose**: The main training script for both `FlexibleThreeHeadedModel` and `TransformerThreeHeadedModel`.
+**Purpose**: The main training script for `TransformerThreeHeadedModel`.
 
 **Key Features**:
 *   **Config-driven**: Accepts a YAML config file (see `configs/curious_darkness_77.yaml` for the Stage I handoff config).

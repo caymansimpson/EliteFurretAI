@@ -39,16 +39,12 @@ value_head:
 architecture:
   # Transformer backbone (matching cool-bee-85-finetune: ~26.7M params, ~5x smaller than
   # curious-darkness-77; trained with raw featureset; finetuned for 15 additional epochs).
-  use_transformer: true
   transformer_layers: 4
   transformer_heads: 8
   transformer_ff_dim: 1024
   transformer_dropout: 0.1
   use_decision_tokens: true
   use_causal_mask: true
-  # LSTM (fallback, unused)
-  lstm_layers: 4
-  lstm_hidden_size: 512
   # Encoder
   early_layers: [1024, 512, 512]
   late_layers: [512, 512]

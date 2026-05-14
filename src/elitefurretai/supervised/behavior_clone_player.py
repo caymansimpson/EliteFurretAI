@@ -9,7 +9,7 @@ from poke_env.player import BattleOrder, DefaultBattleOrder, Player
 from elitefurretai.etl.embedder import Embedder
 from elitefurretai.etl.encoder import MDBO
 from elitefurretai.rl.masking import fast_get_action_mask
-from elitefurretai.supervised.model_archs import FlexibleThreeHeadedModel
+from elitefurretai.supervised.model_archs import TransformerThreeHeadedModel
 
 
 class BCPlayer(Player):
@@ -91,20 +91,21 @@ class BCPlayer(Player):
 
     def _load_model(
         self, filepath: str, device: str = "cpu"
-    ) -> Tuple[FlexibleThreeHeadedModel, Embedder, Dict[str, Any]]:
-        """
-        Load model from new format with embedded config.
+    ) -> Tuple[TransformerThreeHeadedModel, Embedder, Dict[str, Any]]:
+        """Load a TransformerThreeHeadedModel from a checkpoint with embedded config.
 
         Args:
             filepath: Path to model checkpoint
-            device: Device to load model on (overrides config device)
+            device: Device to load model on
 
         Returns:
-            model: Loaded FlexibleThreeHeadedModel
+            model: Loaded TransformerThreeHeadedModel
             embedder: Embedder configured for this model
             config: Full config dict from checkpoint
         """
-        # Load checkpoint (expects {'model_state_dict': ..., 'config': ...})
+        # Lazy import to avoid a supervised -> rl import cycle.
+        from elitefurretai.rl.learners import build_model_from_config
+
         if self._verbose:
             print("  Loading checkpoint from disk...")
         checkpoint = torch.load(filepath, map_location=device)
@@ -122,7 +123,6 @@ class BCPlayer(Player):
         config = checkpoint["config"]
         state_dict = checkpoint["model_state_dict"]
 
-        # Create embedder from config
         if self._verbose:
             print("  Creating embedder...")
         embedder = Embedder(
@@ -131,35 +131,12 @@ class BCPlayer(Player):
             omniscient=False,
         )
 
-        # Build model from config
         if self._verbose:
             print("  Building model architecture...")
-        model = FlexibleThreeHeadedModel(
-            embedder=embedder,
-            early_layers=config["early_layers"],
-            late_layers=config["late_layers"],
-            lstm_layers=config.get("lstm_layers", 2),
-            lstm_hidden_size=config.get("lstm_hidden_size", 512),
-            dropout=config.get("dropout", 0.1),
-            early_attention_heads=config.get("early_attention_heads", 8),
-            late_attention_heads=config.get("late_attention_heads", 8),
-            grouped_encoder_hidden_dim=config.get("grouped_encoder_hidden_dim", 128),
-            grouped_encoder_aggregated_dim=config.get(
-                "grouped_encoder_aggregated_dim", 1024
-            ),
-            pokemon_attention_heads=config.get("pokemon_attention_heads", 2),
-            teampreview_head_layers=config.get("teampreview_head_layers", []),
-            teampreview_head_dropout=config.get("teampreview_head_dropout", 0.1),
-            teampreview_attention_heads=config.get("teampreview_attention_heads", 4),
-            turn_head_layers=config.get("turn_head_layers", []),
-            num_actions=MDBO.action_space(),
-            num_teampreview_actions=MDBO.teampreview_space(),
-            max_seq_len=config.get("max_seq_len", 40),
-        ).to(device)
-
-        if self._verbose:
-            print("  Loading model weights...")
-        model.load_state_dict(state_dict)
+        model = build_model_from_config(
+            config, embedder, device, state_dict=state_dict, strict=True
+        )
+        assert isinstance(model, TransformerThreeHeadedModel)
         model.eval()
 
         if self._verbose:

@@ -68,7 +68,6 @@ value_head:
 architecture:
   # Transformer backbone (matching cool-bee-85-finetune for clean BC load
   # of the trunk).
-  use_transformer: true
   transformer_layers: 4
   transformer_heads: 8
   transformer_ff_dim: 1024
@@ -112,6 +111,14 @@ hardware:
   # With ~96 in-flight battles per worker, batches of 4 were under-filled
   # by ~24x.
   batch_size: 32
+  # 2026-05-14: an isolated bump 0.005 → 0.008 (no topology change) was
+  # tried and ALSO regressed — sustained 7-8s slow-handler warnings
+  # within 90s of boot, lock_waits growing past 15s. Killed before first
+  # Update line. The inference service is more sensitive to drain
+  # latency than the 3ms delta would suggest — likely a feedback loop
+  # where slower batches let more requests pile up, growing per-batch
+  # cost in a runaway. Do not widen this without an investigation into
+  # the inference service's queue dynamics first.
   batch_timeout: 0.005
   device: cuda
   max_battle_steps: 30
@@ -188,10 +195,10 @@ training:
   # new value_ff_stack + reshaped win_head are fresh-initialized. Strict
   # load is bypassed in train.py's initialize_path branch for sep_arch.
   initialize_path: data/models/supervised/cool-bee-85-finetune_best.pt
-  # Resume from step 151 to preserve ~4h of training when relaunching
-  # for vectorized _dual_expand profiling (2026-05-13). The vectorization
-  # only adds non-persistent buffers so the checkpoint loads cleanly.
-  resume_from: data/models/rl/pretty-jazz-4/main_model_step_151.pt
+  # Resume from step 208 (latest checkpoint from the failed topology run
+  # — even though the run itself regressed, the two completed updates
+  # are preserved on disk).
+  resume_from: data/models/rl/pretty-jazz-4/main_model_step_208.pt
   max_updates: 100000
   save_dir: data/models/rl
   train_batch_size: 256

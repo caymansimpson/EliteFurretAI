@@ -6,7 +6,7 @@ These tests verify:
 1. ResidualBlock forward passes
 2. GroupedFeatureEncoder with cross-attention
 3. DNN simple model
-4. FlexibleThreeHeadedModel initialization and forward pass
+4. TransformerThreeHeadedModel initialization and forward pass
 5. Output shapes and value ranges
 6. Weight initialization
 
@@ -21,12 +21,10 @@ from elitefurretai.etl.embedder import Embedder
 from elitefurretai.etl.encoder import MDBO
 from elitefurretai.supervised.model_archs import (
     DNN,
-    FlexibleThreeHeadedModel,
     GroupedFeatureEncoder,
     NumberBankEncoder,
     ResidualBlock,
     TransformerThreeHeadedModel,
-    init_linear_layer,
 )
 
 # =============================================================================
@@ -294,425 +292,6 @@ def test_dnn_with_sequence():
     output = model(x)
 
     assert output.shape == (4, 5, MDBO.action_space())
-
-
-# =============================================================================
-# FLEXIBLE THREE-HEADED MODEL TESTS
-# =============================================================================
-
-
-def test_flexible_model_initialization(simple_embedder):
-    """
-    Test FlexibleThreeHeadedModel initialization.
-
-    Model should create all components without errors.
-
-    Expected: Model initializes successfully.
-    """
-    model = FlexibleThreeHeadedModel(
-        embedder=simple_embedder,
-        early_layers=[64, 32],
-        late_layers=[64, 32],
-        lstm_layers=1,
-        lstm_hidden_size=32,
-        num_actions=2025,
-        num_teampreview_actions=90,
-        max_seq_len=20,
-        dropout=0.1,
-    )
-
-    assert model is not None
-    assert hasattr(model, "lstm")
-    assert hasattr(model, "turn_action_head")
-    assert hasattr(model, "teampreview_head")
-    assert hasattr(model, "win_head")
-
-
-def test_flexible_model_forward_shapes(simple_embedder):
-    """
-    Test FlexibleThreeHeadedModel output shapes.
-
-    Model produces three outputs:
-    - Turn logits: (batch, seq, 2025)
-    - Teampreview logits: (batch, seq, 90)
-    - Win value: (batch, seq)
-
-    Expected: All outputs have correct shapes.
-    """
-    model = FlexibleThreeHeadedModel(
-        embedder=simple_embedder,
-        early_layers=[64, 32],
-        late_layers=[64, 32],
-        lstm_layers=1,
-        lstm_hidden_size=32,
-        num_actions=2025,
-        num_teampreview_actions=90,
-        max_seq_len=20,
-        dropout=0.1,
-    )
-    model.eval()
-
-    x = torch.randn(4, 5, simple_embedder.embedding_size)
-    turn_logits, tp_logits, win_value, win_dist_logits = model(x)
-
-    assert turn_logits.shape == (4, 5, 2025)
-    assert tp_logits.shape == (4, 5, 90)
-    assert win_value.shape == (4, 5)
-
-
-def test_flexible_model_win_value_range(simple_embedder):
-    """
-    Test that win value is bounded in [-1, 1].
-
-    Win head uses tanh activation, so output should be bounded.
-
-    Expected: All win values in [-1, 1].
-    """
-    model = FlexibleThreeHeadedModel(
-        embedder=simple_embedder,
-        early_layers=[64, 32],
-        late_layers=[64, 32],
-        lstm_layers=1,
-        lstm_hidden_size=32,
-        dropout=0.0,
-    )
-    model.eval()
-
-    # Test with various inputs
-    for _ in range(5):
-        x = torch.randn(4, 5, simple_embedder.embedding_size) * 10  # Large values
-        _, _, win_value, _ = model(x)
-
-        assert win_value.min() >= -1.0
-        assert win_value.max() <= 1.0
-
-
-def test_flexible_model_with_grouped_encoder():
-    """
-    Test FlexibleThreeHeadedModel with GroupedFeatureEncoder.
-
-    Passing an Embedder with non-simple feature_set enables grouped encoding.
-
-    Expected: Model works with grouped encoder.
-    """
-    embedder = Embedder()  # raw feature set → grouped encoder enabled
-
-    model = FlexibleThreeHeadedModel(
-        embedder=embedder,
-        early_layers=[64, 32],
-        late_layers=[64, 32],
-        lstm_layers=1,
-        lstm_hidden_size=32,
-        dropout=0.1,
-        grouped_encoder_hidden_dim=16,
-        grouped_encoder_aggregated_dim=64,
-    )
-    model.eval()
-
-    x = torch.randn(4, 5, embedder.embedding_size)
-    turn_logits, tp_logits, win_value, _ = model(x)
-
-    assert turn_logits.shape[0] == 4
-    assert tp_logits.shape[2] == 90
-    assert win_value.shape == (4, 5)
-
-
-def test_flexible_model_with_attention(simple_embedder):
-    """
-    Test FlexibleThreeHeadedModel with attention layers.
-
-    early_attention_heads and late_attention_heads enable self-attention.
-
-    Expected: Model works with attention enabled.
-    """
-    model = FlexibleThreeHeadedModel(
-        embedder=simple_embedder,
-        early_layers=[64, 32],
-        late_layers=[64, 32],
-        lstm_layers=1,
-        lstm_hidden_size=32,
-        dropout=0.1,
-        early_attention_heads=4,
-        late_attention_heads=4,
-    )
-    model.eval()
-
-    x = torch.randn(4, 5, simple_embedder.embedding_size)
-    turn_logits, tp_logits, win_value, _ = model(x)
-
-    assert turn_logits.shape == (4, 5, 2025)
-
-
-def test_flexible_model_with_action_mask(simple_embedder):
-    """
-    Test FlexibleThreeHeadedModel with action masking.
-
-    Mask should be applied to turn logits.
-    Note: The model expects a 2D mask of shape (batch, seq) for attention.
-
-    Expected: Model accepts and applies mask correctly.
-    """
-    model = FlexibleThreeHeadedModel(
-        embedder=simple_embedder,
-        early_layers=[64, 32],
-        late_layers=[64, 32],
-        lstm_layers=1,
-        lstm_hidden_size=32,
-        dropout=0.0,
-    )
-    model.eval()
-
-    x = torch.randn(4, 5, simple_embedder.embedding_size)
-
-    # Create 2D mask for attention (batch, seq) - True means padded/masked
-    # This is the key_padding_mask format expected by PyTorch MHA
-    mask = torch.zeros(4, 5, dtype=torch.bool)
-    mask[:, -1] = True  # Mask last position
-
-    turn_logits, _, _, _ = model(x, mask=mask)
-
-    assert turn_logits.shape == (4, 5, 2025)
-
-
-def test_flexible_model_forward_with_hidden(simple_embedder):
-    """
-    Test forward_with_hidden method for RL training.
-
-    Returns hidden states for recurrent inference.
-
-    Expected: Returns 4 outputs including hidden states.
-    """
-    model = FlexibleThreeHeadedModel(
-        embedder=simple_embedder,
-        early_layers=[64, 32],
-        late_layers=[64, 32],
-        lstm_layers=1,
-        lstm_hidden_size=32,
-        dropout=0.0,
-    )
-    model.eval()
-
-    x = torch.randn(4, 5, simple_embedder.embedding_size)
-
-    # Get initial hidden state
-    batch_size = 4
-    num_directions = 2
-    num_layers = 1
-    hidden_size = 32
-    h0 = torch.zeros(num_layers * num_directions, batch_size, hidden_size)
-    c0 = torch.zeros(num_layers * num_directions, batch_size, hidden_size)
-
-    turn_logits, tp_logits, win_value, win_dist_logits, hidden = model.forward_with_hidden(
-        x, (h0, c0)
-    )
-
-    assert turn_logits.shape == (4, 5, 2025)
-    assert tp_logits.shape == (4, 5, 90)
-    assert win_value.shape == (4, 5)
-    assert isinstance(hidden, tuple)
-    assert len(hidden) == 2  # (h, c)
-
-
-# =============================================================================
-# WEIGHT INITIALIZATION TESTS
-# =============================================================================
-
-
-def test_init_linear_layer():
-    """
-    Test init_linear_layer helper function.
-
-    Should apply Kaiming initialization.
-
-    Expected: Weights should be modified from default.
-    """
-    layer = torch.nn.Linear(64, 32)
-    original_weight = layer.weight.clone()
-
-    init_linear_layer(layer)
-
-    # Weights should be different after initialization
-    assert not torch.allclose(layer.weight, original_weight)
-    # Bias should be zero
-    assert torch.allclose(layer.bias, torch.zeros_like(layer.bias))
-
-
-def test_model_weight_statistics(simple_embedder):
-    """
-    Test that model weights have reasonable statistics.
-
-    Well-initialized weights should have small variance.
-    LayerNorm weights are initialized to 1.0 (constant), so we skip those.
-
-    Expected: Weights not too large or too small (excluding normalization layers).
-    """
-    model = FlexibleThreeHeadedModel(
-        embedder=simple_embedder,
-        early_layers=[64, 32],
-        late_layers=[64, 32],
-        lstm_layers=1,
-        lstm_hidden_size=32,
-        dropout=0.1,
-    )
-
-    linear_layers_checked = 0
-    for name, param in model.named_parameters():
-        if "weight" in name:
-            std = param.std().item()  # type: ignore[union-attr]
-            # Weights shouldn't be too large
-            assert std < 2.0, f"{name} has std={std}"
-
-            # Only check Linear layer weights (skip LayerNorm, which has std=0)
-            # Linear weights should have variance > 0
-            if "_head" in name or "lstm" in name or "fc" in name:
-                if param.dim() >= 2:  # type: ignore[union-attr]
-                    assert std > 0.0, f"{name} has std={std}"
-                    linear_layers_checked += 1
-
-    # Make sure we actually checked some layers
-    assert linear_layers_checked > 0, "Should have checked at least one linear layer"
-
-
-# =============================================================================
-# GRADIENT FLOW TESTS
-# =============================================================================
-
-
-def test_gradient_flow_through_model(simple_embedder):
-    """
-    Test that gradients flow through entire model.
-
-    All parameters should receive gradients during backprop.
-
-    Expected: No zero gradients for trainable parameters.
-    """
-    model = FlexibleThreeHeadedModel(
-        embedder=simple_embedder,
-        early_layers=[64, 32],
-        late_layers=[64, 32],
-        lstm_layers=1,
-        lstm_hidden_size=32,
-        dropout=0.0,  # Disable dropout for deterministic gradients
-    )
-
-    x = torch.randn(4, 5, simple_embedder.embedding_size, requires_grad=True)
-    turn_logits, tp_logits, win_value, _ = model(x)
-
-    # Compute loss from all outputs
-    loss = turn_logits.sum() + tp_logits.sum() + win_value.sum()
-    loss.backward()
-
-    # Check input has gradient
-    assert x.grad is not None
-
-    # Check key parameters have gradients
-    for name, param in model.named_parameters():
-        if param.requires_grad:  # type: ignore[union-attr]
-            assert param.grad is not None, f"{name} has no gradient"  # type: ignore[union-attr]
-
-
-# =============================================================================
-# EDGE CASE TESTS
-# =============================================================================
-
-
-def test_single_sequence_element(simple_embedder):
-    """
-    Test model with sequence length of 1.
-
-    Some operations behave differently with single elements.
-
-    Expected: Model handles seq_len=1 correctly.
-    """
-    model = FlexibleThreeHeadedModel(
-        embedder=simple_embedder,
-        early_layers=[64, 32],
-        late_layers=[64, 32],
-        lstm_layers=1,
-        lstm_hidden_size=32,
-        dropout=0.0,
-    )
-    model.eval()
-
-    x = torch.randn(4, 1, simple_embedder.embedding_size)  # seq_len = 1
-    turn_logits, tp_logits, win_value, _ = model(x)
-
-    assert turn_logits.shape == (4, 1, 2025)
-    assert tp_logits.shape == (4, 1, 90)
-    assert win_value.shape == (4, 1)
-
-
-def test_batch_size_one(simple_embedder):
-    """
-    Test model with batch size of 1.
-
-    Expected: Model handles batch_size=1 correctly.
-    """
-    model = FlexibleThreeHeadedModel(
-        embedder=simple_embedder,
-        early_layers=[64, 32],
-        late_layers=[64, 32],
-        lstm_layers=1,
-        lstm_hidden_size=32,
-        dropout=0.0,
-    )
-    model.eval()
-
-    x = torch.randn(1, 5, simple_embedder.embedding_size)  # batch = 1
-    turn_logits, tp_logits, win_value, _ = model(x)
-
-    assert turn_logits.shape == (1, 5, 2025)
-
-
-def test_no_early_layers(simple_embedder):
-    """
-    Test model with minimal early_layers.
-
-    Note: embed_dim must be divisible by attention heads (4 by default).
-    So we use layer size of 64 which is divisible by 4.
-
-    Expected: Model produces valid output.
-    """
-    model = FlexibleThreeHeadedModel(
-        embedder=simple_embedder,
-        early_layers=[64],  # Single layer
-        late_layers=[64, 32],
-        lstm_layers=1,
-        lstm_hidden_size=32,
-        dropout=0.1,
-    )
-    model.eval()
-
-    x = torch.randn(4, 5, simple_embedder.embedding_size)
-    turn_logits, _, _, _ = model(x)
-
-    assert turn_logits.shape[2] == 2025
-
-
-def test_deep_model(simple_embedder):
-    """
-    Test model with many layers.
-
-    Deep models should still work correctly.
-
-    Expected: Deep model produces valid output.
-    """
-    model = FlexibleThreeHeadedModel(
-        embedder=simple_embedder,
-        early_layers=[128, 128, 64, 64, 32],
-        late_layers=[128, 64, 32],
-        lstm_layers=2,
-        lstm_hidden_size=64,
-        dropout=0.1,
-    )
-    model.eval()
-
-    x = torch.randn(4, 5, simple_embedder.embedding_size)
-    turn_logits, tp_logits, win_value, _ = model(x)
-
-    assert torch.isfinite(turn_logits).all()
-    assert torch.isfinite(tp_logits).all()
-    assert torch.isfinite(win_value).all()
 
 
 if __name__ == "__main__":
@@ -1171,9 +750,7 @@ def test_compiled_rnad_agent_matches_eager(simple_embedder):
     eager_agent = RNaDAgent(model)
     # Same wrapped model under compile. dynamic=True so the growing context
     # tensor doesn't trigger recompilation per turn.
-    compiled_agent = torch.compile(
-        RNaDAgent(model), mode="default", dynamic=True
-    )
+    compiled_agent = torch.compile(RNaDAgent(model), mode="default", dynamic=True)
 
     # Exercise multiple batch sizes (1..4) and turn-0 (no context) +
     # turn-1 (with context), since both code paths matter in production.
@@ -1191,8 +768,7 @@ def test_compiled_rnad_agent_matches_eager(simple_embedder):
                 f"batch={batch} turn0 {tag}: shape eager={e.shape} compiled={c.shape}"
             )
             assert torch.allclose(e, c, atol=1e-4, rtol=1e-4), (
-                f"batch={batch} turn0 {tag}: max abs diff "
-                f"{(e - c).abs().max().item():.2e}"
+                f"batch={batch} turn0 {tag}: max abs diff {(e - c).abs().max().item():.2e}"
             )
 
         # Turn 1 with non-trivial growing context.
@@ -1209,6 +785,5 @@ def test_compiled_rnad_agent_matches_eager(simple_embedder):
         ):
             assert e.shape == c.shape
             assert torch.allclose(e, c, atol=1e-4, rtol=1e-4), (
-                f"batch={batch} turn1 {tag}: max abs diff "
-                f"{(e - c).abs().max().item():.2e}"
+                f"batch={batch} turn1 {tag}: max abs diff {(e - c).abs().max().item():.2e}"
             )
