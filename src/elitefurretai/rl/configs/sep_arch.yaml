@@ -106,7 +106,12 @@ architecture:
   number_bank_embedding_dim: 16
 
 hardware:
-  batch_size: 4
+  # 2026-05-13: bumped 4 → 32 after post-vectorization py-spy showed the
+  # inference thread spending 34% OwnTime in concurrent.futures._worker
+  # (queue-blocking), i.e. the batcher was starving for fuller batches.
+  # With ~96 in-flight battles per worker, batches of 4 were under-filled
+  # by ~24x.
+  batch_size: 32
   batch_timeout: 0.005
   device: cuda
   max_battle_steps: 30
@@ -116,10 +121,40 @@ hardware:
   # slow-handler tax diagnosed in Track C of the 2026-05-12 planning doc.
   max_concurrent_battles_per_player: 32
   num_players: 12
+  # 2026-05-13: tried 1, killed the run via zero-completion watchdog —
+  # one node server cannot handle 12*32=384 concurrent battle streams.
+  # The 0% OwnTime in py-spy was per-WORKER CPU cost, not Showdown's
+  # per-second throughput capacity. Reverted to 4. (Could test 2 or 3
+  # later if reclaiming CPU matters.)
   num_servers: 4
   num_workers: 4
   showdown_start_port: 8000
   use_mixed_precision: true
+  # 2026-05-13: torch.compile experiment. Tested with mode=default,
+  # dynamic=True, plus a synchronous warmup pass. Result: workers run
+  # inference on CPU (device='cpu' is hard-coded for workers in
+  # worker.py:232), and CPU TorchInductor compile is too slow for the
+  # online inference path — even after warmup, real battle requests
+  # cascade into 8s inference_request_timeout fires and websocket
+  # disconnects. The mechanism (kernel fusion + dispatch reduction)
+  # is sound; the deployment path isn't right. Re-enable only after
+  # either (a) moving worker inference to GPU, or (b) profiling
+  # confirms no recompile triggers during steady state.
+  # Set to "default" / "reduce-overhead" / "max-autotune" to enable.
+  # Centralized inference: this knob now applies to the trainer-side
+  # service, not workers. Compile happens once in the trainer, paid
+  # synchronously before workers start sending requests (warmup pass
+  # in train.py). H4 of the throughput investigation is unblocked
+  # under D3-alt because we no longer pay the compile cost per worker.
+  compile_inference_model: default
+  # M4 centralized inference: route worker BatchInferencePlayer
+  # requests through a single trainer-side InferenceService. Combines
+  # all workers' main-agent requests into one batched forward — unlocks
+  # F8 (per-player batchers cap at ~4 due to one-websocket-per-player
+  # serialization). Requires self-play-only curriculum in M4 MVP
+  # because the player.model hot-swap path (BC/ghost/exploiter) hasn't
+  # been ported to inference_client swaps yet.
+  enable_centralized_inference: true
 
 curriculum:
   battle_format: gen9vgc2024regg
@@ -128,6 +163,19 @@ curriculum:
   agent_team_path: data/teams/gen9vgc2024regg/constrained/naicchampion.txt
   bc_model_path: data/models/supervised/cool-bee-85-finetune_best.pt
   curriculum_weights:
+    # M4 MVP: self-play only. Other model-based opponents (bc_player,
+    # ghosts, exploiters) require porting opponent.model hot-swap to
+    # inference_client swap, which is post-MVP work. Heuristic /
+    # external opponents (max_damage, simple_heuristic, vgc_bench)
+    # don't go through the centralized path but require the
+    # opponent.model swap path that's also not centralized — so
+    # zero them too for the clean MVP.
+    # Step 6 of registry plan: full original curriculum re-enabled.
+    # self_play + bc_player route through centralized inference;
+    # ghosts use the legacy on-demand worker-side loading (step 5
+    # deferred); max_damage / simple_heuristic / vgc_bench are
+    # heuristic/external (no model). exploiters / train_exploiter
+    # stay off — they were 0 in the original config too.
     self_play: 0.3
     bc_player: 0.1
     exploiters: 0.0
@@ -155,7 +203,10 @@ training:
   # new value_ff_stack + reshaped win_head are fresh-initialized. Strict
   # load is bypassed in train.py's initialize_path branch for sep_arch.
   initialize_path: data/models/supervised/cool-bee-85-finetune_best.pt
-  resume_from: null
+  # Resume from step 151 to preserve ~4h of training when relaunching
+  # for vectorized _dual_expand profiling (2026-05-13). The vectorization
+  # only adds non-persistent buffers so the checkpoint loads cleanly.
+  resume_from: data/models/rl/pretty-jazz-4/main_model_step_151.pt
   max_updates: 100000
   save_dir: data/models/rl
   train_batch_size: 256
@@ -164,7 +215,12 @@ training:
   use_wandb: true
   wandb_project: elitefurretai-instruct
   wandb_run_name: null
-  memory_watchdog_threshold_gb: 20.0
+  # Bumped 20 → 22 for step 6 (full curriculum + centralized): VGCBench
+  # external runners (~5.5 GB) + 4 Showdown servers + workers + trainer
+  # combined RSS edges over 20 GB on this 24 GB WSL2. 2 GB headroom is
+  # enough for normal fluctuation; the watchdog still catches runaway
+  # leaks before WSL2 OOM crashes.
+  memory_watchdog_threshold_gb: 22.0
 
 # Exploiter co-training disabled for this ablation — keeps the comparison
 # against single_team.yaml on equal footing.

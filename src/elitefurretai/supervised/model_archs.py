@@ -131,7 +131,7 @@ Key Features:
 """
 
 import math
-from typing import List, Literal, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import torch
 
@@ -306,6 +306,18 @@ class GroupedFeatureEncoder(torch.nn.Module):
             nb_expansion = self.number_bank.group_output_sizes[i] - group_sizes[i]
             effective_sizes[i] += nb_expansion
 
+        # Precompute per-group layouts so _dual_expand can run as a small number
+        # of batched embedding lookups + scatter assignments instead of a Python
+        # loop over individual positions.
+        self._build_dual_expand_layouts()
+        # Sanity-check that the precomputed output sizes match the path the rest
+        # of __init__ uses to size encoders.
+        for gi, eff in enumerate(effective_sizes):
+            assert self._dual_expand_layouts[gi]["output_size"] == eff, (
+                f"_dual_expand layout output size mismatch at group {gi}: "
+                f"layout={self._dual_expand_layouts[gi]['output_size']} eff={eff}"
+            )
+
         # Per-group encoders
         self.encoders = torch.nn.ModuleList(
             [
@@ -346,9 +358,7 @@ class GroupedFeatureEncoder(torch.nn.Module):
         # Encode each group
         group_features = []
         start_idx = 0
-        for group_idx, (encoder, size) in enumerate(
-            zip(self.encoders, self.group_sizes)
-        ):
+        for group_idx, (encoder, size) in enumerate(zip(self.encoders, self.group_sizes)):
             group = x[:, :, start_idx : start_idx + size]
             # Apply entity-ID and number-bank embedding expansions in one pass.
             group = self._dual_expand(group, group_idx)
@@ -378,41 +388,181 @@ class GroupedFeatureEncoder(torch.nn.Module):
         )  # (batch, seq, hidden * num_groups)
         return self.aggregator(concatenated)  # (batch, seq, aggregated_dim)
 
-    def _dual_expand(self, x: torch.Tensor, group_idx: int) -> torch.Tensor:
-        """Expand entity IDs and number bank features in a single pass.
+    def _build_dual_expand_layouts(self) -> None:
+        """Precompute per-group layouts for vectorized _dual_expand.
 
-        Both encoders reference local indices from the *original* group tensor.
-        We iterate through all positions left-to-right, applying the appropriate
-        expansion for each position, ensuring no index drift.
+        For each group, records: passthrough source/destination spans, plus
+        per-entity-type and per-bank source-position / destination-index
+        tensors. Source/destination tensors are registered as non-persistent
+        buffers so they migrate with .to(device) without polluting state_dict.
+        """
+        self._dual_expand_layouts: List[Dict[str, Any]] = []
+
+        for group_idx, gsize in enumerate(self.group_sizes):
+            eid_entries = self.entity_id_encoder._group_maps[group_idx]
+            nb_entries = self.number_bank._group_maps[group_idx]
+
+            pos_info: Dict[int, Tuple[str, str, Optional[Tuple[float, float, int]]]] = {}
+            for local_idx, entity_type in eid_entries:
+                pos_info[local_idx] = ("eid", entity_type, None)
+            for local_idx, bank_name, min_val, max_val, n_bins in nb_entries:
+                pos_info[local_idx] = ("nb", bank_name, (min_val, max_val, n_bins))
+
+            passthrough_spans: List[Tuple[int, int, int, int]] = []
+            # etype -> list of (src_pos, dst_start, embed_dim)
+            eid_dsts: Dict[str, List[Tuple[int, int, int]]] = {}
+            # bank_name -> list of (src_pos, dst_start, embed_dim, min, max, n_bins)
+            nb_dsts: Dict[str, List[Tuple[int, int, int, float, float, int]]] = {}
+
+            prev_src_end = 0
+            out_pos = 0
+            for src_pos in sorted(pos_info.keys()):
+                if src_pos > prev_src_end:
+                    pass_len = src_pos - prev_src_end
+                    passthrough_spans.append(
+                        (prev_src_end, src_pos, out_pos, out_pos + pass_len)
+                    )
+                    out_pos += pass_len
+                kind, key, params = pos_info[src_pos]
+                if kind == "eid":
+                    embed_dim = self.entity_id_encoder._embed_dim_for(key)
+                    eid_dsts.setdefault(key, []).append((src_pos, out_pos, embed_dim))
+                else:
+                    assert params is not None
+                    mn, mx, nb = params
+                    embed_dim = self.number_bank._embed_dim_for_bank(key)
+                    nb_dsts.setdefault(key, []).append(
+                        (src_pos, out_pos, embed_dim, mn, mx, nb)
+                    )
+                out_pos += embed_dim
+                prev_src_end = src_pos + 1
+            if prev_src_end < gsize:
+                pass_len = gsize - prev_src_end
+                passthrough_spans.append(
+                    (prev_src_end, gsize, out_pos, out_pos + pass_len)
+                )
+                out_pos += pass_len
+
+            eid_layout: Dict[str, Dict[str, Any]] = {}
+            for etype, items in eid_dsts.items():
+                embed_dim = items[0][2]
+                src_positions = torch.tensor([s[0] for s in items], dtype=torch.long)
+                dst_idx_flat: List[int] = []
+                for _, dst_start, ed in items:
+                    dst_idx_flat.extend(range(dst_start, dst_start + ed))
+                dst_indices = torch.tensor(dst_idx_flat, dtype=torch.long)
+                src_buf = f"_dual_g{group_idx}_eid_{etype}_src"
+                dst_buf = f"_dual_g{group_idx}_eid_{etype}_dst"
+                self.register_buffer(src_buf, src_positions, persistent=False)
+                self.register_buffer(dst_buf, dst_indices, persistent=False)
+                eid_layout[etype] = {
+                    "src_buf": src_buf,
+                    "dst_buf": dst_buf,
+                    "embed_dim": embed_dim,
+                    "k": len(items),
+                }
+
+            nb_layout: Dict[str, Dict[str, Any]] = {}
+            for bank_name, items in nb_dsts.items():
+                embed_dim = items[0][2]
+                mn = items[0][3]
+                mx = items[0][4]
+                nb = items[0][5]
+                src_positions = torch.tensor([s[0] for s in items], dtype=torch.long)
+                dst_idx_flat = []
+                for _, dst_start, ed, _, _, _ in items:
+                    dst_idx_flat.extend(range(dst_start, dst_start + ed))
+                dst_indices = torch.tensor(dst_idx_flat, dtype=torch.long)
+                src_buf = f"_dual_g{group_idx}_nb_{bank_name}_src"
+                dst_buf = f"_dual_g{group_idx}_nb_{bank_name}_dst"
+                self.register_buffer(src_buf, src_positions, persistent=False)
+                self.register_buffer(dst_buf, dst_indices, persistent=False)
+                nb_layout[bank_name] = {
+                    "src_buf": src_buf,
+                    "dst_buf": dst_buf,
+                    "embed_dim": embed_dim,
+                    "min_val": mn,
+                    "max_val": mx,
+                    "n_bins": nb,
+                    "k": len(items),
+                }
+
+            self._dual_expand_layouts.append(
+                {
+                    "output_size": out_pos,
+                    "passthrough": passthrough_spans,
+                    "eid_layout": eid_layout,
+                    "nb_layout": nb_layout,
+                }
+            )
+
+    def _dual_expand(self, x: torch.Tensor, group_idx: int) -> torch.Tensor:
+        """Vectorized expansion of entity IDs and number bank features.
+
+        Replaces the per-position Python loop in _dual_expand_legacy with one
+        batched embedding lookup per type/bank, scattered into a pre-allocated
+        output tensor at the same positions the legacy version would have
+        emitted. Output is bit-for-bit equivalent (modulo nondeterminism in
+        the embedding ops themselves, which there is none of).
+        """
+        layout = self._dual_expand_layouts[group_idx]
+
+        if not layout["eid_layout"] and not layout["nb_layout"]:
+            return x
+
+        B, T, _ = x.shape
+        out = torch.empty(B, T, layout["output_size"], dtype=x.dtype, device=x.device)
+
+        for src_s, src_e, dst_s, dst_e in layout["passthrough"]:
+            out[:, :, dst_s:dst_e] = x[:, :, src_s:src_e]
+
+        for etype, info in layout["eid_layout"].items():
+            src_pos = getattr(self, info["src_buf"])  # (k,) long
+            dst_idx = getattr(self, info["dst_buf"])  # (k * embed_dim,) long
+            raw_ids = x[:, :, src_pos].long().clamp(min=0)  # (B, T, k)
+            emb = self.entity_id_encoder._get_embedding(etype)(raw_ids)
+            out[:, :, dst_idx] = emb.reshape(B, T, info["k"] * info["embed_dim"])
+
+        for bank_name, info in layout["nb_layout"].items():
+            src_pos = getattr(self, info["src_buf"])
+            dst_idx = getattr(self, info["dst_buf"])
+            raw = x[:, :, src_pos]  # (B, T, k)
+            mn = info["min_val"]
+            mx = info["max_val"]
+            nb_bins = info["n_bins"]
+            clamped = raw.clamp(min=mn, max=mx)
+            bucket = ((clamped - mn) / (mx - mn) * nb_bins).long().clamp(0, nb_bins)
+            emb = self.number_bank._get_bank(bank_name)(bucket)
+            out[:, :, dst_idx] = emb.reshape(B, T, info["k"] * info["embed_dim"])
+
+        return out
+
+    def _dual_expand_legacy(self, x: torch.Tensor, group_idx: int) -> torch.Tensor:
+        """Reference implementation kept solely for regression testing.
+
+        Do not remove without porting equivalent coverage. _dual_expand must
+        produce identical output for any valid input.
         """
         eid_map = {
-            idx: etype
-            for idx, etype in self.entity_id_encoder._group_maps[group_idx]
+            idx: etype for idx, etype in self.entity_id_encoder._group_maps[group_idx]
         }
-        nb_map = {
-            entry[0]: entry
-            for entry in self.number_bank._group_maps[group_idx]
-        }
+        nb_map = {entry[0]: entry for entry in self.number_bank._group_maps[group_idx]}
 
         group_size = x.shape[2]
         parts: List[torch.Tensor] = []
         prev_end = 0
 
-        # Merge all replacement positions
         all_positions = sorted(set(eid_map.keys()) | set(nb_map.keys()))
 
         for pos in all_positions:
-            # Append passthrough features before this position
             if pos > prev_end:
                 parts.append(x[:, :, prev_end:pos])
 
             if pos in eid_map:
-                # Entity ID replacement
                 raw_id = x[:, :, pos].long().clamp(min=0)
                 emb_layer = self.entity_id_encoder._get_embedding(eid_map[pos])
                 parts.append(emb_layer(raw_id))
             elif pos in nb_map:
-                # Number bank replacement
                 local_idx, bank_name, min_val, max_val, n_bins = nb_map[pos]
                 raw = x[:, :, local_idx]
                 clamped = raw.clamp(min=min_val, max=max_val)
@@ -423,7 +573,6 @@ class GroupedFeatureEncoder(torch.nn.Module):
 
             prev_end = pos + 1
 
-        # Append remaining features
         if prev_end < group_size:
             parts.append(x[:, :, prev_end:])
 
@@ -507,9 +656,7 @@ class NumberBankEncoder(torch.nn.Module):
                     gmap.append((local_idx, *entry))
             self._group_maps.append(gmap)
             # New size = original - n_replaced + sum of per-feature embed_dims
-            embed_expansion = sum(
-                self._embed_dim_for_entry(entry) for entry in gmap
-            )
+            embed_expansion = sum(self._embed_dim_for_entry(entry) for entry in gmap)
             n_replaced = len(gmap)
             self._group_output_sizes.append(gsize - n_replaced + embed_expansion)
             offset += gsize
@@ -667,15 +814,11 @@ class EntityIDEncoder(torch.nn.Module):
         self.ability_emb = torch.nn.Embedding(
             num_abilities, ability_embed_dim, padding_idx=0
         )
-        self.item_emb = torch.nn.Embedding(
-            num_items, item_embed_dim, padding_idx=0
-        )
+        self.item_emb = torch.nn.Embedding(num_items, item_embed_dim, padding_idx=0)
         self.species_emb = torch.nn.Embedding(
             num_species, species_embed_dim, padding_idx=0
         )
-        self.move_emb = torch.nn.Embedding(
-            num_moves, move_embed_dim, padding_idx=0
-        )
+        self.move_emb = torch.nn.Embedding(num_moves, move_embed_dim, padding_idx=0)
 
         # Build per-group maps: for each group, which positions are entity IDs
         # Each entry: (local_idx, entity_type)
@@ -697,9 +840,7 @@ class EntityIDEncoder(torch.nn.Module):
             self._group_maps.append(gmap)
             # Each replaced scalar becomes embed_dim features
             n_replaced = len(gmap)
-            embed_expansion = sum(
-                self._embed_dim_for(etype) for _, etype in gmap
-            )
+            embed_expansion = sum(self._embed_dim_for(etype) for _, etype in gmap)
             self._group_output_sizes.append(gsize - n_replaced + embed_expansion)
             offset += gsize
 
@@ -1068,7 +1209,9 @@ class FlexibleThreeHeadedModel(torch.nn.Module):
             for h in self.value_head_layers:
                 value_ff_layers_list.append(ResidualBlock(prev_size, h, dropout=dropout))
                 prev_size = h
-            self.value_ff_stack: torch.nn.Module = torch.nn.Sequential(*value_ff_layers_list)
+            self.value_ff_stack: torch.nn.Module = torch.nn.Sequential(
+                *value_ff_layers_list
+            )
             value_output_size = self.value_head_layers[-1]
             self.win_head: torch.nn.Module = torch.nn.Linear(
                 value_output_size, num_value_bins
@@ -1211,7 +1354,11 @@ class FlexibleThreeHeadedModel(torch.nn.Module):
         hidden_state: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         mask: Optional[torch.Tensor] = None,
     ) -> Tuple[
-        torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, Tuple[torch.Tensor, torch.Tensor]
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        Tuple[torch.Tensor, torch.Tensor],
     ]:
         """
         Forward pass for RL inference with explicit LSTM hidden state management.
@@ -1355,7 +1502,13 @@ class FlexibleThreeHeadedModel(torch.nn.Module):
         win_probs = torch.softmax(win_dist_logits, dim=-1)
         win_values = (win_probs * self.value_support).sum(dim=-1)  # type: ignore[operator]  # (batch, seq)
 
-        return turn_action_logits, teampreview_logits, win_values, win_dist_logits, next_hidden
+        return (
+            turn_action_logits,
+            teampreview_logits,
+            win_values,
+            win_dist_logits,
+            next_hidden,
+        )
 
     def predict(self, x: torch.Tensor, mask=None):
         with torch.no_grad():
@@ -1512,7 +1665,9 @@ class TransformerThreeHeadedModel(torch.nn.Module):
                 early_ff_layers.append(ResidualBlock(prev_size, h, dropout=dropout))
                 prev_size = h
             self.early_ff_stack = (
-                torch.nn.Sequential(*early_ff_layers) if early_ff_layers else torch.nn.Identity()
+                torch.nn.Sequential(*early_ff_layers)
+                if early_ff_layers
+                else torch.nn.Identity()
             )
         else:
             self.feature_encoder = None
@@ -1526,21 +1681,36 @@ class TransformerThreeHeadedModel(torch.nn.Module):
                 early_ff_layers.append(ResidualBlock(prev_size, h, dropout=dropout))
                 prev_size = h
             self.early_ff_stack = (
-                torch.nn.Sequential(*early_ff_layers) if early_ff_layers else torch.nn.Identity()
+                torch.nn.Sequential(*early_ff_layers)
+                if early_ff_layers
+                else torch.nn.Identity()
             )
         # ---- Teampreview head (branches before the backbone, same as LSTM) ----
         tp_ff_layers: list = []
         prev_size = self.hidden_size
         for h in self.teampreview_head_layers:
-            tp_ff_layers.append(ResidualBlock(prev_size, h, dropout=teampreview_head_dropout))
+            tp_ff_layers.append(
+                ResidualBlock(prev_size, h, dropout=teampreview_head_dropout)
+            )
             prev_size = h
-        tp_output_size = self.teampreview_head_layers[-1] if self.teampreview_head_layers else self.hidden_size
+        tp_output_size = (
+            self.teampreview_head_layers[-1]
+            if self.teampreview_head_layers
+            else self.hidden_size
+        )
 
         if teampreview_attention_heads > 0:
             self.teampreview_attn: Optional[torch.nn.MultiheadAttention] = (
-                torch.nn.MultiheadAttention(tp_output_size, teampreview_attention_heads, batch_first=True, dropout=teampreview_head_dropout)
+                torch.nn.MultiheadAttention(
+                    tp_output_size,
+                    teampreview_attention_heads,
+                    batch_first=True,
+                    dropout=teampreview_head_dropout,
+                )
             )
-            self.teampreview_ln: Optional[torch.nn.LayerNorm] = torch.nn.LayerNorm(tp_output_size)
+            self.teampreview_ln: Optional[torch.nn.LayerNorm] = torch.nn.LayerNorm(
+                tp_output_size
+            )
         else:
             self.teampreview_attn = None
             self.teampreview_ln = None
@@ -1597,7 +1767,9 @@ class TransformerThreeHeadedModel(torch.nn.Module):
             late_ff_layers_list.append(ResidualBlock(prev_size, h, dropout=dropout))
             prev_size = h
         self.late_ff_stack = (
-            torch.nn.Sequential(*late_ff_layers_list) if late_ff_layers_list else torch.nn.Identity()
+            torch.nn.Sequential(*late_ff_layers_list)
+            if late_ff_layers_list
+            else torch.nn.Identity()
         )
         output_size = late_layers[-1] if late_layers else self.hidden_size
 
@@ -1607,9 +1779,13 @@ class TransformerThreeHeadedModel(torch.nn.Module):
         for h in self.turn_head_layers:
             turn_ff_layers_list.append(ResidualBlock(prev_size, h, dropout=dropout))
             prev_size = h
-        turn_output_size = self.turn_head_layers[-1] if self.turn_head_layers else output_size
+        turn_output_size = (
+            self.turn_head_layers[-1] if self.turn_head_layers else output_size
+        )
         self.turn_ff_stack = (
-            torch.nn.Sequential(*turn_ff_layers_list) if turn_ff_layers_list else torch.nn.Identity()
+            torch.nn.Sequential(*turn_ff_layers_list)
+            if turn_ff_layers_list
+            else torch.nn.Identity()
         )
         self.turn_action_head = torch.nn.Linear(turn_output_size, num_actions)
         torch.nn.init.xavier_normal_(self.turn_action_head.weight, gain=0.01)
@@ -1634,7 +1810,9 @@ class TransformerThreeHeadedModel(torch.nn.Module):
             for h in self.value_head_layers:
                 value_ff_layers_list.append(ResidualBlock(prev_size, h, dropout=dropout))
                 prev_size = h
-            self.value_ff_stack: torch.nn.Module = torch.nn.Sequential(*value_ff_layers_list)
+            self.value_ff_stack: torch.nn.Module = torch.nn.Sequential(
+                *value_ff_layers_list
+            )
             value_output_size = self.value_head_layers[-1]
             self.win_head: torch.nn.Module = torch.nn.Linear(
                 value_output_size, num_value_bins
@@ -1703,7 +1881,9 @@ class TransformerThreeHeadedModel(torch.nn.Module):
         tp_feat = self.teampreview_ff_stack(tp_detached)
         if self.teampreview_attn is not None:
             attn_mask = ~mask.bool() if mask is not None else None
-            tp_ao, _ = self.teampreview_attn(tp_feat, tp_feat, tp_feat, key_padding_mask=attn_mask)
+            tp_ao, _ = self.teampreview_attn(
+                tp_feat, tp_feat, tp_feat, key_padding_mask=attn_mask
+            )
             tp_feat = self.teampreview_ln(tp_feat + tp_ao)  # type: ignore
         teampreview_logits = self.teampreview_head(tp_feat)
 
@@ -1726,7 +1906,9 @@ class TransformerThreeHeadedModel(torch.nn.Module):
 
         # Build attention mask
         attn_mask = (
-            self._build_causal_mask(full_seq.size(1), x.device) if self.use_causal_mask else None
+            self._build_causal_mask(full_seq.size(1), x.device)
+            if self.use_causal_mask
+            else None
         )
 
         # Build key_padding_mask if a padding mask is provided
@@ -1735,7 +1917,9 @@ class TransformerThreeHeadedModel(torch.nn.Module):
             pad_mask = ~mask.bool()  # True = padding position
             if self.use_decision_tokens:
                 # Decision tokens are never padded
-                dt_pad = torch.zeros(batch_size, self.NUM_DECISION_TOKENS, device=x.device, dtype=torch.bool)
+                dt_pad = torch.zeros(
+                    batch_size, self.NUM_DECISION_TOKENS, device=x.device, dtype=torch.bool
+                )
                 src_key_padding_mask = torch.cat([dt_pad, pad_mask], dim=1)
             else:
                 src_key_padding_mask = pad_mask
@@ -1752,7 +1936,7 @@ class TransformerThreeHeadedModel(torch.nn.Module):
             actor_out = t_out[:, 0:1, :].expand(-1, seq_len, -1)  # broadcast
             critic_out = t_out[:, 1:2, :].expand(-1, seq_len, -1)
             # Also use the last-turn representation for per-step outputs
-            turn_out = t_out[:, self.NUM_DECISION_TOKENS:, :]  # (B, S, H)
+            turn_out = t_out[:, self.NUM_DECISION_TOKENS :, :]  # (B, S, H)
         else:
             actor_out = t_out
             critic_out = t_out
@@ -1857,7 +2041,9 @@ class TransformerThreeHeadedModel(torch.nn.Module):
 
         # Causal mask
         attn_mask = (
-            self._build_causal_mask(full_seq.size(1), x.device) if self.use_causal_mask else None
+            self._build_causal_mask(full_seq.size(1), x.device)
+            if self.use_causal_mask
+            else None
         )
 
         src_key_padding_mask: Optional[torch.Tensor] = None

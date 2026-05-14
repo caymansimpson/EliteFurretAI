@@ -156,6 +156,35 @@ def test_max_concurrent_battles_per_player_default_and_roundtrip():
         )
 
 
+def test_compile_inference_model_default_and_roundtrip():
+    """The torch.compile knob defaults to None (eager) and round-trips
+    through YAML both as a mode string and as None.
+    """
+    config = get_default_config()
+    assert config.hardware.compile_inference_model is None
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config_path = os.path.join(tmpdir, "compile.yaml")
+        config.hardware.compile_inference_model = "default"
+        config.save(config_path)
+        assert (
+            RNaDConfig.load(config_path).hardware.compile_inference_model == "default"
+        )
+
+        config.hardware.compile_inference_model = "reduce-overhead"
+        config.save(config_path)
+        assert (
+            RNaDConfig.load(config_path).hardware.compile_inference_model
+            == "reduce-overhead"
+        )
+
+        config.hardware.compile_inference_model = None
+        config.save(config_path)
+        assert (
+            RNaDConfig.load(config_path).hardware.compile_inference_model is None
+        )
+
+
 def test_memory_watchdog_threshold_default_and_roundtrip():
     """Memory watchdog threshold defaults to 20.0 GB and round-trips through YAML.
 

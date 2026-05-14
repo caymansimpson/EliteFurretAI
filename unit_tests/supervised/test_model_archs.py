@@ -502,7 +502,9 @@ def test_flexible_model_forward_with_hidden(simple_embedder):
     h0 = torch.zeros(num_layers * num_directions, batch_size, hidden_size)
     c0 = torch.zeros(num_layers * num_directions, batch_size, hidden_size)
 
-    turn_logits, tp_logits, win_value, win_dist_logits, hidden = model.forward_with_hidden(x, (h0, c0))
+    turn_logits, tp_logits, win_value, win_dist_logits, hidden = model.forward_with_hidden(
+        x, (h0, c0)
+    )
 
     assert turn_logits.shape == (4, 5, 2025)
     assert tp_logits.shape == (4, 5, 90)
@@ -726,8 +728,9 @@ def test_number_bank_encoder_no_numerical():
     """NumberBankEncoder with no matching features passes data through unchanged."""
     feature_names = ["feat_a", "feat_b", "feat_c"]
     group_sizes = [3]
-    nb = NumberBankEncoder(feature_names, group_sizes,
-                           hp_bins=10, stat_bins=10, power_bins=10, embed_dim=4)
+    nb = NumberBankEncoder(
+        feature_names, group_sizes, hp_bins=10, stat_bins=10, power_bins=10, embed_dim=4
+    )
 
     # No numerical features → output size unchanged
     assert nb.group_output_sizes == [3]
@@ -744,8 +747,14 @@ def test_number_bank_encoder_hp_feature():
     feature_names = ["other", "current_hp_fraction", "another"]
     group_sizes = [3]
     embed_dim = 8
-    nb = NumberBankEncoder(feature_names, group_sizes,
-                           hp_bins=100, stat_bins=100, power_bins=100, embed_dim=embed_dim)
+    nb = NumberBankEncoder(
+        feature_names,
+        group_sizes,
+        hp_bins=100,
+        stat_bins=100,
+        power_bins=100,
+        embed_dim=embed_dim,
+    )
 
     # 1 numeric replaced: 3 - 1 + 1*8 = 10
     assert nb.group_output_sizes == [10]
@@ -760,8 +769,14 @@ def test_number_bank_encoder_multiple_groups():
     feature_names = ["current_hp_fraction", "feat_a", "STAT:hp", "base_power", "feat_b"]
     group_sizes = [2, 3]
     embed_dim = 4
-    nb = NumberBankEncoder(feature_names, group_sizes,
-                           hp_bins=10, stat_bins=10, power_bins=10, embed_dim=embed_dim)
+    nb = NumberBankEncoder(
+        feature_names,
+        group_sizes,
+        hp_bins=10,
+        stat_bins=10,
+        power_bins=10,
+        embed_dim=embed_dim,
+    )
 
     # Group 0: [hp_frac(→4), feat_a] = 1 + 4 = 5
     # Group 1: [STAT:hp(→4), base_power(→4), feat_b] = 3 - 2 + 2*4 = 9
@@ -780,8 +795,9 @@ def test_number_bank_gradient_flow():
     """Gradients flow through number bank embedding lookups."""
     feature_names = ["current_hp_fraction"]
     group_sizes = [1]
-    nb = NumberBankEncoder(feature_names, group_sizes,
-                           hp_bins=10, stat_bins=10, power_bins=10, embed_dim=4)
+    nb = NumberBankEncoder(
+        feature_names, group_sizes, hp_bins=10, stat_bins=10, power_bins=10, embed_dim=4
+    )
 
     x = torch.tensor([[[0.5]]])  # hp fraction
     out = nb.embed_group(x, 0)
@@ -798,13 +814,16 @@ def test_grouped_encoder_with_number_bank():
     group_sizes = [4, 4, 4, 4, 4, 4, 4]
     # Create feature names with some numerical features spread across groups
     feature_names = (
-        ["current_hp_fraction"] + ["feat"] * 3        # group 0 (player pokemon 0)
-        + ["STAT:atk"] + ["feat"] * 3                  # group 1 (player pokemon 1)
-        + ["feat"] * 4                                  # group 2
-        + ["feat"] * 4                                  # group 3
-        + ["feat"] * 4                                  # group 4
-        + ["feat"] * 4                                  # group 5
-        + ["base_power"] + ["feat"] * 3                 # group 6 (extra)
+        ["current_hp_fraction"]
+        + ["feat"] * 3  # group 0 (player pokemon 0)
+        + ["STAT:atk"]
+        + ["feat"] * 3  # group 1 (player pokemon 1)
+        + ["feat"] * 4  # group 2
+        + ["feat"] * 4  # group 3
+        + ["feat"] * 4  # group 4
+        + ["feat"] * 4  # group 5
+        + ["base_power"]
+        + ["feat"] * 3  # group 6 (extra)
     )
     encoder = GroupedFeatureEncoder(
         group_sizes=group_sizes,
@@ -826,6 +845,119 @@ def test_grouped_encoder_with_number_bank():
     x = torch.randn(2, 3, 28)  # 7 groups * 4 = 28
     out = encoder(x)
     assert out.shape == (2, 3, 32)
+
+
+# =============================================================================
+# DUAL EXPAND VECTORIZATION EQUIVALENCE
+# =============================================================================
+
+
+def _make_encoder_for_dual_expand(feature_names, group_sizes):
+    """Helper: minimal GroupedFeatureEncoder for _dual_expand equivalence tests."""
+    return GroupedFeatureEncoder(
+        group_sizes=group_sizes,
+        feature_names=feature_names,
+        num_abilities=64,
+        num_items=128,
+        num_species=256,
+        num_moves=256,
+        hidden_dim=8,
+        aggregated_dim=16,
+        dropout=0.0,
+        pokemon_attention_heads=2,
+        number_bank_hp_bins=10,
+        number_bank_stat_bins=10,
+        number_bank_power_bins=10,
+        number_bank_embedding_dim=4,
+        number_bank_damage_bins=10,
+        number_bank_damage_embed_dim=2,
+        number_bank_turn_bins=10,
+        number_bank_turn_embed_dim=4,
+        number_bank_rating_bins=10,
+        number_bank_rating_embed_dim=4,
+    )
+
+
+@pytest.mark.parametrize("seed", [0, 1, 42])
+def test_dual_expand_matches_legacy_passthrough_only(seed):
+    """Groups with no replacements should match (and short-circuit)."""
+    torch.manual_seed(seed)
+    group_sizes = [4] * 7
+    feature_names = ["feat"] * sum(group_sizes)
+    encoder = _make_encoder_for_dual_expand(feature_names, group_sizes)
+    encoder.eval()
+    x = torch.randn(2, 3, group_sizes[0])
+    for gi in range(len(group_sizes)):
+        new_out = encoder._dual_expand(x, gi)
+        old_out = encoder._dual_expand_legacy(x, gi)
+        assert torch.equal(new_out, old_out)
+
+
+@pytest.mark.parametrize("seed", [0, 1, 42])
+def test_dual_expand_matches_legacy_mixed_replacements(seed):
+    """Groups with mixed eid+nb replacements at varied positions should match exactly."""
+    torch.manual_seed(seed)
+    # Each group exercises a different replacement pattern.
+    group_sizes = [4, 4, 4, 4, 4, 4, 6, 5]
+    feature_names = (
+        # group 0: nb at position 0 (HP)
+        ["current_hp_fraction", "f", "f", "f"]
+        # group 1: nb in middle (stat)
+        + ["f", "STAT:atk", "f", "f"]
+        # group 2: eid at end (ability)
+        + ["f", "f", "f", "ability_id"]
+        # group 3: multiple eids of different types
+        + ["item_id", "f", "species_id", "f"]
+        # group 4: multiple nbs of same bank (stat) + one different (power)
+        + ["STAT:atk", "STAT:def", "base_power", "f"]
+        # group 5: all replacements (no passthrough)
+        + ["current_hp_fraction", "STAT:spa", "ability_id", "move_id"]
+        # group 6: mixed eid + nb interleaved with passthrough
+        + ["f", "ability_id", "f", "STAT:spd", "f", "item_id"]
+        # group 7: trailing passthrough only after a single replacement
+        + ["current_hp_fraction", "f", "f", "f", "f"]
+    )
+    encoder = _make_encoder_for_dual_expand(feature_names, group_sizes)
+    encoder.eval()
+
+    for gi, gsize in enumerate(group_sizes):
+        x = torch.randn(3, 4, gsize)
+        # Ensure some scalar columns hit sentinel -1 (clamped to 0/padding).
+        x[..., 0] = torch.where(
+            torch.rand_like(x[..., 0]) < 0.2,
+            torch.full_like(x[..., 0], -1.0),
+            x[..., 0],
+        )
+        new_out = encoder._dual_expand(x, gi)
+        old_out = encoder._dual_expand_legacy(x, gi)
+        assert new_out.shape == old_out.shape, (
+            f"shape mismatch at group {gi}: new={new_out.shape} old={old_out.shape}"
+        )
+        assert torch.allclose(new_out, old_out, atol=0, rtol=0), (
+            f"value mismatch at group {gi}"
+        )
+
+
+def test_dual_expand_layout_output_sizes_match_effective_sizes():
+    """The precomputed layout output sizes must equal the encoder's effective sizes."""
+    group_sizes = [4, 4, 4, 4, 4, 4, 5]
+    feature_names = (
+        ["current_hp_fraction", "STAT:atk", "ability_id", "f"]
+        + ["f", "STAT:def", "item_id", "f"]
+        + ["base_power", "f", "f", "f"]
+        + ["f", "f", "species_id", "f"]
+        + ["move_id", "f", "f", "f"]
+        + ["f", "f", "f", "f"]
+        + ["turn", "p1rating", "EST_DAMAGE_MIN:0", "EST_DAMAGE_MAX:0", "f"]
+    )
+    encoder = _make_encoder_for_dual_expand(feature_names, group_sizes)
+    # Check by running both impls and confirming their output dims match.
+    encoder.eval()
+    for gi, gsize in enumerate(group_sizes):
+        x = torch.randn(1, 1, gsize)
+        new_out = encoder._dual_expand(x, gi)
+        legacy_out = encoder._dual_expand_legacy(x, gi)
+        assert new_out.shape == legacy_out.shape
 
 
 # =============================================================================
@@ -872,7 +1004,9 @@ def test_transformer_model_forward_with_hidden(simple_embedder):
 
     # Turn 0: no context
     x0 = torch.randn(2, 1, simple_embedder.embedding_size)
-    turn_logits, tp_logits, win_values, win_dist_logits, context = model.forward_with_hidden(x0, None)
+    turn_logits, tp_logits, win_values, win_dist_logits, context = (
+        model.forward_with_hidden(x0, None)
+    )
 
     assert turn_logits.shape == (2, 1, 2025)
     assert tp_logits.shape == (2, 1, 90)
@@ -1005,3 +1139,76 @@ def test_transformer_no_causal_mask(simple_embedder):
     x = torch.randn(2, 3, simple_embedder.embedding_size)
     turn_logits, _, _, _ = model(x)
     assert turn_logits.shape == (2, 3, 2025)
+
+
+# =============================================================================
+# torch.compile EQUIVALENCE (worker inference path)
+# =============================================================================
+
+
+def test_compiled_rnad_agent_matches_eager(simple_embedder):
+    """torch.compile(RNaDAgent) on the inference path must produce the same
+    outputs (within float tolerance) as eager mode for representative
+    transformer + variable-batch + growing-context calls.
+
+    This is the test we'd want to fail loudly if a future torch upgrade
+    or model change breaks compile compatibility on the rollout path.
+    """
+    from elitefurretai.rl.players import RNaDAgent
+
+    torch.manual_seed(0)
+    model = TransformerThreeHeadedModel(
+        embedder=simple_embedder,
+        early_layers=[64, 32],
+        late_layers=[64, 32],
+        transformer_layers=2,
+        transformer_heads=4,
+        transformer_ff_dim=64,
+        dropout=0.0,
+        max_seq_len=40,
+    )
+    model.eval()
+    eager_agent = RNaDAgent(model)
+    # Same wrapped model under compile. dynamic=True so the growing context
+    # tensor doesn't trigger recompilation per turn.
+    compiled_agent = torch.compile(
+        RNaDAgent(model), mode="default", dynamic=True
+    )
+
+    # Exercise multiple batch sizes (1..4) and turn-0 (no context) +
+    # turn-1 (with context), since both code paths matter in production.
+    for batch in (1, 2, 4):
+        x = torch.randn(batch, 1, simple_embedder.embedding_size)
+        with torch.no_grad():
+            eager_out = eager_agent(x, None)
+            compiled_out = compiled_agent(x, None)
+        for tag, e, c in zip(
+            ("turn_logits", "tp_logits", "value", "win_dist", "next_hidden"),
+            eager_out,
+            compiled_out,
+        ):
+            assert e.shape == c.shape, (
+                f"batch={batch} turn0 {tag}: shape eager={e.shape} compiled={c.shape}"
+            )
+            assert torch.allclose(e, c, atol=1e-4, rtol=1e-4), (
+                f"batch={batch} turn0 {tag}: max abs diff "
+                f"{(e - c).abs().max().item():.2e}"
+            )
+
+        # Turn 1 with non-trivial growing context.
+        x_next = torch.randn(batch, 1, simple_embedder.embedding_size)
+        with torch.no_grad():
+            eager_ctx = eager_out[4]
+            eager_out2 = eager_agent(x_next, eager_ctx)
+            compiled_ctx = compiled_out[4]
+            compiled_out2 = compiled_agent(x_next, compiled_ctx)
+        for tag, e, c in zip(
+            ("turn_logits", "tp_logits", "value", "win_dist", "next_hidden"),
+            eager_out2,
+            compiled_out2,
+        ):
+            assert e.shape == c.shape
+            assert torch.allclose(e, c, atol=1e-4, rtol=1e-4), (
+                f"batch={batch} turn1 {tag}: max abs diff "
+                f"{(e - c).abs().max().item():.2e}"
+            )

@@ -73,6 +73,42 @@ def test_score_available_actions_filters_moves_not_in_request():
 # spin up a real ps_client + asyncio loop, which we don't want in unit tests.
 
 
+def test_batch_inference_player_init_rejects_neither_model_nor_client():
+    """BatchInferencePlayer requires exactly one of `model` or
+    `inference_client`. Neither is an error (caught before super().__init__
+    so no heavy setup runs)."""
+    with pytest.raises(ValueError, match="exactly one of"):
+        BatchInferencePlayer()
+
+
+def test_batch_inference_player_init_rejects_both_model_and_client():
+    """Passing both is also rejected."""
+    fake_model = MagicMock()
+    fake_client = MagicMock()
+    with pytest.raises(ValueError, match="exactly one of"):
+        BatchInferencePlayer(model=fake_model, inference_client=fake_client)
+
+
+def test_batch_inference_player_init_requires_is_transformer_for_client():
+    """When `inference_client` is provided, `is_transformer` is required
+    (the player needs to know hidden-state shape without a model to
+    introspect)."""
+    fake_client = MagicMock()
+    with pytest.raises(ValueError, match="is_transformer"):
+        BatchInferencePlayer(inference_client=fake_client)
+
+
+def test_start_inference_loop_is_noop_in_centralized_mode():
+    """In centralized mode the trainer-side InferenceService runs the
+    loop; the player must not start its own (it has no queue)."""
+    player = BatchInferencePlayer.__new__(BatchInferencePlayer)
+    player.inference_client = MagicMock()  # truthy, simulates centralized mode
+    player._inference_future = None
+    # Should not error and should not set _inference_future.
+    player.start_inference_loop()
+    assert player._inference_future is None
+
+
 def _make_player_for_popup_tests():
     """Construct a minimal BatchInferencePlayer with just the attributes the
     popup-recovery code path touches."""
@@ -94,6 +130,9 @@ def _make_player_for_popup_tests():
     player.hidden_states = {}
     player.trajectory_queue = None  # opponent-only mode (no trajectory ship)
     player.opponent_type = "self_play"
+    # Centralized-inference attribute: tests bypass __init__ via __new__,
+    # so we set it explicitly. None = legacy mode (no inference client).
+    player.inference_client = None
     player._original_handle_message = MagicMock()
     # Minimal ps_client stand-in. `_battle_locks` and `_active_tasks` are read
     # by _recover_room_lost_battle to free queued lock waiters. `logger`

@@ -93,6 +93,7 @@ from elitefurretai.rl.learners import (
     load_checkpoint,
     save_checkpoint,
 )
+from elitefurretai.rl.model_registry import ModelRegistry
 from elitefurretai.rl.opponents import OpponentPool
 from elitefurretai.rl.players import RNaDAgent, cleanup_worker_executors
 from elitefurretai.rl.worker import mp_worker_process
@@ -1156,6 +1157,162 @@ def main():
     mp_error_queue: MPQueue = MPQueue(maxsize=100)
     mp_stop_event: MPEvent = mp.Event()
 
+    # ── Centralized inference (M4) ───────────────────────────────────────────
+    # When enabled, build a trainer-side InferenceService for the main
+    # agent and per-worker mp.Queues that workers will use to submit
+    # inference requests. The service holds an independent CPU copy of
+    # the agent model so the learner can update without racing with
+    # inference; we sync weights into it at the same cadence as the
+    # legacy per-worker broadcast.
+    centralized = config.hardware.enable_centralized_inference
+    registry: Optional[ModelRegistry] = None
+    main_is_transformer: Optional[bool] = None
+    main_request_queue: Optional[MPQueue] = None
+    main_response_queues: List[Optional[MPQueue]] = [None] * config.hardware.num_workers
+    if centralized:
+        from elitefurretai.supervised.model_archs import (
+            TransformerThreeHeadedModel,
+        )
+
+        # ModelRegistry owns one InferenceService per registered model.
+        # For step 2 (this commit) we register only "main"; later steps
+        # add bc / victim / exploiter / ghost slots without changing the
+        # surrounding plumbing.
+        inference_device = config.hardware.device
+        inference_embedder = Embedder(
+            format=config.curriculum.battle_format,
+            feature_set=config.training.embedder_feature_set,
+            omniscient=False,
+        )
+        registry = ModelRegistry(
+            num_workers=config.hardware.num_workers,
+            batch_size=config.hardware.batch_size,
+            batch_timeout=config.hardware.batch_timeout,
+            device=inference_device,
+            compile_mode=config.hardware.compile_inference_model,
+            embedding_size=inference_embedder.embedding_size,
+        )
+
+        # Build a CPU-or-GPU copy of the main model for inference (kept
+        # independent of the learner's model so backward+forward don't
+        # race; weights sync at broadcast cadence via registry.sync_weights).
+        main_inference_base = build_model_from_config(
+            worker_model_config,
+            inference_embedder,
+            inference_device,
+            None,
+            strict=False,
+        )
+        main_inference_base.eval()
+        main_inference_base.load_state_dict(agent.model.state_dict())
+        registry.register("main", RNaDAgent(main_inference_base))
+        main_is_transformer = isinstance(main_inference_base, TransformerThreeHeadedModel)
+
+        # Step 3: register BC if a BC checkpoint is configured AND the
+        # curriculum will actually use it. Wasting a service slot on an
+        # unused model would still cost compile time + GPU memory; the
+        # curriculum check keeps that gated.
+        bc_checkpoint_path = config.curriculum.bc_model_path
+        bc_curriculum_weight = config.curriculum.curriculum_weights.get(
+            OpponentPool.BC_PLAYER, 0.0
+        )
+        if bc_checkpoint_path and bc_curriculum_weight > 0:
+            logger.info(
+                "Step 3: registering BC model from %s (curriculum weight %.3f)",
+                bc_checkpoint_path,
+                bc_curriculum_weight,
+            )
+            bc_checkpoint = torch.load(
+                bc_checkpoint_path, map_location="cpu", weights_only=False
+            )
+            bc_inference_base = build_model_from_config(
+                worker_model_config,
+                inference_embedder,
+                inference_device,
+                bc_checkpoint["model_state_dict"],
+                strict=False,
+            )
+            bc_inference_base.eval()
+            for param in bc_inference_base.parameters():
+                param.requires_grad = False
+            # compile=False: with multiple compiled models in concurrent
+            # InferenceService threads, dynamo throws "FX symbolic trace
+            # of dynamo-optimized function" mid-flight (~0.5% of
+            # batches). Compile only main (highest traffic); secondary
+            # models stay eager. See planning/stage2/2026-05-14-00-15-
+            # model-registry-plan.md for the trade-off.
+            registry.register("bc", RNaDAgent(bc_inference_base), compile=False)
+            del bc_checkpoint
+
+        # Step 4: register exploiter (live-trained adversary) + victim
+        # (frozen periodically-refreshed copy of main) if the curriculum
+        # gates the train_exploiter pipeline ON. exploiter is sync'd from
+        # the exploiter learner each update; victim is sync'd from main
+        # at victim_refresh_interval. Both registered with compile=False
+        # for the same dynamo-race reason as BC.
+        train_exploiter_weight = config.curriculum.curriculum_weights.get(
+            OpponentPool.TRAIN_EXPLOITER, 0.0
+        )
+        if train_exploiter_weight > 0:
+            logger.info(
+                "Step 4: registering exploiter + victim (curriculum weight %.3f)",
+                train_exploiter_weight,
+            )
+            for slot_name in ("exploiter", "victim"):
+                slot_base = build_model_from_config(
+                    worker_model_config,
+                    inference_embedder,
+                    inference_device,
+                    None,
+                    strict=False,
+                )
+                slot_base.eval()
+                if slot_name == "victim":
+                    # Victim starts as a copy of main; weights refresh
+                    # periodically via registry.sync_weights("victim", ...).
+                    slot_base.load_state_dict(agent.model.state_dict())
+                    for param in slot_base.parameters():
+                        param.requires_grad = False
+                # exploiter starts with whatever build_model_from_config
+                # gave us (BC init if `initialize_path` is set, else
+                # fresh). It'll be sync'd as the exploiter learner
+                # produces updates.
+                registry.register(slot_name, RNaDAgent(slot_base), compile=False)
+
+        # Pull out main's queues for the existing per-worker spawn-args
+        # interface. Step 3+ also passes the full bundle so workers can
+        # construct WorkerInferenceClients with one client per registered
+        # model.
+        all_queues = registry.queues_for_workers()
+        main_request_queue, main_response_qs = all_queues["main"]
+        main_response_queues = list(main_response_qs)
+
+        logger.info(
+            "ModelRegistry initialized; %d models registered (%s). "
+            "device=%s batch_size=%d batch_timeout=%.4f compile=%s "
+            "is_transformer=%s",
+            len(registry.names()),
+            ", ".join(registry.names()),
+            inference_device,
+            config.hardware.batch_size,
+            config.hardware.batch_timeout,
+            config.hardware.compile_inference_model,
+            main_is_transformer,
+        )
+
+    # Per-worker bundle of (request_q, response_q) pairs keyed by model
+    # name. Each worker gets ITS slice of the response queues; the
+    # request queue is shared across workers per model. Workers wrap
+    # their slice in WorkerInferenceClients on the worker side. None in
+    # legacy (non-centralized) mode.
+    queues_by_worker: List[Optional[Dict[str, Any]]] = [None] * config.hardware.num_workers
+    if registry is not None:
+        all_queues = registry.queues_for_workers()
+        for w in range(config.hardware.num_workers):
+            queues_by_worker[w] = {
+                name: (req_q, resp_qs[w]) for name, (req_q, resp_qs) in all_queues.items()
+            }
+
     # Create Processes
     processes: List[mp.Process] = []
     for i, server_port in enumerate(worker_ports):
@@ -1173,6 +1330,11 @@ def main():
                 mp_stop_event,
                 run_id,
                 config,
+                False,  # verbose
+                main_request_queue,
+                main_response_queues[i],
+                main_is_transformer,
+                queues_by_worker[i],
             ),
             daemon=True,
             name=f"MPWorker-{i}",
@@ -1480,6 +1642,17 @@ def main():
                         "[Update %d] Broadcasting weights to worker processes...", updates
                     )
                     cpu_weights = {k: v.cpu() for k, v in agent.model.state_dict().items()}
+                    # Centralized inference: sync the trainer-side
+                    # InferenceService model(s) from the learner. Same
+                    # cadence as the worker broadcast — workers in
+                    # centralized mode ignore the broadcasted weights
+                    # (their VGCEnvironment.update_weights drops on
+                    # None model) but the service copy MUST be kept
+                    # current or workers will play increasingly
+                    # off-policy. Step 2 syncs only "main"; step 4 will
+                    # also sync "exploiter" + "victim" here.
+                    if registry is not None and "main" in registry.names():
+                        registry.sync_weights("main", cpu_weights)
                     in_warmup = updates < config.exploiter.warmup_updates
                     update_payload: Dict[str, Any] = {
                         "weights": cpu_weights,
@@ -1493,18 +1666,27 @@ def main():
                         "ghost_paths": [p for _, p in opponent_pool.ghosts],
                     }
                     if exploiter_pipeline_on and exploiter_agent is not None:
-                        update_payload["exploiter_weights"] = {
+                        exploiter_cpu = {
                             k: v.cpu()
                             for k, v in exploiter_agent.model.state_dict().items()
                         }
+                        update_payload["exploiter_weights"] = exploiter_cpu
+                        # Step 4: sync the trainer-side exploiter
+                        # InferenceService at the same cadence as the
+                        # worker broadcast.
+                        if registry is not None and "exploiter" in registry.names():
+                            registry.sync_weights("exploiter", exploiter_cpu)
                     if (
                         exploiter_pipeline_on
                         and victim_agent is not None
                         and victim_needs_broadcast
                     ):
-                        update_payload["victim_weights"] = {
+                        victim_cpu = {
                             k: v.cpu() for k, v in victim_agent.model.state_dict().items()
                         }
+                        update_payload["victim_weights"] = victim_cpu
+                        if registry is not None and "victim" in registry.names():
+                            registry.sync_weights("victim", victim_cpu)
                         # Cleared after queueing: each refresh is broadcast
                         # exactly once, then we wait for the next refresh tick.
                         victim_needs_broadcast = False
@@ -1627,6 +1809,12 @@ def main():
 
         # Final cleanup: Shutdown workers and Showdown servers
         cleanup_worker_executors()
+        # Stop every InferenceService thread the registry started. Drain
+        # nothing — workers have exited so no new requests will arrive;
+        # any already-buffered ones get dropped.
+        if registry is not None:
+            registry.stop_all()
+            logger.info("ModelRegistry stopped (services: %s)", registry.names())
         shutdown_external_vgcbench_runners(
             external_runner_processes,
             external_runner_log_files,

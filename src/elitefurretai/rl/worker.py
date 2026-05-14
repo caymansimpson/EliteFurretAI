@@ -65,7 +65,7 @@ import time
 from collections import deque
 from multiprocessing import Queue as MPQueue
 from multiprocessing.synchronize import Event as MPEvent
-from typing import Any, Dict
+from typing import Any, Dict, Optional, cast
 
 import psutil
 import torch
@@ -93,6 +93,22 @@ def mp_worker_process(
     run_id: str,
     config: RNaDConfig,
     verbose: bool = False,
+    # M4 centralized inference: when both queues are provided, the worker
+    # skips loading the main model into its process and submits inference
+    # requests to the trainer-side InferenceService instead. `model_path`
+    # is then unused for the main agent (still used for ghost loading
+    # etc.). `main_is_transformer` is required so BatchInferencePlayer
+    # knows hidden-state shapes without a model to introspect.
+    main_inference_request_queue: Optional[MPQueue] = None,
+    main_inference_response_queue: Optional[MPQueue] = None,
+    main_is_transformer: Optional[bool] = None,
+    # Step 3+: bundle of (req_q, resp_q) keyed by model name for ALL
+    # registered models in the trainer's ModelRegistry. Workers wrap
+    # this in WorkerInferenceClients so the factory can hot-swap
+    # opponent.inference_client between main / bc / ghost slots / etc.
+    # When None (legacy mode or step-2 config), only the singular
+    # main_inference_request_queue path is used.
+    queues_by_model: Optional[Dict[str, Any]] = None,
 ):
     """
     Multiprocessing worker process for true parallel RL data collection.
@@ -243,15 +259,121 @@ def mp_worker_process(
         # exist in the checkpoint. Without this, workers crash at startup
         # with `Missing/Unexpected key(s) in state_dict` while the trainer
         # itself loads fine — a silent asymmetry.
-        model = build_model_from_config(
-            model_config,
-            embedder,
-            device,
-            checkpoint["model_state_dict"],
-            strict=False,
+        # Centralized-inference (M4) skips loading the main model into
+        # this worker's process — the trainer-side InferenceService owns
+        # it. We still need `embedder` (built above) for featurization
+        # and `model_config` for ghost loading paths. Detected from
+        # spawn args: when both inference queues are present, build a
+        # client and skip the model build.
+        centralized_main = (
+            main_inference_request_queue is not None
+            and main_inference_response_queue is not None
         )
-        model.eval()
-        agent = RNaDAgent(model)
+
+        model: Optional[Any] = None
+        agent: Optional[RNaDAgent] = None
+        main_inference_client = None
+        worker_inference_clients = None  # set in centralized mode (step 3+)
+        if centralized_main:
+            from elitefurretai.rl.inference_client import InferenceClient
+            from elitefurretai.rl.worker_inference_clients import (
+                WorkerInferenceClients,
+            )
+
+            assert main_is_transformer is not None, (
+                "main_is_transformer must be set in centralized mode"
+            )
+            from poke_env.concurrency import POKE_LOOP
+
+            # Step 3+: when the trainer passed a per-model queues bundle,
+            # wrap it in WorkerInferenceClients (one InferenceClient per
+            # registered model). When only legacy main queues were passed,
+            # construct a single main client.
+            if queues_by_model is not None:
+                worker_inference_clients = WorkerInferenceClients(
+                    worker_id=worker_id,
+                    queues_by_model=cast(Any, queues_by_model),
+                    loop=POKE_LOOP,
+                )
+                main_inference_client = worker_inference_clients.get("main")
+                if verbose:
+                    logger.debug(
+                        "[MPWorker %d] Centralized inference (bundle) enabled; "
+                        "models=%s",
+                        worker_id,
+                        worker_inference_clients.names(),
+                    )
+            else:
+                main_inference_client = InferenceClient(
+                    worker_id=worker_id,
+                    request_queue=cast(Any, main_inference_request_queue),
+                    response_queue=cast(Any, main_inference_response_queue),
+                    loop=POKE_LOOP,
+                )
+                main_inference_client.start()
+                if verbose:
+                    logger.debug(
+                        "[MPWorker %d] Centralized inference (legacy single) "
+                        "enabled; skipping main model load",
+                        worker_id,
+                    )
+        else:
+            model = build_model_from_config(
+                model_config,
+                embedder,
+                device,
+                checkpoint["model_state_dict"],
+                strict=False,
+            )
+            model.eval()
+            agent = RNaDAgent(model)
+        # Optional: torch.compile the inference agent for kernel fusion +
+        # dispatch-overhead removal. dynamic=True so the transformer's
+        # growing context tensor doesn't trigger recompilation each turn.
+        # First inference call after launch pays the compile cost.
+        # Skipped in centralized mode (no agent here; trainer owns the
+        # compile decision).
+        compile_mode = (
+            config.hardware.compile_inference_model if not centralized_main else None
+        )
+        if compile_mode:
+            if verbose:
+                logger.debug(
+                    "[MPWorker %d] torch.compile(agent, mode=%s, dynamic=True)",
+                    worker_id,
+                    compile_mode,
+                )
+            # torch.compile returns an OptimizedModule that delegates
+            # __call__ and attribute access to the wrapped module; the
+            # downstream code only invokes agent(x, ...) and reads
+            # agent.model. Cast preserves that runtime contract for
+            # the type checker. Guarded by compile_mode (None in
+            # centralized mode) so agent is always set here.
+            assert agent is not None
+            agent = cast(RNaDAgent, torch.compile(agent, mode=compile_mode, dynamic=True))
+
+            # Warm the compile cache synchronously BEFORE workers start
+            # accepting battle requests. Without this, the first real
+            # inference call pays the 30-60s compile cost while battles'
+            # 8s inference_request_timeout fires repeatedly, causing a
+            # cascade of "Invalid choice" errors as fallback choices
+            # arrive after Showdown has moved on. Two warmup shapes
+            # cover the two transformer code paths actually hit in
+            # production: turn 0 (no context) and turn 1+ (with context).
+            warmup_start = time.time()
+            embedding_size = embedder.embedding_size
+            with torch.no_grad():
+                # Turn 0: no hidden context.
+                x_warm = torch.zeros(1, 1, embedding_size, device=device)
+                _, _, _, _, ctx_warm = agent(x_warm, None)
+                # Turn 1: with prior context.
+                agent(x_warm, ctx_warm)
+            if verbose:
+                logger.debug(
+                    "[MPWorker %d] compile warmup complete in %.1fs",
+                    worker_id,
+                    time.time() - warmup_start,
+                )
         del checkpoint
         if verbose:
             logger.debug(
@@ -352,6 +474,9 @@ def mp_worker_process(
             initial_curriculum=curriculum,
             exploiter_agent=exploiter_agent,
             victim_agent=victim_agent,
+            main_inference_client=main_inference_client,
+            main_is_transformer=main_is_transformer,
+            worker_inference_clients=worker_inference_clients,
         )
 
         loop = asyncio.new_event_loop()
@@ -576,7 +701,14 @@ def mp_worker_process(
             finally:
                 await env.teardown()
 
-        loop.run_until_complete(run_battles(num_battles_per_pair))
+        try:
+            loop.run_until_complete(run_battles(num_battles_per_pair))
+        finally:
+            # Stop the centralized inference client cleanly so its
+            # response-dispatcher thread exits and pending submits get
+            # cancelled rather than hanging on shutdown.
+            if main_inference_client is not None:
+                main_inference_client.stop()
         if verbose:
             logger.debug("[MPWorker %d] Finished gracefully", worker_id)
 

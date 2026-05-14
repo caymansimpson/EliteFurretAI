@@ -49,7 +49,9 @@ class Embedder:
     SIMPLE = "simple"
     RAW = "raw"
     FULL = "full"
-    FULL_NO_TRANSITION = "full_no_transition"  # FULL minus transition features (engineered kept)
+    FULL_NO_TRANSITION = (
+        "full_no_transition"  # FULL minus transition features (engineered kept)
+    )
 
     def __init__(
         self, format="gen9vgc2023regc", feature_set: str = "raw", omniscient=False
@@ -78,7 +80,9 @@ class Embedder:
             self._knowledge[key] = set(enum)
 
         # Track all relevant game elements for encoding
-        self._knowledge["Pokemon"] = set(GenData.from_gen(int(self._format[3])).pokedex.keys())
+        self._knowledge["Pokemon"] = set(
+            GenData.from_gen(int(self._format[3])).pokedex.keys()
+        )
         self._knowledge["Effect_VolatileStatus"] = TRACKED_EFFECTS
         self._knowledge["Item"] = TRACKED_ITEMS
         self._knowledge["Target"] = TRACKED_TARGET_TYPES
@@ -124,9 +128,7 @@ class Embedder:
         """
         return string.lower().replace("_", " ")
 
-    def _compute_grouped_feature_names(
-        self, battle: DoubleBattle
-    ) -> List[str]:
+    def _compute_grouped_feature_names(self, battle: DoubleBattle) -> List[str]:
         """Compute feature names in group order with sorting within each group.
 
         This preserves semantic group boundaries so that model architectures
@@ -404,7 +406,7 @@ class Embedder:
         )
 
         # Now do it for the opponent
-        num_fainted, hp_frac, total_hp, num_status = 0, 0., 0, 0
+        num_fainted, hp_frac, total_hp, num_status = 0, 0.0, 0, 0
         for mon in fill_with_none(list(battle.opponent_team.values()), 4):
             if mon is None:
                 hp_frac += 1
@@ -615,16 +617,30 @@ class Embedder:
 
         return emb
 
+    # TODO: speed up
     def _generate_null_move_features(self, prefix: str = "") -> Dict[str, float]:
         """Generate features for a null move (all -1s)."""
         emb: Dict[str, float] = {}
 
         # Scalar features
         for key in [
-            "accuracy", "base_power", "current_pp", "used", "damage", "drain",
-            "force_switch", "heal", "is_protect_move", "is_side_protect_move",
-            "min_hits", "max_hits", "priority", "recoil", "self_switch",
-            "use_target_offensive", "chance"
+            "accuracy",
+            "base_power",
+            "current_pp",
+            "used",
+            "damage",
+            "drain",
+            "force_switch",
+            "heal",
+            "is_protect_move",
+            "is_side_protect_move",
+            "min_hits",
+            "max_hits",
+            "priority",
+            "recoil",
+            "self_switch",
+            "use_target_offensive",
+            "chance",
         ]:
             emb[prefix + key] = -1
 
@@ -847,9 +863,7 @@ class Embedder:
         emb[prefix + "item_id"] = ITEM_TO_ID.get(mon.item, 0) if mon and mon.item else -1
 
         # Entity ID for species (integer index into nn.Embedding)
-        emb[prefix + "species_id"] = (
-            self._species_to_id.get(mon.species, 0) if mon else -1
-        )
+        emb[prefix + "species_id"] = self._species_to_id.get(mon.species, 0) if mon else -1
 
         # Add various relevant fields for mons
         emb[prefix + "current_hp_fraction"] = mon.current_hp_fraction if mon else -1
@@ -989,9 +1003,7 @@ class Embedder:
             emb[prefix + "item_id"] = 0  # Unknown item
 
         # Entity ID for species (integer index into nn.Embedding)
-        emb[prefix + "species_id"] = (
-            self._species_to_id.get(mon.species, 0) if mon else -1
-        )
+        emb[prefix + "species_id"] = self._species_to_id.get(mon.species, 0) if mon else -1
 
         # Add several other fields
         emb[prefix + "current_hp_fraction"] = mon.current_hp_fraction if mon else -1
@@ -1137,7 +1149,9 @@ class Embedder:
             if weather in battle.weather:
                 set_turn = battle.weather[weather]
                 remaining = max(0, WEATHER_DURATION - (battle.turn - set_turn))
-                emb["WEATHER:" + weather.name + ":remaining"] = remaining / WEATHER_DURATION
+                emb["WEATHER:" + weather.name + ":remaining"] = (
+                    remaining / WEATHER_DURATION
+                )
             else:
                 emb["WEATHER:" + weather.name + ":remaining"] = 0
 
@@ -1228,9 +1242,7 @@ class Embedder:
             return f"OPP:{slot_idx}:"
         return None
 
-    def generate_transition_features(
-        self, battle: DoubleBattle
-    ) -> Dict[str, float]:
+    def generate_transition_features(self, battle: DoubleBattle) -> Dict[str, float]:
         """Extract features describing what happened during the previous turn.
 
         Parses ``battle.observations[prev_turn].events`` to produce per-slot features
@@ -1243,9 +1255,14 @@ class Embedder:
         # Initialise every feature to -1 (unknown / not applicable)
         slots = ["MY:0:", "MY:1:", "OPP:0:", "OPP:1:"]
         per_slot_feats = [
-            "used_move", "used_switch", "used_protect",
-            "was_crit", "hit_super_effective", "hit_resisted",
-            "move_missed", "move_failed",
+            "used_move",
+            "used_switch",
+            "used_protect",
+            "was_crit",
+            "hit_super_effective",
+            "hit_resisted",
+            "move_missed",
+            "move_failed",
         ]
         for slot in slots:
             for feat in per_slot_feats:
@@ -1387,7 +1404,12 @@ def compute_stats(mon: Pokemon, type="max") -> Dict[str, int]:
         for k, v in zip(
             stat_types,
             compute_raw_stats(
-                mon.species, [0] * 6, [0] * 6, mon.level, "serious", GenData.from_gen(int(mon.gen))
+                mon.species,
+                [0] * 6,
+                [0] * 6,
+                mon.level,
+                "serious",
+                GenData.from_gen(int(mon.gen)),
             ),
         ):
             stats[k] = int(0.9 * v) if k != "hp" else v
@@ -1397,7 +1419,12 @@ def compute_stats(mon: Pokemon, type="max") -> Dict[str, int]:
         for k, v in zip(
             stat_types,
             compute_raw_stats(
-                mon.species, [252] * 6, [31] * 6, mon.level, "serious", GenData.from_gen(int(mon.gen))
+                mon.species,
+                [252] * 6,
+                [31] * 6,
+                mon.level,
+                "serious",
+                GenData.from_gen(int(mon.gen)),
             ),
         ):
             stats[k] = int(1.1 * v) if k != "hp" else v

@@ -1,0 +1,273 @@
+# -*- coding: utf-8 -*-
+"""Unit tests for ModelRegistry + WorkerInferenceClients.
+
+These run entirely in-process (single Python interpreter) and exercise
+the registry / worker-bundle plumbing without spawning subprocesses or
+loading real models. Real-model + cross-process behavior is already
+covered by:
+  - test_inference_handler_real_model.py (M2 — real RNaDAgent in handler)
+  - test_inference_multistep_and_mp.py (M3 — multistep + cross-process)
+
+The registry tests focus on:
+  - register / sync_weights / queues_for_workers / get_diagnostics /
+    stop_all behavior
+  - duplicate-register and missing-name errors
+  - WorkerInferenceClients construction from queues bundle, get/has/names,
+    clean shutdown
+  - Smoke end-to-end: registry → workers (in-process) → submit + receive
+"""
+
+from __future__ import annotations
+
+import asyncio
+from typing import Dict, Tuple
+
+import numpy as np
+import pytest
+
+from elitefurretai.etl.embedder import Embedder
+from elitefurretai.rl.model_registry import ModelRegistry
+from elitefurretai.rl.players import RNaDAgent
+from elitefurretai.rl.worker_inference_clients import WorkerInferenceClients
+from elitefurretai.supervised.model_archs import TransformerThreeHeadedModel
+
+
+@pytest.fixture
+def small_agent_factory():
+    """Returns a callable that builds a fresh small agent each call.
+
+    Multiple agents needed to exercise multi-model registration without
+    sharing weights between names.
+    """
+    embedder = Embedder(feature_set="simple")
+
+    def make() -> RNaDAgent:
+        model = TransformerThreeHeadedModel(
+            embedder=embedder,
+            early_layers=[64, 32],
+            late_layers=[64, 32],
+            transformer_layers=2,
+            transformer_heads=4,
+            transformer_ff_dim=64,
+            dropout=0.0,
+            max_seq_len=40,
+        )
+        model.eval()
+        return RNaDAgent(model)
+
+    return make, embedder
+
+
+# ─────────────────────────────────────────────────────────────────────
+# ModelRegistry
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_registry_register_starts_service(small_agent_factory):
+    make, _ = small_agent_factory
+    registry = ModelRegistry(num_workers=2, batch_size=4, batch_timeout=0.005)
+    try:
+        registry.register("main", make())
+        assert "main" in registry.names()
+        diag = registry.get_diagnostics()
+        assert "main" in diag
+        assert diag["main"]["inference_batches"] == 0.0
+    finally:
+        registry.stop_all()
+
+
+def test_registry_register_duplicate_raises(small_agent_factory):
+    make, _ = small_agent_factory
+    registry = ModelRegistry(num_workers=1, batch_size=4, batch_timeout=0.005)
+    try:
+        registry.register("main", make())
+        with pytest.raises(ValueError, match="already registered"):
+            registry.register("main", make())
+    finally:
+        registry.stop_all()
+
+
+def test_registry_register_three_models(small_agent_factory):
+    make, _ = small_agent_factory
+    registry = ModelRegistry(num_workers=3, batch_size=4, batch_timeout=0.005)
+    try:
+        registry.register("main", make())
+        registry.register("bc", make())
+        registry.register("ghost_0", make())
+        assert sorted(registry.names()) == ["bc", "ghost_0", "main"]
+        bundles = registry.queues_for_workers()
+        assert sorted(bundles.keys()) == ["bc", "ghost_0", "main"]
+        for name, (req_q, resp_qs) in bundles.items():
+            assert req_q is not None
+            assert len(resp_qs) == 3  # one per worker
+    finally:
+        registry.stop_all()
+
+
+def test_registry_sync_weights_updates_in_place(small_agent_factory):
+    make, _ = small_agent_factory
+    registry = ModelRegistry(num_workers=1, batch_size=4, batch_timeout=0.005)
+    try:
+        agent = make()
+        registry.register("main", agent)
+
+        # Build a different state_dict by zeroing one parameter.
+        new_sd = {k: v.clone() for k, v in agent.model.state_dict().items()}
+        first_key = next(iter(new_sd))
+        new_sd[first_key] = new_sd[first_key].zero_()
+
+        registry.sync_weights("main", new_sd)
+        # Verify the agent's parameter is now zeroed.
+        assert agent.model.state_dict()[first_key].abs().sum().item() == 0.0
+    finally:
+        registry.stop_all()
+
+
+def test_registry_sync_weights_unknown_name_raises():
+    registry = ModelRegistry(num_workers=1, batch_size=4, batch_timeout=0.005)
+    try:
+        with pytest.raises(KeyError, match="not registered"):
+            registry.sync_weights("does_not_exist", {})
+    finally:
+        registry.stop_all()
+
+
+def test_registry_compile_requires_embedding_size():
+    with pytest.raises(ValueError, match="embedding_size"):
+        ModelRegistry(
+            num_workers=1,
+            batch_size=4,
+            batch_timeout=0.005,
+            compile_mode="default",
+            # embedding_size deliberately omitted
+        )
+
+
+def test_registry_stop_all_idempotent(small_agent_factory):
+    make, _ = small_agent_factory
+    registry = ModelRegistry(num_workers=1, batch_size=4, batch_timeout=0.005)
+    registry.register("main", make())
+    registry.stop_all()
+    # Second call shouldn't raise.
+    registry.stop_all()
+    assert registry.names() == []
+
+
+# ─────────────────────────────────────────────────────────────────────
+# WorkerInferenceClients
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _per_worker_slice(
+    bundles: Dict[str, Tuple], worker_id: int
+) -> Dict[str, Tuple]:
+    return {
+        name: (req_q, resp_qs[worker_id])
+        for name, (req_q, resp_qs) in bundles.items()
+    }
+
+
+def test_worker_clients_constructs_one_per_model(small_agent_factory):
+    make, _ = small_agent_factory
+    registry = ModelRegistry(num_workers=2, batch_size=4, batch_timeout=0.005)
+    try:
+        registry.register("main", make())
+        registry.register("bc", make())
+        loop = asyncio.new_event_loop()
+        try:
+            worker_slice = _per_worker_slice(registry.queues_for_workers(), 0)
+            clients = WorkerInferenceClients(0, worker_slice, loop=loop)
+            try:
+                assert sorted(clients.names()) == ["bc", "main"]
+                assert clients.has("main")
+                assert clients.has("bc")
+                assert not clients.has("ghost_0")
+                assert clients.get("main").worker_id == 0
+                assert clients.get("bc").worker_id == 0
+            finally:
+                clients.stop_all()
+        finally:
+            loop.close()
+    finally:
+        registry.stop_all()
+
+
+def test_worker_clients_get_unknown_raises(small_agent_factory):
+    make, _ = small_agent_factory
+    registry = ModelRegistry(num_workers=1, batch_size=4, batch_timeout=0.005)
+    try:
+        registry.register("main", make())
+        loop = asyncio.new_event_loop()
+        try:
+            slice_ = _per_worker_slice(registry.queues_for_workers(), 0)
+            clients = WorkerInferenceClients(0, slice_, loop=loop)
+            try:
+                with pytest.raises(KeyError, match="No inference client"):
+                    clients.get("does_not_exist")
+            finally:
+                clients.stop_all()
+        finally:
+            loop.close()
+    finally:
+        registry.stop_all()
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Smoke end-to-end (in-process)
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_registry_to_worker_round_trip(small_agent_factory):
+    """Register two models, build worker clients, submit one request to
+    each, verify both come back with valid action indices and the
+    handler stored hidden state for both."""
+    make, embedder = small_agent_factory
+    registry = ModelRegistry(num_workers=1, batch_size=4, batch_timeout=0.005)
+    try:
+        registry.register("main", make())
+        registry.register("bc", make())
+
+        loop = asyncio.new_event_loop()
+        try:
+            slice_ = _per_worker_slice(registry.queues_for_workers(), 0)
+            clients = WorkerInferenceClients(0, slice_, loop=loop)
+            try:
+                async def submit_to(name: str) -> int:
+                    resp = await clients.get(name).submit(
+                        state=np.random.randn(embedder.embedding_size).astype(
+                            np.float32
+                        ),
+                        mask=np.ones(2025, dtype=np.float32),
+                        is_teampreview=False,
+                        player_id="p",
+                        battle_tag=f"tag-{name}",
+                        temperature=1.0,
+                        top_p=1.0,
+                    )
+                    return resp.action_idx
+
+                np.random.seed(0)
+
+                async def both():
+                    return await asyncio.gather(
+                        submit_to("main"), submit_to("bc")
+                    )
+
+                main_action, bc_action = loop.run_until_complete(both())
+                assert 0 <= main_action < 2025
+                assert 0 <= bc_action < 2025
+
+                # Handlers stored state per-model.
+                main_handler = registry._handlers["main"]
+                bc_handler = registry._handlers["bc"]
+                assert (0, "p", "tag-main") in main_handler.hidden_states
+                assert (0, "p", "tag-bc") in bc_handler.hidden_states
+                # Cross-isolation: main's tag isn't in bc's handler.
+                assert (0, "p", "tag-main") not in bc_handler.hidden_states
+                assert (0, "p", "tag-bc") not in main_handler.hidden_states
+            finally:
+                clients.stop_all()
+        finally:
+            loop.close()
+    finally:
+        registry.stop_all()

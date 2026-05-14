@@ -4,6 +4,8 @@
 data/battles/*
 data/database/frisk.db
 data/models/*
+data/benchmarks/*
+data/logs/*
 __pycache__/*
 *.pyc
 coverage.xml
@@ -16,3 +18,4 @@ nohup.out
 EliteFurretAI.code-workspace
 .gitattributesdata/logs/
 CLAUDE.md
+.claude

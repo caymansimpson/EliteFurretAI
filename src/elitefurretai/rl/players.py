@@ -59,7 +59,21 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from threading import Lock
-from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Union, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Dict,
+    List,
+    Optional,
+    Sequence,
+    Set,
+    Tuple,
+    Union,
+    cast,
+)
+
+if TYPE_CHECKING:
+    from elitefurretai.rl.inference_client import InferenceClient
 
 import numpy as np
 import torch
@@ -246,7 +260,7 @@ class BatchInferencePlayer(Player):
 
     def __init__(
         self,
-        model: "RNaDAgent",
+        model: Optional["RNaDAgent"] = None,
         device="cpu",
         batch_size=16,
         batch_timeout=0.01,
@@ -257,11 +271,32 @@ class BatchInferencePlayer(Player):
         embedder: Optional[Embedder] = None,
         max_battle_steps: int = 40,
         opponent_type: str = "self_play",
+        # Centralized-inference (M4): when set, the player submits requests
+        # to a shared trainer-side InferenceService instead of running a
+        # per-player inference loop. Mutually exclusive with `model`. When
+        # `inference_client` is provided, `is_transformer` must also be
+        # supplied (the player needs it to know the shape of hidden_states
+        # entries; without `model` we can't introspect).
+        inference_client: Optional["InferenceClient"] = None,
+        is_transformer: Optional[bool] = None,
         **kwargs,
     ):
         battle_format = kwargs.get("battle_format", "gen9vgc2023regc")
 
+        if (model is None) == (inference_client is None):
+            raise ValueError(
+                "BatchInferencePlayer requires exactly one of `model` "
+                "(legacy per-player inference) or `inference_client` "
+                "(centralized inference via InferenceService)"
+            )
+        if inference_client is not None and is_transformer is None:
+            raise ValueError(
+                "`is_transformer` must be supplied when `inference_client` "
+                "is set; without `model` we can't introspect arch type"
+            )
+
         self.model = model
+        self.inference_client = inference_client
         self.device = device
         self.batch_size = batch_size
         self.batch_timeout = batch_timeout
@@ -276,15 +311,25 @@ class BatchInferencePlayer(Player):
                 format=battle_format, feature_set=Embedder.FULL, omniscient=False
             )
         )
-        self.queue: asyncio.Queue = create_in_poke_loop(asyncio.Queue, POKE_LOOP)
+        # Legacy mode owns a per-player asyncio queue + inference loop.
+        # Centralized mode submits via `self.inference_client` and never
+        # touches `self.queue`. Type kept as Optional so attribute always
+        # exists for callers that defensively check it.
+        self.queue: Optional[asyncio.Queue] = (
+            create_in_poke_loop(asyncio.Queue, POKE_LOOP) if model is not None else None
+        )
         self.hidden_states: Dict[
             str, Any
         ] = {}  # (h,c) for LSTM or context tensor for Transformer
-        underlying_model = getattr(model, "model", model)
-        self._is_transformer: bool = isinstance(
-            underlying_model,
-            TransformerThreeHeadedModel,
-        )
+        if model is not None:
+            underlying_model = getattr(model, "model", model)
+            self._is_transformer: bool = isinstance(
+                underlying_model,
+                TransformerThreeHeadedModel,
+            )
+        else:
+            assert is_transformer is not None
+            self._is_transformer = is_transformer
         self._inference_task: Optional[asyncio.Task] = None
         self._inference_future: Optional[concurrent.futures.Future] = None
         self.temperature: float = 1.0  # Sampling temperature (set by trainer)
@@ -308,6 +353,8 @@ class BatchInferencePlayer(Player):
             "inference_batches": 0.0,
             "inference_batch_items": 0.0,
             "inference_batch_size_max": 0.0,
+            "inference_batches_filled_to_max": 0.0,
+            "inference_batches_flushed_timeout": 0.0,
             "inference_executor_seconds": 0.0,
             "inference_wait_calls": 0.0,
             "inference_wait_seconds": 0.0,
@@ -375,6 +422,21 @@ class BatchInferencePlayer(Player):
     async def stop_listening(self):
         await self.ps_client.stop_listening()
 
+    def _reset_battle_hidden_state(self, battle_tag: str) -> None:
+        """Drop hidden state for a battle from BOTH the player-local dict
+        AND the trainer-side InferenceService (when in centralized mode).
+
+        The legacy code resets hidden on every stale-request / timeout /
+        error path so the next request for that battle starts from scratch.
+        Without this, multiple in-flight requests' hidden updates pile up
+        and the context tensor exceeds `max_seq_len`, crashing the
+        positional encoder. Centralized mode hits the same race; the
+        trainer-side dict needs the same reset.
+        """
+        self.hidden_states.pop(battle_tag, None)
+        if self.inference_client is not None:
+            self.inference_client.evict(self.username, battle_tag)
+
     def stop_inference_loop(self, timeout_s: float = 1.0) -> None:
         """Stop the background inference loop if it is running.
 
@@ -415,6 +477,10 @@ class BatchInferencePlayer(Player):
             pass
 
     def start_inference_loop(self) -> None:
+        # Centralized mode: the trainer-side InferenceService owns its own
+        # loop; players have no per-instance loop to start. No-op.
+        if self.inference_client is not None:
+            return
         self._inference_future = asyncio.run_coroutine_threadsafe(
             self._inference_loop(), POKE_LOOP
         )
@@ -434,6 +500,13 @@ class BatchInferencePlayer(Player):
         #     model overhead, but each individual decision waits longer.
         #   - Small values = snappier per-decision but more wasted forwards.
         # ─────────────────────────────────────────────────────────────────────
+        # This loop only runs in legacy mode (model + per-player queue).
+        # Centralized mode never starts the inference loop; the trainer-side
+        # InferenceService owns its equivalent.
+        assert self.queue is not None, (
+            "_inference_loop entered without a queue — centralized-mode "
+            "players should not start the legacy inference loop"
+        )
         while True:
             batch: List[Any] = []
             futures: List[Any] = []
@@ -476,6 +549,30 @@ class BatchInferencePlayer(Player):
                     self._diagnostics["inference_batch_size_max"],
                     float(len(batch)),
                 )
+                if len(batch) >= self.batch_size:
+                    self._diagnostics["inference_batches_filled_to_max"] += 1
+                else:
+                    self._diagnostics["inference_batches_flushed_timeout"] += 1
+                # Periodic batch-fill log so we can tell at a glance whether
+                # batch_size is well-tuned. Emits every 500 batches per player.
+                if self._diagnostics["inference_batches"] % 500 == 0:
+                    n = self._diagnostics["inference_batches"]
+                    items = self._diagnostics["inference_batch_items"]
+                    filled = self._diagnostics["inference_batches_filled_to_max"]
+                    timeout = self._diagnostics["inference_batches_flushed_timeout"]
+                    # WARNING level chosen so the line surfaces past the
+                    # worker's INFO-suppression for poke-env loggers. This is
+                    # diagnostic and should be lowered or removed once
+                    # batch_size has been tuned (2026-05-13 throughput work).
+                    self.logger.warning(
+                        "[batch-fill] n=%d avg=%.2f max=%d filled%%=%.1f timeout%%=%.1f cap=%d",
+                        int(n),
+                        items / max(n, 1),
+                        int(self._diagnostics["inference_batch_size_max"]),
+                        100.0 * filled / max(n, 1),
+                        100.0 * timeout / max(n, 1),
+                        self.batch_size,
+                    )
                 # Step 3+4: run the batched forward and resolve futures.
                 await self._run_batch(batch, futures, battle_tags, is_tps, masks)
 
@@ -487,6 +584,13 @@ class BatchInferencePlayer(Player):
         masks.append(item[4])
 
     def _gpu_inference_sync(self, states_np, hidden_cpu, hidden_mask_cpu=None):
+        # Legacy-mode-only: only called from _run_batch which only runs in
+        # legacy mode. Centralized mode routes inference through the
+        # trainer's RealModelBatchHandler.
+        assert self.model is not None, (
+            "_gpu_inference_sync called without a model — centralized-mode "
+            "players don't own a model and shouldn't enter this path"
+        )
         states_tensor = (
             torch.tensor(states_np, dtype=torch.float32).to(self.device).unsqueeze(1)
         )
@@ -726,6 +830,11 @@ class BatchInferencePlayer(Player):
             return
 
         # ---- LSTM path (original batched inference) ----
+        # Legacy-mode-only entry point (only callable from _run_batch).
+        assert self.model is not None, (
+            "_run_batch LSTM path requires a model — centralized mode "
+            "doesn't take this path"
+        )
         h_list = []
         c_list = []
         for tag in battle_tags:
@@ -854,7 +963,7 @@ class BatchInferencePlayer(Player):
                     f"message={message} err={repr(exc)}"
                 )
                 self.current_trajectories.pop(battle.battle_tag, None)
-                self.hidden_states.pop(battle.battle_tag, None)
+                self._reset_battle_hidden_state(battle.battle_tag)
             return
 
         choice = await self._choose_move_async(
@@ -930,7 +1039,7 @@ class BatchInferencePlayer(Player):
                     f"legal_switches={legal_switch_names} err={repr(exc)}"
                 )
                 self.current_trajectories.pop(battle.battle_tag, None)
-                self.hidden_states.pop(battle.battle_tag, None)
+                self._reset_battle_hidden_state(battle.battle_tag)
 
     def choose_move(self, battle: AbstractBattle) -> Any:
         return self._choose_move_async(battle)
@@ -953,7 +1062,7 @@ class BatchInferencePlayer(Player):
             self._diagnostics["discarded_battles"] += 1
             self._discarded_battles.add(battle.battle_tag)
             self.current_trajectories.pop(battle.battle_tag, None)
-            self.hidden_states.pop(battle.battle_tag, None)
+            self._reset_battle_hidden_state(battle.battle_tag)
             return (
                 "/forfeit" if self.trajectory_queue is not None else DefaultBattleOrder()
             )
@@ -992,14 +1101,42 @@ class BatchInferencePlayer(Player):
             else tuple()
         )
 
-        loop = asyncio.get_running_loop()
-        future = loop.create_future()
-        await self.queue.put((state, future, battle.battle_tag, battle.teampreview, mask))
         wait_start = asyncio.get_running_loop().time()
         try:
-            result = await asyncio.wait_for(
-                future, timeout=self.inference_request_timeout_s
-            )
+            if self.inference_client is not None:
+                # Centralized path: trainer-side InferenceService runs the
+                # forward + sampling AND owns the hidden state, keyed by
+                # (worker_id, battle_tag). The wire payload only carries
+                # the lightweight battle_tag (D3-alt). Player no longer
+                # tracks hidden_states locally in this mode.
+                response = await asyncio.wait_for(
+                    self.inference_client.submit(
+                        state=state,
+                        mask=mask,
+                        is_teampreview=battle.teampreview,
+                        player_id=self.username,
+                        battle_tag=battle.battle_tag,
+                        temperature=self.temperature,
+                        top_p=self.top_p,
+                    ),
+                    timeout=self.inference_request_timeout_s,
+                )
+                result: Dict[str, Any] = {
+                    "action": response.action_idx,
+                    "log_prob": response.log_prob,
+                    "value": response.value,
+                }
+            else:
+                # Legacy path: per-player asyncio queue + inference loop.
+                assert self.queue is not None
+                loop = asyncio.get_running_loop()
+                future = loop.create_future()
+                await self.queue.put(
+                    (state, future, battle.battle_tag, battle.teampreview, mask)
+                )
+                result = await asyncio.wait_for(
+                    future, timeout=self.inference_request_timeout_s
+                )
             self._diagnostics["inference_wait_calls"] += 1
             self._diagnostics["inference_wait_seconds"] += (
                 asyncio.get_running_loop().time() - wait_start
@@ -1010,15 +1147,20 @@ class BatchInferencePlayer(Player):
                 asyncio.get_running_loop().time() - wait_start
             )
             self._diagnostics["inference_timeouts"] += 1
+            queue_repr = (
+                self.queue.qsize()
+                if self.queue is not None and hasattr(self.queue, "qsize")
+                else "centralized"
+            )
             logger.debug(
                 "INFERENCE_TIMEOUT tag=%s turn=%s teampreview=%s queue_size=%s",
                 battle.battle_tag,
                 getattr(battle, "turn", "?"),
                 battle.teampreview,
-                self.queue.qsize() if hasattr(self.queue, "qsize") else "?",
+                queue_repr,
             )
             self.current_trajectories.pop(battle.battle_tag, None)
-            self.hidden_states.pop(battle.battle_tag, None)
+            self._reset_battle_hidden_state(battle.battle_tag)
             return DefaultBattleOrder()
 
         # Request-generation guard: if a newer request is already active for this
@@ -1034,7 +1176,7 @@ class BatchInferencePlayer(Player):
                     latest_generation,
                 )
                 self.current_trajectories.pop(battle.battle_tag, None)
-                self.hidden_states.pop(battle.battle_tag, None)
+                self._reset_battle_hidden_state(battle.battle_tag)
                 return DefaultBattleOrder()
 
         action_idx = result["action"]
@@ -1066,7 +1208,7 @@ class BatchInferencePlayer(Player):
                 current_force_switch,
             )
             self.current_trajectories.pop(battle.battle_tag, None)
-            self.hidden_states.pop(battle.battle_tag, None)
+            self._reset_battle_hidden_state(battle.battle_tag)
             return DefaultBattleOrder()
 
         current_request_fingerprint = _request_fingerprint(battle.last_request)
@@ -1080,7 +1222,7 @@ class BatchInferencePlayer(Player):
                 None if battle.last_request is None else battle.last_request.get("rqid"),
             )
             self.current_trajectories.pop(battle.battle_tag, None)
-            self.hidden_states.pop(battle.battle_tag, None)
+            self._reset_battle_hidden_state(battle.battle_tag)
             return DefaultBattleOrder()
 
         if mask is not None and action_idx < len(mask) and mask[action_idx] == 0:
@@ -1249,20 +1391,27 @@ class BatchInferencePlayer(Player):
         # ─────────────────────────────────────────────────────────────────────
         self._request_generation.pop(battle.battle_tag, None)
 
+        # Centralized inference (D3-alt): trainer-side handler keeps a
+        # hidden_states dict keyed by (worker_id, battle_tag). Tell it
+        # to free the slot so the dict doesn't grow monotonically over
+        # the run. Cheap fire-and-forget IPC message.
+        if self.inference_client is not None:
+            self.inference_client.evict(self.username, battle.battle_tag)
+
         # If the battle was discarded mid-flight (e.g. trajectory exceeded
         # max_battle_steps), drop everything — we don't want to train on the
         # truncated trajectory because the terminal reward is undefined.
         if battle.battle_tag in self._discarded_battles:
             self._discarded_battles.discard(battle.battle_tag)
             self.current_trajectories.pop(battle.battle_tag, None)
-            self.hidden_states.pop(battle.battle_tag, None)
+            self._reset_battle_hidden_state(battle.battle_tag)
             return
 
         # If trajectory_queue is None this is an opponent-only player (we're
         # not collecting from this side); just clean up state.
         if self.trajectory_queue is None:
             self.current_trajectories.pop(battle.battle_tag, None)
-            self.hidden_states.pop(battle.battle_tag, None)
+            self._reset_battle_hidden_state(battle.battle_tag)
             return
 
         if battle.battle_tag in self.current_trajectories:
@@ -1302,7 +1451,7 @@ class BatchInferencePlayer(Player):
                     "forfeited": forfeited,
                 }
             )
-            self.hidden_states.pop(battle.battle_tag, None)
+            self._reset_battle_hidden_state(battle.battle_tag)
 
 
 class RNaDAgent(torch.nn.Module):

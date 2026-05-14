@@ -371,6 +371,22 @@ class HardwareConfig:
     # (Showdown training path); analysis scripts are unaffected.
     max_concurrent_battles_per_player: Optional[int] = None
 
+    # torch.compile the inference model in workers. The 2026-05-13 profile
+    # showed model forward (linear + transformer + layer_norm) was the
+    # dominant useful work (~36% OwnTime); compile should fuse small
+    # kernels and remove Python dispatch overhead. None/False = eager;
+    # "default" / "reduce-overhead" / "max-autotune" select the mode.
+    # Note: first call after launch pays compile cost (10–60s typical);
+    # subsequent calls reuse the cached graph.
+    compile_inference_model: Optional[str] = None
+
+    # Centralized inference (M4 of the centralized-inference plan): when
+    # True, the trainer process owns a single InferenceService for the
+    # main agent and workers submit requests via mp.Queue instead of
+    # holding their own model copies. Unlocks bigger batch sizes (F8)
+    # and re-enables torch.compile (single process compile cost).
+    enable_centralized_inference: bool = False
+
     def __post_init__(self) -> None:
         if self.battle_backend not in SUPPORTED_BATTLE_BACKENDS:
             raise ValueError(

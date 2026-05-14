@@ -691,6 +691,9 @@ def test_choose_move_drops_same_turn_request_mutation():
     player._discarded_battles = set()
     player.trajectory_queue = None
     player.queue = asyncio.Queue()
+    # Centralized-mode attribute: tests bypass __init__ via __new__, so
+    # we set it explicitly. None = legacy mode (queue.put path).
+    player.inference_client = None
     player.inference_request_timeout_s = 1.0
     player._request_generation = {"battle-1": 1}
     player._diagnostics = defaultdict(int)

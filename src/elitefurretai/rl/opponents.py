@@ -59,7 +59,11 @@ import random
 from collections import deque
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, cast
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, cast
+
+if TYPE_CHECKING:
+    from elitefurretai.rl.inference_client import InferenceClient
+    from elitefurretai.rl.worker_inference_clients import WorkerInferenceClients
 
 import numpy as np
 import torch
@@ -908,7 +912,7 @@ class WorkerOpponentFactory:
         battle_format: str,
         team_subdirectory: Optional[str],
         server_config: ServerConfiguration,
-        main_agent: RNaDAgent,
+        main_agent: Optional[RNaDAgent],
         bc_agent: Optional[RNaDAgent],
         curriculum: Optional[Dict[str, float]],
         embedder: Embedder,
@@ -929,12 +933,41 @@ class WorkerOpponentFactory:
         exploiter_agent: Optional[RNaDAgent] = None,
         victim_agent: Optional[RNaDAgent] = None,
         max_concurrent_battles_per_player: Optional[int] = None,
+        # Centralized-inference (M4): when set, the factory wires
+        # BatchInferencePlayers to submit through the trainer-side
+        # InferenceService instead of holding a model copy. `main_agent`
+        # may be None when this is set; `main_is_transformer` is then
+        # required because the player needs hidden-state shape info.
+        main_inference_client: Optional["InferenceClient"] = None,
+        main_is_transformer: Optional[bool] = None,
+        # Step 3+: full bundle of inference clients (one per registered
+        # model name in the trainer's ModelRegistry). When set, takes
+        # precedence over the singular `main_inference_client` —
+        # `configure_opponent_for_batch` uses bundle.get("main") /
+        # bundle.get("bc") / bundle.get(f"ghost_{n}") to hot-swap
+        # opponent.inference_client per curriculum pick.
+        worker_inference_clients: Optional["WorkerInferenceClients"] = None,
     ):
+        if main_agent is None and main_inference_client is None:
+            raise ValueError(
+                "WorkerOpponentFactory requires either main_agent (legacy "
+                "per-player inference) or main_inference_client (centralized)"
+            )
+        if main_inference_client is not None and main_is_transformer is None:
+            raise ValueError(
+                "main_is_transformer must be set when main_inference_client is provided"
+            )
         self.team_repo = team_repo
         self.battle_format = battle_format
         self.team_subdirectory = team_subdirectory
         self.server_config = server_config
         self.main_agent = main_agent
+        # The bundle is the source of truth in centralized mode (step 3+).
+        # `main_inference_client` is kept for back-compat with the step-2
+        # call site that didn't yet know about the bundle.
+        self.worker_inference_clients = worker_inference_clients
+        self.main_inference_client = main_inference_client
+        self.main_is_transformer = main_is_transformer
         self.bc_agent = bc_agent
         # poke-env Player's `max_concurrent_battles` kwarg. None preserves
         # the library default of 1. See Track C in
@@ -1197,9 +1230,25 @@ class WorkerOpponentFactory:
                 self.max_concurrent_battles_per_player
             )
 
+        # Centralized vs legacy: in centralized mode (M4) the player owns
+        # an `inference_client` and submits requests to the trainer-side
+        # InferenceService; in legacy mode it owns a model copy and runs
+        # its own inference loop. Same constructor accepts either.
+        # Step 3+: prefer the bundle (worker_inference_clients.get("main"))
+        # so that the same player can be re-pointed at "bc" / ghost slots
+        # later by configure_opponent_for_batch.
+        main_client = self._resolve_centralized_client("main")
+        main_kwargs: Dict[str, Any]
+        if main_client is not None:
+            main_kwargs = {
+                "inference_client": main_client,
+                "is_transformer": self.main_is_transformer,
+            }
+        else:
+            main_kwargs = {"model": self.main_agent}
+
         for i in range(num_pairs):
             player = BatchInferencePlayer(
-                model=self.main_agent,
                 device=self.device,
                 batch_size=self.batch_size,
                 batch_timeout=self.batch_timeout,
@@ -1214,12 +1263,12 @@ class WorkerOpponentFactory:
                 embedder=self.embedder,
                 max_battle_steps=self.max_battle_steps,
                 opponent_type=self.SELF_PLAY,
+                **main_kwargs,
                 **extra_player_kwargs,
             )
             self.players.append(player)
 
             opponent = BatchInferencePlayer(
-                model=self.main_agent,
                 device=self.device,
                 batch_size=self.batch_size,
                 batch_timeout=self.batch_timeout,
@@ -1233,6 +1282,7 @@ class WorkerOpponentFactory:
                 worker_id=self.worker_id,
                 embedder=self.embedder,
                 max_battle_steps=self.max_battle_steps,
+                **main_kwargs,
                 **extra_player_kwargs,
             )
             self.opponents.append(opponent)
@@ -1347,6 +1397,50 @@ class WorkerOpponentFactory:
 
         return self.SELF_PLAY
 
+    def _resolve_centralized_client(
+        self, model_name: str
+    ) -> Optional["InferenceClient"]:
+        """Return the centralized InferenceClient for `model_name` if
+        available. Order of precedence:
+          1. `worker_inference_clients` bundle (step 3+ canonical path)
+          2. legacy single `main_inference_client` parameter (for "main"
+             only — kept so step 2 callers continue to work)
+          3. None — caller falls back to legacy `model = X` swap
+        """
+        if (
+            self.worker_inference_clients is not None
+            and self.worker_inference_clients.has(model_name)
+        ):
+            return self.worker_inference_clients.get(model_name)
+        if model_name == "main" and self.main_inference_client is not None:
+            return self.main_inference_client
+        return None
+
+    def _swap_to(
+        self,
+        slot: BatchInferencePlayer,
+        centralized_name: Optional[str],
+        legacy_agent: Optional[RNaDAgent],
+    ) -> bool:
+        """Re-point one player or opponent slot at a different model.
+
+        Centralized mode: assign `slot.inference_client = clients.get(name)`.
+        Legacy mode: assign `slot.model = legacy_agent`.
+
+        Returns True if the swap succeeded (the requested model is
+        available in the active mode), False if neither was available
+        (caller should fall back to self-play / main).
+        """
+        if centralized_name is not None:
+            client = self._resolve_centralized_client(centralized_name)
+            if client is not None:
+                slot.inference_client = client
+                return True
+        if legacy_agent is not None:
+            slot.model = legacy_agent
+            return True
+        return False
+
     def configure_opponent_for_batch(
         self,
         player: BatchInferencePlayer,
@@ -1355,44 +1449,56 @@ class WorkerOpponentFactory:
         """Configure one pair for the next batch and return chosen type.
 
         - `max_damage` is handled by separate MaxDamagePlayer instances
-        - `bc_player` swaps opponent.model to the frozen BC agent
-        - `train_exploiter` swaps player→exploiter, opponent→victim (the
-          trajectory feeds the in-process exploiter learner)
-        - fallback is self-play against `main_agent`
+        - `bc_player` swaps opponent to the BC client (centralized) or
+          model (legacy)
+        - `train_exploiter` swaps player→exploiter, opponent→victim
+        - fallback is self-play against the main agent
+
+        In centralized mode (worker_inference_clients set), the swap
+        targets `slot.inference_client`; in legacy mode it targets
+        `slot.model`. `_swap_to` resolves which to use.
         """
         selected_type = self.sample_opponent_type()
 
+        # Default: self-play. Each branch may override.
+        opponent_swapped = False
+
         if selected_type == self.MAX_DAMAGE:
             pass
-        elif selected_type == self.BC_PLAYER and self.bc_agent is not None:
-            opponent.model = self.bc_agent
+        elif selected_type == self.BC_PLAYER:
+            opponent_swapped = self._swap_to(opponent, "bc", self.bc_agent)
+            if not opponent_swapped:
+                selected_type = self.SELF_PLAY
         elif selected_type == self.EXPLOITERS:
             exploiter_agent = self._get_exploiter_agent()
-            if exploiter_agent is not None:
-                opponent.model = exploiter_agent
-            else:
+            opponent_swapped = self._swap_to(opponent, None, exploiter_agent)
+            if not opponent_swapped:
                 selected_type = self.SELF_PLAY
-                opponent.model = self.main_agent
         elif selected_type == self.TRAIN_EXPLOITER:
-            # Exploiter (player) vs. frozen victim (opponent). Trajectory is
-            # tagged "train_exploiter" so the main process routes it to the
-            # exploiter learner instead of the main learner.
-            if self.exploiter_agent is not None and self.victim_agent is not None:
-                player.model = self.exploiter_agent
-                opponent.model = self.victim_agent
-            else:
-                # Co-training agents not provisioned (e.g., curriculum slot
-                # ramped up before main process built them). Fall back to
-                # self-play; trajectory will be routed as main.
+            # Exploiter (player) vs. frozen victim (opponent). Trajectory
+            # is tagged "train_exploiter" so the main process routes it
+            # to the exploiter learner instead of the main learner.
+            player_swapped = self._swap_to(
+                player, "exploiter", self.exploiter_agent
+            )
+            opponent_swapped = self._swap_to(
+                opponent, "victim", self.victim_agent
+            )
+            if not (player_swapped and opponent_swapped):
+                # Co-training agents not provisioned (e.g., curriculum
+                # slot ramped up before main process built them). Fall
+                # back to self-play; trajectory will be routed as main.
                 selected_type = self.SELF_PLAY
-                opponent.model = self.main_agent
+                self._swap_to(player, "main", self.main_agent)
         elif selected_type == self.GHOSTS:
             ghost_agent = self._get_ghost_agent()
-            if ghost_agent is not None:
-                opponent.model = ghost_agent
-            else:
+            # Ghost slots in centralized mode use names like "ghost_0".
+            # Step 5 will add slot rotation; for now ghosts only work in
+            # legacy mode (passing None centralized_name forces fallback
+            # to ghost_agent legacy swap).
+            opponent_swapped = self._swap_to(opponent, None, ghost_agent)
+            if not opponent_swapped:
                 selected_type = self.SELF_PLAY
-                opponent.model = self.main_agent
         else:
             if selected_type not in (
                 self.SELF_PLAY,
@@ -1403,7 +1509,12 @@ class WorkerOpponentFactory:
                 self.VGC_BENCH_BASELINE,
             ):
                 selected_type = self.SELF_PLAY
-            opponent.model = self.main_agent
+
+        # If we fell back to self-play (or were self-play to begin
+        # with), or the chosen branch didn't swap the opponent, point
+        # opponent at main.
+        if not opponent_swapped:
+            self._swap_to(opponent, "main", self.main_agent)
 
         player.opponent_type = selected_type
         return selected_type
