@@ -72,8 +72,6 @@ architecture:
   transformer_heads: 8
   transformer_ff_dim: 1024
   transformer_dropout: 0.1
-  use_decision_tokens: true
-  use_causal_mask: true
   # Encoder
   early_layers: [1024, 512, 512]
   late_layers: [512, 512]
@@ -136,7 +134,6 @@ hardware:
   num_servers: 4
   num_workers: 4
   showdown_start_port: 8000
-  use_mixed_precision: true
   # torch.compile mode applied to the trainer-side inference model
   # (one compile, one warmup, paid before workers spawn). Set to
   # "default" / "reduce-overhead" / "max-autotune" to enable; null to
@@ -159,11 +156,11 @@ curriculum:
   agent_team_path: data/teams/gen9vgc2024regg/constrained/naicchampion.txt
   bc_model_path: data/models/supervised/cool-bee-85-finetune_best.pt
   curriculum_weights:
-    # self_play + bc_player route through centralized inference;
-    # ghosts use the legacy on-demand worker-side loading (registry
-    # ghost-slot rotation is "Future work" in the registry plan).
-    # max_damage / simple_heuristic / vgc_bench are heuristic / external
-    # (no model). exploiters / train_exploiter stay off.
+    # All model-driven opponents (self_play, bc_player, ghosts) route
+    # through the centralized ModelRegistry. ghosts use pre-registered
+    # ghost_<slot> services with LRU rotation. max_damage /
+    # simple_heuristic / vgc_bench are heuristic / external (no model).
+    # exploiters / train_exploiter stay off in this config.
     self_play: 0.3
     bc_player: 0.1
     exploiters: 0.0

@@ -689,11 +689,14 @@ Plus two collateral improvements landed in the same commit:
 ### Caveats / known issues
 
 - **torch.compile + multi-threaded service calls**: `mode='default',
-  dynamic=True` is not thread-safe across multiple compiled services
-  in concurrent threads. Symptom: `RuntimeError: Detected that you are
-  using FX to symbolically trace a dynamo-optimized function`.
-  Workaround: `registry.register(name, agent, compile=False)` for any
-  non-main model. Documented in `ModelRegistry.register`'s docstring.
+  dynamic=True` triggers a dynamo cross-instance race when multiple
+  compiled services run concurrently. Symptom: `RuntimeError: Detected
+  that you are using FX to symbolically trace a dynamo-optimized function`.
+  **Fix shipped 2026-05-14**: process-wide `_COMPILE_LOCK` in
+  `inference_trainer.py` serializes all compiled-model forward calls;
+  per-model locks are insufficient because dynamo's trace state is
+  global across instances of the same class. All registered models
+  (main, bc, exploiter, victim, ghost_*) now run with `compile=True`.
 - **Memory watchdog**: bumped from 20 GB → 22 GB in sep_arch.yaml.
   VGCBench external runners (~5.5 GB) + 4 Showdown servers + workers
   + trainer combined RSS edges over 20 GB on the 24 GB WSL2.
