@@ -666,8 +666,13 @@ def _initialize_exploiter_pipeline(
         feature_set=config.training.embedder_feature_set,
         omniscient=False,
     )
+    # strict=False mirrors the main-agent BC load (train.py:303-312): the BC
+    # checkpoint may have a different value/win head shape than the runtime
+    # architecture (e.g. sep_arch's deep value head). Trunk + policy load fine;
+    # mismatched heads get fresh-initialized — they'll be overwritten on the
+    # first victim_refresh anyway.
     victim_model = build_model_from_config(
-        worker_model_config, embedder, device, bc_state_dict
+        worker_model_config, embedder, device, bc_state_dict, strict=False
     )
     victim_model.eval()
     for param in victim_model.parameters():
@@ -908,7 +913,10 @@ def _maybe_run_exploiter_update(
         # faces the latest defender rather than a snapshot from the previous
         # victim refresh tick.
         if bc_state_dict is not None and exploiter_agent is not None:
-            exploiter_agent.model.load_state_dict(bc_state_dict)
+            # strict=False: BC checkpoint may have a different value/win head
+            # shape than the runtime architecture; trunk + policy load, heads
+            # fresh-initialize. Same rationale as the victim init above.
+            exploiter_agent.model.load_state_dict(bc_state_dict, strict=False)
         if victim_agent is not None:
             victim_agent.model.load_state_dict(agent.model.state_dict())
             # Workers must sync to the new victim before the next generation's
