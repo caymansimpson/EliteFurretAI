@@ -1358,6 +1358,7 @@ def main():
                 main_response_queues[i],
                 queues_by_worker[i],
                 sorted(opponent_pool.active_ghost_slots()),
+                sorted(opponent_pool.active_exploiter_slots()),
             ),
             daemon=True,
             name=f"MPWorker-{i}",
@@ -1701,6 +1702,9 @@ def main():
                         "exploiter_paths": [p for _, p in opponent_pool.exploiter_models],
                         "active_ghost_slots": sorted(
                             opponent_pool.active_ghost_slots()
+                        ),
+                        "active_exploiter_slots": sorted(
+                            opponent_pool.active_exploiter_slots()
                         ),
                     }
                     if exploiter_pipeline_on and exploiter_agent is not None:

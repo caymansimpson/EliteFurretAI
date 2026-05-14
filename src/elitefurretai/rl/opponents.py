@@ -822,6 +822,7 @@ class WorkerOpponentFactory:
         self.active_exploiters: List[Tuple[float, str]] = []
         self.loaded_exploiters: Dict[str, RNaDAgent] = {}
         self._active_ghost_slots: Set[int] = set()
+        self._active_exploiter_slots: Set[int] = set()
         self._batch_count = 0
         # Rebuild generation increments every time we recreate runtime agents.
         # Why: Showdown usernames must be unique among currently connected clients,
@@ -924,6 +925,14 @@ class WorkerOpponentFactory:
         routing in `configure_opponent_for_batch`.
         """
         self._active_ghost_slots = set(slots)
+
+    def set_active_exploiter_slots(self, slots: List[int]) -> None:
+        """Update the set of populated exploiter snapshot slots from a
+        trainer broadcast. Workers use this to know which
+        `exploiter_snap_<slot>` clients in the inference bundle
+        correspond to real weights vs placeholders.
+        """
+        self._active_exploiter_slots = set(slots)
 
     def update_exploiter_weights(self, state_dict: Dict) -> None:
         """Apply broadcasted exploiter weights to the worker-local exploiter agent.
@@ -1210,10 +1219,18 @@ class WorkerOpponentFactory:
             if not opponent_swapped:
                 selected_type = self.SELF_PLAY
         elif selected_type == self.EXPLOITERS:
-            # Snapshot-exploiter routing is not yet centralized through the
-            # registry; legacy disk-load path was removed in Phase 3. Fall
-            # back to self-play if curriculum samples this type.
-            selected_type = self.SELF_PLAY
+            if not self._active_exploiter_slots:
+                # Curriculum sampled EXPLOITERS but no slots populated —
+                # fall back to self-play. The curriculum's
+                # _opponent_available guard should prevent this.
+                selected_type = self.SELF_PLAY
+            else:
+                slot = random.choice(tuple(self._active_exploiter_slots))
+                opponent_swapped = self._swap_to(
+                    opponent, f"exploiter_snap_{slot}"
+                )
+                if not opponent_swapped:
+                    selected_type = self.SELF_PLAY
         elif selected_type == self.TRAIN_EXPLOITER:
             # Exploiter (player) vs. frozen victim (opponent). Trajectory
             # is tagged "train_exploiter" so the main process routes it

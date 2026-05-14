@@ -107,6 +107,7 @@ def mp_worker_process(
     # main_inference_request_queue path is used (back-compat shim).
     queues_by_model: Optional[Dict[str, Any]] = None,
     initial_active_ghost_slots: List[int] = [],
+    initial_active_exploiter_slots: List[int] = [],
 ):
     """
     Multiprocessing worker process for true parallel RL data collection.
@@ -346,12 +347,18 @@ def mp_worker_process(
         )
 
         # Close the blind window between spawn and first broadcast: seed
-        # the factory with whatever ghost slots were active at spawn time.
-        if initial_active_ghost_slots:
+        # the factory with whatever ghost/exploiter slots were active at
+        # spawn time.
+        if initial_active_ghost_slots or initial_active_exploiter_slots:
             _backend = getattr(env, "_backend", None)
             _wfactory = getattr(_backend, "_factory", None)
             if _wfactory is not None:
-                _wfactory.set_active_ghost_slots(initial_active_ghost_slots)
+                if initial_active_ghost_slots:
+                    _wfactory.set_active_ghost_slots(initial_active_ghost_slots)
+                if initial_active_exploiter_slots:
+                    _wfactory.set_active_exploiter_slots(
+                        initial_active_exploiter_slots
+                    )
 
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
@@ -430,15 +437,21 @@ def mp_worker_process(
                                                 "exploiter_paths"
                                             ),
                                         )
-                                    if "active_ghost_slots" in incoming_payload:
+                                    if "active_ghost_slots" in incoming_payload or \
+                                            "active_exploiter_slots" in incoming_payload:
                                         _backend = getattr(env, "_backend", None)
                                         _wfactory = getattr(
                                             _backend, "_factory", None
                                         )
                                         if _wfactory is not None:
-                                            _wfactory.set_active_ghost_slots(
-                                                incoming_payload["active_ghost_slots"]
-                                            )
+                                            if "active_ghost_slots" in incoming_payload:
+                                                _wfactory.set_active_ghost_slots(
+                                                    incoming_payload["active_ghost_slots"]
+                                                )
+                                            if "active_exploiter_slots" in incoming_payload:
+                                                _wfactory.set_active_exploiter_slots(
+                                                    incoming_payload["active_exploiter_slots"]
+                                                )
                                     env.update_sampling(
                                         temperature=incoming_payload.get("temperature"),
                                         top_p=incoming_payload.get("top_p"),

@@ -253,3 +253,72 @@ def test_configure_opponent_for_batch_ghosts_falls_back_when_no_active_slots():
     )
 
     assert selected == factory.SELF_PLAY
+
+
+def test_set_active_exploiter_slots_updates_state():
+    factory = _make_factory({"self_play": 1.0})
+    assert factory._active_exploiter_slots == set()
+    factory.set_active_exploiter_slots([0, 1, 2])
+    assert factory._active_exploiter_slots == {0, 1, 2}
+    factory.set_active_exploiter_slots([])
+    assert factory._active_exploiter_slots == set()
+
+
+def test_configure_opponent_for_batch_exploiters_routes_via_active_slot():
+    """When EXPLOITERS is sampled and slots are active, opponent gets an
+    exploiter_snap_<slot> InferenceClient from the bundle."""
+    from unittest.mock import MagicMock
+
+    snap_clients = {
+        f"exploiter_snap_{i}": MagicMock(name=f"snap_client_{i}") for i in range(3)
+    }
+    main_client = MagicMock(name="main_client")
+
+    clients = MagicMock()
+    clients.has = MagicMock(
+        side_effect=lambda n: n in {"main", "exploiter_snap_0", "exploiter_snap_1", "exploiter_snap_2"}
+    )
+    clients.get = MagicMock(side_effect=lambda n: snap_clients.get(n, main_client))
+
+    factory = _make_factory({"exploiters": 1.0})
+    factory.worker_inference_clients = clients
+    factory.set_active_exploiter_slots([0, 1, 2])
+
+    player = _DummyPlayer()
+    opponent = _DummyOpponent(model=factory.main_agent)
+
+    selected = factory.configure_opponent_for_batch(
+        cast(BatchInferencePlayer, player),
+        cast(BatchInferencePlayer, opponent),
+    )
+
+    assert selected == factory.EXPLOITERS
+    assert player.opponent_type == factory.EXPLOITERS
+    # opponent.inference_client should now point to one of the snap clients
+    assigned = opponent.inference_client
+    assert assigned in snap_clients.values()
+
+
+def test_configure_opponent_for_batch_exploiters_falls_back_when_no_active_slots():
+    """When EXPLOITERS is sampled but no slots are active, fall back to self-play.
+    (Curriculum normally guards this via _opponent_available; this test pins
+    the defensive fallback inside configure_opponent_for_batch.)"""
+    from unittest.mock import MagicMock
+
+    clients = MagicMock()
+    clients.has = MagicMock(side_effect=lambda n: n == "main")
+    main_client = MagicMock(name="main_client")
+    clients.get = MagicMock(return_value=main_client)
+
+    factory = _make_factory({"exploiters": 1.0}, worker_inference_clients=clients)
+    # Note: deliberately NOT calling set_active_exploiter_slots — empty by default.
+
+    player = _DummyPlayer()
+    opponent = _DummyOpponent(model=factory.main_agent)
+
+    selected = factory.configure_opponent_for_batch(
+        cast(BatchInferencePlayer, player),
+        cast(BatchInferencePlayer, opponent),
+    )
+
+    assert selected == factory.SELF_PLAY
