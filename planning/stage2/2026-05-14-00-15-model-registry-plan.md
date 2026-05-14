@@ -238,3 +238,15 @@ or breaks something, we pause and diagnose before proceeding.
 - **Ghost centralization** (step 5 deferred): pre-register `max_ghosts` slot services; rotate via `sync_weights`. Requires worker-side slot tracking (broadcast active slots).
 - **Resolve torch.compile multi-thread race**: would let us compile bc/exploiter/victim too. Possibly fixable with `torch.compiler.cudagraph_mark_step_begin()` or per-thread compile contexts. Worth investigating if secondary models become high-traffic.
 - **Eval-time inference**: OpponentPool's main-process eval battles still use legacy inference. Re-route through registry if eval becomes a bottleneck.
+
+### 2026-05-14 15:45 — Future work CLOSED
+
+All three items resolved. See `2026-05-14-13-00-ghost-centralization-and-cleanup-design.md` for the design and `2026-05-14-13-30-ghost-centralization-implementation-plan.md` for the implementation plan.
+
+- **Ghost centralization**: SHIPPED. Pre-registered `max_ghosts` slot services in `ModelRegistry` with LRU rotation; `WorkerOpponentFactory._active_ghost_slots` filters routing; broadcast extends weight-sync payload with `active_ghost_slots: List[int]`. Throughput +12.6% over baseline (5.61 vs 4.98 traj/s).
+- **torch.compile multi-thread race**: SHIPPED. Investigation found per-model locks insufficient (dynamo's trace state is GLOBAL across model instances of the same class); single process-wide `_COMPILE_LOCK` in `inference_trainer.py` fixes it. `compile=True` now enabled on `main`, `bc`, `exploiter`, `victim`, and all `ghost_<slot>` services. Throughput +18.3% over baseline at peak.
+- **Eval-time inference**: DROPPED. Audit confirmed `OpponentPool.sample_opponent` and the `_create_*_opponent` family had no production callers. Methods removed entirely (commit `8831cee`, −270 lines). The Rust backend's `_RustPolicyOpponentPool.sample_opponent` is a distinct class kept intact.
+
+Bonus: full legacy inference path removed (~1,100 lines across `players.py`, `worker.py`, `opponents.py`, `config.py`, `engine/vgc_environment.py`, `sep_arch.yaml`, `RL.md`). Single inference path everywhere; `enable_centralized_inference` flag gone.
+
+Final throughput on `sep_arch.yaml` (post-cleanup): **5.68 ± 0.34 traj/s, +14.1% over 2026-05-14 baseline**.

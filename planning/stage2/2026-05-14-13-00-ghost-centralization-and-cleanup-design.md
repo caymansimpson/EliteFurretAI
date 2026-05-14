@@ -413,3 +413,68 @@ Notes:
   code. The lock just extends that serialization across model instances.
 
 Ready for Phase 3 (legacy inference path cleanup).
+
+### 2026-05-14 15:45 — Phase 3 complete + Measurement 4
+
+Phase 3 shipped 8 commits removing ~1,100 lines of legacy code now that
+centralized inference is the only mode:
+
+| Commit | What |
+|---|---|
+| `88f66d5` | Drop 3 legacy dual-mode/sample_opponent tests |
+| `8c7f788` | Remove `enable_centralized_inference` config flag |
+| `2b164d7` | Strip dual-mode from `BatchInferencePlayer` (−398 lines) |
+| `2ca6b15` | Drop legacy per-worker model build path from `worker.py` (−182 lines) |
+| `04e538a` | Drop legacy ghost-loading path (`vgc_environment.py` + factory) |
+| `8831cee` | Remove unused `OpponentPool.sample_opponent` family (−270 lines) |
+| `7ab4a07` | Drop `_swap_to` legacy fallback + dead `_get_exploiter_agent` |
+| `7d0b970` | Update `RL.md` + `sep_arch.yaml` comments |
+
+**Behavior change**: the `EXPLOITERS` curriculum sample type (snapshot
+exploiters, distinct from `TRAIN_EXPLOITER` live co-training) now falls
+back to self-play. Snapshot-exploiter routing was never centralized
+through the registry, so removing the legacy disk-load path leaves the
+feature without a backend. `exploiters: 0.0` in `sep_arch.yaml` so this
+is dormant; re-enabling would require centralizing exploiter slots
+(parallel to ghosts).
+
+**Measurement 4** ran sep_arch.yaml full curriculum from checkpoint
+step 208, captured 14 post-warmup updates (210-223):
+
+| Metric | M1 (baseline) | M2 (ghost) | M3 (+compile) | M4 (+cleanup) | Δ vs M3 |
+|---|---|---|---|---|---|
+| traj/s mean | 4.98 | 5.61 ± 0.49 | 5.89 ± 0.46 | **5.68 ± 0.34** | -3.6% (noise) |
+| learner steps/s | ~87 | ~98 | ~103 | ~98 | -5% (noise) |
+| compile-race errors | 0¹ | 0¹ | 0 | **0** | — |
+
+**Gate check**: throughput ≈ M3 within noise (two-sample t=1.34, df≈25,
+p>0.20 — not statistically significant) → **PASS**. Cleanup did not
+regress runtime behavior.
+
+### 2026-05-14 15:45 — Final comparison
+
+| Measurement | Configuration | traj/s | learner steps/s | Δ vs baseline |
+|---|---|---|---|---|
+| 1 | Baseline on `main @ 1944eda` | 4.98 | ~87 | — |
+| 2 | + ghost centralization | 5.61 ± 0.49 | ~98 | **+12.6%** |
+| 3 | + global compile lock (compile=True on all secondaries) | 5.89 ± 0.46 | ~103 | **+18.3%** |
+| 4 | + legacy code cleanup (~1,100 lines removed) | 5.68 ± 0.34 | ~98 | **+14.1%** |
+
+**Net cumulative throughput gain: +14% sustained** (M4 vs baseline).
+M3's +18% peak is within noise of M4 — the cleanup commit landed
+during a slightly slower micro-window but is not a real regression.
+
+**Deliverables shipped**:
+1. Ghost inference centralized through `ModelRegistry` slot pattern
+2. `torch.compile` multi-thread race fixed via process-wide
+   `_COMPILE_LOCK`; `compile=True` enabled on all registered models
+3. Legacy per-worker inference path entirely removed (config flag,
+   dual-mode `BatchInferencePlayer`, worker.py model build, factory
+   ghost caching, `OpponentPool.sample_opponent` family)
+4. Documentation updated (`RL.md`, `sep_arch.yaml` comments)
+
+All commits on `main`; no feature branch. Total: 18 commits in this
+session including the Phase 1 ghost bugfix.
+
+**Status: design plan complete.** Registry plan's "Future work"
+section is now closed (see next doc update).
