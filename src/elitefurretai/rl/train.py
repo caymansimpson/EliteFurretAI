@@ -1618,6 +1618,17 @@ def main():
                     # Add checkpoint to ghosts pool for opponent diversity
                     # Workers can sample these past versions as opponents
                     opponent_pool.add_ghost(updates, ghost_checkpoint_path)
+                    # Sync new weights into the registry slot. OpponentPool
+                    # already assigned the slot in add_ghost; look it up.
+                    if registry is not None:
+                        new_slot = opponent_pool.slot_for_ghost_path[
+                            ghost_checkpoint_path
+                        ]
+                        state_dict = torch.load(
+                            ghost_checkpoint_path,
+                            map_location=registry.device,
+                        )
+                        registry.sync_weights(f"ghost_{new_slot}", state_dict)
 
                     # Recompute curriculum in the learner/main process only,
                     # if we want to update it. Algorithm to update the
