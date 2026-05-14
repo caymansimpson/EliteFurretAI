@@ -140,13 +140,9 @@ The system uses an **IMPALA-style multiprocessing architecture** with separate P
 
 **Key Characteristics:**
 - Each actor is a **separate Python process** (still true — bypasses GIL).
-- **Legacy mode** (the dataclass default, `enable_centralized_inference: false`):
-  each actor holds a CPU model copy and runs its own batched inference
-  loop. The diagram above shows this mode.
-- **Centralized inference** (opt-in via `enable_centralized_inference: true`,
-  enabled in the production configs like `sep_arch.yaml`): actors no
-  longer hold their own model copies. A trainer-side `ModelRegistry`
-  owns one `InferenceService` per model name; actors construct a
+- **Centralized inference** (the only mode): actors no longer hold
+  their own model copies. A trainer-side `ModelRegistry` owns one
+  `InferenceService` per model name; actors construct a
   `WorkerInferenceClients` bundle and submit via mp.Queue. The inference
   forward runs on `config.hardware.device` (typically the trainer's GPU)
   in the trainer process. See "Centralized Inference" section below for
@@ -398,7 +394,7 @@ Notable helpers in this module: `initialize_learner`,
   `use_decision_tokens`, `use_causal_mask`
 - **Hardware**: `num_workers`, `batch_size`, `batch_timeout`,
   `battle_backend`, `device`, `max_concurrent_battles_per_player`,
-  `enable_centralized_inference`, `compile_inference_model`
+  `compile_inference_model`
 
 ### `masking.py`: Optimized action masking
 
@@ -627,7 +623,7 @@ broadcasts. With `num_workers=4` and a 27M-param transformer, that's
 4 model copies in worker memory and 4 separate, CPU-bound inference
 loops.
 
-Post-merge architecture (opt-in via `enable_centralized_inference: true`):
+Current architecture (centralized inference, the only mode):
 
 - Trainer owns a `ModelRegistry` with one `InferenceService` per model
   name. Currently registered: `main` (torch.compile'd), optionally
@@ -701,12 +697,6 @@ Plus two collateral improvements landed in the same commit:
 - **Memory watchdog**: bumped from 20 GB → 22 GB in sep_arch.yaml.
   VGCBench external runners (~5.5 GB) + 4 Showdown servers + workers
   + trainer combined RSS edges over 20 GB on the 24 GB WSL2.
-
-### How to revert (escape hatch)
-
-`enable_centralized_inference: false` in your config. The dual-mode
-`BatchInferencePlayer` keeps the legacy per-player path fully intact;
-this is one config knob away.
 
 ---
 
@@ -1025,7 +1015,7 @@ Tested on forward pass (5.85ms baseline):
 | `learners.py` | `PortfolioRNaDLearner` with PPO + KL regularization + distributional value (C51). Model construction lives here too (`build_model_from_config`, `load_agent_from_checkpoint`). |
 | `worker.py` | `mp_worker_process` — the actor subprocess body. Spawns once per `num_workers`; sets up VGCEnvironment, runs battles, ships trajectories. In centralized mode skips loading the main model and constructs `WorkerInferenceClients` from spawn args. |
 | `train.py` | Main training coordinator. Owns the learner, the `ModelRegistry` (centralized inference), worker spawn, weight broadcast, checkpointing. |
-| `config.py` | `RNaDConfig` dataclass. Knobs: hardware (num_workers, batch_size, enable_centralized_inference, compile_inference_model, max_concurrent_battles_per_player, ...), algorithm (PPO/RNaD), curriculum, etc. |
+| `config.py` | `RNaDConfig` dataclass. Knobs: hardware (num_workers, batch_size, compile_inference_model, max_concurrent_battles_per_player, ...), algorithm (PPO/RNaD), curriculum, etc. |
 | `opponents.py` | `OpponentPool` (trainer-side curriculum manager) + `WorkerOpponentFactory` (worker-side player builder, opponent hot-swap via `_swap_to`). |
 | `masking.py` | `fast_get_action_mask` and helpers (the optimized action-mask path). |
 | `model_registry.py` | Trainer-side `ModelRegistry`: one `InferenceService` per registered model name. Used in centralized inference mode (post-2026-05-14). |

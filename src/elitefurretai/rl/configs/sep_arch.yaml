@@ -151,10 +151,6 @@ hardware:
   # Trainer-side compile fixes both: one process, GPU device, paid
   # before workers start.
   compile_inference_model: default
-  # Centralized inference: workers send requests to the trainer's
-  # ModelRegistry / InferenceServices instead of holding model copies.
-  # See src/elitefurretai/rl/RL.md section 8b for the full design.
-  enable_centralized_inference: true
 
 curriculum:
   battle_format: gen9vgc2024regg

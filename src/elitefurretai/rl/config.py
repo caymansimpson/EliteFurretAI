@@ -392,15 +392,6 @@ class HardwareConfig:
     compile_inference_model: Optional[str] = None
 
     # TODO: I think this should be a default, and set to true?
-    # Centralized inference: when True, the trainer process owns a
-    # ModelRegistry of InferenceServices (one per registered model
-    # name) and workers submit requests via mp.Queue instead of holding
-    # their own model copies. Unlocks bigger batch sizes (combines all
-    # workers' main requests into one forward) and lets torch.compile
-    # be applied once trainer-side instead of N times worker-side.
-    # See src/elitefurretai/rl/RL.md section 8b for the full design.
-    enable_centralized_inference: bool = False
-
     def __post_init__(self) -> None:
         if self.battle_backend not in SUPPORTED_BATTLE_BACKENDS:
             raise ValueError(
@@ -471,7 +462,7 @@ class CurriculumConfig:
             "random_baseline": 0.05,
         }
     )
-    # TODO: add comment on the algorithm
+    # TODO: add comment on the algorithm, once developed
     adaptive_curriculum: bool = True
     # Exploiter and ghost model pool sizes (paths are derived from training.run_dir)
     max_exploiter_models: int = 10

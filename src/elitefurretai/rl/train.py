@@ -1158,173 +1158,161 @@ def main():
     mp_stop_event: MPEvent = mp.Event()
 
     # ── Centralized inference ────────────────────────────────────────────
-    # When enabled, build a trainer-side ModelRegistry of
-    # InferenceServices (main always, BC if curriculum uses it,
-    # exploiter/victim if train_exploiter is on). Workers submit
-    # inference requests via mp.Queues. Each service holds an
-    # independent copy of its model so the learner can update without
-    # racing with inference; we sync weights into them at the same
-    # cadence as the legacy per-worker broadcast.
-    centralized = config.hardware.enable_centralized_inference
+    # Trainer process owns a ModelRegistry of InferenceServices (main
+    # always, BC if curriculum uses it, exploiter/victim if
+    # train_exploiter is on). Workers submit inference requests via
+    # mp.Queues. Each service holds an independent copy of its model so
+    # the learner can update without racing with inference; we sync
+    # weights into them at the same cadence as the per-worker broadcast.
     registry: Optional[ModelRegistry] = None
     main_request_queue: Optional[MPQueue] = None
     main_response_queues: List[Optional[MPQueue]] = [None] * config.hardware.num_workers
-    if centralized:
-        # ModelRegistry owns one InferenceService per registered model.
-        # We always register "main"; BC / victim / exploiter are
-        # conditionally registered below if the curriculum uses them.
-        # Ghost slot rotation isn't wired into the registry yet — see
-        # model-registry-plan.md "Future work" — so ghosts continue to
-        # use the legacy on-demand worker-side loading path.
-        inference_device = config.hardware.device
-        inference_embedder = Embedder(
-            format=config.curriculum.battle_format,
-            feature_set=config.training.embedder_feature_set,
-            omniscient=False,
-        )
-        registry = ModelRegistry(
-            num_workers=config.hardware.num_workers,
-            batch_size=config.hardware.batch_size,
-            batch_timeout=config.hardware.batch_timeout,
-            device=inference_device,
-            compile_mode=config.hardware.compile_inference_model,
-            embedding_size=inference_embedder.embedding_size,
-        )
+    inference_device = config.hardware.device
+    inference_embedder = Embedder(
+        format=config.curriculum.battle_format,
+        feature_set=config.training.embedder_feature_set,
+        omniscient=False,
+    )
+    registry = ModelRegistry(
+        num_workers=config.hardware.num_workers,
+        batch_size=config.hardware.batch_size,
+        batch_timeout=config.hardware.batch_timeout,
+        device=inference_device,
+        compile_mode=config.hardware.compile_inference_model,
+        embedding_size=inference_embedder.embedding_size,
+    )
 
-        # Build a CPU-or-GPU copy of the main model for inference (kept
-        # independent of the learner's model so backward+forward don't
-        # race; weights sync at broadcast cadence via registry.sync_weights).
-        main_inference_base = build_model_from_config(
+    # Build a CPU-or-GPU copy of the main model for inference (kept
+    # independent of the learner's model so backward+forward don't
+    # race; weights sync at broadcast cadence via registry.sync_weights).
+    main_inference_base = build_model_from_config(
+        worker_model_config,
+        inference_embedder,
+        inference_device,
+        None,
+        strict=False,
+    )
+    main_inference_base.eval()
+    main_inference_base.load_state_dict(agent.model.state_dict())
+    registry.register("main", RNaDAgent(main_inference_base))
+
+    # Step 3: register BC if a BC checkpoint is configured AND the
+    # curriculum will actually use it. Wasting a service slot on an
+    # unused model would still cost compile time + GPU memory; the
+    # curriculum check keeps that gated.
+    bc_checkpoint_path = config.curriculum.bc_model_path
+    bc_curriculum_weight = config.curriculum.curriculum_weights.get(
+        OpponentPool.BC_PLAYER, 0.0
+    )
+    if bc_checkpoint_path and bc_curriculum_weight > 0:
+        logger.info(
+            "Step 3: registering BC model from %s (curriculum weight %.3f)",
+            bc_checkpoint_path,
+            bc_curriculum_weight,
+        )
+        bc_checkpoint = torch.load(
+            bc_checkpoint_path, map_location="cpu", weights_only=False
+        )
+        bc_inference_base = build_model_from_config(
             worker_model_config,
             inference_embedder,
             inference_device,
-            None,
+            bc_checkpoint["model_state_dict"],
             strict=False,
         )
-        main_inference_base.eval()
-        main_inference_base.load_state_dict(agent.model.state_dict())
-        registry.register("main", RNaDAgent(main_inference_base))
+        bc_inference_base.eval()
+        for param in bc_inference_base.parameters():
+            param.requires_grad = False
+        # compile=True: safe now that RealModelBatchHandler holds
+        # _COMPILE_LOCK (a global process-wide threading.Lock) around
+        # every compiled forward call. The lock serializes dynamo's
+        # global trace state across concurrent InferenceService threads,
+        # eliminating the "FX symbolic trace of dynamo-optimized function"
+        # race. See unit_tests/rl/test_compile_race_reproducer.py.
+        registry.register("bc", RNaDAgent(bc_inference_base), compile=True)
+        del bc_checkpoint
 
-        # Step 3: register BC if a BC checkpoint is configured AND the
-        # curriculum will actually use it. Wasting a service slot on an
-        # unused model would still cost compile time + GPU memory; the
-        # curriculum check keeps that gated.
-        bc_checkpoint_path = config.curriculum.bc_model_path
-        bc_curriculum_weight = config.curriculum.curriculum_weights.get(
-            OpponentPool.BC_PLAYER, 0.0
+    # Step 4: register exploiter (live-trained adversary) + victim
+    # (frozen periodically-refreshed copy of main) if the curriculum
+    # gates the train_exploiter pipeline ON. exploiter is sync'd from
+    # the exploiter learner each update; victim is sync'd from main
+    # at victim_refresh_interval. Both registered with compile=True
+    # now that the global _COMPILE_LOCK in RealModelBatchHandler
+    # serializes dynamo's trace state across concurrent threads.
+    train_exploiter_weight = config.curriculum.curriculum_weights.get(
+        OpponentPool.TRAIN_EXPLOITER, 0.0
+    )
+    if train_exploiter_weight > 0:
+        logger.info(
+            "Step 4: registering exploiter + victim (curriculum weight %.3f)",
+            train_exploiter_weight,
         )
-        if bc_checkpoint_path and bc_curriculum_weight > 0:
-            logger.info(
-                "Step 3: registering BC model from %s (curriculum weight %.3f)",
-                bc_checkpoint_path,
-                bc_curriculum_weight,
-            )
-            bc_checkpoint = torch.load(
-                bc_checkpoint_path, map_location="cpu", weights_only=False
-            )
-            bc_inference_base = build_model_from_config(
+        for slot_name in ("exploiter", "victim"):
+            slot_base = build_model_from_config(
                 worker_model_config,
                 inference_embedder,
                 inference_device,
-                bc_checkpoint["model_state_dict"],
+                None,
                 strict=False,
             )
-            bc_inference_base.eval()
-            for param in bc_inference_base.parameters():
-                param.requires_grad = False
-            # compile=True: safe now that RealModelBatchHandler holds
-            # _COMPILE_LOCK (a global process-wide threading.Lock) around
-            # every compiled forward call. The lock serializes dynamo's
-            # global trace state across concurrent InferenceService threads,
-            # eliminating the "FX symbolic trace of dynamo-optimized function"
-            # race. See unit_tests/rl/test_compile_race_reproducer.py.
-            registry.register("bc", RNaDAgent(bc_inference_base), compile=True)
-            del bc_checkpoint
+            slot_base.eval()
+            if slot_name == "victim":
+                # Victim starts as a copy of main; weights refresh
+                # periodically via registry.sync_weights("victim", ...).
+                slot_base.load_state_dict(agent.model.state_dict())
+                for param in slot_base.parameters():
+                    param.requires_grad = False
+            # exploiter starts with whatever build_model_from_config
+            # gave us (BC init if `initialize_path` is set, else
+            # fresh). It'll be sync'd as the exploiter learner
+            # produces updates.
+            registry.register(slot_name, RNaDAgent(slot_base), compile=True)
 
-        # Step 4: register exploiter (live-trained adversary) + victim
-        # (frozen periodically-refreshed copy of main) if the curriculum
-        # gates the train_exploiter pipeline ON. exploiter is sync'd from
-        # the exploiter learner each update; victim is sync'd from main
-        # at victim_refresh_interval. Both registered with compile=True
-        # now that the global _COMPILE_LOCK in RealModelBatchHandler
-        # serializes dynamo's trace state across concurrent threads.
-        train_exploiter_weight = config.curriculum.curriculum_weights.get(
-            OpponentPool.TRAIN_EXPLOITER, 0.0
-        )
-        if train_exploiter_weight > 0:
-            logger.info(
-                "Step 4: registering exploiter + victim (curriculum weight %.3f)",
-                train_exploiter_weight,
-            )
-            for slot_name in ("exploiter", "victim"):
-                slot_base = build_model_from_config(
-                    worker_model_config,
-                    inference_embedder,
-                    inference_device,
-                    None,
-                    strict=False,
-                )
-                slot_base.eval()
-                if slot_name == "victim":
-                    # Victim starts as a copy of main; weights refresh
-                    # periodically via registry.sync_weights("victim", ...).
-                    slot_base.load_state_dict(agent.model.state_dict())
-                    for param in slot_base.parameters():
-                        param.requires_grad = False
-                # exploiter starts with whatever build_model_from_config
-                # gave us (BC init if `initialize_path` is set, else
-                # fresh). It'll be sync'd as the exploiter learner
-                # produces updates.
-                registry.register(slot_name, RNaDAgent(slot_base), compile=True)
+    # Ghost slots: pre-register max_ghosts services so the slot pool is
+    # fixed-size and the registration plumbing never happens mid-run.
+    # Slots start with main-agent weights as placeholders; only slots
+    # listed in `opponent_pool.active_ghost_slots()` are valid routing
+    # targets (workers filter on that set). compile=True now that the
+    # global _COMPILE_LOCK in RealModelBatchHandler eliminates the
+    # torch.compile multi-thread race (see registry plan).
+    for slot in range(config.curriculum.max_ghosts):
+        ghost_agent = copy.deepcopy(registry._raw_agents["main"])
+        registry.register(f"ghost_{slot}", ghost_agent, compile=True)
+    # Load weights for any pre-existing ghost checkpoints onto their
+    # assigned slots. `slot_for_ghost_path` was populated by
+    # OpponentPool._load_ghosts.
+    for path, slot in opponent_pool.slot_for_ghost_path.items():
+        checkpoint = torch.load(path, map_location=registry.device)
+        registry.sync_weights(f"ghost_{slot}", checkpoint["model_state_dict"])
 
-        # Ghost slots: pre-register max_ghosts services so the slot pool is
-        # fixed-size and the registration plumbing never happens mid-run.
-        # Slots start with main-agent weights as placeholders; only slots
-        # listed in `opponent_pool.active_ghost_slots()` are valid routing
-        # targets (workers filter on that set). compile=True now that the
-        # global _COMPILE_LOCK in RealModelBatchHandler eliminates the
-        # torch.compile multi-thread race (see registry plan).
-        for slot in range(config.curriculum.max_ghosts):
-            ghost_agent = copy.deepcopy(registry._raw_agents["main"])
-            registry.register(f"ghost_{slot}", ghost_agent, compile=True)
-        # Load weights for any pre-existing ghost checkpoints onto their
-        # assigned slots. `slot_for_ghost_path` was populated by
-        # OpponentPool._load_ghosts.
-        for path, slot in opponent_pool.slot_for_ghost_path.items():
-            checkpoint = torch.load(path, map_location=registry.device)
-            registry.sync_weights(f"ghost_{slot}", checkpoint["model_state_dict"])
+    # Pull out main's queues for the back-compat per-worker
+    # spawn-args interface. The full bundle is also passed below so
+    # workers can construct WorkerInferenceClients with one client
+    # per registered model.
+    all_queues = registry.queues_for_workers()
+    main_request_queue, main_response_qs = all_queues["main"]
+    main_response_queues = list(main_response_qs)
 
-        # Pull out main's queues for the back-compat per-worker
-        # spawn-args interface. The full bundle is also passed below so
-        # workers can construct WorkerInferenceClients with one client
-        # per registered model.
-        all_queues = registry.queues_for_workers()
-        main_request_queue, main_response_qs = all_queues["main"]
-        main_response_queues = list(main_response_qs)
-
-        logger.info(
-            "ModelRegistry initialized; %d models registered (%s). "
-            "device=%s batch_size=%d batch_timeout=%.4f compile=%s",
-            len(registry.names()),
-            ", ".join(registry.names()),
-            inference_device,
-            config.hardware.batch_size,
-            config.hardware.batch_timeout,
-            config.hardware.compile_inference_model,
-        )
+    logger.info(
+        "ModelRegistry initialized; %d models registered (%s). "
+        "device=%s batch_size=%d batch_timeout=%.4f compile=%s",
+        len(registry.names()),
+        ", ".join(registry.names()),
+        inference_device,
+        config.hardware.batch_size,
+        config.hardware.batch_timeout,
+        config.hardware.compile_inference_model,
+    )
 
     # Per-worker bundle of (request_q, response_q) pairs keyed by model
     # name. Each worker gets ITS slice of the response queues; the
     # request queue is shared across workers per model. Workers wrap
-    # their slice in WorkerInferenceClients on the worker side. None in
-    # legacy (non-centralized) mode.
+    # their slice in WorkerInferenceClients on the worker side.
     queues_by_worker: List[Optional[Dict[str, Any]]] = [None] * config.hardware.num_workers
-    if registry is not None:
-        all_queues = registry.queues_for_workers()
-        for w in range(config.hardware.num_workers):
-            queues_by_worker[w] = {
-                name: (req_q, resp_qs[w]) for name, (req_q, resp_qs) in all_queues.items()
-            }
+    for w in range(config.hardware.num_workers):
+        queues_by_worker[w] = {
+            name: (req_q, resp_qs[w]) for name, (req_q, resp_qs) in all_queues.items()
+        }
 
     # Create Processes
     processes: List[mp.Process] = []
