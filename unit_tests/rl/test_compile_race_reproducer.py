@@ -301,3 +301,72 @@ def test_two_real_rnad_agents_with_cudagraph_mark_step():
     t1.join()
     t2.join()
     assert errors == [], f"compile race triggered with cudagraph_mark_step: {errors[0]!r}"
+
+
+@pytest.mark.timeout(180)
+def test_two_real_rnad_agents_with_global_lock():
+    """One shared lock across ALL compiled-model calls. Diagnoses
+    Task 2.2's finding that dynamo trace state is global, not per-model.
+
+    Both threads serialize through a single global_lock, making compiled-model
+    invocation single-threaded across the whole process. If the race is purely
+    in dynamo's global trace state, this should fix it.
+
+    Task 2.4 workaround candidate. Expected PASS if a global lock is sufficient;
+    FAIL with the same dynamo error if the race is in dynamo's compilation cache
+    or guard state rather than forward-execution trace state.
+    """
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    agent1_raw, emb_size, hidden_size = _make_small_rnad_agent(device)
+    agent2_raw, _, _ = _make_small_rnad_agent(device)
+
+    agent1 = torch.compile(agent1_raw, mode="default", dynamic=True)
+    agent2 = torch.compile(agent2_raw, mode="default", dynamic=True)
+
+    def _warmup(agent: Any) -> None:
+        with torch.no_grad():
+            x0 = torch.zeros(1, 1, emb_size, device=device)
+            _, _, _, _, h0 = agent(x0, None, mask=None, hidden_mask=None)
+            ctx1 = h0[:1, :1, :].clone()
+            hmask1 = torch.ones(1, 1, dtype=torch.bool, device=device)
+            x1 = torch.zeros(1, 1, emb_size, device=device)
+            agent(x1, ctx1, mask=None, hidden_mask=hmask1)
+
+    _warmup(agent1)
+    _warmup(agent2)
+
+    global_lock = threading.Lock()
+
+    errors: List[BaseException] = []
+
+    def loop_global_lock(agent: Any) -> None:
+        rng = random.Random()
+        try:
+            with torch.no_grad():
+                for _ in range(200):
+                    ctx_len = rng.randint(0, 10)
+                    batch_size = rng.randint(1, 8)
+                    x = torch.randn(batch_size, 1, emb_size, device=device)
+                    if ctx_len == 0:
+                        hidden: Optional[torch.Tensor] = None
+                        hmask: Optional[torch.Tensor] = None
+                    else:
+                        hidden = torch.randn(
+                            batch_size, ctx_len, hidden_size, device=device
+                        )
+                        hmask = torch.ones(
+                            batch_size, ctx_len, dtype=torch.bool, device=device
+                        )
+                    with global_lock:
+                        agent(x, hidden, mask=None, hidden_mask=hmask)
+        except BaseException as exc:
+            errors.append(exc)
+
+    t1 = threading.Thread(target=loop_global_lock, args=(agent1,))
+    t2 = threading.Thread(target=loop_global_lock, args=(agent2,))
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+    assert errors == [], f"compile race triggered with global lock: {errors[0]!r}"
