@@ -11,7 +11,7 @@ Lifecycle:
   while training:
       result = await env.run_battle_batch(n_battles)
       env.update_weights(state_dict)
-      env.update_curriculum(curriculum, exploiter_paths, ghost_paths)
+      env.update_curriculum(curriculum, exploiter_paths)
   await env.teardown()
 """
 
@@ -469,12 +469,9 @@ class VGCEnvironment:
         self,
         curriculum: Dict[str, float],
         exploiter_paths: Optional[List[str]] = None,
-        ghost_paths: Optional[List[str]] = None,
     ) -> None:
         """Update opponent sampling distribution and explicit model file lists."""
-        self._backend.update_curriculum(
-            curriculum, exploiter_paths or [], ghost_paths or []
-        )
+        self._backend.update_curriculum(curriculum, exploiter_paths or [])
 
     def update_sampling(
         self, temperature: Optional[float], top_p: Optional[float]
@@ -534,7 +531,6 @@ class _BackendBase:
         self,
         curriculum: Dict[str, float],
         exploiter_paths: List[str],
-        ghost_paths: List[str],
     ) -> None:
         raise NotImplementedError
 
@@ -672,8 +668,6 @@ class _ShowdownBackend(_BackendBase):
                 str(self._config.training.run_dir), "exploiters"
             ),
             max_exploiter_models=cur.max_exploiter_models,
-            ghosts_dir=os.path.join(str(self._config.training.run_dir), "ghosts"),
-            max_ghosts=cur.max_ghosts,
             vgc_bench_checkpoint_path=cur.vgc_bench_checkpoint_path,
             external_vgcbench_usernames=external_vgcbench_usernames,
             model_config=self._model_config,
@@ -758,15 +752,12 @@ class _ShowdownBackend(_BackendBase):
         self,
         curriculum: Dict[str, float],
         exploiter_paths: List[str],
-        ghost_paths: List[str],
     ) -> None:
         self._curriculum = curriculum
         if self._factory is not None:
             self._factory.update_curriculum(curriculum)
             if exploiter_paths:
                 self._factory.set_exploiter_paths(exploiter_paths)
-            if ghost_paths:
-                self._factory.set_ghost_paths(ghost_paths)
 
     def update_sampling(
         self, temperature: Optional[float], top_p: Optional[float]
@@ -958,14 +949,11 @@ class _RustBackend(_BackendBase):
         self,
         curriculum: Dict[str, float],
         exploiter_paths: List[str],
-        ghost_paths: List[str],
     ) -> None:
         if self._pool is not None:
             self._pool.update_curriculum(curriculum)
             if exploiter_paths:
                 self._pool.set_exploiter_paths(exploiter_paths)
-            if ghost_paths:
-                self._pool.set_ghost_paths(ghost_paths)
 
     def update_sampling(
         self, temperature: Optional[float], top_p: Optional[float]

@@ -1677,7 +1677,6 @@ def main():
                         "top_p": config.exploration.top_p,
                         # Option C: broadcast explicit paths so workers don't scan directories
                         "exploiter_paths": [p for _, p in opponent_pool.exploiter_models],
-                        "ghost_paths": [p for _, p in opponent_pool.ghosts],
                         "active_ghost_slots": sorted(
                             opponent_pool.active_ghost_slots()
                         ),

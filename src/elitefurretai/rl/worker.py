@@ -362,7 +362,7 @@ def mp_worker_process(
         #      - model weights (env.update_weights)
         #      - curriculum distribution (env.update_curriculum)
         #      - temperature / top_p (env.update_sampling)
-        #      - exploiter_paths / ghost_paths (Option C: explicit model file lists)
+        #      - exploiter_paths (Option C: explicit model file lists)
         #   2. env.run_battle_batch(battles_per_task) → BatchResult
         #   3. Forward trajectories to traj_queue (Phase 4)
         #   4. Handle timeout recovery (env.rebuild()) or reset (env.reset_battles())
@@ -402,8 +402,8 @@ def mp_worker_process(
                     #   - "weights": the new model state_dict (CPU tensors)
                     #   - "curriculum": new opponent-mix probabilities
                     #   - "temperature" / "top_p": new exploration knobs
-                    #   - "exploiter_paths" / "ghost_paths": disk paths the
-                    #     worker may need to load if curriculum mentions them
+                    #   - "exploiter_paths": disk paths the worker may need
+                    #     to load if curriculum mentions exploiters
                     #   - "exploiter_weights" / "victim_weights" (optional):
                     #     in-process exploiter co-training. Exploiter is
                     #     pushed every broadcast; victim only on refresh
@@ -428,9 +428,6 @@ def mp_worker_process(
                                             new_curriculum,
                                             exploiter_paths=incoming_payload.get(
                                                 "exploiter_paths"
-                                            ),
-                                            ghost_paths=incoming_payload.get(
-                                                "ghost_paths"
                                             ),
                                         )
                                     if "active_ghost_slots" in incoming_payload:

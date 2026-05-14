@@ -961,8 +961,6 @@ class WorkerOpponentFactory:
         max_battle_steps: int = 40,
         exploiter_models_dir: Optional[str] = None,
         max_exploiter_models: int = 10,
-        ghosts_dir: Optional[str] = None,
-        max_ghosts: int = 10,
         vgc_bench_checkpoint_path: Optional[str] = None,
         external_vgcbench_usernames: Optional[List[str]] = None,
         model_config: Optional[Dict[str, Any]] = None,
@@ -1022,8 +1020,6 @@ class WorkerOpponentFactory:
         self.max_battle_steps = max_battle_steps
         self.exploiter_models_dir = exploiter_models_dir
         self.max_exploiter_models = max_exploiter_models
-        self.ghosts_dir = ghosts_dir
-        self.max_ghosts = max_ghosts
         self.vgc_bench_checkpoint_path = vgc_bench_checkpoint_path
         self.model_config = model_config
         self.agent_team_path = agent_team_path
@@ -1059,8 +1055,6 @@ class WorkerOpponentFactory:
         self.vgc_bench_baseline_opponents: List[Player] = []
         self.active_exploiters: List[Tuple[float, str]] = []
         self.loaded_exploiters: Dict[str, RNaDAgent] = {}
-        self.ghosts: List[Tuple[int, str]] = []
-        self.loaded_ghosts: Dict[str, RNaDAgent] = {}
         self._active_ghost_slots: Set[int] = set()
         self._batch_count = 0
         # Rebuild generation increments every time we recreate runtime agents.
@@ -1074,7 +1068,6 @@ class WorkerOpponentFactory:
         self._run_tag = cleaned_run_id[-4:] if cleaned_run_id else "0000"
         self._factory_tag = f"{random.getrandbits(8):02X}"
         self._load_exploiter_models()
-        self._load_ghosts()
 
     def _account_name(self, role: str, idx: int) -> str:
         """Create compact, rebuild-unique account names.
@@ -1157,25 +1150,6 @@ class WorkerOpponentFactory:
         _, filepath = random.choice(self.active_exploiters)
         return self._get_cached_model(filepath, self.loaded_exploiters)
 
-    def _load_ghosts(self) -> None:
-        if not self.ghosts_dir or not os.path.exists(self.ghosts_dir):
-            self.ghosts = []
-            return
-
-        model_files = self._list_model_checkpoints(self.ghosts_dir)
-
-        models: List[Tuple[int, str]] = []
-        for filepath in model_files:
-            filename = os.path.basename(filepath)
-            try:
-                step = int(filename.split("_step_")[1].split(".pt")[0])
-            except (ValueError, IndexError):
-                step = int(os.path.getmtime(filepath))
-            models.append((step, filepath))
-
-        models.sort(key=lambda x: x[0], reverse=True)
-        self.ghosts = models[: self.max_ghosts]
-
     def set_exploiter_paths(self, paths: List[str]) -> None:
         """Apply explicit exploiter file list from learner broadcast (Option C)."""
         models = [(os.path.getmtime(p), p) for p in paths if os.path.isfile(p)]
@@ -1191,21 +1165,6 @@ class WorkerOpponentFactory:
         routing in `configure_opponent_for_batch`.
         """
         self._active_ghost_slots = set(slots)
-
-    def set_ghost_paths(self, paths: List[str]) -> None:
-        """Apply explicit ghost file list from learner broadcast (Option C)."""
-        models: List[Tuple[int, str]] = []
-        for p in paths:
-            if not os.path.isfile(p):
-                continue
-            filename = os.path.basename(p)
-            try:
-                step = int(filename.split("_step_")[1].split(".pt")[0])
-            except (IndexError, ValueError):
-                step = int(os.path.getmtime(p))
-            models.append((step, p))
-        models.sort(key=lambda item: item[0], reverse=True)
-        self.ghosts = models
 
     def update_exploiter_weights(self, state_dict: Dict) -> None:
         """Apply broadcasted exploiter weights to the worker-local exploiter agent.
@@ -1226,13 +1185,6 @@ class WorkerOpponentFactory:
         """
         if self.victim_agent is not None:
             self.victim_agent.model.load_state_dict(state_dict)
-
-    def _get_ghost_agent(self) -> Optional[RNaDAgent]:
-        if not self.ghosts:
-            return None
-
-        _, filepath = self.ghosts[np.random.randint(len(self.ghosts))]
-        return self._get_cached_model(filepath, self.loaded_ghosts)
 
     def sample_team(self) -> str:
         return self.team_repo.sample_team(
