@@ -78,7 +78,7 @@ import numpy as np
 import torch
 from poke_env.battle import AbstractBattle, DoubleBattle, Pokemon
 from poke_env.calc import calculate_damage
-from poke_env.concurrency import POKE_LOOP, create_in_poke_loop
+from poke_env.concurrency import POKE_LOOP
 from poke_env.data import GenData
 from poke_env.player import BattleOrder, DoubleBattleOrder, Player
 from poke_env.player.battle_order import (
@@ -256,7 +256,7 @@ class BatchInferencePlayer(Player):
 
     def __init__(
         self,
-        model: Optional["RNaDAgent"] = None,
+        inference_client: "InferenceClient",
         device="cpu",
         batch_size=16,
         batch_timeout=0.01,
@@ -267,22 +267,10 @@ class BatchInferencePlayer(Player):
         embedder: Optional[Embedder] = None,
         max_battle_steps: int = 40,
         opponent_type: str = "self_play",
-        # Centralized-inference: when set, the player submits requests
-        # to a shared trainer-side InferenceService instead of running
-        # a per-player inference loop. Mutually exclusive with `model`.
-        inference_client: Optional["InferenceClient"] = None,
         **kwargs,
     ):
         battle_format = kwargs.get("battle_format", "gen9vgc2023regc")
 
-        if (model is None) == (inference_client is None):
-            raise ValueError(
-                "BatchInferencePlayer requires exactly one of `model` "
-                "(legacy per-player inference) or `inference_client` "
-                "(centralized inference via InferenceService)"
-            )
-
-        self.model = model
         self.inference_client = inference_client
         self.device = device
         self.batch_size = batch_size
@@ -298,16 +286,8 @@ class BatchInferencePlayer(Player):
                 format=battle_format, feature_set=Embedder.FULL, omniscient=False
             )
         )
-        # Legacy mode owns a per-player asyncio queue + inference loop.
-        # Centralized mode submits via `self.inference_client` and never
-        # touches `self.queue`. Type kept as Optional so attribute always
-        # exists for callers that defensively check it.
-        self.queue: Optional[asyncio.Queue] = (
-            create_in_poke_loop(asyncio.Queue, POKE_LOOP) if model is not None else None
-        )
         # context tensor accumulated across turns by TransformerThreeHeadedModel
         self.hidden_states: Dict[str, Any] = {}
-        self._inference_task: Optional[asyncio.Task] = None
         self._inference_future: Optional[concurrent.futures.Future] = None
         self.temperature: float = 1.0  # Sampling temperature (set by trainer)
         self.top_p: float = 1.0  # Nucleus sampling threshold (set by trainer)
@@ -454,341 +434,11 @@ class BatchInferencePlayer(Player):
             pass
 
     def start_inference_loop(self) -> None:
-        # Centralized mode: the trainer-side InferenceService owns its own
-        # loop; players have no per-instance loop to start. No-op.
-        if self.inference_client is not None:
-            return
-        self._inference_future = asyncio.run_coroutine_threadsafe(
-            self._inference_loop(), POKE_LOOP
-        )
-
-    async def _inference_loop(self):
-        # ── The dynamic-batching heart of this class ─────────────────────────
-        # Loop forever:
-        #   1. Block until at least ONE decision request arrives.
-        #   2. Greedily pull more requests off the queue, but never wait longer
-        #      than `batch_timeout` total and never gather more than `batch_size`.
-        #   3. Run ONE model forward pass over the gathered batch.
-        #   4. Set the result on each pending future so the awaiting coroutines
-        #      can resume.
-        #
-        # The trade-off is throughput vs latency:
-        #   - Big batch_timeout / big batch_size = larger batches, less wasted
-        #     model overhead, but each individual decision waits longer.
-        #   - Small values = snappier per-decision but more wasted forwards.
-        # ─────────────────────────────────────────────────────────────────────
-        # This loop only runs in legacy mode (model + per-player queue).
-        # Centralized mode never starts the inference loop; the trainer-side
-        # InferenceService owns its equivalent.
-        assert self.queue is not None, (
-            "_inference_loop entered without a queue — centralized-mode "
-            "players should not start the legacy inference loop"
-        )
-        while True:
-            batch: List[Any] = []
-            futures: List[Any] = []
-            battle_tags: List[str] = []
-            is_tps: List[bool] = []
-            masks: List[Any] = []
-            try:
-                # Step 1: wait for at least one request — no point batching
-                # nothing.
-                item = await self.queue.get()
-                self._add_to_batch(batch, futures, battle_tags, is_tps, masks, item)
-
-                # Step 2: opportunistically gather more, capped by both batch
-                # size and elapsed time since the first item arrived.
-                start_time = asyncio.get_event_loop().time()
-                while len(batch) < self.batch_size:
-                    timeout = self.batch_timeout - (
-                        asyncio.get_event_loop().time() - start_time
-                    )
-                    if timeout <= 0:
-                        break
-                    try:
-                        item = await asyncio.wait_for(self.queue.get(), timeout=timeout)
-                        self._add_to_batch(
-                            batch, futures, battle_tags, is_tps, masks, item
-                        )
-                    except asyncio.TimeoutError:
-                        # No more requests arrived within the window — flush.
-                        break
-            except asyncio.CancelledError:
-                # Worker shutting down; exit loop cleanly.
-                break
-
-            if batch:
-                # Diagnostics: track batch fill quality so we can tell whether
-                # batch_size and batch_timeout are well-tuned.
-                self._diagnostics["inference_batches"] += 1
-                self._diagnostics["inference_batch_items"] += len(batch)
-                self._diagnostics["inference_batch_size_max"] = max(
-                    self._diagnostics["inference_batch_size_max"],
-                    float(len(batch)),
-                )
-                if len(batch) >= self.batch_size:
-                    self._diagnostics["inference_batches_filled_to_max"] += 1
-                else:
-                    self._diagnostics["inference_batches_flushed_timeout"] += 1
-                # Periodic batch-fill log so we can tell at a glance whether
-                # batch_size is well-tuned. Emits every 500 batches per player.
-                if self._diagnostics["inference_batches"] % 500 == 0:
-                    n = self._diagnostics["inference_batches"]
-                    items = self._diagnostics["inference_batch_items"]
-                    filled = self._diagnostics["inference_batches_filled_to_max"]
-                    timeout = self._diagnostics["inference_batches_flushed_timeout"]
-                    # WARNING level chosen so the line surfaces past the
-                    # worker's INFO-suppression for poke-env loggers. This is
-                    # diagnostic and should be lowered or removed once
-                    # batch_size has been tuned (2026-05-13 throughput work).
-                    self.logger.warning(
-                        "[batch-fill] n=%d avg=%.2f max=%d filled%%=%.1f timeout%%=%.1f cap=%d",
-                        int(n),
-                        items / max(n, 1),
-                        int(self._diagnostics["inference_batch_size_max"]),
-                        100.0 * filled / max(n, 1),
-                        100.0 * timeout / max(n, 1),
-                        self.batch_size,
-                    )
-                # Step 3+4: run the batched forward and resolve futures.
-                await self._run_batch(batch, futures, battle_tags, is_tps, masks)
-
-    def _add_to_batch(self, batch, futures, battle_tags, is_tps, masks, item):
-        batch.append(item[0])
-        futures.append(item[1])
-        battle_tags.append(item[2])
-        is_tps.append(item[3])
-        masks.append(item[4])
-
-    def _gpu_inference_sync(self, states_np, hidden_cpu, hidden_mask_cpu=None):
-        # Legacy-mode-only: only called from _run_batch which only runs in
-        # legacy mode. Centralized mode routes inference through the
-        # trainer's RealModelBatchHandler.
-        assert self.model is not None, (
-            "_gpu_inference_sync called without a model — centralized-mode "
-            "players don't own a model and shouldn't enter this path"
-        )
-        states_tensor = (
-            torch.tensor(states_np, dtype=torch.float32).to(self.device).unsqueeze(1)
-        )
-
-        # Transformer: hidden_cpu is the accumulated context tensor or None
-        hidden = hidden_cpu.to(self.device) if hidden_cpu is not None else None
-        hidden_mask = (
-            hidden_mask_cpu.to(self.device) if hidden_mask_cpu is not None else None
-        )
-
-        with torch.no_grad():
-            turn_logits, tp_logits, values, _, next_hidden = self.model(
-                states_tensor,
-                hidden,
-                hidden_mask=hidden_mask,
-            )
-
-        # ── Two probability distributions, one for sampling, one for PPO ────
-        # We compute TWO different softmaxes here, and this distinction is
-        # subtle but important.
-        #
-        # `turn_probs` / `tp_probs` (temperature-scaled):
-        #   Used to actually SAMPLE the action. Higher temperature flattens
-        #   the distribution → more exploration. Lower temperature sharpens
-        #   it → more exploitation. We anneal temperature down over training.
-        #
-        # `turn_log_probs` / `tp_log_probs` (T=1, unscaled):
-        #   Recorded into the trajectory for later use as `old_log_prob` in
-        #   PPO's importance ratio. PPO assumes these come from the *true*
-        #   policy distribution. If we used the temperature-scaled log-probs
-        #   here, the importance ratio would be biased and the gradient
-        #   estimate would be wrong.
-        #
-        # In short: temperature is a sampling-time exploration knob; PPO math
-        # always uses the underlying T=1 distribution.
-        # ─────────────────────────────────────────────────────────────────────
-        temp = max(self.temperature, 1e-6)
-        turn_probs = torch.softmax(turn_logits / temp, dim=-1).cpu().numpy()
-        tp_probs = torch.softmax(tp_logits / temp, dim=-1).cpu().numpy()
-
-        turn_log_probs = torch.log_softmax(turn_logits, dim=-1).cpu().numpy()
-        tp_log_probs = torch.log_softmax(tp_logits, dim=-1).cpu().numpy()
-
-        values_np = values.cpu().numpy()
-
-        # next_hidden is the accumulated context tensor (batch, T, H)
-        next_hidden_cpu = next_hidden.cpu()
-
-        return (
-            turn_probs,
-            tp_probs,
-            turn_log_probs,
-            tp_log_probs,
-            values_np,
-            next_hidden_cpu,
-        )
-
-    async def _run_batch(self, states, futures, battle_tags, is_tps, masks):
-        # ── Where the batched forward pass actually runs ─────────────────────
-        # Inputs are lists, one element per gathered request:
-        #   states       — the embedded battle state vectors
-        #   futures      — the asyncio futures awaited by each requesting battle
-        #   battle_tags  — id of the battle each state came from (used to look
-        #                  up that battle's accumulated transformer context)
-        #   is_tps       — booleans: is this a teampreview decision (90 actions)
-        #                  or a turn decision (2025 actions)?
-        #   masks        — per-state legality masks (for turn decisions only)
-        # ─────────────────────────────────────────────────────────────────────
-        states_np = np.array(states)
-
-        context_lengths: List[int] = []
-        hidden_size: Optional[int] = None
-        context_tensors: List[Optional[torch.Tensor]] = []
-        for tag in battle_tags:
-            ctx = cast(Optional[torch.Tensor], self.hidden_states.get(tag, None))
-            context_tensors.append(ctx)
-            if ctx is None:
-                context_lengths.append(0)
-                continue
-            if ctx.ndim != 3 or ctx.shape[0] != 1:
-                raise ValueError(
-                    f"Expected transformer context shape (1, T, H), got {tuple(ctx.shape)}"
-                )
-            context_lengths.append(int(ctx.shape[1]))
-            if hidden_size is None:
-                hidden_size = int(ctx.shape[2])
-
-        max_context_len = max(context_lengths, default=0)
-        hidden_batch_cpu: Optional[torch.Tensor] = None
-        hidden_mask_cpu: Optional[torch.Tensor] = None
-        batch_size = len(battle_tags)
-        if max_context_len > 0:
-            if hidden_size is None:
-                for ctx in context_tensors:
-                    if ctx is not None:
-                        hidden_size = int(ctx.shape[2])
-                        break
-            assert hidden_size is not None
-            hidden_batch_cpu = torch.zeros(
-                batch_size,
-                max_context_len,
-                hidden_size,
-                dtype=torch.float32,
-            )
-            hidden_mask_cpu = torch.zeros(
-                batch_size,
-                max_context_len,
-                dtype=torch.bool,
-            )
-            for index, ctx in enumerate(context_tensors):
-                if ctx is None:
-                    continue
-                length = context_lengths[index]
-                if length == 0:
-                    continue
-                hidden_batch_cpu[index, :length, :] = ctx[0, :length, :]
-                hidden_mask_cpu[index, :length] = True
-
-        self._diagnostics["transformer_batched_calls"] += 1
-        self._diagnostics["transformer_context_items"] += batch_size
-        self._diagnostics["transformer_context_tokens_real"] += float(
-            sum(context_lengths)
-        )
-        self._diagnostics["transformer_context_tokens_padded"] += float(
-            batch_size * max_context_len
-        )
-        self._diagnostics["transformer_context_len_max"] = max(
-            self._diagnostics["transformer_context_len_max"],
-            float(max_context_len),
-        )
-
-        loop = asyncio.get_running_loop()
-        executor = get_worker_executor(self.worker_id)
-        inference_start = loop.time()
-        (
-            turn_probs,
-            tp_probs,
-            turn_log_probs,
-            tp_log_probs,
-            values,
-            next_ctx_batch,
-        ) = await loop.run_in_executor(
-            executor,
-            self._gpu_inference_sync,
-            states_np,
-            hidden_batch_cpu,
-            hidden_mask_cpu,
-        )
-        next_ctx_batch = cast(torch.Tensor, next_ctx_batch)
-        self._diagnostics["inference_executor_seconds"] += (
-            asyncio.get_running_loop().time() - inference_start
-        )
-
-        next_lengths = [length + 1 for length in context_lengths]
-        all_results: List[Dict[str, Any]] = []
-        for i, tag in enumerate(battle_tags):
-            next_len = next_lengths[i]
-            self.hidden_states[tag] = next_ctx_batch[i : i + 1, :next_len, :].clone()
-            all_results.append(
-                {
-                    "turn_probs": turn_probs[i, 0],
-                    "tp_probs": tp_probs[i, 0],
-                    "turn_log_probs": turn_log_probs[i, 0],
-                    "tp_log_probs": tp_log_probs[i, 0],
-                    "value": values[i, 0],
-                }
-            )
-
-        for i, future in enumerate(futures):
-            is_tp = is_tps[i]
-            mask = masks[i]
-            r = all_results[i]
-
-            if is_tp:
-                probs = r["tp_probs"]
-                unscaled_log_probs = r["tp_log_probs"]
-                valid_actions = list(range(len(probs)))
-            else:
-                probs = r["turn_probs"]
-                unscaled_log_probs = r["turn_log_probs"]
-                if mask is not None:
-                    probs = probs * mask
-                    if probs.sum() == 0:
-                        probs = mask / mask.sum()
-                    else:
-                        probs = probs / probs.sum()
-
-                    if self.top_p < 1.0:
-                        sorted_idx = np.argsort(-probs)
-                        cum = np.cumsum(probs[sorted_idx])
-                        cutoff = np.searchsorted(cum, self.top_p) + 1
-                        keep = sorted_idx[:cutoff]
-                        filtered = np.zeros_like(probs)
-                        filtered[keep] = probs[keep]
-                        probs = filtered / filtered.sum()
-
-                valid_actions = list(range(len(probs)))
-
-            action = (
-                np.random.choice(valid_actions, p=probs)
-                if self.probabilistic
-                else np.argmax(probs)
-            )
-
-            # Compute log_prob from the MASKED distribution so PPO
-            # ratios are consistent with the learner (which also masks).
-            if mask is not None:
-                valid_mask = mask.astype(bool)
-                log_valid_mass = np.log(np.exp(unscaled_log_probs[valid_mask]).sum())
-                log_prob = float(unscaled_log_probs[action] - log_valid_mass)
-            else:
-                log_prob = float(unscaled_log_probs[action])
-
-            future.set_result(
-                {
-                    "action": action,
-                    "log_prob": log_prob,
-                    "value": r["value"],
-                    "probs": probs,
-                }
-            )
+        # The trainer-side InferenceService owns its own loop.
+        # Players have no per-instance loop to start. No-op kept for
+        # backward compatibility with callers in opponents.py, evaluate.py,
+        # showdown_benchmark.py, and vgc_environment.py.
+        pass
 
     async def _handle_battle_request(
         self, battle: AbstractBattle, maybe_default_order: bool = False
@@ -956,40 +606,26 @@ class BatchInferencePlayer(Player):
 
         wait_start = asyncio.get_running_loop().time()
         try:
-            if self.inference_client is not None:
-                # Centralized path: trainer-side InferenceService runs the
-                # forward + sampling AND owns the hidden state, keyed by
-                # (worker_id, battle_tag). The wire payload only carries
-                # the lightweight battle_tag. Player no longer tracks
-                # hidden_states locally in this mode.
-                response = await asyncio.wait_for(
-                    self.inference_client.submit(
-                        state=state,
-                        mask=mask,
-                        is_teampreview=battle.teampreview,
-                        player_id=self.username,
-                        battle_tag=battle.battle_tag,
-                        temperature=self.temperature,
-                        top_p=self.top_p,
-                    ),
-                    timeout=self.inference_request_timeout_s,
-                )
-                result: Dict[str, Any] = {
-                    "action": response.action_idx,
-                    "log_prob": response.log_prob,
-                    "value": response.value,
-                }
-            else:
-                # Legacy path: per-player asyncio queue + inference loop.
-                assert self.queue is not None
-                loop = asyncio.get_running_loop()
-                future = loop.create_future()
-                await self.queue.put(
-                    (state, future, battle.battle_tag, battle.teampreview, mask)
-                )
-                result = await asyncio.wait_for(
-                    future, timeout=self.inference_request_timeout_s
-                )
+            # Centralized path: trainer-side InferenceService runs the
+            # forward + sampling AND owns the hidden state, keyed by
+            # (worker_id, battle_tag).
+            response = await asyncio.wait_for(
+                self.inference_client.submit(
+                    state=state,
+                    mask=mask,
+                    is_teampreview=battle.teampreview,
+                    player_id=self.username,
+                    battle_tag=battle.battle_tag,
+                    temperature=self.temperature,
+                    top_p=self.top_p,
+                ),
+                timeout=self.inference_request_timeout_s,
+            )
+            result: Dict[str, Any] = {
+                "action": response.action_idx,
+                "log_prob": response.log_prob,
+                "value": response.value,
+            }
             self._diagnostics["inference_wait_calls"] += 1
             self._diagnostics["inference_wait_seconds"] += (
                 asyncio.get_running_loop().time() - wait_start
@@ -1000,17 +636,11 @@ class BatchInferencePlayer(Player):
                 asyncio.get_running_loop().time() - wait_start
             )
             self._diagnostics["inference_timeouts"] += 1
-            queue_repr = (
-                self.queue.qsize()
-                if self.queue is not None and hasattr(self.queue, "qsize")
-                else "centralized"
-            )
             logger.debug(
-                "INFERENCE_TIMEOUT tag=%s turn=%s teampreview=%s queue_size=%s",
+                "INFERENCE_TIMEOUT tag=%s turn=%s teampreview=%s",
                 battle.battle_tag,
                 getattr(battle, "turn", "?"),
                 battle.teampreview,
-                queue_repr,
             )
             self.current_trajectories.pop(battle.battle_tag, None)
             self._reset_battle_hidden_state(battle.battle_tag)
