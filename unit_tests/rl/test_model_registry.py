@@ -217,6 +217,21 @@ def test_worker_clients_get_unknown_raises(small_agent_factory):
 # ─────────────────────────────────────────────────────────────────────
 
 
+def test_register_multiple_ghost_slots(small_agent_factory):
+    """Registry accepts N ghost_<i> registrations with distinct services."""
+    make, _ = small_agent_factory
+    registry = ModelRegistry(num_workers=2, batch_size=4, batch_timeout=0.005)
+    try:
+        for slot in range(3):
+            registry.register(f"ghost_{slot}", make(), compile=False)
+        assert set(registry.names()) == {"ghost_0", "ghost_1", "ghost_2"}
+        # Each slot has independent diagnostics
+        diag = registry.get_diagnostics()
+        assert set(diag.keys()) == {"ghost_0", "ghost_1", "ghost_2"}
+    finally:
+        registry.stop_all()
+
+
 def test_registry_to_worker_round_trip(small_agent_factory):
     """Register two models, build worker clients, submit one request to
     each, verify both come back with valid action indices and the

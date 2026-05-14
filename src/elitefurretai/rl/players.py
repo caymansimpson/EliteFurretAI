@@ -68,7 +68,6 @@ from typing import (
     Sequence,
     Set,
     Tuple,
-    Union,
     cast,
 )
 
@@ -96,10 +95,7 @@ from elitefurretai.rl.masking import (
     get_valid_targets,
     slot_is_commanding,
 )
-from elitefurretai.supervised.model_archs import (
-    FlexibleThreeHeadedModel,
-    TransformerThreeHeadedModel,
-)
+from elitefurretai.supervised.model_archs import TransformerThreeHeadedModel
 
 logger = logging.getLogger("MaxDamagePlayer")
 
@@ -274,11 +270,7 @@ class BatchInferencePlayer(Player):
         # Centralized-inference: when set, the player submits requests
         # to a shared trainer-side InferenceService instead of running
         # a per-player inference loop. Mutually exclusive with `model`.
-        # When `inference_client` is provided, `is_transformer` must
-        # also be supplied (the player needs it to know the shape of
-        # hidden_states entries; without `model` we can't introspect).
         inference_client: Optional["InferenceClient"] = None,
-        is_transformer: Optional[bool] = None,
         **kwargs,
     ):
         battle_format = kwargs.get("battle_format", "gen9vgc2023regc")
@@ -288,11 +280,6 @@ class BatchInferencePlayer(Player):
                 "BatchInferencePlayer requires exactly one of `model` "
                 "(legacy per-player inference) or `inference_client` "
                 "(centralized inference via InferenceService)"
-            )
-        if inference_client is not None and is_transformer is None:
-            raise ValueError(
-                "`is_transformer` must be supplied when `inference_client` "
-                "is set; without `model` we can't introspect arch type"
             )
 
         self.model = model
@@ -318,18 +305,8 @@ class BatchInferencePlayer(Player):
         self.queue: Optional[asyncio.Queue] = (
             create_in_poke_loop(asyncio.Queue, POKE_LOOP) if model is not None else None
         )
-        self.hidden_states: Dict[
-            str, Any
-        ] = {}  # (h,c) for LSTM or context tensor for Transformer
-        if model is not None:
-            underlying_model = getattr(model, "model", model)
-            self._is_transformer: bool = isinstance(
-                underlying_model,
-                TransformerThreeHeadedModel,
-            )
-        else:
-            assert is_transformer is not None
-            self._is_transformer = is_transformer
+        # context tensor accumulated across turns by TransformerThreeHeadedModel
+        self.hidden_states: Dict[str, Any] = {}
         self._inference_task: Optional[asyncio.Task] = None
         self._inference_future: Optional[concurrent.futures.Future] = None
         self.temperature: float = 1.0  # Sampling temperature (set by trainer)
@@ -595,16 +572,11 @@ class BatchInferencePlayer(Player):
             torch.tensor(states_np, dtype=torch.float32).to(self.device).unsqueeze(1)
         )
 
-        if self._is_transformer:
-            # Transformer: hidden_cpu is context tensor or None
-            hidden = hidden_cpu.to(self.device) if hidden_cpu is not None else None
-            hidden_mask = (
-                hidden_mask_cpu.to(self.device) if hidden_mask_cpu is not None else None
-            )
-        else:
-            # LSTM: hidden_cpu is (h, c)
-            hidden = (hidden_cpu[0].to(self.device), hidden_cpu[1].to(self.device))
-            hidden_mask = None
+        # Transformer: hidden_cpu is the accumulated context tensor or None
+        hidden = hidden_cpu.to(self.device) if hidden_cpu is not None else None
+        hidden_mask = (
+            hidden_mask_cpu.to(self.device) if hidden_mask_cpu is not None else None
+        )
 
         with torch.no_grad():
             turn_logits, tp_logits, values, _, next_hidden = self.model(
@@ -641,12 +613,8 @@ class BatchInferencePlayer(Player):
 
         values_np = values.cpu().numpy()
 
-        if self._is_transformer:
-            # next_hidden is context tensor (batch, T, H)
-            next_hidden_cpu = next_hidden.cpu()
-        else:
-            # next_hidden is (h, c)
-            next_hidden_cpu = (next_hidden[0].cpu(), next_hidden[1].cpu())
+        # next_hidden is the accumulated context tensor (batch, T, H)
+        next_hidden_cpu = next_hidden.cpu()
 
         return (
             turn_probs,
@@ -663,191 +631,73 @@ class BatchInferencePlayer(Player):
         #   states       — the embedded battle state vectors
         #   futures      — the asyncio futures awaited by each requesting battle
         #   battle_tags  — id of the battle each state came from (used to look
-        #                  up that battle's hidden state / KV context)
+        #                  up that battle's accumulated transformer context)
         #   is_tps       — booleans: is this a teampreview decision (90 actions)
         #                  or a turn decision (2025 actions)?
         #   masks        — per-state legality masks (for turn decisions only)
-        #
-        # The code splits into two paths because Transformer and LSTM differ
-        # in how they manage the recurrent state across turns:
-        #   - Transformer: a growing context tensor (one row per past turn)
-        #   - LSTM: the classic (h, c) hidden state pair
         # ─────────────────────────────────────────────────────────────────────
         states_np = np.array(states)
 
-        if self._is_transformer:
-            context_lengths: List[int] = []
-            hidden_size: Optional[int] = None
-            context_tensors: List[Optional[torch.Tensor]] = []
-            for tag in battle_tags:
-                ctx = cast(Optional[torch.Tensor], self.hidden_states.get(tag, None))
-                context_tensors.append(ctx)
-                if ctx is None:
-                    context_lengths.append(0)
-                    continue
-                if ctx.ndim != 3 or ctx.shape[0] != 1:
-                    raise ValueError(
-                        f"Expected transformer context shape (1, T, H), got {tuple(ctx.shape)}"
-                    )
-                context_lengths.append(int(ctx.shape[1]))
-                if hidden_size is None:
-                    hidden_size = int(ctx.shape[2])
-
-            max_context_len = max(context_lengths, default=0)
-            hidden_batch_cpu: Optional[torch.Tensor] = None
-            hidden_mask_cpu: Optional[torch.Tensor] = None
-            batch_size = len(battle_tags)
-            if max_context_len > 0:
-                if hidden_size is None:
-                    for ctx in context_tensors:
-                        if ctx is not None:
-                            hidden_size = int(ctx.shape[2])
-                            break
-                assert hidden_size is not None
-                hidden_batch_cpu = torch.zeros(
-                    batch_size,
-                    max_context_len,
-                    hidden_size,
-                    dtype=torch.float32,
-                )
-                hidden_mask_cpu = torch.zeros(
-                    batch_size,
-                    max_context_len,
-                    dtype=torch.bool,
-                )
-                for index, ctx in enumerate(context_tensors):
-                    if ctx is None:
-                        continue
-                    length = context_lengths[index]
-                    if length == 0:
-                        continue
-                    hidden_batch_cpu[index, :length, :] = ctx[0, :length, :]
-                    hidden_mask_cpu[index, :length] = True
-
-            self._diagnostics["transformer_batched_calls"] += 1
-            self._diagnostics["transformer_context_items"] += batch_size
-            self._diagnostics["transformer_context_tokens_real"] += float(
-                sum(context_lengths)
-            )
-            self._diagnostics["transformer_context_tokens_padded"] += float(
-                batch_size * max_context_len
-            )
-            self._diagnostics["transformer_context_len_max"] = max(
-                self._diagnostics["transformer_context_len_max"],
-                float(max_context_len),
-            )
-
-            loop = asyncio.get_running_loop()
-            executor = get_worker_executor(self.worker_id)
-            inference_start = loop.time()
-            (
-                turn_probs,
-                tp_probs,
-                turn_log_probs,
-                tp_log_probs,
-                values,
-                next_ctx_batch,
-            ) = await loop.run_in_executor(
-                executor,
-                self._gpu_inference_sync,
-                states_np,
-                hidden_batch_cpu,
-                hidden_mask_cpu,
-            )
-            next_ctx_batch = cast(torch.Tensor, next_ctx_batch)
-            self._diagnostics["inference_executor_seconds"] += (
-                asyncio.get_running_loop().time() - inference_start
-            )
-
-            next_lengths = [length + 1 for length in context_lengths]
-            all_results: List[Dict[str, Any]] = []
-            for i, tag in enumerate(battle_tags):
-                next_len = next_lengths[i]
-                self.hidden_states[tag] = next_ctx_batch[i : i + 1, :next_len, :].clone()
-                all_results.append(
-                    {
-                        "turn_probs": turn_probs[i, 0],
-                        "tp_probs": tp_probs[i, 0],
-                        "turn_log_probs": turn_log_probs[i, 0],
-                        "tp_log_probs": tp_log_probs[i, 0],
-                        "value": values[i, 0],
-                    }
-                )
-
-            for i, future in enumerate(futures):
-                is_tp = is_tps[i]
-                mask = masks[i]
-                r = all_results[i]
-
-                if is_tp:
-                    probs = r["tp_probs"]
-                    unscaled_log_probs = r["tp_log_probs"]
-                    valid_actions = list(range(len(probs)))
-                else:
-                    probs = r["turn_probs"]
-                    unscaled_log_probs = r["turn_log_probs"]
-                    if mask is not None:
-                        probs = probs * mask
-                        if probs.sum() == 0:
-                            probs = mask / mask.sum()
-                        else:
-                            probs = probs / probs.sum()
-
-                        if self.top_p < 1.0:
-                            sorted_idx = np.argsort(-probs)
-                            cum = np.cumsum(probs[sorted_idx])
-                            cutoff = np.searchsorted(cum, self.top_p) + 1
-                            keep = sorted_idx[:cutoff]
-                            filtered = np.zeros_like(probs)
-                            filtered[keep] = probs[keep]
-                            probs = filtered / filtered.sum()
-
-                    valid_actions = list(range(len(probs)))
-
-                action = (
-                    np.random.choice(valid_actions, p=probs)
-                    if self.probabilistic
-                    else np.argmax(probs)
-                )
-
-                # Compute log_prob from the MASKED distribution so PPO
-                # ratios are consistent with the learner (which also masks).
-                if mask is not None:
-                    valid_mask = mask.astype(bool)
-                    log_valid_mass = np.log(np.exp(unscaled_log_probs[valid_mask]).sum())
-                    log_prob = float(unscaled_log_probs[action] - log_valid_mass)
-                else:
-                    log_prob = float(unscaled_log_probs[action])
-
-                future.set_result(
-                    {
-                        "action": action,
-                        "log_prob": log_prob,
-                        "value": r["value"],
-                        "probs": probs,
-                    }
-                )
-            return
-
-        # ---- LSTM path (original batched inference) ----
-        # Legacy-mode-only entry point (only callable from _run_batch).
-        assert self.model is not None, (
-            "_run_batch LSTM path requires a model — centralized mode "
-            "doesn't take this path"
-        )
-        h_list = []
-        c_list = []
+        context_lengths: List[int] = []
+        hidden_size: Optional[int] = None
+        context_tensors: List[Optional[torch.Tensor]] = []
         for tag in battle_tags:
-            if tag not in self.hidden_states:
-                init_state = self.model.get_initial_state(1, "cpu")
-                assert init_state is not None  # LSTM always returns (h, c)
-                h, c = init_state
-                self.hidden_states[tag] = (h, c)
-            h_list.append(self.hidden_states[tag][0])
-            c_list.append(self.hidden_states[tag][1])
+            ctx = cast(Optional[torch.Tensor], self.hidden_states.get(tag, None))
+            context_tensors.append(ctx)
+            if ctx is None:
+                context_lengths.append(0)
+                continue
+            if ctx.ndim != 3 or ctx.shape[0] != 1:
+                raise ValueError(
+                    f"Expected transformer context shape (1, T, H), got {tuple(ctx.shape)}"
+                )
+            context_lengths.append(int(ctx.shape[1]))
+            if hidden_size is None:
+                hidden_size = int(ctx.shape[2])
 
-        h_batch = torch.cat(h_list, dim=1)
-        c_batch = torch.cat(c_list, dim=1)
+        max_context_len = max(context_lengths, default=0)
+        hidden_batch_cpu: Optional[torch.Tensor] = None
+        hidden_mask_cpu: Optional[torch.Tensor] = None
+        batch_size = len(battle_tags)
+        if max_context_len > 0:
+            if hidden_size is None:
+                for ctx in context_tensors:
+                    if ctx is not None:
+                        hidden_size = int(ctx.shape[2])
+                        break
+            assert hidden_size is not None
+            hidden_batch_cpu = torch.zeros(
+                batch_size,
+                max_context_len,
+                hidden_size,
+                dtype=torch.float32,
+            )
+            hidden_mask_cpu = torch.zeros(
+                batch_size,
+                max_context_len,
+                dtype=torch.bool,
+            )
+            for index, ctx in enumerate(context_tensors):
+                if ctx is None:
+                    continue
+                length = context_lengths[index]
+                if length == 0:
+                    continue
+                hidden_batch_cpu[index, :length, :] = ctx[0, :length, :]
+                hidden_mask_cpu[index, :length] = True
+
+        self._diagnostics["transformer_batched_calls"] += 1
+        self._diagnostics["transformer_context_items"] += batch_size
+        self._diagnostics["transformer_context_tokens_real"] += float(
+            sum(context_lengths)
+        )
+        self._diagnostics["transformer_context_tokens_padded"] += float(
+            batch_size * max_context_len
+        )
+        self._diagnostics["transformer_context_len_max"] = max(
+            self._diagnostics["transformer_context_len_max"],
+            float(max_context_len),
+        )
 
         loop = asyncio.get_running_loop()
         executor = get_worker_executor(self.worker_id)
@@ -858,35 +708,46 @@ class BatchInferencePlayer(Player):
             turn_log_probs,
             tp_log_probs,
             values,
-            next_hidden_cpu,
+            next_ctx_batch,
         ) = await loop.run_in_executor(
             executor,
             self._gpu_inference_sync,
             states_np,
-            (h_batch, c_batch),
+            hidden_batch_cpu,
+            hidden_mask_cpu,
         )
+        next_ctx_batch = cast(torch.Tensor, next_ctx_batch)
         self._diagnostics["inference_executor_seconds"] += (
             asyncio.get_running_loop().time() - inference_start
         )
 
-        h_next_cpu, c_next_cpu = next_hidden_cpu
+        next_lengths = [length + 1 for length in context_lengths]
+        all_results: List[Dict[str, Any]] = []
         for i, tag in enumerate(battle_tags):
-            self.hidden_states[tag] = (
-                h_next_cpu[:, i : i + 1, :],
-                c_next_cpu[:, i : i + 1, :],
+            next_len = next_lengths[i]
+            self.hidden_states[tag] = next_ctx_batch[i : i + 1, :next_len, :].clone()
+            all_results.append(
+                {
+                    "turn_probs": turn_probs[i, 0],
+                    "tp_probs": tp_probs[i, 0],
+                    "turn_log_probs": turn_log_probs[i, 0],
+                    "tp_log_probs": tp_log_probs[i, 0],
+                    "value": values[i, 0],
+                }
             )
 
         for i, future in enumerate(futures):
             is_tp = is_tps[i]
             mask = masks[i]
+            r = all_results[i]
 
             if is_tp:
-                probs = tp_probs[i, 0]
-                unscaled_log_probs = tp_log_probs[i, 0]
+                probs = r["tp_probs"]
+                unscaled_log_probs = r["tp_log_probs"]
                 valid_actions = list(range(len(probs)))
             else:
-                probs = turn_probs[i, 0]
-                unscaled_log_probs = turn_log_probs[i, 0]
+                probs = r["turn_probs"]
+                unscaled_log_probs = r["turn_log_probs"]
                 if mask is not None:
                     probs = probs * mask
                     if probs.sum() == 0:
@@ -894,10 +755,6 @@ class BatchInferencePlayer(Player):
                     else:
                         probs = probs / probs.sum()
 
-                    # Top-p (nucleus) filtering: zero out the tail of the
-                    # temperature-scaled sampling distribution so that only
-                    # the smallest set of actions whose cumulative probability
-                    # exceeds top_p are kept.
                     if self.top_p < 1.0:
                         sorted_idx = np.argsort(-probs)
                         cum = np.cumsum(probs[sorted_idx])
@@ -915,12 +772,8 @@ class BatchInferencePlayer(Player):
                 else np.argmax(probs)
             )
 
-            # Use the UNSCALED (T=1) log-prob for PPO importance ratios.
-            # The temperature-scaled probs only determine which action is
-            # *selected*, but the policy gradient must use the true policy
-            # distribution to avoid biased ratio estimates.
-            # Apply mask correction so old_log_prob matches the learner's
-            # masked Categorical distribution.
+            # Compute log_prob from the MASKED distribution so PPO
+            # ratios are consistent with the learner (which also masks).
             if mask is not None:
                 valid_mask = mask.astype(bool)
                 log_valid_mass = np.log(np.exp(unscaled_log_probs[valid_mask]).sum())
@@ -932,7 +785,7 @@ class BatchInferencePlayer(Player):
                 {
                     "action": action,
                     "log_prob": log_prob,
-                    "value": values[i, 0],
+                    "value": r["value"],
                     "probs": probs,
                 }
             )
@@ -1455,67 +1308,34 @@ class BatchInferencePlayer(Player):
 
 
 class RNaDAgent(torch.nn.Module):
-    """RL Agent wrapper around FlexibleThreeHeadedModel or TransformerThreeHeadedModel.
+    """RL Agent wrapper around TransformerThreeHeadedModel.
 
     Why this exists
     ---------------
-    The supervised (BC) model has TWO callable interfaces:
-      - LSTM variant: needs an (h, c) hidden state pair threaded across turns.
-      - Transformer variant: maintains a growing context tensor instead.
+    The supervised (BC) model maintains a growing context tensor across turns.
+    RNaDAgent presents a uniform `forward(x, hidden_state)` API that callers
+    use without caring about the underlying architecture details.
 
-    Callers shouldn't have to care which architecture is in use. RNaDAgent
-    presents a single uniform `forward(x, hidden_state)` API, and internally
-    routes to whichever forward path the wrapped model needs.
-
-    `get_initial_state(batch_size, device)` is the other half of this — gives
-    callers a "fresh" hidden state to start a battle with, again uniformly.
-    LSTMs return (zeros, zeros); Transformers return None (empty context).
+    `get_initial_state(batch_size, device)` returns None (empty context) to
+    start a fresh battle.
 
     This is a wrapper, not a model — it has no parameters of its own beyond
     those of the wrapped model.
     """
 
-    def __init__(
-        self, model: Union[FlexibleThreeHeadedModel, TransformerThreeHeadedModel]
-    ):
+    def __init__(self, model: TransformerThreeHeadedModel):
         super().__init__()
         self.model = model
-        self._is_transformer = isinstance(model, TransformerThreeHeadedModel)
 
     def get_initial_state(self, batch_size: int, device: str):
-        if self._is_transformer:
-            # Transformer has no initial hidden state — context starts as None.
-            # Return a sentinel None that players.py checks.
-            return None
-        assert isinstance(self.model, FlexibleThreeHeadedModel)
-        num_directions = 2
-        num_layers: int = self.model.lstm.num_layers
-        hidden_size: int = self.model.lstm_hidden_size
-        h = torch.zeros(
-            num_layers * num_directions,
-            batch_size,
-            hidden_size,
-            device=device,
-        )
-        c = torch.zeros(
-            num_layers * num_directions,
-            batch_size,
-            hidden_size,
-            device=device,
-        )
-        return (h, c)
+        # Transformer has no initial hidden state — context starts as None.
+        return None
 
     def forward(self, x, hidden_state=None, mask=None, hidden_mask=None):
-        if self._is_transformer:
-            assert isinstance(self.model, TransformerThreeHeadedModel)
-            turn_logits, tp_logits, value, win_dist_logits, next_hidden = (
-                self.model.forward_with_hidden(x, hidden_state, mask, hidden_mask)
-            )
-        else:
-            assert isinstance(self.model, FlexibleThreeHeadedModel)
-            turn_logits, tp_logits, value, win_dist_logits, next_hidden = (
-                self.model.forward_with_hidden(x, hidden_state, mask)
-            )
+        assert isinstance(self.model, TransformerThreeHeadedModel)
+        turn_logits, tp_logits, value, win_dist_logits, next_hidden = (
+            self.model.forward_with_hidden(x, hidden_state, mask, hidden_mask)
+        )
         return turn_logits, tp_logits, value, win_dist_logits, next_hidden
 
 

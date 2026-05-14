@@ -79,7 +79,6 @@ from elitefurretai.rl.learners import (
     load_model_from_checkpoint,
 )
 from elitefurretai.rl.players import BatchInferencePlayer, MaxDamagePlayer, RNaDAgent
-from elitefurretai.supervised import FlexibleThreeHeadedModel
 from elitefurretai.supervised.behavior_clone_player import BCPlayer
 
 logger = logging.getLogger(__name__)
@@ -1794,5 +1793,4 @@ __all__ = [
     "WorkerOpponentFactory",
     "build_model_from_config",
     "load_model_from_checkpoint",
-    "FlexibleThreeHeadedModel",
 ]
