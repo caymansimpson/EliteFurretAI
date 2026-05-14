@@ -253,3 +253,12 @@ def test_create_player_pairs_passes_max_concurrent_when_set(monkeypatch):
     assert len(captured_kwargs) == 6  # 3 pairs × (player + opponent)
     for kw in captured_kwargs:
         assert kw.get("max_concurrent_battles") == 16
+
+
+def test_set_active_ghost_slots_updates_state():
+    factory = _make_factory({"self_play": 1.0})
+    assert factory._active_ghost_slots == set()
+    factory.set_active_ghost_slots([0, 2, 4])
+    assert factory._active_ghost_slots == {0, 2, 4}
+    factory.set_active_ghost_slots([])
+    assert factory._active_ghost_slots == set()

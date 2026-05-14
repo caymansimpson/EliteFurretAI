@@ -59,7 +59,7 @@ import random
 from collections import deque
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, cast
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple, cast
 
 if TYPE_CHECKING:
     from elitefurretai.rl.inference_worker import (
@@ -1025,6 +1025,7 @@ class WorkerOpponentFactory:
         self.loaded_exploiters: Dict[str, RNaDAgent] = {}
         self.ghosts: List[Tuple[int, str]] = []
         self.loaded_ghosts: Dict[str, RNaDAgent] = {}
+        self._active_ghost_slots: Set[int] = set()
         self._batch_count = 0
         # Rebuild generation increments every time we recreate runtime agents.
         # Why: Showdown usernames must be unique among currently connected clients,
@@ -1144,6 +1145,16 @@ class WorkerOpponentFactory:
         models = [(os.path.getmtime(p), p) for p in paths if os.path.isfile(p)]
         models.sort(key=lambda item: item[0], reverse=True)
         self.active_exploiters = models
+
+    def set_active_ghost_slots(self, slots: List[int]) -> None:
+        """Update the set of populated ghost slots from a trainer broadcast.
+
+        Workers use this to know which `ghost_<slot>` clients in the
+        inference bundle correspond to real ghost weights vs placeholders.
+        Only slots in this set are valid targets for GHOSTS opponent
+        routing in `configure_opponent_for_batch`.
+        """
+        self._active_ghost_slots = set(slots)
 
     def set_ghost_paths(self, paths: List[str]) -> None:
         """Apply explicit ghost file list from learner broadcast (Option C)."""
