@@ -267,6 +267,12 @@ class OpponentPool:
         self.ghosts_dir = ghosts_dir
         os.makedirs(ghosts_dir, exist_ok=True)
         self.ghosts: List[Tuple[int, str]] = []
+        # Ghost slot lifecycle: each path is assigned a slot 0..max_ghosts-1.
+        # `slot_for_ghost_path` maps file path -> slot index. `_slot_lru` is
+        # an insertion-ordered list of currently-occupied slots; head is
+        # oldest. Loaded ghosts from disk on startup get slots 0..K-1.
+        self.slot_for_ghost_path: Dict[str, int] = {}
+        self._slot_lru: List[int] = []
         self._load_ghosts()
 
         self.win_rates: Dict[str, List[float]] = {
@@ -375,6 +381,14 @@ class OpponentPool:
 
         models.sort(key=lambda item: item[0], reverse=True)
         self.ghosts = models[: self.max_ghosts]
+        # Assign slots in oldest-first order (slot 0 = oldest = first to
+        # be evicted by LRU). `self.ghosts` is sorted newest-first, so
+        # iterate in reverse for slot assignment.
+        self.slot_for_ghost_path = {}
+        self._slot_lru = []
+        for slot, (_, path) in enumerate(reversed(self.ghosts)):
+            self.slot_for_ghost_path[path] = slot
+            self._slot_lru.append(slot)
 
     def _load_exploiter_model(self, filepath: str) -> RNaDAgent:
         if filepath in self.loaded_exploiters:
@@ -654,9 +668,31 @@ class OpponentPool:
         )
 
     def add_ghost(self, step: int, filepath: str):
+        # Determine slot: reuse if path already known, else allocate
+        # next free or evict LRU.
+        if filepath in self.slot_for_ghost_path:
+            slot = self.slot_for_ghost_path[filepath]
+        elif len(self._slot_lru) < self.max_ghosts:
+            slot = len(self._slot_lru)
+            self._slot_lru.append(slot)
+        else:
+            # Evict the LRU slot. Find which path currently holds it,
+            # drop the mapping, and reuse the slot for the new path.
+            slot = self._slot_lru.pop(0)
+            evicted_path = next(
+                p for p, s in self.slot_for_ghost_path.items() if s == slot
+            )
+            del self.slot_for_ghost_path[evicted_path]
+            self._slot_lru.append(slot)
+        self.slot_for_ghost_path[filepath] = slot
+
         self.ghosts.append((step, filepath))
         self.ghosts.sort(key=lambda x: x[0], reverse=True)
         self.ghosts = self.ghosts[: self.max_ghosts]
+
+    def active_ghost_slots(self) -> Set[int]:
+        """Slots currently populated with real ghost weights."""
+        return set(self._slot_lru)
 
     def add_exploiter(self, filepath: str):
         """Register a newly-graduated exploiter snapshot.

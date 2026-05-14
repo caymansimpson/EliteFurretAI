@@ -172,3 +172,35 @@ def test_sample_opponent_self_play_only(
         player_config, server_config, team="Pikachu @ Light Ball"
     )
     assert opponent is not None
+
+
+def test_opponent_pool_tracks_active_ghost_slots(tmp_path, mock_main_model, temp_exploiters_dir):
+    """OpponentPool exposes active_ghost_slots reflecting which slots
+    hold real ghost weights, and rotates LRU when full."""
+    ghosts_dir = str(tmp_path / "ghosts")
+    os.makedirs(ghosts_dir)
+    pool = OpponentPool(
+        main_model=mock_main_model,
+        device="cpu",
+        battle_format="gen9vgc2023regc",
+        max_ghosts=3,
+        exploiter_models_dir=temp_exploiters_dir,
+        ghosts_dir=ghosts_dir,
+    )
+    assert pool.active_ghost_slots() == set()
+    assert pool.slot_for_ghost_path == {}
+
+    # First three add_ghost calls fill slots 0, 1, 2
+    for step, name in [(10, "g10.pt"), (20, "g20.pt"), (30, "g30.pt")]:
+        p = tmp_path / name
+        p.write_bytes(b"x")  # add_ghost only stores the path
+        pool.add_ghost(step, str(p))
+    assert pool.active_ghost_slots() == {0, 1, 2}
+    assert set(pool.slot_for_ghost_path.values()) == {0, 1, 2}
+
+    # Fourth add evicts LRU (slot 0 — oldest by insertion)
+    p4 = tmp_path / "g40.pt"
+    p4.write_bytes(b"x")
+    pool.add_ghost(40, str(p4))
+    assert pool.active_ghost_slots() == {0, 1, 2}  # still full
+    assert pool.slot_for_ghost_path[str(p4)] == 0
