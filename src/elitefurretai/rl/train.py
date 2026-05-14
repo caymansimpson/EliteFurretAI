@@ -1345,6 +1345,7 @@ def main():
                 main_request_queue,
                 main_response_queues[i],
                 queues_by_worker[i],
+                sorted(opponent_pool.active_ghost_slots()),
             ),
             daemon=True,
             name=f"MPWorker-{i}",

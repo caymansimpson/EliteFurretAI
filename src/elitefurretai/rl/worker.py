@@ -65,7 +65,7 @@ import time
 from collections import deque
 from multiprocessing import Queue as MPQueue
 from multiprocessing.synchronize import Event as MPEvent
-from typing import Any, Dict, Optional, cast
+from typing import Any, Dict, List, Optional, cast
 
 import psutil
 import torch
@@ -107,6 +107,7 @@ def mp_worker_process(
     # When None (legacy mode), only the singular
     # main_inference_request_queue path is used (back-compat shim).
     queues_by_model: Optional[Dict[str, Any]] = None,
+    initial_active_ghost_slots: List[int] = [],
 ):
     """
     Multiprocessing worker process for true parallel RL data collection.
@@ -471,6 +472,14 @@ def mp_worker_process(
             main_inference_client=main_inference_client,
             worker_inference_clients=worker_inference_clients,
         )
+
+        # Close the blind window between spawn and first broadcast: seed
+        # the factory with whatever ghost slots were active at spawn time.
+        if initial_active_ghost_slots:
+            _backend = getattr(env, "_backend", None)
+            _wfactory = getattr(_backend, "_factory", None)
+            if _wfactory is not None:
+                _wfactory.set_active_ghost_slots(initial_active_ghost_slots)
 
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
