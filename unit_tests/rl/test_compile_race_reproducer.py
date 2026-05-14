@@ -234,3 +234,70 @@ def test_two_real_rnad_agents_with_per_model_lock():
     t1.join()
     t2.join()
     assert errors == [], f"compile race triggered with per-model lock: {errors[0]!r}"
+
+
+@pytest.mark.timeout(180)
+def test_two_real_rnad_agents_with_cudagraph_mark_step():
+    """Insert torch.compiler.cudagraph_mark_step_begin() before each
+    compiled call. Tests whether the race is in CUDA graph capture state —
+    the marker signals a step boundary which may flush dynamo's per-step
+    shared state and prevent cross-instance trace collisions.
+
+    Task 2.3 workaround candidate. Expected PASS if the race is CUDA-graph-
+    capture-related; FAIL with the same dynamo error if not.
+    """
+    if not torch.cuda.is_available():
+        pytest.skip("cudagraph_mark_step_begin is GPU-specific")
+
+    device = "cuda"
+
+    agent1_raw, emb_size, hidden_size = _make_small_rnad_agent(device)
+    agent2_raw, _, _ = _make_small_rnad_agent(device)
+
+    agent1 = torch.compile(agent1_raw, mode="default", dynamic=True)
+    agent2 = torch.compile(agent2_raw, mode="default", dynamic=True)
+
+    def _warmup(agent: Any) -> None:
+        with torch.no_grad():
+            x0 = torch.zeros(1, 1, emb_size, device=device)
+            _, _, _, _, h0 = agent(x0, None, mask=None, hidden_mask=None)
+            ctx1 = h0[:1, :1, :].clone()
+            hmask1 = torch.ones(1, 1, dtype=torch.bool, device=device)
+            x1 = torch.zeros(1, 1, emb_size, device=device)
+            agent(x1, ctx1, mask=None, hidden_mask=hmask1)
+
+    _warmup(agent1)
+    _warmup(agent2)
+
+    errors: List[BaseException] = []
+
+    def loop_with_mark(agent: Any) -> None:
+        rng = random.Random()
+        try:
+            with torch.no_grad():
+                for _ in range(200):
+                    ctx_len = rng.randint(0, 10)
+                    batch_size = rng.randint(1, 8)
+                    x = torch.randn(batch_size, 1, emb_size, device=device)
+                    if ctx_len == 0:
+                        hidden: Optional[torch.Tensor] = None
+                        hmask: Optional[torch.Tensor] = None
+                    else:
+                        hidden = torch.randn(
+                            batch_size, ctx_len, hidden_size, device=device
+                        )
+                        hmask = torch.ones(
+                            batch_size, ctx_len, dtype=torch.bool, device=device
+                        )
+                    torch.compiler.cudagraph_mark_step_begin()
+                    agent(x, hidden, mask=None, hidden_mask=hmask)
+        except BaseException as exc:
+            errors.append(exc)
+
+    t1 = threading.Thread(target=loop_with_mark, args=(agent1,))
+    t2 = threading.Thread(target=loop_with_mark, args=(agent2,))
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+    assert errors == [], f"compile race triggered with cudagraph_mark_step: {errors[0]!r}"
