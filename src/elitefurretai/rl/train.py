@@ -1289,8 +1289,8 @@ def main():
         # assigned slots. `slot_for_ghost_path` was populated by
         # OpponentPool._load_ghosts.
         for path, slot in opponent_pool.slot_for_ghost_path.items():
-            state_dict = torch.load(path, map_location=registry.device)
-            registry.sync_weights(f"ghost_{slot}", state_dict)
+            checkpoint = torch.load(path, map_location=registry.device)
+            registry.sync_weights(f"ghost_{slot}", checkpoint["model_state_dict"])
 
         # Pull out main's queues for the back-compat per-worker
         # spawn-args interface. The full bundle is also passed below so
@@ -1625,11 +1625,13 @@ def main():
                         new_slot = opponent_pool.slot_for_ghost_path[
                             ghost_checkpoint_path
                         ]
-                        state_dict = torch.load(
+                        checkpoint = torch.load(
                             ghost_checkpoint_path,
                             map_location=registry.device,
                         )
-                        registry.sync_weights(f"ghost_{new_slot}", state_dict)
+                        registry.sync_weights(
+                            f"ghost_{new_slot}", checkpoint["model_state_dict"]
+                        )
 
                     # Recompute curriculum in the learner/main process only,
                     # if we want to update it. Algorithm to update the
