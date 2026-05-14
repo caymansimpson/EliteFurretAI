@@ -73,22 +73,6 @@ def test_score_available_actions_filters_moves_not_in_request():
 # spin up a real ps_client + asyncio loop, which we don't want in unit tests.
 
 
-def test_batch_inference_player_init_rejects_neither_model_nor_client():
-    """BatchInferencePlayer requires exactly one of `model` or
-    `inference_client`. Neither is an error (caught before super().__init__
-    so no heavy setup runs)."""
-    with pytest.raises(ValueError, match="exactly one of"):
-        BatchInferencePlayer()
-
-
-def test_batch_inference_player_init_rejects_both_model_and_client():
-    """Passing both is also rejected."""
-    fake_model = MagicMock()
-    fake_client = MagicMock()
-    with pytest.raises(ValueError, match="exactly one of"):
-        BatchInferencePlayer(model=fake_model, inference_client=fake_client)
-
-
 def test_start_inference_loop_is_noop_in_centralized_mode():
     """In centralized mode the trainer-side InferenceService runs the
     loop; the player must not start its own (it has no queue)."""

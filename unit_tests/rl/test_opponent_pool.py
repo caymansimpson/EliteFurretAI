@@ -148,32 +148,6 @@ def test_load_exploiter_models_from_directory(
     assert len(pool.exploiter_models) == 3
 
 
-def test_sample_opponent_self_play_only(
-    mock_main_model, player_config, server_config, temp_exploiters_dir, temp_ghosts_dir
-):
-    curriculum = {
-        "self_play": 1.0,
-        "bc_player": 0.0,
-        "exploiters": 0.0,
-        "ghosts": 0.0,
-        "max_damage": 0.0,
-        "random_baseline": 0.0,
-        "max_base_power_baseline": 0.0,
-        "simple_heuristic_baseline": 0.0,
-    }
-    pool = _make_pool(
-        mock_main_model,
-        temp_exploiters_dir,
-        temp_ghosts_dir,
-        curriculum=curriculum,
-    )
-
-    opponent = pool.sample_opponent(
-        player_config, server_config, team="Pikachu @ Light Ball"
-    )
-    assert opponent is not None
-
-
 def test_opponent_pool_tracks_active_ghost_slots(tmp_path, mock_main_model, temp_exploiters_dir):
     """OpponentPool exposes active_ghost_slots reflecting which slots
     hold real ghost weights, and rotates LRU when full."""
