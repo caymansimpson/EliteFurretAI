@@ -1276,6 +1276,22 @@ def main():
                 # produces updates.
                 registry.register(slot_name, RNaDAgent(slot_base), compile=False)
 
+        # Ghost slots: pre-register max_ghosts services so the slot pool is
+        # fixed-size and the registration plumbing never happens mid-run.
+        # Slots start with main-agent weights as placeholders; only slots
+        # listed in `opponent_pool.active_ghost_slots()` are valid routing
+        # targets (workers filter on that set). compile=False per the known
+        # torch.compile multi-thread race (see registry plan).
+        for slot in range(config.curriculum.max_ghosts):
+            ghost_agent = copy.deepcopy(registry._raw_agents["main"])
+            registry.register(f"ghost_{slot}", ghost_agent, compile=False)
+        # Load weights for any pre-existing ghost checkpoints onto their
+        # assigned slots. `slot_for_ghost_path` was populated by
+        # OpponentPool._load_ghosts.
+        for path, slot in opponent_pool.slot_for_ghost_path.items():
+            state_dict = torch.load(path, map_location=registry.device)
+            registry.sync_weights(f"ghost_{slot}", state_dict)
+
         # Pull out main's queues for the back-compat per-worker
         # spawn-args interface. The full bundle is also passed below so
         # workers can construct WorkerInferenceClients with one client
