@@ -873,13 +873,6 @@ class WorkerOpponentFactory:
         loaded[filepath] = loaded_model
         return loaded_model
 
-    def _get_exploiter_agent(self) -> Optional[RNaDAgent]:
-        if not self.active_exploiters:
-            return None
-
-        _, filepath = random.choice(self.active_exploiters)
-        return self._get_cached_model(filepath, self.loaded_exploiters)
-
     def set_exploiter_paths(self, paths: List[str]) -> None:
         """Apply explicit exploiter file list from learner broadcast (Option C)."""
         models = [(os.path.getmtime(p), p) for p in paths if os.path.isfile(p)]
@@ -1138,25 +1131,17 @@ class WorkerOpponentFactory:
     def _swap_to(
         self,
         slot: BatchInferencePlayer,
-        centralized_name: Optional[str],
-        legacy_agent: Optional[RNaDAgent],
+        centralized_name: str,
     ) -> bool:
         """Re-point one player or opponent slot at a different model.
 
-        Centralized mode: assign `slot.inference_client = clients.get(name)`.
-        Legacy mode: assign `slot.model = legacy_agent`.
-
-        Returns True if the swap succeeded (the requested model is
-        available in the active mode), False if neither was available
+        Centralized only: assign `slot.inference_client = clients.get(name)`.
+        Returns True if the named client is available, False otherwise
         (caller should fall back to self-play / main).
         """
-        if centralized_name is not None:
-            client = self._resolve_centralized_client(centralized_name)
-            if client is not None:
-                slot.inference_client = client
-                return True
-        if legacy_agent is not None:
-            slot.model = legacy_agent
+        client = self._resolve_centralized_client(centralized_name)
+        if client is not None:
+            slot.inference_client = client
             return True
         return False
 
@@ -1185,26 +1170,26 @@ class WorkerOpponentFactory:
         if selected_type == self.MAX_DAMAGE:
             pass
         elif selected_type == self.BC_PLAYER:
-            opponent_swapped = self._swap_to(opponent, "bc", self.bc_agent)
+            opponent_swapped = self._swap_to(opponent, "bc")
             if not opponent_swapped:
                 selected_type = self.SELF_PLAY
         elif selected_type == self.EXPLOITERS:
-            exploiter_agent = self._get_exploiter_agent()
-            opponent_swapped = self._swap_to(opponent, None, exploiter_agent)
-            if not opponent_swapped:
-                selected_type = self.SELF_PLAY
+            # Snapshot-exploiter routing is not yet centralized through the
+            # registry; legacy disk-load path was removed in Phase 3. Fall
+            # back to self-play if curriculum samples this type.
+            selected_type = self.SELF_PLAY
         elif selected_type == self.TRAIN_EXPLOITER:
             # Exploiter (player) vs. frozen victim (opponent). Trajectory
             # is tagged "train_exploiter" so the main process routes it
             # to the exploiter learner instead of the main learner.
-            player_swapped = self._swap_to(player, "exploiter", self.exploiter_agent)
-            opponent_swapped = self._swap_to(opponent, "victim", self.victim_agent)
+            player_swapped = self._swap_to(player, "exploiter")
+            opponent_swapped = self._swap_to(opponent, "victim")
             if not (player_swapped and opponent_swapped):
                 # Co-training agents not provisioned (e.g., curriculum
                 # slot ramped up before main process built them). Fall
                 # back to self-play; trajectory will be routed as main.
                 selected_type = self.SELF_PLAY
-                self._swap_to(player, "main", self.main_agent)
+                self._swap_to(player, "main")
         elif selected_type == self.GHOSTS:
             if not self._active_ghost_slots:
                 # Curriculum sampled GHOSTS but no slots are populated —
@@ -1214,7 +1199,7 @@ class WorkerOpponentFactory:
                 selected_type = self.SELF_PLAY
             else:
                 slot = random.choice(tuple(self._active_ghost_slots))
-                opponent_swapped = self._swap_to(opponent, f"ghost_{slot}", None)
+                opponent_swapped = self._swap_to(opponent, f"ghost_{slot}")
                 if not opponent_swapped:
                     selected_type = self.SELF_PLAY
         else:
@@ -1232,7 +1217,7 @@ class WorkerOpponentFactory:
         # with), or the chosen branch didn't swap the opponent, point
         # opponent at main.
         if not opponent_swapped:
-            self._swap_to(opponent, "main", self.main_agent)
+            self._swap_to(opponent, "main")
 
         player.opponent_type = selected_type
         return selected_type

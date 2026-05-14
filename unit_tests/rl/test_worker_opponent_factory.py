@@ -41,46 +41,10 @@ def _make_factory(
         worker_id=0,
         run_id="0000",
         device="cpu",
-        ghosts_dir=None,
         exploiter_agent=cast(RNaDAgent, exploiter_agent) if exploiter_agent else None,
         victim_agent=cast(RNaDAgent, victim_agent) if victim_agent else None,
         worker_inference_clients=worker_inference_clients,
     )
-
-
-def test_configure_opponent_for_batch_supports_exploiters(monkeypatch):
-    factory = _make_factory({"exploiters": 1.0})
-    exploiter_agent = SimpleNamespace(name="exploiter")
-    monkeypatch.setattr(factory, "_get_exploiter_agent", lambda: exploiter_agent)
-
-    player = _DummyPlayer()
-    opponent = _DummyOpponent(model=factory.main_agent)
-
-    selected = factory.configure_opponent_for_batch(
-        cast(BatchInferencePlayer, player),
-        cast(BatchInferencePlayer, opponent),
-    )
-
-    assert selected == factory.EXPLOITERS
-    assert player.opponent_type == factory.EXPLOITERS
-    assert opponent.model is exploiter_agent
-
-
-def test_configure_opponent_for_batch_exploiters_fallback_to_self_play(monkeypatch):
-    factory = _make_factory({"exploiters": 1.0})
-    monkeypatch.setattr(factory, "_get_exploiter_agent", lambda: None)
-
-    player = _DummyPlayer()
-    opponent = _DummyOpponent(model=SimpleNamespace(name="other"))
-
-    selected = factory.configure_opponent_for_batch(
-        cast(BatchInferencePlayer, player),
-        cast(BatchInferencePlayer, opponent),
-    )
-
-    assert selected == factory.SELF_PLAY
-    assert player.opponent_type == factory.SELF_PLAY
-    assert opponent.model is factory.main_agent
 
 
 def test_configure_opponent_for_batch_supports_train_exploiter():
