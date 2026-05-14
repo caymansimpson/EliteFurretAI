@@ -314,3 +314,45 @@ centralization + 4-hour compile-race investigation + full legacy
 inference path cleanup. Eval-time inference dropped (no production
 caller). All work commits to `main` directly (no feature branch).
 Ready for plan writing.
+
+### 2026-05-14 13:16 — Measurement 2 (post Phase 1 — ghost centralization)
+
+Ghost centralization shipped: 9 commits implementing slot lifecycle in
+`OpponentPool`, pre-registration of `max_ghosts` slot services in the
+trainer, broadcast plumbing for `active_ghost_slots`, and routing
+through `clients.get(f"ghost_{slot}")` in `WorkerOpponentFactory`. Plus
+one bugfix (`6a3e5f2`) extracting `model_state_dict` from ghost
+checkpoint files.
+
+Measurement 1 (baseline) used the prior 2026-05-14 result of **4.98
+traj/s** on this same `main` commit before any Phase 1 changes (per
+the registry plan doc, post-warmup updates 153-156).
+
+Measurement 2 ran sep_arch.yaml full curriculum from checkpoint
+step 208, captured 15 post-warmup updates (209-223). Update 209 was
+warmup-tainted; the post-warmup window is updates 210-223 (14 samples).
+
+| Metric | Measurement 1 (baseline) | Measurement 2 (ghost centralized) | Δ |
+|---|---|---|---|
+| traj/s mean | 4.98 | **5.61** ± 0.49 | **+12.6%** |
+| learner steps/s mean | ~87 | ~98 | +13% |
+| Window | 4 updates | 14 updates | — |
+
+**Gate check**: throughput ≥ baseline → **PASS**.
+
+Notes:
+- 880 "Slow battle" warnings + 76 "Invalid choice" errors over the
+  16-min run. These are the documented residual Showdown bugs
+  (`planning/stage2/2026-04-26-22-00-two-residual-bugs.md`), not
+  caused by ghost centralization. Throughput is solid despite them.
+- The 14-update window is shorter than the plan's target 20-update
+  window because Showdown port contention from a prior failed run
+  (zombie processes) ate ~20 min of available wall time before the
+  successful relaunch. The 14 consistent samples (4.92-6.81 traj/s,
+  σ=0.49) are stable enough to call.
+- Process hygiene lesson: failed training runs leak Showdown servers
+  + external VGCBench runners on ports 8000-8003; need explicit
+  cleanup before relaunch. Worth a one-liner in the run-script docs
+  but out of scope for this plan.
+
+Ready for Phase 2 (torch.compile race investigation).
