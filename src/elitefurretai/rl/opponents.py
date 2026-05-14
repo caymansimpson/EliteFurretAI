@@ -77,7 +77,6 @@ from elitefurretai.etl import Embedder, TeamRepo
 from elitefurretai.rl.learners import (
     build_model_from_config,
     is_checkpoint_compatible_with_model_config,
-    load_agent_from_checkpoint,
     load_model_from_checkpoint,
 )
 from elitefurretai.rl.players import BatchInferencePlayer, MaxDamagePlayer, RNaDAgent
@@ -260,7 +259,6 @@ class OpponentPool:
         self.exploiter_models_dir = exploiter_models_dir
         os.makedirs(self.exploiter_models_dir, exist_ok=True)
         self.exploiter_models: List[Tuple[float, str]] = []
-        self.loaded_exploiters: Dict[str, RNaDAgent] = {}
         # Exploiter snapshot slot lifecycle: each path is assigned a slot
         # 0..max_exploiter_models-1. `slot_for_exploiter_path` maps file
         # path -> slot index. `_exploiter_slot_lru` is an
@@ -403,14 +401,6 @@ class OpponentPool:
         for slot, (_, path) in enumerate(reversed(self.ghosts)):
             self.slot_for_ghost_path[path] = slot
             self._slot_lru.append(slot)
-
-    def _load_exploiter_model(self, filepath: str) -> RNaDAgent:
-        if filepath in self.loaded_exploiters:
-            return self.loaded_exploiters[filepath]
-
-        model = load_agent_from_checkpoint(filepath, self.device)
-        self.loaded_exploiters[filepath] = model
-        return model
 
     def add_ghost(self, step: int, filepath: str):
         # Determine slot: reuse if path already known, else allocate
