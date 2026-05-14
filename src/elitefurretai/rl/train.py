@@ -30,12 +30,12 @@ Where this file fits
                  │ (mp_traj_queue)       (weight_queues)│
         ┌────────┴────────┐                ┌────────────┴───────┐
         │   worker.py     │                │   worker.py        │
-        │   (×N workers)  │  ←──────────── │   (back-channel)   │
+        │   (xN workers)  │  ←──────────── │   (back-channel)   │
         └────────┬────────┘                └────────────────────┘
                  │ websockets
         ┌────────┴────────┐
         │ Showdown servers│
-        │  (×M servers)   │
+        │  (xM servers)   │
         └─────────────────┘
 
 Key design notes for new readers
@@ -753,6 +753,7 @@ def _maybe_run_exploiter_update(
     exploiter_updates_total: int,
     exploiter_updates_in_generation: int,
     exploiter_generation: int,
+    registry: Optional[ModelRegistry] = None,
 ) -> Dict[str, Any]:
     """Maybe run one exploiter learner update and handle graduation/reset.
 
@@ -866,6 +867,16 @@ def _maybe_run_exploiter_update(
             snapshot_path,
         )
         opponent_pool.add_exploiter(snapshot_path)
+        if registry is not None:
+            new_slot = opponent_pool.slot_for_exploiter_path[snapshot_path]
+            checkpoint = torch.load(
+                snapshot_path,
+                map_location=registry.device,
+            )
+            registry.sync_weights(
+                f"exploiter_snap_{new_slot}",
+                checkpoint["model_state_dict"],
+            )
 
         logger.info(
             "[Update %d] Exploiter generation %d %s | "
@@ -1284,6 +1295,17 @@ def main():
     for path, slot in opponent_pool.slot_for_ghost_path.items():
         checkpoint = torch.load(path, map_location=registry.device)
         registry.sync_weights(f"ghost_{slot}", checkpoint["model_state_dict"])
+
+    # Exploiter snapshot slots: pre-register max_exploiter_models services
+    # (parallel to ghosts). Each holds an independent agent; sync_weights
+    # populates real exploiter snapshot weights from disk for any slot
+    # OpponentPool's _load_exploiter_models pre-assigned at startup.
+    for slot in range(config.curriculum.max_exploiter_models):
+        exploiter_snap_agent = copy.deepcopy(registry._raw_agents["main"])
+        registry.register(f"exploiter_snap_{slot}", exploiter_snap_agent, compile=True)
+    for path, slot in opponent_pool.slot_for_exploiter_path.items():
+        checkpoint = torch.load(path, map_location=registry.device)
+        registry.sync_weights(f"exploiter_snap_{slot}", checkpoint["model_state_dict"])
 
     # Pull out main's queues for the back-compat per-worker
     # spawn-args interface. The full bundle is also passed below so
@@ -1765,6 +1787,7 @@ def main():
                     exploiter_updates_total=exploiter_updates_total,
                     exploiter_updates_in_generation=exploiter_updates_in_generation,
                     exploiter_generation=exploiter_generation,
+                    registry=registry,
                 )
                 exploiter_updates_total = exploiter_result["updates_total"]
                 exploiter_updates_in_generation = exploiter_result["updates_in_generation"]

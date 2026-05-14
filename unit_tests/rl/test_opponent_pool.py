@@ -178,3 +178,37 @@ def test_opponent_pool_tracks_active_ghost_slots(tmp_path, mock_main_model, temp
     pool.add_ghost(40, str(p4))
     assert pool.active_ghost_slots() == {0, 1, 2}  # still full
     assert pool.slot_for_ghost_path[str(p4)] == 0
+
+
+def test_opponent_pool_tracks_active_exploiter_slots(tmp_path, mock_main_model, temp_exploiters_dir):
+    """OpponentPool exposes active_exploiter_slots reflecting which slots
+    hold real exploiter snapshot weights, and rotates LRU when full."""
+    pool = OpponentPool(
+        main_model=mock_main_model,
+        device="cpu",
+        battle_format="gen9vgc2023regc",
+        max_exploiter_models=3,
+        exploiter_models_dir=str(tmp_path),
+        ghosts_dir=temp_exploiters_dir,
+    )
+    assert pool.active_exploiter_slots() == set()
+    assert pool.slot_for_exploiter_path == {}
+
+    # First three add_exploiter calls fill slots 0, 1, 2
+    for i, name in enumerate(["e10.pt", "e20.pt", "e30.pt"]):
+        p = tmp_path / name
+        p.write_bytes(b"x")
+        import time
+        os.utime(p, (time.time() + i, time.time() + i))
+        pool.add_exploiter(str(p))
+    assert pool.active_exploiter_slots() == {0, 1, 2}
+    assert set(pool.slot_for_exploiter_path.values()) == {0, 1, 2}
+
+    # Fourth add evicts LRU (slot 0 — oldest by insertion)
+    p4 = tmp_path / "e40.pt"
+    p4.write_bytes(b"x")
+    import time
+    os.utime(p4, (time.time() + 4, time.time() + 4))
+    pool.add_exploiter(str(p4))
+    assert pool.active_exploiter_slots() == {0, 1, 2}  # still full
+    assert pool.slot_for_exploiter_path[str(p4)] == 0

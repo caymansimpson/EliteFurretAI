@@ -261,6 +261,13 @@ class OpponentPool:
         os.makedirs(self.exploiter_models_dir, exist_ok=True)
         self.exploiter_models: List[Tuple[float, str]] = []
         self.loaded_exploiters: Dict[str, RNaDAgent] = {}
+        # Exploiter snapshot slot lifecycle: each path is assigned a slot
+        # 0..max_exploiter_models-1. `slot_for_exploiter_path` maps file
+        # path -> slot index. `_exploiter_slot_lru` is an
+        # insertion-ordered list of currently-occupied slots; head is
+        # oldest. Loaded exploiters from disk on startup get slots 0..K-1.
+        self.slot_for_exploiter_path: Dict[str, int] = {}
+        self._exploiter_slot_lru: List[int] = []
         self._load_exploiter_models()
 
         self.ghosts_dir = ghosts_dir
@@ -366,6 +373,14 @@ class OpponentPool:
         ]
         models.sort(key=lambda item: item[0], reverse=True)
         self.exploiter_models = models[: self.max_exploiter_models]
+        # Assign slots in oldest-first order (slot 0 = oldest = first to
+        # be evicted by LRU). `self.exploiter_models` is sorted newest-first
+        # by mtime, so iterate in reverse for slot assignment.
+        self.slot_for_exploiter_path = {}
+        self._exploiter_slot_lru = []
+        for slot, (_, path) in enumerate(reversed(self.exploiter_models)):
+            self.slot_for_exploiter_path[path] = slot
+            self._exploiter_slot_lru.append(slot)
 
     def _load_ghosts(self) -> None:
         files = self._list_model_checkpoints(self.ghosts_dir)
@@ -439,9 +454,30 @@ class OpponentPool:
         """
         if not os.path.isfile(filepath):
             return
+
+        # Determine slot: reuse if path known, else allocate next free
+        # or evict LRU. Mirrors add_ghost.
+        if filepath in self.slot_for_exploiter_path:
+            slot = self.slot_for_exploiter_path[filepath]
+        elif len(self._exploiter_slot_lru) < self.max_exploiter_models:
+            slot = len(self._exploiter_slot_lru)
+            self._exploiter_slot_lru.append(slot)
+        else:
+            slot = self._exploiter_slot_lru.pop(0)
+            evicted_path = next(
+                p for p, s in self.slot_for_exploiter_path.items() if s == slot
+            )
+            del self.slot_for_exploiter_path[evicted_path]
+            self._exploiter_slot_lru.append(slot)
+        self.slot_for_exploiter_path[filepath] = slot
+
         self.exploiter_models.append((os.path.getmtime(filepath), filepath))
         self.exploiter_models.sort(key=lambda x: x[0], reverse=True)
         self.exploiter_models = self.exploiter_models[: self.max_exploiter_models]
+
+    def active_exploiter_slots(self) -> Set[int]:
+        """Slots currently populated with real exploiter snapshot weights."""
+        return set(self._exploiter_slot_lru)
 
     def record_battle_result(
         self,
