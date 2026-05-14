@@ -1,57 +1,30 @@
+# Only non-default values are listed. Defaults live in
+# `src/elitefurretai/rl/config.py` (the `@dataclass` definitions).
 algorithm:
-  clip_range: 0.2
   ent_coef: 0.02
-  ent_coef_end: 0.001
-  gae_lambda: 0.95
   gamma: 1
-  max_grad_norm: 0.5
   rnad_alpha: 0.15
   vf_coef: 1.0
   ppo_epochs: 4
 
 portfolio:
-  max_portfolio_size: 5
   portfolio_add_interval: 25
-  portfolio_update_strategy: recent
-
-exploration:
-  temperature_start: 1.5
-  temperature_end: 0.5
-  temperature_anneal_steps: 50000
-  top_p: 0.95
 
 optimizer:
-  type: adamw
-  weight_decay: 0.0001
-  warmup_steps: 1000
-  schedule: cosine
   backbone_lr: 0.00001
-  backbone_weight_decay: 0.0001
   heads_lr: 0.00003
-  heads_weight_decay: 0.0
   lr: 0.00001
 
-value_head:
-  num_value_bins: 51
-  value_min: -1.0
-  value_max: 1.0
-
-# TODO: revisit what i can remove, as defaults
 architecture:
   # Transformer backbone (matching cool-bee-85-finetune: ~26.7M params, ~5x smaller than
   # curious-darkness-77; trained with raw featureset; finetuned for 15 additional epochs).
   transformer_layers: 4
   transformer_heads: 8
   transformer_ff_dim: 1024
-  transformer_dropout: 0.1
-  use_decision_tokens: true
-  use_causal_mask: true
   # Encoder
   early_layers: [1024, 512, 512]
   late_layers: [512, 512]
   dropout: 0
-  early_attention_heads: 16
-  late_attention_heads: 32
   grouped_encoder_hidden_dim: 256
   grouped_encoder_aggregated_dim: 2048
   pokemon_attention_heads: 8
@@ -60,18 +33,10 @@ architecture:
   teampreview_head_dropout: 0
   teampreview_attention_heads: 2
   turn_head_layers: [512, 256, 256]
-  max_seq_len: 40
-  # Number bank embeddings
-  number_bank_hp_bins: 100
-  number_bank_stat_bins: 600
-  number_bank_power_bins: 250
-  number_bank_embedding_dim: 16
 
 hardware:
   batch_size: 8
   batch_timeout: 0.02
-  device: cuda
-  max_battle_steps: 40
   num_battles_per_pair: 16
   # null = poke-env's default of 1 (battles serialise behind the previous
   # battle's duration). Set to num_battles_per_pair to remove the 5-30s
@@ -80,8 +45,6 @@ hardware:
   num_players: 18
   num_servers: 6
   num_workers: 6
-  showdown_start_port: 8000
-  use_mixed_precision: true # TODOL remove as default
 
 curriculum:
   battle_format: gen9vgc2024regg
@@ -101,7 +64,6 @@ curriculum:
     vgc_bench_baseline: 0.1
     train_exploiter: 0.0  # off; bump to 0.20 to activate in-process exploiter co-training
   adaptive_curriculum: false
-  max_portfolio_size: 5
   max_exploiter_models: 5
   max_ghosts: 5
   vgc_bench_checkpoint_path: data/models/vgc-bench-sb3-model.zip
@@ -113,17 +75,11 @@ curriculum:
   external_vgcbench_team_file: data/teams/gen9vgc2024regg/vgcbench.txt
 
 training:
-  embedder_feature_set: raw
   initialize_path: data/models/supervised/cool-bee-85-finetune_best.pt
   resume_from: data/models/rl/bright-pine-189/main_model_step_144.pt
-  max_updates: 100000
   save_dir: data/models/rl
   train_batch_size: 128
   checkpoint_interval: 100
-  log_interval: 1
-  use_wandb: true
-  wandb_project: elitefurretai-rnad
-  wandb_run_name: null
 
 # ── Exploiter co-training (in-process, graduation-based)
 # ─ gated by curriculum train_exploiter weight ─

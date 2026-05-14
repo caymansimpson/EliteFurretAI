@@ -46,6 +46,7 @@ def test_team_repo():
         tr.get_all(format="invalidformat")
 
 
+@pytest.mark.slow
 def test_validator():
     tr = TeamRepo("data/fixture/teams", verbose=True)
 

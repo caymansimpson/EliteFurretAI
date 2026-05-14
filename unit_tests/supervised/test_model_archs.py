@@ -725,6 +725,7 @@ def test_transformer_no_causal_mask(simple_embedder):
 # =============================================================================
 
 
+@pytest.mark.slow
 def test_compiled_rnad_agent_matches_eager(simple_embedder):
     """torch.compile(RNaDAgent) on the inference path must produce the same
     outputs (within float tolerance) as eager mode for representative

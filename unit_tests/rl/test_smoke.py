@@ -80,8 +80,6 @@ _SMOKE_YAML = textwrap.dedent("""\
       transformer_heads: 1
       transformer_ff_dim: 64
       transformer_dropout: 0.0
-      use_decision_tokens: false
-      use_causal_mask: false
 
     hardware:
       batch_size: 1
@@ -93,7 +91,6 @@ _SMOKE_YAML = textwrap.dedent("""\
       num_servers: 1
       num_workers: 1
       showdown_start_port: 8000
-      use_mixed_precision: false
       battle_backend: rust_engine
 
     curriculum:
@@ -113,7 +110,6 @@ _SMOKE_YAML = textwrap.dedent("""\
       auto_launch_external_vgcbench: false
       external_vgcbench_python_executable: python
       external_vgcbench_team_file: ""
-      dedicated_vgcbench_workers: 0
 
     training:
       embedder_feature_set: full

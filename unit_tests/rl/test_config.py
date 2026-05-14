@@ -409,17 +409,6 @@ def test_use_wandb_is_boolean():
     assert isinstance(config.training.use_wandb, bool)
 
 
-def test_use_mixed_precision_is_boolean():
-    """
-    Test that use_mixed_precision is a boolean.
-
-    Expected: use_mixed_precision is True or False.
-    """
-    config = get_default_config()
-
-    assert isinstance(config.hardware.use_mixed_precision, bool)
-
-
 # =============================================================================
 # PORTFOLIO CONFIG TESTS
 # =============================================================================

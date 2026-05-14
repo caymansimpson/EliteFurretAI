@@ -169,7 +169,6 @@ class PortfolioRNaDLearner:
         self.ppo_epochs = max(1, config.algorithm.ppo_epochs)
         self.ppo_kl_early_stop = config.algorithm.ppo_kl_early_stop
         self.device = device
-        self.use_mixed_precision = config.hardware.use_mixed_precision
         self.max_portfolio_size = config.portfolio.max_portfolio_size
         self.portfolio_update_strategy = config.portfolio.portfolio_update_strategy
         self._step = 0
@@ -184,7 +183,7 @@ class PortfolioRNaDLearner:
 
         self.scaler = (
             torch.amp.GradScaler(device=self.device)  # type: ignore[attr-defined]
-            if self.use_mixed_precision
+            if str(self.device).startswith("cuda")
             else None
         )
 
@@ -371,7 +370,7 @@ class PortfolioRNaDLearner:
         ref_turn_logits_list: list = []
         if len(self.ref_models) > 0:
             with torch.amp.autocast(  # pyright: ignore[reportPrivateImportUsage]
-                device_type=self.device, enabled=self.use_mixed_precision
+                device_type=self.device
             ):
                 with torch.no_grad():
                     for ref_model in self.ref_models:
@@ -404,7 +403,7 @@ class PortfolioRNaDLearner:
             track_kl = epoch == 0
 
             with torch.amp.autocast(  # pyright: ignore[reportPrivateImportUsage]
-                device_type=self.device, enabled=self.use_mixed_precision
+                device_type=self.device
             ):
                 turn_logits, tp_logits, values, win_dist_logits = self.model.model.forward(
                     states
@@ -517,7 +516,7 @@ class PortfolioRNaDLearner:
 
             self.optimizer.zero_grad()
 
-            if self.use_mixed_precision and self.scaler is not None:
+            if self.scaler is not None:
                 self.scaler.scale(total_loss).backward()
                 self.scaler.unscale_(self.optimizer)
                 grad_norm_before = torch.nn.utils.clip_grad_norm_(
@@ -627,8 +626,6 @@ MODEL_ARCH_CONFIG_KEYS = (
     "transformer_heads",
     "transformer_ff_dim",
     "transformer_dropout",
-    "use_decision_tokens",
-    "use_causal_mask",
 )
 
 

@@ -2,6 +2,7 @@
 import itertools
 from unittest.mock import MagicMock
 
+import pytest
 from poke_env.battle import Battle, DoubleBattle, Move, Pokemon, Status, Target
 from poke_env.player import DoubleBattleOrder, PassBattleOrder, SingleBattleOrder
 
@@ -88,6 +89,7 @@ def test_is_valid_singles_order(example_singles_request):
 # This tests all possible orders for a double battle, and their validity under major conditions
 # It tests 2v2, force_switch, trapped and 1v1 scenarios. This method really demonstrates how
 # much more complicated VGC is as a game
+@pytest.mark.slow
 def test_is_valid_doubles_order(example_doubles_request):
     # Initiate battle and create an opponent team
     logger = MagicMock()

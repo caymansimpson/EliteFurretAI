@@ -107,53 +107,56 @@ The system uses an **IMPALA-style multiprocessing architecture** with separate P
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                        LEARNER PROCESS (GPU)                        │
-│  ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐  │
-│  │  Main Model     │    │ Reference Model │    │ Optimizer       │  │
-│  │  (GPU, FP32)    │    │ (GPU, FP32)     │    │ (Adam states)   │  │
-│  └─────────────────┘    └─────────────────┘    └─────────────────┘  │
+│  ┌─────────────────┐   ┌─────────────────┐   ┌─────────────────┐    │
+│  │  Main Model     │   │ Reference Model │   │   Optimizer     │    │
+│  │  (GPU, FP32)    │   │ (GPU, FP32)     │   │ (Adam states)   │    │
+│  └─────────────────┘   └─────────────────┘   └─────────────────┘    │
 │                                                                     │
-│  ┌─────────────────────────────────────────────────────────────┐   │
-│  │                    Trajectory Queue                          │   │
-│  │              (receives from all actors)                      │   │
-│  └─────────────────────────────────────────────────────────────┘   │
-│           ▲                     ▲                     ▲           │
-└───────────┼─────────────────────┼─────────────────────┼───────────┘
-            │                     │                     │
-    ┌───────┴───────┐     ┌───────┴───────┐     ┌───────┴───────┐
-    │  ACTOR 0      │     │  ACTOR 1      │     │  ACTOR 2      │
-    │  (CPU only)   │     │  (CPU only)   │     │  (CPU only)   │
-    │               │     │               │     │               │
-    │ ┌───────────┐ │     │ ┌───────────┐ │     │ ┌───────────┐ │
-    │ │Model Copy │ │     │ │Model Copy │ │     │ │Model Copy │ │
-    │ └───────────┘ │     │ └───────────┘ │     │ └───────────┘ │
-    │       ↓       │     │       ↓       │     │       ↓       │
-    │ ┌───────────┐ │     │ ┌───────────┐ │     │ ┌───────────┐ │
-    │ │ Embedder  │ │     │ │ Embedder  │ │     │ │ Embedder  │ │
-    │ └───────────┘ │     │ └───────────┘ │     │ └───────────┘ │
-    │       ↓       │     │       ↓       │     │       ↓       │
-    │ ┌───────────┐ │     │ ┌───────────┐ │     │ ┌───────────┐ │
-    │ │ Showdown  │ │     │ │ Showdown  │ │     │ │ Showdown  │ │
-    │ │ :8000     │ │     │ │ :8001     │ │     │ │ :8002     │ │
-    │ └───────────┘ │     │ └───────────┘ │     │ └───────────┘ │
-    └───────────────┘     └───────────────┘     └───────────────┘
+│  ┌───────────────── ModelRegistry (trainer GPU) ──────────────────┐ │
+│  │  InferenceService["main"]   InferenceService["bc"]   ...       │ │
+│  │   • daemon thread            • daemon thread                   │ │
+│  │   • batches mp.Queue reqs    • hidden_states[(wid,pid,tag)]    │ │
+│  │   • one batched forward → response queues                      │ │
+│  └────────────────────────────────────────────────────────────────┘ │
+│              ▲ requests         │ responses   ▲ trajectories        │
+└──────────────┼──────────────────┼─────────────┼─────────────────────┘
+               │                  ▼             │
+       ┌───────┴────────┐ ┌───────┴────────┐ ┌──┴─────────────┐
+       │   WORKER 0     │ │   WORKER 1     │ │   WORKER N     │
+       │  (CPU only)    │ │  (CPU only)    │ │  (CPU only)    │
+       │                │ │                │ │                │
+       │ WorkerInferenceClients (per name: main / bc / ...)   │
+       │  • client.submit(req) → trainer InferenceService     │
+       │  • await response future                             │
+       │                │ │                │ │                │
+       │ ┌────────────┐ │ │ ┌────────────┐ │ │ ┌────────────┐ │
+       │ │  Embedder  │ │ │ │  Embedder  │ │ │ │  Embedder  │ │
+       │ └────────────┘ │ │ └────────────┘ │ │ └────────────┘ │
+       │ ┌────────────┐ │ │ ┌────────────┐ │ │ ┌────────────┐ │
+       │ │  Showdown  │ │ │ │  Showdown  │ │ │ │  Showdown  │ │
+       │ │   :8000    │ │ │ │   :8001    │ │ │ │   :8002    │ │
+       │ └────────────┘ │ │ └────────────┘ │ │ └────────────┘ │
+       └────────────────┘ └────────────────┘ └────────────────┘
 ```
 
 **Key Characteristics:**
-- Each actor is a **separate Python process** (still true — bypasses GIL).
-- **Centralized inference** (the only mode): actors no longer hold
-  their own model copies. A trainer-side `ModelRegistry` owns one
-  `InferenceService` per model name; actors construct a
-  `WorkerInferenceClients` bundle and submit via mp.Queue. The inference
-  forward runs on `config.hardware.device` (typically the trainer's GPU)
-  in the trainer process. See "Centralized Inference" section below for
-  details.
-- **Bypasses GIL** for true parallelism — featurization + battle
-  stepping in actor processes, inference either CPU-per-actor (legacy)
-  or batched on the trainer's GPU (centralized).
-- In legacy mode the learner **broadcasts updated weights** to actors
-  via mp.Queue. In centralized mode actors don't hold the model;
-  instead the trainer calls `registry.sync_weights(...)` to update the
-  inference service's copy at the same cadence.
+- Each actor is a **separate Python process** (bypasses GIL for
+  featurization + battle stepping).
+- **Actors do not hold model weights.** Inference is centralized:
+  trainer owns a `ModelRegistry` with one `InferenceService` per
+  registered model name (`main`, optionally `bc` / `exploiter` /
+  `victim` / `ghost_*`). Each actor constructs a
+  `WorkerInferenceClients` bundle of per-model mp.Queue pairs and
+  submits requests; the batched forward runs on
+  `config.hardware.device` (the trainer's GPU) in the trainer process.
+  See [Section 8b](#8b-centralized-inference-may-2026) for details.
+- **Weight sync is centralized.** The trainer calls
+  `registry.sync_weights(name, state_dict)` to update each
+  `InferenceService`'s model copy in place; actors never load model
+  weights. Per-worker `weight_queue`s remain but now carry only
+  curriculum / temperature / top_p / exploiter paths / ghost slot
+  toggles (any `"weights"` payload still in the broadcast is dropped
+  on the worker side).
 - Actors send completed trajectories via `multiprocessing.Queue`.
 
 ---
@@ -237,8 +240,8 @@ Actor 2: [===RUN===][===RUN===][===RUN===][===RUN===]
 
 1.  **Trajectories are the Currency**: Actors collect `(state, action, reward, log_prob, value)` tuples and send them to the learner via queue. The Learner computes gradients from these trajectories.
 2.  **Bidirectional Communication**: Actors send actions to Pokémon Showdown and receive state updates via WebSocket.
-3.  **Inference placement is mode-dependent**: Legacy mode runs inference on per-actor CPU model copies, freeing the GPU entirely for gradient computation. Centralized mode runs batched inference on the trainer's GPU (`config.hardware.device`), trading some GPU contention with the learner for much higher inference batch sizes and one model copy total.
-4.  **Periodic Weight Sync**: Every N trajectories, fresh weights propagate from the learner — to the actors' model copies in legacy mode, or to the trainer-side `InferenceService`'s model copy in centralized mode (`registry.sync_weights`).
+3.  **Inference is centralized on the trainer's GPU**: All actors submit batched inference requests to the trainer-side `InferenceService`s. This trades some GPU contention with the learner for much larger inference batches and a single model copy in memory per registered name, instead of one per worker.
+4.  **Periodic Weight Sync**: Every N trajectories, the trainer calls `registry.sync_weights(name, state_dict)` to update each `InferenceService`'s model copy in place. Workers never reload model weights.
 
 ---
 

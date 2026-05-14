@@ -320,7 +320,6 @@ class MetaDB:
             if mon.item and mon.item != GenData.UNKNOWN_ITEM
             else "NULL"
         )
-        # gender = mon.gender.name.lower() if mon.gender else "NULL" TODO: changed so i dont store gender
         tera_type = mon.tera_type.name if mon.tera_type else "NULL"
 
         clause = "\t\t\tspecies = '{species}'".format(species=mon.species.lower())
@@ -330,8 +329,6 @@ class MetaDB:
             clause += "\n\t\t\tAND ability = '{ability}'".format(ability=ability)
         if item != "NULL":
             clause += "\n\t\t\tAND item = '{item}'".format(item=item)
-        # if gender != "NULL":
-        #     clause += "\n\t\t\tAND gender = '{gender}'".format(gender=gender)
         if tera_type != "NULL":
             clause += "\n\t\t\tAND tera_type = '{teratype}'".format(teratype=tera_type)
 

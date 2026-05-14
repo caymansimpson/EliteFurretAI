@@ -162,15 +162,15 @@ curriculum:
     # simple_heuristic / vgc_bench are heuristic / external (no model).
     # exploiters / train_exploiter stay off in this config.
     self_play: 0.3
-    bc_player: 0.1
-    exploiters: 0.0
+    bc_player: 0.05
+    exploiters: 0.1
     ghosts: 0.1
     max_damage: 0.1
     random_baseline: 0
     max_base_power_baseline: 0
-    simple_heuristic_baseline: 0.1
-    vgc_bench_baseline: 0.3
-    train_exploiter: 0.0
+    simple_heuristic_baseline: 0.05
+    vgc_bench_baseline: 0.2
+    train_exploiter: 0.1
   adaptive_curriculum: false
   max_exploiter_models: 5
   max_ghosts: 5
@@ -191,7 +191,7 @@ training:
   # Resume from step 208 (latest checkpoint from the failed topology run
   # — even though the run itself regressed, the two completed updates
   # are preserved on disk).
-  resume_from: data/models/rl/pretty-jazz-4/main_model_step_208.pt
+  resume_from: data/models/rl/pretty-jazz-4/main_model_step_365.pt
   max_updates: 100000
   save_dir: data/models/rl
   train_batch_size: 256

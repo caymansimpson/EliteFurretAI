@@ -108,12 +108,21 @@ class PortfolioConfig:
     set max_portfolio_size=1 and portfolio_update_strategy="recent".
     PortfolioRNaDLearner reduces to the base algorithm in that configuration.
 
-    TODO: enumerate that we want to be able to only accept: recent, best
-    and diverse; implement all of these, and add an explanation on what they
-    are
+    portfolio_update_strategy (see `PortfolioRNaDLearner._prune_portfolio`):
+      - "recent"  : when the portfolio is full, evict the oldest reference.
+                    Cheapest and most stable; recommended default.
+      - "best"    : evict the reference that has been selected (i.e. been the
+                    closest KL anchor) least often. Keeps the most-load-bearing
+                    anchors around longer.
+      - "diverse" : reserved name for a diversity-maximising eviction policy
+                    (e.g. drop the reference whose representations are closest
+                    to another's). NOT YET IMPLEMENTED — selecting it raises
+                    NotImplementedError.
     """
 
     max_portfolio_size: int = 5
+    # Updates between adding the current main model into the portfolio as a
+    # new reference. Larger = more diverse anchors but slower portfolio churn.
     portfolio_add_interval: int = 500
     portfolio_update_strategy: str = "recent"
 
@@ -242,10 +251,26 @@ class ExploiterConfig:
 
 @dataclass
 class ExplorationConfig:
-    """Temperature annealing and nucleus sampling for action selection."""
+    """Temperature annealing and nucleus sampling for action selection.
 
-    # TODO: add comments here on what these are, the implications of raising/
-    # lowering them are, and where they're used
+    Used by `temperature_at_step` (below) and pushed to workers via
+    `players.top_p` / the per-update sampling broadcast. The same annealing
+    schedule also drives `ent_coef_at_step` (entropy bonus annealing).
+
+    - temperature_start / temperature_end: softmax temperature on action
+      logits. Higher = flatter distribution = more exploration. Linearly
+      annealed from start → end over `temperature_anneal_steps` updates.
+      Raising the start widens early exploration but slows convergence;
+      lowering the end sharpens late-stage exploitation.
+    - temperature_anneal_steps: horizon of the linear schedule. Should be set
+      relative to `training.max_updates` (typically ~half of it). Smaller =
+      faster collapse to greedy play; larger = sustained exploration.
+    - top_p: nucleus-sampling cutoff applied AFTER temperature. Restricts
+      sampling to the smallest set of actions whose cumulative probability
+      exceeds top_p. 1.0 disables nucleus filtering; 0.95 is the standard
+      "drop the long tail" setting. Used in `inference_trainer.softmax_with_top_p`.
+    """
+
     temperature_anneal_steps: int = 50000
     temperature_end: float = 0.5
     temperature_start: float = 1.5
@@ -316,9 +341,11 @@ class ArchitectureConfig:
     transformer_heads: int = 16
     transformer_layers: int = 6
 
-    # TODO: treat these all as constants; they shouldnt be configs
-    use_causal_mask: bool = True
-    use_decision_tokens: bool = True
+    # Note: `use_causal_mask` and `use_decision_tokens` used to live here.
+    # RL training always uses both (set to True). The flags survive only on
+    # the supervised side (`model_archs.TransformerThreeHeadedModel` kwargs +
+    # supervised YAMLs) where ablations still need them; `build_model_from_config`
+    # defaults to True when the keys are absent.
 
 
 @dataclass
@@ -346,10 +373,11 @@ class HardwareConfig:
         max_battle_steps          = trajectory truncation. Battles longer than
                                     this have early steps dropped (we keep the
                                     last N decisions, since later turns matter more).
-        use_mixed_precision       = use FP16 autocast in the learner (~2× speedup
-                                    on RTX cards, ~30% VRAM savings).
         rust_max_concurrent_..    = override for the Rust backend's per-worker
                                     concurrency cap. Only used if rust backend.
+
+    Note: mixed-precision is no longer a knob. The learner unconditionally
+    uses autocast and creates a GradScaler when running on CUDA.
     """
 
     batch_size: int = 16
@@ -361,15 +389,12 @@ class HardwareConfig:
     num_players: int = 3
     num_servers: int = 3
     num_workers: int = 3
-    # TODO: is this necessary? what does this do?
-    # Wondering if we should remove, especially
-    # given we are moving away from Rust; don't want this extra
-    # complexity. Feels we can add a comment in the rust engine part
-    # of this codebase that this is a potential configurable parameter
-    # if we ever want to revisit
+    # Optional override for the Rust backend's auto-computed per-worker
+    # concurrency cap (see `rust_max_concurrent_battles_per_worker` property
+    # below). Kept while the Rust backend exists; once Showdown is the only
+    # backend, this field and the property can be removed together.
     rust_max_concurrent_battles_override: Optional[int] = None
     showdown_start_port: int = 8000
-    use_mixed_precision: bool = True
     use_multiprocessing: bool = False
     # Per-player concurrent-battle cap (poke-env's `max_concurrent_battles`
     # kwarg on Player). None = poke-env's default of 1, which serialises
@@ -381,7 +406,6 @@ class HardwareConfig:
     # (Showdown training path); analysis scripts are unaffected.
     max_concurrent_battles_per_player: Optional[int] = 20
 
-    # TODO: revisit. Shouldnt this be a constant?
     # torch.compile the inference model in workers. The 2026-05-13 profile
     # showed model forward (linear + transformer + layer_norm) was the
     # dominant useful work (~36% OwnTime); compile should fuse small
@@ -391,7 +415,6 @@ class HardwareConfig:
     # subsequent calls reuse the cached graph.
     compile_inference_model: Optional[str] = None
 
-    # TODO: I think this should be a default, and set to true?
     def __post_init__(self) -> None:
         if self.battle_backend not in SUPPORTED_BATTLE_BACKENDS:
             raise ValueError(
@@ -462,16 +485,22 @@ class CurriculumConfig:
             "random_baseline": 0.05,
         }
     )
-    # TODO: add comment on the algorithm, once developed
+    # PFSP-style curriculum adaptation. When True, `update_curriculum` runs
+    # every `checkpoint_interval` updates and re-weights opponents based on
+    # recent win rates (blends PFSP — favour ~50/50 matchups for max learning
+    # signal — with weakness targeting — push more games toward opponents
+    # where main underperforms). Smoothed + sample-gated to avoid noise.
+    # See `WorkerOpponentFactory.update_curriculum` in `opponents.py` for
+    # the full algorithm. False = fixed `curriculum_weights` for the run.
     adaptive_curriculum: bool = True
     # Exploiter and ghost model pool sizes (paths are derived from training.run_dir)
     max_exploiter_models: int = 10
     max_ghosts: int = 10
-    # TODO: are there any of these vgcbench that can just be constants?
-    # like usernames are not valuable at all, and many of these will never change
-    # VGC bench external runner
+    # VGC bench external runner — launches a separate venv'd VGCBench
+    # instance and registers it under OpponentPool.VGC_BENCH_BASELINE. All
+    # knobs here are environment-level (paths, usernames, startup timing);
+    # they are not training-algorithm knobs and rarely change between runs.
     auto_launch_external_vgcbench: bool = False
-    dedicated_vgcbench_workers: int = 0  # TODO: i think this is old, and we can remove
     external_vgcbench_python_executable: Optional[str] = None
     external_vgcbench_startup_wait_s: float = 5.0
     external_vgcbench_team_file: str = "data/teams/gen9vgc2024regg/vgcbench.txt"
@@ -487,9 +516,23 @@ class TrainingConfig:
     accessed at `config.exploiter.*` rather than `config.training.*`.
     """
 
-    # TODO: probably helpful to talka bout what this does
+    # Cadence (in main-process updates) for the per-update "rendezvous":
+    # save a .pt checkpoint, broadcast fresh weights + curriculum to all
+    # workers, refresh ghost slots, and (when enabled) run curriculum
+    # adaptation. Smaller = tighter weight sync at the cost of throughput
+    # (broadcast is the dominant blocking op); larger = workers drift
+    # further from the live learner between updates.
     checkpoint_interval: int = 1000
-    # TODO: valuable to comment on all the possibilities here
+    # Embedder feature set fed into the model. Values must match constants
+    # defined on `etl.embedder.Embedder`:
+    #   - "simple"             : minimal hand-picked features (debug / smoke).
+    #   - "raw"                : default. Token-style raw fields without
+    #                            engineered transition features. Used by the
+    #                            current best checkpoint (cool-bee-85).
+    #   - "full"               : raw + engineered features incl. transition
+    #                            features. Larger embedding, slower.
+    #   - "full_no_transition" : "full" minus transition features (kept around
+    #                            for ablations).
     embedder_feature_set: str = "raw"
     initialize_path: Optional[str] = None
     log_interval: int = 1
@@ -512,7 +555,6 @@ class TrainingConfig:
     memory_watchdog_threshold_gb: Optional[float] = 20.0
 
 
-# TODO: is this necessary or used at all?
 def _make_sub(klass: Any, d: Dict[str, Any]) -> Any:
     """Construct a dataclass from a dict, ignoring unknown keys."""
     known = {f for f in klass.__dataclass_fields__}

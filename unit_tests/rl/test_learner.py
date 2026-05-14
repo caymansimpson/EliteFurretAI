@@ -91,7 +91,6 @@ def learner(agent, ref_agent):
     config.algorithm.gamma = 0.99
     config.algorithm.max_grad_norm = 0.5
     config.hardware.device = "cpu"
-    config.hardware.use_mixed_precision = False
     config.optimizer.warmup_steps = 0
     config.optimizer.schedule = "constant"
     config.optimizer.backbone_lr = 1e-4
@@ -499,7 +498,6 @@ def _make_learner_with_epochs(agent, ref_agent, ppo_epochs=1, kl_early_stop=None
     config.algorithm.ppo_epochs = ppo_epochs
     config.algorithm.ppo_kl_early_stop = kl_early_stop
     config.hardware.device = "cpu"
-    config.hardware.use_mixed_precision = False
     config.optimizer.warmup_steps = 0
     config.optimizer.schedule = "constant"
     config.optimizer.backbone_lr = 1e-4

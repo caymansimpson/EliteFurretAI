@@ -43,8 +43,6 @@ architecture:
   transformer_heads: 8
   transformer_ff_dim: 1024
   transformer_dropout: 0.1
-  use_decision_tokens: true
-  use_causal_mask: true
   # Encoder
   early_layers: [1024, 512, 512]
   late_layers: [512, 512]
@@ -80,7 +78,6 @@ hardware:
   num_servers: 4
   num_workers: 4
   showdown_start_port: 8000
-  use_mixed_precision: true
 
 curriculum:
   battle_format: gen9vgc2024regg

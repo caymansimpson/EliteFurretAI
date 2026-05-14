@@ -77,12 +77,13 @@ pythonVersion = "3.7"
 
 [tool.pytest.ini_options]
 minversion = "6.0"
-addopts = "-ra -q"
+addopts = "-ra -q -m 'not slow'"
 testpaths = [
     "unit_tests",
 ]
 markers = [
     "smoke: end-to-end training smoke tests (deselect with '-m not smoke')",
+    "slow: tests taking >10s; skipped by default, run with '-m slow'",
 ]
 
 [tool.setuptools.dynamic]

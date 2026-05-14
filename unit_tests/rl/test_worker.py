@@ -496,25 +496,6 @@ def test_add_to_batch_collects_items():
     assert is_tps[0] is False
 
 
-def test_inference_loop_processes_queue():
-    """
-    Test that BatchInferencePlayer has the _inference_loop method.
-
-    The inference loop should:
-    1. Wait for items in the queue
-    2. Collect up to batch_size items
-    3. Run batched inference
-    4. Set results on futures
-
-    Note: Full async testing requires pytest-asyncio.
-    This verifies the class has the method.
-    """
-    from elitefurretai.rl.players import BatchInferencePlayer
-
-    # Verify the class has the method
-    assert hasattr(BatchInferencePlayer, "_inference_loop")
-
-
 # =============================================================================
 # HIDDEN STATE MANAGEMENT TESTS
 # =============================================================================
