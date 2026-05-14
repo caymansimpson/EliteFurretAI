@@ -478,3 +478,29 @@ session including the Phase 1 ghost bugfix.
 
 **Status: design plan complete.** Registry plan's "Future work"
 section is now closed (see next doc update).
+
+### 2026-05-14 (follow-up) — Exploiter slot centralization
+
+Cayman asked to extend the same pattern to EXPLOITERS (snapshot
+exploiters, distinct from the live TRAIN_EXPLOITER co-training).
+4 commits, structurally parallel to ghost centralization:
+
+| Commit | What |
+|---|---|
+| `52e036a` | OpponentPool slot lifecycle (`slot_for_exploiter_path`, `_exploiter_slot_lru`, `active_exploiter_slots()`); train.py pre-registers `max_exploiter_models` `exploiter_snap_<slot>` services; syncs weights on `add_exploiter` event. |
+| `a67b855` | `WorkerOpponentFactory._active_exploiter_slots` + `set_active_exploiter_slots()`; EXPLOITERS branch in `configure_opponent_for_batch` routes via `clients.get(f"exploiter_snap_{slot}")`; broadcast payload + spawn args. |
+| `edfd7df` | Drop legacy `exploiter_paths` plumbing across train.py / worker.py / vgc_environment.py / WorkerOpponentFactory (parallel to ghost Phase 3 cleanup). |
+| `6df21b7` | Remove dead `_load_exploiter_model` + `loaded_exploiters` cache (last legacy bits of the snapshot-exploiter disk-load path). |
+
+The behavior change noted earlier (EXPLOITERS curriculum sample falls
+back to self-play) is now reversed: EXPLOITERS routes through
+`exploiter_snap_<slot>` services if any are populated, falls back to
+self-play if not. `sep_arch.yaml` still has `exploiters: 0.0` so the
+active config is unaffected; the wiring is dormant but ready for
+re-activation.
+
+No measurement run — the active sep_arch curriculum doesn't sample
+EXPLOITERS, so throughput is unchanged from Measurement 4. Validation
+is via the new unit tests (`test_opponent_pool_tracks_active_exploiter_slots`,
+`test_configure_opponent_for_batch_exploiters_routes_via_active_slot`,
+`test_configure_opponent_for_batch_exploiters_falls_back_when_no_active_slots`).
