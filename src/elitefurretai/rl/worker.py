@@ -570,6 +570,15 @@ def mp_worker_process(
                                                 "ghost_paths"
                                             ),
                                         )
+                                    if "active_ghost_slots" in incoming_payload:
+                                        _backend = getattr(env, "_backend", None)
+                                        _wfactory = getattr(
+                                            _backend, "_factory", None
+                                        )
+                                        if _wfactory is not None:
+                                            _wfactory.set_active_ghost_slots(
+                                                incoming_payload["active_ghost_slots"]
+                                            )
                                     env.update_sampling(
                                         temperature=incoming_payload.get("temperature"),
                                         top_p=incoming_payload.get("top_p"),
