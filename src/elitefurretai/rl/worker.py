@@ -74,7 +74,6 @@ from elitefurretai.engine.vgc_environment import VGCEnvironment
 from elitefurretai.etl import Embedder, TeamRepo
 from elitefurretai.etl.system_utils import suppress_third_party_warnings
 from elitefurretai.rl.config import RNaDConfig
-from elitefurretai.rl.learners import build_model_from_config
 from elitefurretai.rl.opponents import OpponentPool
 from elitefurretai.rl.players import RNaDAgent
 
@@ -169,23 +168,10 @@ def mp_worker_process(
         team_pool_path = config.curriculum.base_team_path
         num_battles_per_pair = config.hardware.num_battles_per_pair
         curriculum = config.curriculum.curriculum_weights
-        bc_model_path = config.curriculum.bc_model_path
         external_vgcbench_usernames = config.curriculum.external_vgcbench_usernames
         external_vgcbench_startup_wait_s = (
             config.curriculum.external_vgcbench_startup_wait_s
         )
-
-        # Apply dedicated worker restrictions to initial curriculum before environment setup.
-        # Dedicated workers always face VGCBench; remaining workers never do.
-        if config.curriculum.dedicated_vgcbench_workers > 0:
-            if worker_id < config.curriculum.dedicated_vgcbench_workers:
-                curriculum = {OpponentPool.VGC_BENCH_BASELINE: 1.0}
-            else:
-                curriculum = {
-                    k: v
-                    for k, v in curriculum.items()
-                    if k != OpponentPool.VGC_BENCH_BASELINE
-                }
 
         if verbose:
             logger.debug(
@@ -264,177 +250,63 @@ def mp_worker_process(
         # and `model_config` for ghost loading paths. Detected from
         # spawn args: when both inference queues are present, build a
         # client and skip the model build.
-        centralized_main = (
-            main_inference_request_queue is not None
-            and main_inference_response_queue is not None
-        )
+        assert main_inference_request_queue is not None and main_inference_response_queue is not None, \
+            "Centralized inference required; main inference queues missing from spawn args"
 
         model: Optional[Any] = None
         agent: Optional[RNaDAgent] = None
         main_inference_client = None
         worker_inference_clients = None  # set in centralized mode (step 3+)
-        if centralized_main:
-            from poke_env.concurrency import POKE_LOOP
 
-            from elitefurretai.rl.inference_worker import (
-                InferenceClient,
-                WorkerInferenceClients,
-            )
+        from poke_env.concurrency import POKE_LOOP
 
-            # When the trainer passed a per-model queues bundle,
-            # wrap it in WorkerInferenceClients (one InferenceClient per
-            # registered model). When only legacy main queues were passed,
-            # construct a single main client.
-            if queues_by_model is not None:
-                worker_inference_clients = WorkerInferenceClients(
-                    worker_id=worker_id,
-                    queues_by_model=cast(Any, queues_by_model),
-                    loop=POKE_LOOP,
-                )
-                main_inference_client = worker_inference_clients.get("main")
-                if verbose:
-                    logger.debug(
-                        "[MPWorker %d] Centralized inference (bundle) enabled; models=%s",
-                        worker_id,
-                        worker_inference_clients.names(),
-                    )
-            else:
-                main_inference_client = InferenceClient(
-                    worker_id=worker_id,
-                    request_queue=cast(Any, main_inference_request_queue),
-                    response_queue=cast(Any, main_inference_response_queue),
-                    loop=POKE_LOOP,
-                )
-                main_inference_client.start()
-                if verbose:
-                    logger.debug(
-                        "[MPWorker %d] Centralized inference (legacy single) "
-                        "enabled; skipping main model load",
-                        worker_id,
-                    )
-        else:
-            model = build_model_from_config(
-                model_config,
-                embedder,
-                device,
-                checkpoint["model_state_dict"],
-                strict=False,
-            )
-            model.eval()
-            agent = RNaDAgent(model)
-        # Optional: torch.compile the inference agent for kernel fusion +
-        # dispatch-overhead removal. dynamic=True so the transformer's
-        # growing context tensor doesn't trigger recompilation each turn.
-        # First inference call after launch pays the compile cost.
-        # Skipped in centralized mode (no agent here; trainer owns the
-        # compile decision).
-        compile_mode = (
-            config.hardware.compile_inference_model if not centralized_main else None
+        from elitefurretai.rl.inference_worker import (
+            InferenceClient,
+            WorkerInferenceClients,
         )
-        if compile_mode:
-            if verbose:
-                logger.debug(
-                    "[MPWorker %d] torch.compile(agent, mode=%s, dynamic=True)",
-                    worker_id,
-                    compile_mode,
-                )
-            # torch.compile returns an OptimizedModule that delegates
-            # __call__ and attribute access to the wrapped module; the
-            # downstream code only invokes agent(x, ...) and reads
-            # agent.model. Cast preserves that runtime contract for
-            # the type checker. Guarded by compile_mode (None in
-            # centralized mode) so agent is always set here.
-            assert agent is not None
-            agent = cast(RNaDAgent, torch.compile(agent, mode=compile_mode, dynamic=True))
 
-            # Warm the compile cache synchronously BEFORE workers start
-            # accepting battle requests. Without this, the first real
-            # inference call pays the 30-60s compile cost while battles'
-            # 8s inference_request_timeout fires repeatedly, causing a
-            # cascade of "Invalid choice" errors as fallback choices
-            # arrive after Showdown has moved on. Two warmup shapes
-            # cover the two transformer code paths actually hit in
-            # production: turn 0 (no context) and turn 1+ (with context).
-            warmup_start = time.time()
-            embedding_size = embedder.embedding_size
-            with torch.no_grad():
-                # Turn 0: no hidden context.
-                x_warm = torch.zeros(1, 1, embedding_size, device=device)
-                _, _, _, _, ctx_warm = agent(x_warm, None)
-                # Turn 1: with prior context.
-                agent(x_warm, ctx_warm)
+        # When the trainer passed a per-model queues bundle,
+        # wrap it in WorkerInferenceClients (one InferenceClient per
+        # registered model). When only legacy main queues were passed,
+        # construct a single main client.
+        if queues_by_model is not None:
+            worker_inference_clients = WorkerInferenceClients(
+                worker_id=worker_id,
+                queues_by_model=cast(Any, queues_by_model),
+                loop=POKE_LOOP,
+            )
+            main_inference_client = worker_inference_clients.get("main")
             if verbose:
                 logger.debug(
-                    "[MPWorker %d] compile warmup complete in %.1fs",
+                    "[MPWorker %d] Centralized inference (bundle) enabled; models=%s",
                     worker_id,
-                    time.time() - warmup_start,
+                    worker_inference_clients.names(),
+                )
+        else:
+            main_inference_client = InferenceClient(
+                worker_id=worker_id,
+                request_queue=cast(Any, main_inference_request_queue),
+                response_queue=cast(Any, main_inference_response_queue),
+                loop=POKE_LOOP,
+            )
+            main_inference_client.start()
+            if verbose:
+                logger.debug(
+                    "[MPWorker %d] Centralized inference (legacy single) "
+                    "enabled; skipping main model load",
+                    worker_id,
                 )
         del checkpoint
         if verbose:
             logger.debug(
-                "[MPWorker %d] Model built... Memory: %s", worker_id, get_memory_usage_mb()
+                "[MPWorker %d] Centralized inference ready... Memory: %s",
+                worker_id,
+                get_memory_usage_mb(),
             )
 
-        bc_agent = None
-        if curriculum and curriculum.get("bc_player", 0) > 0 and bc_model_path:
-            if verbose:
-                logger.debug(
-                    "[MPWorker %d] Loading BC model... Memory: %s",
-                    worker_id,
-                    get_memory_usage_mb(),
-                )
-            bc_checkpoint = torch.load(
-                bc_model_path, map_location="cpu", weights_only=False
-            )
-            # strict=False for the same partial-load reason as the main
-            # model above. BC opponents drive action selection through the
-            # policy head only, so a partially-loaded value/win head doesn't
-            # affect their behavior — only their (unused-as-opponent) value
-            # predictions are fresh-initialized.
-            bc_model = build_model_from_config(
-                model_config,
-                embedder,
-                device,
-                bc_checkpoint["model_state_dict"],
-                strict=False,
-            )
-            bc_model.eval()
-            for param in bc_model.parameters():
-                param.requires_grad = False
-            bc_agent = RNaDAgent(bc_model)
-            del bc_checkpoint
-            if verbose:
-                logger.debug(
-                    "[MPWorker %d] BC model loaded and frozen... Memory: %s",
-                    worker_id,
-                    get_memory_usage_mb(),
-                )
-
-        # ── Co-training agents (in-process exploiter pipeline) ────────────
-        # When `train_exploiter > 0` in the configured curriculum, build CPU
-        # model copies for the exploiter (live, weights synced from main via
-        # broadcast) and victim (frozen periodically-refreshed copy of main).
-        # Initial weights come from the first broadcast; until then we hold
-        # randomly-initialized models. The warmup gate in train.py prevents
-        # train_exploiter battles from being sampled before the first
-        # broadcast lands.
-        exploiter_agent = None
-        victim_agent = None
-        if curriculum and curriculum.get("train_exploiter", 0) > 0:
-            if verbose:
-                logger.debug(
-                    "[MPWorker %d] Building exploiter and victim agents... Memory: %s",
-                    worker_id,
-                    get_memory_usage_mb(),
-                )
-            exploiter_model = build_model_from_config(model_config, embedder, device)
-            exploiter_model.eval()
-            exploiter_agent = RNaDAgent(exploiter_model)
-            victim_model = build_model_from_config(model_config, embedder, device)
-            victim_model.eval()
-            for param in victim_model.parameters():
-                param.requires_grad = False
-            victim_agent = RNaDAgent(victim_model)
+        bc_agent = None  # BC inference goes through registry now
+        exploiter_agent = None  # exploiter inference goes through registry now
+        victim_agent = None  # victim inference goes through registry now
 
         if verbose:
             logger.debug(
@@ -552,24 +424,6 @@ def mp_worker_process(
                                     env.update_weights(incoming_payload["weights"])
                                     new_curriculum = incoming_payload.get("curriculum")
                                     if isinstance(new_curriculum, dict):
-                                        # Reapply dedicated-worker overrides on every broadcast
-                                        if (
-                                            config.curriculum.dedicated_vgcbench_workers
-                                            > 0
-                                        ):
-                                            if (
-                                                worker_id
-                                                < config.curriculum.dedicated_vgcbench_workers
-                                            ):
-                                                new_curriculum = {
-                                                    OpponentPool.VGC_BENCH_BASELINE: 1.0
-                                                }
-                                            else:
-                                                new_curriculum = {
-                                                    k: v
-                                                    for k, v in new_curriculum.items()
-                                                    if k != OpponentPool.VGC_BENCH_BASELINE
-                                                }
                                         env.update_curriculum(
                                             new_curriculum,
                                             exploiter_paths=incoming_payload.get(
