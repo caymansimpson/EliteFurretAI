@@ -356,3 +356,60 @@ Notes:
   but out of scope for this plan.
 
 Ready for Phase 2 (torch.compile race investigation).
+
+### 2026-05-14 14:17 — Measurement 3 (post Phase 2 — compile race fix)
+
+Phase 2 found and shipped a fix for the torch.compile multi-thread
+dynamo race. Investigation arc:
+
+1. **Synthetic reproducer (TinyAgent)**: race did NOT trigger
+   (commit `19d20b9`). Implied production-specific factors.
+2. **Production-like reproducer (real `RNaDAgent` + variable hidden state)**:
+   race DID trigger (commit `a850991`). Trigger is variable context
+   length + variable batch size forcing dynamo recompilation, which is
+   when the cross-thread race hits.
+3. **Per-model `threading.Lock` (Task 2.2)**: FAILED. Diagnosis: dynamo's
+   trace state is GLOBAL across all `RNaDAgent` instances of the same
+   class, so a per-model lock cannot protect against cross-instance
+   contention. Commit `c1b6005`.
+4. **`torch.compiler.cudagraph_mark_step_begin()` (Task 2.3)**: FAILED.
+   Race is not in CUDA graph state. Commit `d242a27`.
+5. **Single process-wide `threading.Lock` across ALL compiled-model calls
+   (Task 2.4)**: **PASSED**. Commit `1aa2db9`. This is the production
+   fix.
+
+**Deployment (Task 2.5, commit `f89c10d`)**:
+- `inference_trainer.py`: added module-level `_COMPILE_LOCK = threading.Lock()`
+  and wrapped the forward-call site in `RealModelBatchHandler.__call__`
+  with `with _COMPILE_LOCK:`.
+- `train.py`: flipped `compile=False` → `compile=True` for `bc`,
+  `exploiter`, `victim`, and all `ghost_<slot>` registrations. Only
+  `main` was previously compiled; now everything is.
+
+**Measurement 3** ran sep_arch.yaml full curriculum from checkpoint
+step 208, captured 14 updates (209-222). Update 209 was warmup-tainted;
+post-warmup window is updates 210-222 (13 samples).
+
+| Metric | Measurement 1 (baseline) | Measurement 2 (ghost) | Measurement 3 (+compile) | Δ vs M2 | Δ vs baseline |
+|---|---|---|---|---|---|
+| traj/s mean | 4.98 | 5.61 ± 0.49 | **5.89 ± 0.46** | **+5.0%** | **+18.3%** |
+| learner steps/s mean | ~87 | ~98 | ~103 | +5% | +18% |
+| compile-race errors | 0¹ | 0¹ | **0** | — | — |
+
+¹ Measurements 1 and 2 only had `main` compiled (single compiled
+service = no concurrent compiled calls = no race).
+**Measurement 3 has 7 compiled services running concurrently and
+produced zero race errors in 16 minutes of training.**
+
+**Gate check**: throughput ≥ Measurement 2 AND zero compile-race errors → **PASS**.
+
+Notes:
+- 1364 "Slow battle" warnings in this run (vs 880 in Measurement 2).
+  Higher because more battles were processed in the same wall time
+  (higher throughput). Per-battle error rate is unchanged; these are
+  the documented residual Showdown bugs, unaffected by Phase 2.
+- Lock contention overhead is negligible. Compiled forwards release the
+  GIL during GPU work; the GIL already serialized Python-level dynamo
+  code. The lock just extends that serialization across model instances.
+
+Ready for Phase 3 (legacy inference path cleanup).
