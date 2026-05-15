@@ -35,7 +35,7 @@ algorithm:
   gae_lambda: 0.95
   gamma: 1
   max_grad_norm: 0.5
-  rnad_alpha: 0.05
+  rnad_alpha: 0.3
   vf_coef: 0.5
 
 portfolio:
@@ -94,6 +94,10 @@ architecture:
   # 2-layer win_head from the BC checkpoint won't strict-load and is
   # fresh-initialized; everything else (encoder, trunk, policy head)
   # loads from cool-bee-85-finetune.
+  # 2026-05-15: reverted head sizes from [768, ...] back to [512, ...]
+  # to permit BC partial-load (strict=False can't span size mismatches
+  # on shared keys, only missing/unexpected). Deeper-input experiment
+  # tabled until Plan C throughput is validated.
   value_head_layers: [512, 512, 256]
   max_seq_len: 40
   # Number bank embeddings
@@ -120,12 +124,22 @@ hardware:
   batch_timeout: 0.005
   device: cuda
   max_battle_steps: 30
-  num_battles_per_pair: 32
+  # 2026-05-14 Run B: bumped 32 → 48 alongside max_concurrent_battles_per_player
+  # and num_players to push more in-flight battles into the centralized
+  # batcher. Hypothesis: prior natural experiment (exploiter-bug period)
+  # showed traj/s jumped 3.8 → 5.0 when the live exploiter service went
+  # quiet, isolating "exploiters were the regression cause." With the
+  # exploiter batcher gone, the bottleneck moves back to svc=main batch
+  # fill (~5-7 avg pre-exploiter, 3.75 with). Bumping these knobs raises
+  # request arrival density at the single remaining service without
+  # adding workers (workers are Active 0% per F10 — adding more is
+  # wasted process overhead).
+  num_battles_per_pair: 48
   # null = poke-env's default of 1 (battles serialise behind the previous
   # battle's duration). Set to num_battles_per_pair to remove the 5-30s
   # slow-handler tax diagnosed in Track C of the 2026-05-12 planning doc.
-  max_concurrent_battles_per_player: 32
-  num_players: 12
+  max_concurrent_battles_per_player: 48
+  num_players: 16
   # 2026-05-13: tried 1, killed the run via zero-completion watchdog —
   # one node server cannot handle 12*32=384 concurrent battle streams.
   # The 0% OwnTime in py-spy was per-WORKER CPU cost, not Showdown's
@@ -156,21 +170,36 @@ curriculum:
   agent_team_path: data/teams/gen9vgc2024regg/constrained/naicchampion.txt
   bc_model_path: data/models/supervised/cool-bee-85-finetune_best.pt
   curriculum_weights:
-    # All model-driven opponents (self_play, bc_player, ghosts) route
-    # through the centralized ModelRegistry. ghosts use pre-registered
-    # ghost_<slot> services with LRU rotation. max_damage /
-    # simple_heuristic / vgc_bench are heuristic / external (no model).
-    # exploiters / train_exploiter stay off in this config.
-    self_play: 0.3
-    bc_player: 0.05
-    exploiters: 0.1
-    ghosts: 0.1
-    max_damage: 0.1
+    # 2026-05-15 Run C: full original curriculum restored to test the
+    # `_COMPILE_LOCK` fix (Layers 1+2 from
+    # 2026-05-15-00-12-compile-lock-serialization-fix-plan.md).
+    # - Layer 1: ModelRegistry.register now warms compiled services with
+    #   (B,T) ∈ {(1,1),(32,1),(1,40),(32,40)} so dynamo doesn't recompile
+    #   on first production-shape request.
+    # - Layer 2: RealModelBatchHandler skips _COMPILE_LOCK on every
+    #   forward once mark_compile_complete() fires after warmup, so
+    #   multiple services can run forwards concurrently.
+    # Expected: ghosts AND exploiters re-enabled, throughput should not
+    # collapse the way Run B post-400 (3.72 traj/s) and the pre-fix
+    # exploiter-on baseline (3.94 traj/s) did. Target: hold ≥5 traj/s.
+    # 2026-05-15 Plan C step 5 test: vgc_bench dropped (0.2 → 0,
+    # auto_launch_external_vgcbench false below) to save ~3.7 GB host
+    # RAM that the external runners consume — needed so the trainer +
+    # workers + showdown + 2 inference subprocesses fit under the
+    # 22 GB watchdog AND under the 23 GB WSL2 physical-RAM ceiling.
+    # Other weights scaled by 1/0.8 = 1.25 to keep relative mix.
+    # exploiters + train_exploiter stay ON so snaps + live subprocesses
+    # get real traffic.
+    self_play: 0.375
+    bc_player: 0.0625
+    exploiters: 0.125
+    ghosts: 0.125
+    max_damage: 0.125
     random_baseline: 0
     max_base_power_baseline: 0
-    simple_heuristic_baseline: 0.05
-    vgc_bench_baseline: 0.2
-    train_exploiter: 0.1
+    simple_heuristic_baseline: 0.0625
+    vgc_bench_baseline: 0
+    train_exploiter: 0.125
   adaptive_curriculum: false
   max_exploiter_models: 5
   max_ghosts: 5
@@ -178,7 +207,7 @@ curriculum:
   external_vgcbench_usernames:
     - VGCBENCH
   external_vgcbench_startup_wait_s: 10.0
-  auto_launch_external_vgcbench: true
+  auto_launch_external_vgcbench: false
   external_vgcbench_python_executable: /home/cayman/Repositories/venv-vgcbench/bin/python
   external_vgcbench_team_file: data/teams/gen9vgc2024regg/vgcbench.txt
 
@@ -188,9 +217,8 @@ training:
   # new value_ff_stack + reshaped win_head are fresh-initialized. Strict
   # load is bypassed in train.py's initialize_path branch for sep_arch.
   initialize_path: data/models/supervised/cool-bee-85-finetune_best.pt
-  # Resume from step 208 (latest checkpoint from the failed topology run
-  # — even though the run itself regressed, the two completed updates
-  # are preserved on disk).
+  # 2026-05-15: head sizes reverted to [512,...] so the pretty-jazz-4
+  # checkpoint loads cleanly. resume_from re-enabled.
   resume_from: data/models/rl/pretty-jazz-4/main_model_step_365.pt
   max_updates: 100000
   save_dir: data/models/rl

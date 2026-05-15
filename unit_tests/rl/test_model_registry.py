@@ -24,6 +24,7 @@ from typing import Dict, Tuple
 
 import numpy as np
 import pytest
+import torch
 
 from elitefurretai.etl.embedder import Embedder
 from elitefurretai.rl.inference_worker import WorkerInferenceClients
@@ -63,11 +64,15 @@ def small_agent_factory():
 # ─────────────────────────────────────────────────────────────────────
 
 
-def test_registry_register_starts_service(small_agent_factory):
+def test_registry_register_then_start_serves_diagnostics(small_agent_factory):
+    """After register() + start_all(), the service is running and exposes
+    diagnostics. (Plan C split register/start_all to fix Run C's
+    registration race.)"""
     make, _ = small_agent_factory
     registry = ModelRegistry(num_workers=2, batch_size=4, batch_timeout=0.005)
     try:
         registry.register("main", make())
+        registry.start_all()
         assert "main" in registry.names()
         diag = registry.get_diagnostics()
         assert "main" in diag
@@ -224,6 +229,7 @@ def test_register_multiple_ghost_slots(small_agent_factory):
     try:
         for slot in range(3):
             registry.register(f"ghost_{slot}", make(), compile=False)
+        registry.start_all()
         assert set(registry.names()) == {"ghost_0", "ghost_1", "ghost_2"}
         # Each slot has independent diagnostics
         diag = registry.get_diagnostics()
@@ -241,6 +247,7 @@ def test_registry_to_worker_round_trip(small_agent_factory):
     try:
         registry.register("main", make())
         registry.register("bc", make())
+        registry.start_all()
 
         loop = asyncio.new_event_loop()
         try:
@@ -284,5 +291,141 @@ def test_registry_to_worker_round_trip(small_agent_factory):
                 clients.stop_all()
         finally:
             loop.close()
+    finally:
+        registry.stop_all()
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Plan C — process_group routing
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_registry_mixed_process_groups(small_agent_factory):
+    """Register two in-process services and one subprocess service;
+    start_all() builds both backends; a request to each comes back."""
+    import copy as _copy
+
+    from elitefurretai.rl.inference_ipc import InferenceRequest
+
+    make, embedder = small_agent_factory
+    registry = ModelRegistry(num_workers=1, batch_size=4, batch_timeout=0.005)
+    try:
+        registry.register("main", make(), compile=False)
+        registry.register("bc", make(), compile=False)
+        registry.register(
+            "ghost_0", make(), compile=False, process_group="ghosts"
+        )
+
+        # Before start_all(): names visible but services not running.
+        assert set(registry.names()) == {"main", "bc", "ghost_0"}
+        # get_diagnostics returns in-process services only, and only
+        # after start; pre-start it's empty.
+        assert registry.get_diagnostics() == {}
+
+        registry.start_all()
+
+        # In-process services: diagnostics expose them.
+        diag = registry.get_diagnostics()
+        assert set(diag.keys()) == {"main", "bc"}
+
+        # Send a request to each via its queue; receive a response.
+        bundles = registry.queues_for_workers()
+        for name in ("main", "bc", "ghost_0"):
+            req_q, resp_qs = bundles[name]
+            state = np.random.randn(embedder.embedding_size).astype(np.float32)
+            req = InferenceRequest(
+                request_id=hash(name) & 0xFFFF,
+                worker_id=0,
+                player_id="p",
+                battle_tag=f"tag-{name}",
+                state=state,
+                mask=np.ones(2025, dtype=np.float32),
+                is_teampreview=False,
+                temperature=1.0,
+                top_p=1.0,
+            )
+            req_q.put(req)
+            resp = resp_qs[0].get(timeout=60.0)
+            assert resp.request_id == req.request_id
+            assert 0 <= resp.action_idx < 2025
+
+        _ = _copy  # silence unused import (kept for symmetry with sync test)
+    finally:
+        registry.stop_all()
+
+
+def test_registry_subprocess_sync_weights(small_agent_factory):
+    """sync_weights for a process_group service routes via the
+    subprocess's control queue; subsequent requests reflect new weights.
+    """
+    import copy
+
+    from elitefurretai.rl.inference_ipc import InferenceRequest
+
+    make, embedder = small_agent_factory
+    registry = ModelRegistry(num_workers=1, batch_size=4, batch_timeout=0.005)
+    try:
+        agent_a = make()
+        registry.register(
+            "ghost_0", agent_a, compile=False, process_group="ghosts"
+        )
+        registry.start_all()
+
+        bundles = registry.queues_for_workers()
+        req_q, resp_qs = bundles["ghost_0"]
+
+        def submit(req_id: int):
+            req = InferenceRequest(
+                request_id=req_id,
+                worker_id=0,
+                player_id="p",
+                battle_tag=f"tag-{req_id}",
+                state=np.random.RandomState(seed=req_id).randn(
+                    embedder.embedding_size
+                ).astype(np.float32),
+                mask=np.ones(2025, dtype=np.float32),
+                is_teampreview=False,
+                temperature=1.0,
+                top_p=1.0,
+            )
+            req_q.put(req)
+            return resp_qs[0].get(timeout=60.0)
+
+        resp_before = submit(1)
+
+        # Build a NEW agent (different random init) and sync its weights.
+        torch.manual_seed(98765)
+        agent_b = make()
+        registry.sync_weights("ghost_0", copy.deepcopy(agent_b.model.state_dict()))
+
+        resp_after = submit(2)
+        assert abs(resp_after.value - resp_before.value) > 1e-5, (
+            f"cross-process sync_weights did not change outputs: "
+            f"before={resp_before.value} after={resp_after.value}"
+        )
+    finally:
+        registry.stop_all()
+
+
+def test_registry_register_after_start_all_raises(small_agent_factory):
+    make, _ = small_agent_factory
+    registry = ModelRegistry(num_workers=1, batch_size=4, batch_timeout=0.005)
+    try:
+        registry.register("main", make(), compile=False)
+        registry.start_all()
+        with pytest.raises(RuntimeError, match="after start_all"):
+            registry.register("bc", make(), compile=False)
+    finally:
+        registry.stop_all()
+
+
+def test_registry_start_all_twice_raises(small_agent_factory):
+    make, _ = small_agent_factory
+    registry = ModelRegistry(num_workers=1, batch_size=4, batch_timeout=0.005)
+    try:
+        registry.register("main", make(), compile=False)
+        registry.start_all()
+        with pytest.raises(RuntimeError, match="already called"):
+            registry.start_all()
     finally:
         registry.stop_all()

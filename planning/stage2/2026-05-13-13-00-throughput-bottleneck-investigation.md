@@ -13,10 +13,19 @@ training state, this doc trumps memory — verify against the live system first.
 
 ## TL;DR
 
-- Current throughput: **3.78 traj/s** (wandb `glad-lake-19`, PID 19534,
-  centralized inference + torch.compile, batch avg 7.2 / max 32 / cap 32).
-  **Regression from 4.05 traj/s** previously reported in the registry doc;
-  worth a separate diff (see F10).
+- **Current "exploiters off" throughput: ~5.0 traj/s** (natural-experiment
+  observation during 2026-05-14 session; equivalent to post-merge 4.98
+  baseline). With exploiters on, throughput drops to ~3.8 traj/s — see F11.
+- Run B (topology bump with exploiters off) launching from
+  [sep_arch.yaml](../../src/elitefurretai/rl/configs/sep_arch.yaml):
+  `num_players: 12→16`, `max_concurrent_battles_per_player: 32→48`,
+  `num_battles_per_pair: 32→48`. Hypothesis: more in-flight battles
+  per existing worker grow svc=main batch fill above the 5-7 average,
+  lifting traj/s above 5.0.
+- Earlier baseline data point: **3.78 traj/s** (wandb `glad-lake-19`,
+  PID 19534, centralized inference + torch.compile, batch avg 7.2 / max
+  32 / cap 32) — superseded by the post-cleanup 4.98 measurement and
+  the 5.0 natural experiment.
 - VGCBench (peer reference): **15–20 traj/s** (~4–5x ahead).
 - **Bottleneck has shifted to the inference service** (post-M4). Workers
   are essentially idle (Active 0% in py-spy) waiting on inference
@@ -139,6 +148,54 @@ the affected battles. Post-merge model behavior will be slightly
 different (more correct); brief regression possible as the model
 re-adapts. Worth keeping an eye on training curves after the
 centralized-inference branch merges.
+
+### F11. Enabling exploiter co-training regresses traj/s ~25% via dual-batcher GIL contention (NATURAL EXPERIMENT)
+**Discovered 2026-05-14 22:14**, after commit `9ac7f0d` ("Session bundle:
+enable exploiter curriculum") shipped earlier the same day.
+
+**Evidence (live sep_arch run with exploiters on)**:
+- Throughput: ~3.8 traj/s, down from post-merge 4.98 baseline
+- Two batchers active in the log: `[batch-fill svc=main] avg=3.75 max=32`
+  and `[batch-fill svc=exploiter] avg=4.61 max=14`. Both 100%
+  timeout-flushed, both well under cap=32. Pre-exploiter single
+  `svc=main` was avg 7.2 (per F10).
+- Sum of the two avgs (~8.4) is roughly the prior single-batcher load,
+  but split inefficiently — neither sub-batcher accumulates enough
+  density during the 5 ms timeout to fill, so per-request Python
+  overhead grows as a share of total work.
+
+**Natural experiment confirming causation**: during the same session,
+the live exploiter service stopped firing requests mid-run (cause not
+yet root-caused, but the symptom is documented). With no other change,
+traj/s **jumped 3.8 → 5.0** while exploiters were quiet, then dropped
+back when exploiters resumed. This is a same-process, same-checkpoint,
+same-worker A/B that no planned experiment could match. 5.0 ≈ the
+4.98 post-merge baseline, so the "exploiters off" path fully recovers
+prior throughput.
+
+**Architectural mechanism**: each `InferenceService` runs in its own
+Python thread inside the trainer process
+([inference_trainer.py:125](../../src/elitefurretai/rl/inference_trainer.py)).
+With full curriculum + exploiter co-training, the trainer hosts 9+
+service threads (`main`, `bc`, `exploiter`, `victim`, up to 5 ghost
+slots). They all share one GIL. Cross-model batching is explicitly
+forbidden for correctness (different weights → different forward
+passes; see Plan B rejection in
+[2026-05-14-00-15-model-registry-plan.md](2026-05-14-00-15-model-registry-plan.md)).
+So enabling exploiters multiplies service threads without raising the
+single-GIL ceiling, and splits request density across the new services.
+
+**Implications**:
+- The "exploiters off" path is the realistic high-throughput regime
+  unless we change the inference service architecture.
+- **Plan C registry parallelism (multi-process services) becomes the
+  natural fix**: putting each service in its own process bypasses the
+  single-GIL ceiling and lets exploiter co-training coexist with main
+  at full throughput.
+- F11 also strengthens the case for **Plan D (distillation)**: a
+  smaller rollout model means each service's per-call Python cost
+  drops, so the same GIL window covers more work, partially absorbing
+  multi-service overhead.
 
 ### F10. Post-M4 bottleneck has moved to the inference service (CPU/Python-bound, not GPU)
 **Discovered 2026-05-14 during post-M4 profiling session** (wandb `glad-lake-19`,

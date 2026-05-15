@@ -58,6 +58,7 @@ import multiprocessing as mp
 import os
 import queue
 import random
+import shutil
 import signal
 import subprocess
 import threading
@@ -258,13 +259,22 @@ def initialize_training_state(
             feature_set=config.training.embedder_feature_set,
             omniscient=False,
         )
+        # Load checkpoint contents BEFORE constructing the learner. Order
+        # matters: `initialize_learner` deepcopies `base_model` as the
+        # initial RNaD reference, so the model weights must already be the
+        # trained ones at that point. If we built the learner first and
+        # loaded weights after, the ref would freeze at random init and
+        # rnad_alpha * KL(curr || ref) would pull the policy toward a
+        # random anchor on every resume (see
+        # planning/stage2/2026-05-14-17-00-resume-state-bugs.md).
+        checkpoint = load_checkpoint(config.training.resume_from, config.hardware.device)
         base_model = build_model_from_config(cfg, embedder, config.hardware.device, None)
+        base_model.load_state_dict(checkpoint["model_state_dict"])
         agent = RNaDAgent(base_model)
         learner = initialize_learner(config, agent, base_model)
-
-        start_step, old_config = load_checkpoint(
-            config.training.resume_from, agent, learner.optimizer, config.hardware.device
-        )
+        learner.load_resume_state(checkpoint)
+        start_step = int(checkpoint["step"])
+        old_config = RNaDConfig.from_dict(checkpoint["config"])
         if old_config.curriculum.curriculum_weights:
             resume_curriculum = old_config.curriculum.curriculum_weights
 
@@ -999,7 +1009,23 @@ def _build_update_metrics(
 def main():
     parser = argparse.ArgumentParser(description="RNaD RL Training for Pokemon VGC")
     parser.add_argument("--config", type=str, required=True, help="Path to config YAML")
+    parser.add_argument(
+        "--log-debug",
+        type=str,
+        default="",
+        help=(
+            "Comma-separated logger names to elevate to DEBUG for this run "
+            "(e.g. 'elitefurretai.rl.inference_trainer' to see [batch-fill] "
+            "lines that were dropped to DEBUG in commit f7fd34d)."
+        ),
+    )
     args = parser.parse_args()
+
+    if args.log_debug:
+        for name in args.log_debug.split(","):
+            name = name.strip()
+            if name:
+                logging.getLogger(name).setLevel(logging.DEBUG)
 
     # Set up signal handlers for graceful shutdown (e.g., when killed via nohup)
     shutdown_requested = generate_shutdown_signal()
@@ -1077,22 +1103,60 @@ def main():
     else:
         run_name = config.training.wandb_run_name or run_id
 
-    # Resolve the per-run directory. On resume, we continue writing into the
-    # original run's directory (inferred from resume_from's parent) so ghosts
-    # and exploiters keep accumulating in one place across resumes.
-    if config.training.resume_from:
-        resume_parent = os.path.dirname(os.path.abspath(config.training.resume_from))
-        # If resuming from a ghost or exploiter file, walk up one level.
-        if os.path.basename(resume_parent) in ("ghosts", "exploiters"):
-            resume_parent = os.path.dirname(resume_parent)
-        run_dir = resume_parent
-    else:
-        run_dir = os.path.join(config.training.save_dir, run_name)
+    # Resolve the per-run directory. Each wandb run gets its own directory
+    # under save_dir to keep checkpoints traceable to their run. On resume,
+    # we copy the source run's ghosts/ and exploiters/ snapshots into the new
+    # directory so the curriculum (which samples opponents from those
+    # subdirs) keeps continuity — new snapshots produced this run accumulate
+    # alongside the copies in the new dir, leaving the source untouched.
+    run_dir = os.path.join(config.training.save_dir, run_name)
     os.makedirs(run_dir, exist_ok=True)
     os.makedirs(os.path.join(run_dir, "ghosts"), exist_ok=True)
     os.makedirs(os.path.join(run_dir, "exploiters"), exist_ok=True)
     config.training.run_dir = run_dir
     logger.info("Run directory: %s", run_dir)
+
+    if config.training.resume_from:
+        resume_parent = os.path.dirname(os.path.abspath(config.training.resume_from))
+        # If resuming from a ghost or exploiter file, walk up one level.
+        if os.path.basename(resume_parent) in ("ghosts", "exploiters"):
+            resume_parent = os.path.dirname(resume_parent)
+        if os.path.abspath(resume_parent) != os.path.abspath(run_dir):
+            for subdir in ("ghosts", "exploiters"):
+                src_dir = os.path.join(resume_parent, subdir)
+                dst_dir = os.path.join(run_dir, subdir)
+                if not os.path.isdir(src_dir):
+                    logger.info(
+                        "Resume copy: %s not present in source run, skipping", src_dir
+                    )
+                    continue
+                files = sorted(
+                    f for f in os.listdir(src_dir)
+                    if os.path.isfile(os.path.join(src_dir, f))
+                )
+                if not files:
+                    logger.info("Resume copy: %s is empty, nothing to copy", src_dir)
+                    continue
+                total_bytes = 0
+                for fname in files:
+                    src_path = os.path.join(src_dir, fname)
+                    dst_path = os.path.join(dst_dir, fname)
+                    size = os.path.getsize(src_path)
+                    total_bytes += size
+                    logger.info(
+                        "Resume copy: %s/%s (%.1f MB) → %s",
+                        subdir, fname, size / 1e6, dst_dir,
+                    )
+                    shutil.copy2(src_path, dst_path)
+                logger.info(
+                    "Resume copy: %d file(s), %.1f MB total copied into %s",
+                    len(files), total_bytes / 1e6, dst_dir,
+                )
+        else:
+            logger.info(
+                "Resume copy: resume source matches new run_dir (%s) — no copy needed",
+                run_dir,
+            )
 
     # Initialize model and learner given the config (handles fresh start, resume, and weight initialization cases)
     (
@@ -1106,6 +1170,23 @@ def main():
 
     # Create opponent pool
     logger.info("Initializing opponent pool...")
+    # The yaml's curriculum wins over the resumed-checkpoint curriculum so
+    # users can switch matchup mixes (e.g. enable train_exploiter mid-curve)
+    # without re-running from scratch. Log loudly when the yaml differs from
+    # the checkpoint, since the change also affects what the registry
+    # registers (BC/exploiter/victim) at startup — silent mismatches
+    # previously left the registry holding services the opponent pool would
+    # never sample from.
+    active_curriculum = config.curriculum.curriculum_weights
+    if resume_curriculum and resume_curriculum != active_curriculum:
+        logger.warning(
+            "Curriculum override on resume: yaml weights differ from "
+            "checkpoint's saved weights. Using yaml.\n"
+            "  yaml:       %s\n"
+            "  checkpoint: %s",
+            active_curriculum,
+            resume_curriculum,
+        )
     opponent_pool = OpponentPool(
         main_model=agent,
         device=config.hardware.device,
@@ -1116,7 +1197,7 @@ def main():
         vgc_bench_checkpoint_path=config.curriculum.vgc_bench_checkpoint_path,
         max_ghosts=config.curriculum.max_ghosts,
         max_exploiter_models=config.curriculum.max_exploiter_models,
-        curriculum=resume_curriculum or config.curriculum.curriculum_weights,
+        curriculum=active_curriculum,
     )
 
     # ── Initialize the exploiter co-training pipeline ──────────────────────
@@ -1248,7 +1329,19 @@ def main():
         # global trace state across concurrent InferenceService threads,
         # eliminating the "FX symbolic trace of dynamo-optimized function"
         # race. See unit_tests/rl/test_compile_race_reproducer.py.
-        registry.register("bc", RNaDAgent(bc_inference_base), compile=True)
+        # bc moves to the "frozen" subprocess: never syncs after
+        # startup (BC is frozen forever), so subprocess co-location
+        # costs nothing — and frees one GIL-contender from the trainer
+        # process. The trainer's GIL ceiling proved binding when 4
+        # services contend; moving bc out brings the count to 3
+        # (main + exploiter + victim).
+        bc_inference_base.cpu()
+        registry.register(
+            "bc",
+            RNaDAgent(bc_inference_base),
+            compile=True,
+            process_group="frozen",
+        )
         del bc_checkpoint
 
     # Step 4: register exploiter (live-trained adversary) + victim
@@ -1258,34 +1351,57 @@ def main():
     # at victim_refresh_interval. Both registered with compile=True
     # now that the global _COMPILE_LOCK in RealModelBatchHandler
     # serializes dynamo's trace state across concurrent threads.
+    #
+    # Plan C grouping for live-trained pair:
+    #   - exploiter STAYS IN-PROCESS. The exploiter learner runs in the
+    #     trainer and updates exploiter weights at high frequency;
+    #     cross-process sync (~24ms per IPC) can't keep up.
+    #   - victim MOVES TO "frozen". It refreshes every
+    #     victim_refresh_interval (1000 battles ≈ 3 min at 6 traj/s),
+    #     well below the IPC throughput ceiling — and getting it out of
+    #     trainer keeps the trainer GIL contention bounded.
     train_exploiter_weight = config.curriculum.curriculum_weights.get(
         OpponentPool.TRAIN_EXPLOITER, 0.0
     )
     if train_exploiter_weight > 0:
         logger.info(
-            "Step 4: registering exploiter + victim (curriculum weight %.3f)",
+            "Step 4: registering exploiter (in-process) + victim (frozen subprocess) "
+            "(curriculum weight %.3f)",
             train_exploiter_weight,
         )
-        for slot_name in ("exploiter", "victim"):
-            slot_base = build_model_from_config(
-                worker_model_config,
-                inference_embedder,
-                inference_device,
-                None,
-                strict=False,
-            )
-            slot_base.eval()
-            if slot_name == "victim":
-                # Victim starts as a copy of main; weights refresh
-                # periodically via registry.sync_weights("victim", ...).
-                slot_base.load_state_dict(agent.model.state_dict())
-                for param in slot_base.parameters():
-                    param.requires_grad = False
-            # exploiter starts with whatever build_model_from_config
-            # gave us (BC init if `initialize_path` is set, else
-            # fresh). It'll be sync'd as the exploiter learner
-            # produces updates.
-            registry.register(slot_name, RNaDAgent(slot_base), compile=True)
+        # exploiter: in-trainer (sync-rate constraint)
+        exploiter_base = build_model_from_config(
+            worker_model_config,
+            inference_embedder,
+            inference_device,
+            None,
+            strict=False,
+        )
+        exploiter_base.eval()
+        # exploiter starts with whatever build_model_from_config gave
+        # us (BC init if `initialize_path` is set, else fresh). It'll
+        # be sync'd as the exploiter learner produces updates.
+        registry.register("exploiter", RNaDAgent(exploiter_base), compile=True)
+        # victim: subprocess (rare refresh, no sync-rate constraint)
+        victim_base = build_model_from_config(
+            worker_model_config,
+            inference_embedder,
+            "cpu",
+            None,
+            strict=False,
+        )
+        victim_base.eval()
+        # Victim starts as a copy of main; weights refresh periodically
+        # via registry.sync_weights("victim", ...).
+        victim_base.load_state_dict(agent.model.state_dict())
+        for param in victim_base.parameters():
+            param.requires_grad = False
+        registry.register(
+            "victim",
+            RNaDAgent(victim_base),
+            compile=True,
+            process_group="frozen",
+        )
 
     # Ghost slots: pre-register max_ghosts services so the slot pool is
     # fixed-size and the registration plumbing never happens mid-run.
@@ -1294,26 +1410,60 @@ def main():
     # targets (workers filter on that set). compile=True now that the
     # global _COMPILE_LOCK in RealModelBatchHandler eliminates the
     # torch.compile multi-thread race (see registry plan).
+    #
+    # 2026-05-15 Plan C step 5: ghosts (LRU swaps on checkpoint events)
+    # AND exploiter_snaps (LRU swaps on graduation events) share a
+    # single "frozen" subprocess. They have homogeneous low-frequency
+    # weight-sync semantics. Earlier the plan called for two separate
+    # subprocesses ("ghosts" + "snaps"), but the compile-peak memory
+    # footprint (~4.6 GB per subprocess) tripped the watchdog at 3-
+    # subprocess fanout. Merging halves per-subprocess fixed overhead
+    # (Python interpreter, PyTorch import, CUDA context) at the cost of
+    # serializing forwards within the merged subprocess — acceptable
+    # because both groups are low-traffic vs main/bc in trainer.
+    # Checkpoints load to CPU because the subprocess does its own
+    # device move + compile at startup; loading directly to cuda would
+    # leak transient GPU allocations during trainer-side staging.
     for slot in range(config.curriculum.max_ghosts):
         ghost_agent = copy.deepcopy(registry._raw_agents["main"])
-        registry.register(f"ghost_{slot}", ghost_agent, compile=True)
+        ghost_agent.model.cpu()
+        registry.register(
+            f"ghost_{slot}", ghost_agent, compile=True, process_group="frozen"
+        )
     # Load weights for any pre-existing ghost checkpoints onto their
     # assigned slots. `slot_for_ghost_path` was populated by
-    # OpponentPool._load_ghosts.
+    # OpponentPool._load_ghosts. sync_weights pre-start_all() updates
+    # the trainer-side CPU shadow only; the subprocess picks up the
+    # latest weights via the shadow at spawn time.
     for path, slot in opponent_pool.slot_for_ghost_path.items():
-        checkpoint = torch.load(path, map_location=registry.device)
+        checkpoint = torch.load(path, map_location="cpu")
         registry.sync_weights(f"ghost_{slot}", checkpoint["model_state_dict"])
 
     # Exploiter snapshot slots: pre-register max_exploiter_models services
     # (parallel to ghosts). Each holds an independent agent; sync_weights
     # populates real exploiter snapshot weights from disk for any slot
     # OpponentPool's _load_exploiter_models pre-assigned at startup.
+    #
+    # Plan C step 5: snaps SHARE the "frozen" subprocess with ghosts
+    # (see ghost loop above for rationale).
     for slot in range(config.curriculum.max_exploiter_models):
         exploiter_snap_agent = copy.deepcopy(registry._raw_agents["main"])
-        registry.register(f"exploiter_snap_{slot}", exploiter_snap_agent, compile=True)
+        exploiter_snap_agent.model.cpu()
+        registry.register(
+            f"exploiter_snap_{slot}",
+            exploiter_snap_agent,
+            compile=True,
+            process_group="frozen",
+        )
     for path, slot in opponent_pool.slot_for_exploiter_path.items():
-        checkpoint = torch.load(path, map_location=registry.device)
+        checkpoint = torch.load(path, map_location="cpu")
         registry.sync_weights(f"exploiter_snap_{slot}", checkpoint["model_state_dict"])
+
+    # All services registered — start in-process service threads and
+    # spawn subprocesses for any process_group set above. Must happen
+    # before workers connect because workers will start sending requests
+    # immediately after spawn.
+    registry.start_all()
 
     # Pull out main's queues for the back-compat per-worker
     # spawn-args interface. The full bundle is also passed below so
@@ -1630,7 +1780,7 @@ def main():
                     # Save model, for safety and to use to battle against
                     ghost_checkpoint_path = save_checkpoint(
                         agent,
-                        learner.optimizer,
+                        learner,
                         updates,
                         config,
                         opponent_pool.curriculum,
@@ -1643,9 +1793,7 @@ def main():
                     # Sync new weights into the registry slot. OpponentPool
                     # already assigned the slot in add_ghost; look it up.
                     if registry is not None:
-                        new_slot = opponent_pool.slot_for_ghost_path[
-                            ghost_checkpoint_path
-                        ]
+                        new_slot = opponent_pool.slot_for_ghost_path[ghost_checkpoint_path]
                         checkpoint = torch.load(
                             ghost_checkpoint_path,
                             map_location=registry.device,
@@ -1706,9 +1854,7 @@ def main():
                         ),
                         "temperature": config.temperature_at_step(updates),
                         "top_p": config.exploration.top_p,
-                        "active_ghost_slots": sorted(
-                            opponent_pool.active_ghost_slots()
-                        ),
+                        "active_ghost_slots": sorted(opponent_pool.active_ghost_slots()),
                         "active_exploiter_slots": sorted(
                             opponent_pool.active_exploiter_slots()
                         ),
@@ -1844,7 +1990,7 @@ def main():
         # Save final checkpoint so training can be resumed later
         final_path = save_checkpoint(
             agent,
-            learner.optimizer,
+            learner,
             updates,
             config,
             opponent_pool.curriculum,
