@@ -601,5 +601,143 @@ def test_ppo_portfolio_selection_count_tracked_once_per_update(
     )
 
 
+# =============================================================================
+# RESUME-STATE TESTS
+# =============================================================================
+#
+# These pin down the invariants violated by the original resume path
+# (see planning/stage2/2026-05-14-17-00-resume-state-bugs.md): the LR
+# scheduler used to rewind to step 0 on every resume, and `_step` (which
+# drives the entropy-bonus anneal) used to reset to 0. Both are now
+# round-tripped through `save_checkpoint` / `load_resume_state`.
+
+
+def test_load_resume_state_restores_scheduler_last_epoch(agent, ref_agent, sample_batch):
+    """Scheduler's `last_epoch` must round-trip via load_resume_state."""
+    learner_a = _make_learner_with_epochs(agent, ref_agent, ppo_epochs=1)
+    for _ in range(5):
+        learner_a.update(sample_batch)
+    saved_last_epoch = learner_a.scheduler.last_epoch
+    assert saved_last_epoch == 5
+
+    # Fresh learner, then restore.
+    learner_b = _make_learner_with_epochs(agent, ref_agent, ppo_epochs=1)
+    assert learner_b.scheduler.last_epoch == 0
+    fake_checkpoint = {
+        "optimizer_state_dict": learner_a.optimizer.state_dict(),
+        "scheduler_state_dict": learner_a.scheduler.state_dict(),
+        "learner_step": learner_a._step,
+        "step": 5,
+    }
+    learner_b.load_resume_state(fake_checkpoint)
+    assert learner_b.scheduler.last_epoch == saved_last_epoch
+
+
+def test_load_resume_state_restores_learner_step(agent, ref_agent, sample_batch):
+    """`_step` (which drives ent_coef anneal) must round-trip."""
+    learner_a = _make_learner_with_epochs(agent, ref_agent, ppo_epochs=1)
+    for _ in range(7):
+        learner_a.update(sample_batch)
+    assert learner_a._step == 7
+
+    learner_b = _make_learner_with_epochs(agent, ref_agent, ppo_epochs=1)
+    fake_checkpoint = {
+        "optimizer_state_dict": learner_a.optimizer.state_dict(),
+        "scheduler_state_dict": learner_a.scheduler.state_dict(),
+        "learner_step": learner_a._step,
+        "step": 7,
+    }
+    learner_b.load_resume_state(fake_checkpoint)
+    assert learner_b._step == 7
+
+
+def test_load_resume_state_legacy_checkpoint_falls_back_to_step(
+    agent, ref_agent, sample_batch
+):
+    """Pre-fix checkpoints (no scheduler/learner_step keys) anchor to `step`.
+
+    A checkpoint produced by the previous save_checkpoint won't have
+    `scheduler_state_dict` or `learner_step`. We must not rewind warmup or
+    the entropy anneal back to zero on those resumes — the fallback uses
+    the global update counter so the LR schedule and ent_coef continue
+    roughly where they left off.
+    """
+    learner_a = _make_learner_with_epochs(agent, ref_agent, ppo_epochs=1)
+    learner_a.update(sample_batch)
+
+    learner_b = _make_learner_with_epochs(agent, ref_agent, ppo_epochs=1)
+    legacy_checkpoint = {
+        "optimizer_state_dict": learner_a.optimizer.state_dict(),
+        "step": 365,
+        # no scheduler_state_dict, no learner_step
+    }
+    learner_b.load_resume_state(legacy_checkpoint)
+    assert learner_b._step == 365
+    # last_epoch is one less than `step` so the NEXT scheduler.step() call
+    # lands on `step` exactly.
+    assert learner_b.scheduler.last_epoch == 364
+
+
+def test_save_checkpoint_round_trip_preserves_scheduler_and_step(
+    tmp_path, agent, ref_agent, sample_batch
+):
+    """End-to-end: save_checkpoint(learner) -> load_checkpoint -> load_resume_state."""
+    from elitefurretai.rl.learners import load_checkpoint, save_checkpoint
+
+    learner_a = _make_learner_with_epochs(agent, ref_agent, ppo_epochs=1)
+    for _ in range(3):
+        learner_a.update(sample_batch)
+
+    save_dir = str(tmp_path)
+    filepath = save_checkpoint(
+        model=agent,
+        learner=learner_a,
+        step=3,
+        config=learner_a.config,
+        curriculum={"self_play": 1.0},
+        save_dir=save_dir,
+    )
+
+    checkpoint = load_checkpoint(filepath, device="cpu")
+    assert "scheduler_state_dict" in checkpoint
+    assert "learner_step" in checkpoint
+    assert checkpoint["learner_step"] == 3
+
+    learner_b = _make_learner_with_epochs(agent, ref_agent, ppo_epochs=1)
+    learner_b.load_resume_state(checkpoint)
+    assert learner_b._step == 3
+    assert learner_b.scheduler.last_epoch == learner_a.scheduler.last_epoch
+
+
+def test_load_resume_state_does_not_touch_model_or_ref(agent, ref_agent, sample_batch):
+    """load_resume_state restores OPTIMIZER state only — model + ref are caller-managed.
+
+    This is the contract that prevents Bug 1: model weights must already be
+    loaded into the agent BEFORE the learner is constructed, so the ref
+    deepcopy captures trained (not random) weights. load_resume_state
+    intentionally has no model_state_dict handling — that responsibility is
+    the caller's, and isolating it keeps the order obvious.
+    """
+    learner_a = _make_learner_with_epochs(agent, ref_agent, ppo_epochs=1)
+    learner_a.update(sample_batch)
+
+    learner_b = _make_learner_with_epochs(agent, ref_agent, ppo_epochs=1)
+    before = copy.deepcopy(
+        {k: v.clone() for k, v in learner_b.model.model.state_dict().items()}
+    )
+    fake_checkpoint = {
+        "optimizer_state_dict": learner_a.optimizer.state_dict(),
+        "scheduler_state_dict": learner_a.scheduler.state_dict(),
+        "learner_step": 1,
+        "step": 1,
+    }
+    learner_b.load_resume_state(fake_checkpoint)
+    after = learner_b.model.model.state_dict()
+    for k in before:
+        assert torch.equal(before[k], after[k]), (
+            f"load_resume_state must not modify model weights ({k} changed)"
+        )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

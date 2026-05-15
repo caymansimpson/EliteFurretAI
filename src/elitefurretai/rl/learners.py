@@ -194,6 +194,33 @@ class PortfolioRNaDLearner:
         self.portfolio_kl_history: List[List[float]] = [[] for _ in range(len(ref_models))]
         self.portfolio_selection_counts: List[int] = [0] * len(ref_models)
 
+    def load_resume_state(self, checkpoint: Dict[str, Any]) -> None:
+        """Restore optimizer, scheduler, and `_step` from a checkpoint dict.
+
+        Must be called AFTER the learner is constructed (so optimizer +
+        scheduler exist) and AFTER the model weights have been loaded into
+        the agent (so `ref_models[0]` deepcopied the trained weights, not
+        the random init).
+
+        Falls back gracefully on older checkpoints that pre-date the
+        scheduler/_step persistence (those skip restoration and the global
+        update counter is used as a best-effort anchor for scheduler
+        `last_epoch`). New checkpoints written by `save_checkpoint` always
+        carry both keys.
+        """
+        self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        global_step = int(checkpoint.get("step", 0))
+        if "scheduler_state_dict" in checkpoint:
+            self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+        else:
+            # Pre-fix checkpoints: anchor warmup/cosine to the global step
+            # so we don't replay the warmup from 0 on resume.
+            self.scheduler.last_epoch = max(global_step - 1, -1)
+        if "learner_step" in checkpoint:
+            self._step = int(checkpoint["learner_step"])
+        else:
+            self._step = global_step
+
     def add_reference_model(self, new_ref: RNaDAgent):
         new_ref = new_ref.to(self.device)
         for param in new_ref.parameters():
@@ -792,19 +819,28 @@ def load_agent_from_checkpoint(
 
 def save_checkpoint(
     model: RNaDAgent,
-    optimizer: Any,
+    learner: "PortfolioRNaDLearner",
     step: int,
     config: RNaDConfig,
     curriculum: Dict[str, Any],
     save_dir: str = "data/models",
 ) -> str:
-    """Save model, optimizer, step, and config to a timestamped checkpoint file."""
+    """Save model + learner state (optimizer, scheduler, step counter), config, curriculum.
+
+    Pulling state through the learner (instead of just `optimizer`) lets us
+    persist the LR scheduler's `last_epoch` and the learner's internal
+    `_step` counter. Without those, resume rewinds the LR warmup and the
+    entropy-bonus annealing back to zero — see
+    planning/stage2/2026-05-14-17-00-resume-state-bugs.md.
+    """
     os.makedirs(save_dir, exist_ok=True)
     filepath = os.path.join(save_dir, f"main_model_step_{step}.pt")
 
     checkpoint = {
         "model_state_dict": model.model.state_dict(),
-        "optimizer_state_dict": optimizer.state_dict(),
+        "optimizer_state_dict": learner.optimizer.state_dict(),
+        "scheduler_state_dict": learner.scheduler.state_dict(),
+        "learner_step": learner._step,
         "step": step,
         "curriculum": curriculum,
         "config": config.to_dict(),
@@ -816,20 +852,19 @@ def save_checkpoint(
     return filepath
 
 
-def load_checkpoint(
-    filepath: str,
-    model: RNaDAgent,
-    optimizer: Any,
-    device: str,
-) -> Tuple[int, RNaDConfig]:
-    """Load checkpoint weights and optimizer state into existing model/optimizer objects."""
+def load_checkpoint(filepath: str, device: str) -> Dict[str, Any]:
+    """Read a checkpoint file from disk and return its raw contents.
+
+    This function is intentionally side-effect-free. Callers must wire state
+    into the model, optimizer, scheduler, and learner step counter in the
+    correct order — model weights MUST be loaded into the model before the
+    learner is constructed, otherwise `PortfolioRNaDLearner`'s initial
+    `ref_models` deepcopy captures random weights and the RNaD KL term
+    pulls the policy toward a random anchor on every resume. Use
+    `PortfolioRNaDLearner.load_resume_state` for the optimizer/scheduler/
+    step counter half.
+    """
     print(f"Resuming from checkpoint: {filepath}")
-    checkpoint = torch.load(filepath, map_location=device)
-
-    model.model.load_state_dict(checkpoint["model_state_dict"])
-    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-    step = checkpoint["step"]
-    old_config = RNaDConfig.from_dict(checkpoint["config"])
-
-    print(f"Resumed from step {step}")
-    return step, old_config
+    checkpoint = torch.load(filepath, map_location=device, weights_only=False)
+    print(f"Resumed from step {checkpoint['step']}")
+    return checkpoint
