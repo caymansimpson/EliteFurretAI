@@ -217,6 +217,9 @@ broadcast. The broadcast still happens at `checkpoint_interval` and uses the
 **Acceptance**: no behavioral test needed beyond verifying no regression; just
 confirm wandb traces of `curriculum_weight_*` are smoother.
 
+### **NOTE:**
+We have to think about exploiter training and how that works. Adaptive curriculum shouldn't touch whether/how we train exploiters, just how we train our main model against them
+
 ---
 
 ## Reasoning

@@ -15,11 +15,11 @@ AI assistants (Copilot, Claude, etc.) lose context between sessions. This folder
 
 Each document is prefixed with the date (`YYYY-MM-DD`) and contains:
 
-- **Context**: What we were working on and why
-- **Before State**: How things worked before the change
+- **Context**: What we were working on and why.
+- **Before State**: How things worked before the change. This is important so we know when data and conclusions in this document are still relevant or stale.
 - **Problem**: What needed to be fixed, improved, or added
 - **Solution**: What we decided to do and the implementation details
-- **Reasoning**: Why this approach is better for the goal of building the best VGC bot
+- **Reasoning**: Why this approach is better for the goal of building the best VGC bot. It should include all relevant empirical data, and also the context in which the data was generated (so that in the future, we can determine whether the data is outdated and needs to be refreshed).
 - **Planned Next Steps**: How we plan to implement this change
 - **Updates**: How our implementation plans went, and what bugs we encountered.
 
