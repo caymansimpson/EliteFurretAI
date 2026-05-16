@@ -221,11 +221,14 @@ def run_subprocess(spec: SubprocessSpec) -> None:
                     sorted(raw_agents.keys()),
                 )
                 continue
+            t_start = time.perf_counter()
             raw_agents[msg.service_name].model.load_state_dict(msg.state_dict)
+            t_loaded = time.perf_counter()
             logger.info(
-                "InferenceSubprocess[%s] synced weights for '%s'",
+                "InferenceSubprocess[%s] synced weights for '%s' load=%.1fms",
                 spec.group_name,
                 msg.service_name,
+                (t_loaded - t_start) * 1000.0,
             )
         else:
             logger.warning(

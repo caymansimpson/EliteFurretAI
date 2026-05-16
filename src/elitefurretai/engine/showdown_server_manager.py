@@ -51,6 +51,7 @@ def launch_showdown_servers(
                     "pokemon-showdown",
                     "start",
                     "--no-security",
+                    "--no-battle-retention",
                     "--port",
                     str(port),
                 ],
@@ -154,10 +155,14 @@ def launch_external_vgcbench_runners(
     config: RNaDConfig,
     server_ports: List[int],
 ) -> Tuple[List[subprocess.Popen], List[TextIO]]:
-    """Launch external vgc-bench runner processes and return (processes, log files)."""
+    """Launch external vgc-bench runner processes and return (processes, log files).
+
+    Caller decides whether to launch (typically based on curriculum
+    weight). This function only checks that a username list is
+    configured — if there's nothing to launch, return empty lists.
+    """
     if (
-        not config.curriculum.auto_launch_external_vgcbench
-        or not config.curriculum.external_vgcbench_usernames
+        not config.curriculum.external_vgcbench_usernames
         or len(config.curriculum.external_vgcbench_usernames) == 0
     ):
         return [], []

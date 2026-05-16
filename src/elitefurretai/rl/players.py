@@ -334,6 +334,8 @@ class BatchInferencePlayer(Player):
             "room_lost_recoveries": 0.0,
             "message_handler_timeouts": 0.0,
             "battle_lock_tasks_cancelled": 0.0,
+            "server_leavebattle_sent": 0.0,
+            "server_leavebattle_send_failed": 0.0,
         }
 
         # Battles finalized via the "not in that room" popup recovery path
@@ -852,6 +854,35 @@ class BatchInferencePlayer(Player):
 
         async with self._battle_end_condition:
             self._battle_end_condition.notify_all()
+
+        # Server-side cleanup hint. The "not in that room" popup means
+        # showdown booted us from the battle's user list, but the battle
+        # itself stays alive on the server until the other side ends or
+        # showdown's ~15-min timeout fires. With ~6 popup-recoveries/min
+        # (measured in dulcet-sun-59), 1.5 abandoned battles per real
+        # battle accumulate × ~5 MB of battle history each ≈ 1.3 GB/hr
+        # of showdown server growth (matches measured rate). Sending
+        # `/leavebattle` targeted at the battle room tells the server to
+        # treat us as having forfeited from that room; the other side's
+        # next turn (or its own timeout) then ends the battle, freeing
+        # the server-side state immediately instead of waiting 15 min.
+        #
+        # Best-effort, deliberately last in the recovery sequence: the
+        # client-side cleanup above is the load-bearing work; this is a
+        # hint to the server. Wrapping in try/except is justified here
+        # (not a "hide errors" anti-pattern) because send may legitimately
+        # fail mid-shutdown — the websocket can be closing as the
+        # popup-recovery fires. Any failure is counted as a diagnostic
+        # so we can spot regressions, and logged at DEBUG so the steady
+        # stream during a healthy run doesn't clog WARNING-level output.
+        try:
+            await ps_client.send_message("/leavebattle", room=battle_tag)
+            self._diagnostics["server_leavebattle_sent"] += 1
+        except Exception as exc:  # noqa: BLE001
+            self._diagnostics["server_leavebattle_send_failed"] += 1
+            self.logger.debug(
+                "leavebattle send failed for %s: %s", battle_tag, exc
+            )
 
     def _battle_finished_callback(self, battle: AbstractBattle):
         # ── End-of-battle: assign rewards and ship the trajectory ────────────

@@ -53,7 +53,9 @@ train.py main loop:
   - Every N updates, broadcasts new model weights back to workers.
 """
 
+import logging
 import os
+import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -68,6 +70,8 @@ from elitefurretai.etl import MDBO, Embedder
 from elitefurretai.rl.config import RNaDConfig
 from elitefurretai.rl.players import RNaDAgent
 from elitefurretai.supervised.model_archs import TransformerThreeHeadedModel, twohot_encode
+
+logger = logging.getLogger(__name__)
 
 # Action-mask fill value: large negative number that drives softmax probability
 # to zero on illegal actions, but small enough in magnitude to fit in fp16
@@ -193,6 +197,16 @@ class PortfolioRNaDLearner:
 
         self.portfolio_kl_history: List[List[float]] = [[] for _ in range(len(ref_models))]
         self.portfolio_selection_counts: List[int] = [0] * len(ref_models)
+
+        # Telemetry: rolling stats on the ref-model forward loop in update().
+        # Logged every _ref_fwd_log_every learner updates so we can see whether
+        # portfolio growth (new ref at every portfolio_add_interval) is the
+        # source of the post-update-100 slowdown without log-spamming.
+        self._ref_fwd_log_every = 50
+        self._ref_fwd_calls_since_log = 0
+        self._ref_fwd_time_sum_s = 0.0
+        self._ref_fwd_count_sum = 0
+        self._main_fwd_time_sum_s = 0.0
 
     def load_resume_state(self, checkpoint: Dict[str, Any]) -> None:
         """Restore optimizer, scheduler, and `_step` from a checkpoint dict.
@@ -395,6 +409,7 @@ class PortfolioRNaDLearner:
         # so the inner loop only computes the main model.
         ref_tp_logits_list: list = []
         ref_turn_logits_list: list = []
+        ref_fwd_start = time.perf_counter()
         if len(self.ref_models) > 0:
             with torch.amp.autocast(  # pyright: ignore[reportPrivateImportUsage]
                 device_type=self.device
@@ -412,6 +427,11 @@ class PortfolioRNaDLearner:
                             ref_turn_logits_list.append(
                                 r.masked_fill(turn_mask_neg_inf, ACTION_MASK_FILL)
                             )
+            if self.device == "cuda":
+                torch.cuda.synchronize()
+        ref_fwd_elapsed = time.perf_counter() - ref_fwd_start
+        self._ref_fwd_time_sum_s += ref_fwd_elapsed
+        self._ref_fwd_count_sum += len(self.ref_models)
 
         # ── PPO inner loop ────────────────────────────────────────────────────
         # K=1 reproduces original behavior. K>1 reuses old log probs from
@@ -596,6 +616,28 @@ class PortfolioRNaDLearner:
                 "ent_coef": ent_coef,
             }
         )
+
+        # Telemetry: every Nth call, emit rolling ref-fwd-loop stats so we can
+        # see whether portfolio growth explains throughput collapse after
+        # portfolio_add_interval ticks.
+        self._ref_fwd_calls_since_log += 1
+        if self._ref_fwd_calls_since_log >= self._ref_fwd_log_every:
+            calls = self._ref_fwd_calls_since_log
+            avg_total_ms = (self._ref_fwd_time_sum_s / calls) * 1000.0
+            avg_refs = self._ref_fwd_count_sum / max(1, calls)
+            per_ref_ms = avg_total_ms / max(1.0, avg_refs)
+            logger.info(
+                "ref_fwd[last %d updates]: portfolio_size=%d avg_total=%.1fms "
+                "avg_refs=%.2f per_ref=%.1fms",
+                calls,
+                len(self.ref_models),
+                avg_total_ms,
+                avg_refs,
+                per_ref_ms,
+            )
+            self._ref_fwd_calls_since_log = 0
+            self._ref_fwd_time_sum_s = 0.0
+            self._ref_fwd_count_sum = 0
         return metrics
 
     def get_portfolio_stats(self) -> Dict[str, Any]:

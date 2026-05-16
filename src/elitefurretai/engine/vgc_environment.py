@@ -632,9 +632,20 @@ class _ShowdownBackend(_BackendBase):
             f"ws://localhost:{self._server_port}/showdown/websocket", ""
         )
         external_vgcbench_usernames = cur.external_vgcbench_usernames
+        # Mirror the launcher's port-suffix derivation
+        # (showdown_server_manager.launch_external_vgcbench_runners) so the
+        # username workers challenge matches the username the runner logs in
+        # under. Trigger on curriculum weight, not `auto_launch_external_vgcbench`
+        # — that legacy flag is no longer the launcher's source of truth
+        # (train.py launches based on curriculum weight > 0). Keeping a
+        # different gate here desynchronizes worker challenges from runner
+        # identities and yields "user not found" popups.
+        vgc_bench_weight = cur.curriculum_weights.get(
+            OpponentPool.VGC_BENCH_BASELINE, 0.0
+        )
         if (
             external_vgcbench_usernames
-            and cur.auto_launch_external_vgcbench
+            and vgc_bench_weight > 0
             and hw.num_servers > 1
         ):
             external_vgcbench_usernames = [

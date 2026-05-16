@@ -1,0 +1,174 @@
+# may15_fast.yaml — fast-iteration variant of may15.yaml for diagnosing
+# the post-portfolio-add-ghost-activation throughput cliff.
+#
+# Why this config exists
+# ----------------------
+# avid-star-62 (may15.yaml, instrumented) confirmed the prior-run cliff
+# pattern: throughput collapses ~16x at update 100, the moment that both
+# `portfolio_add_interval` (adds a 2nd reference model) AND
+# `checkpoint_interval` (saves a checkpoint, adds it to opponent pool as
+# ghost_0, syncs weights into the frozen subprocess, activates ghost_0
+# in the curriculum) fire together.
+#
+# Update 99: 6.90 b/s window, Update 100: 8.33 b/s window (peak),
+# Update 101: 0.51 b/s window (-16x), Update 102: 0.48 b/s (saturation).
+# Portfolio-add block instrumentation showed all per-op timings are
+# trivial (block total = 1191 ms one-time). The cliff is in the
+# *steady-state* post-activation behavior, not the block itself.
+#
+# Iterating on the bug at update_interval=100 means ~30 minutes per
+# attempt to see the cliff. This config drops both intervals to 10 so
+# the cliff lands at update 10 (~3-4 minutes), enabling tight diagnostic
+# loops.
+#
+# What changes vs may15.yaml
+# --------------------------
+# - portfolio.portfolio_add_interval: 100 -> 10
+# - training.checkpoint_interval: 100 -> 10
+# Everything else is identical.
+#
+# What we'll measure
+# ------------------
+# Same instrumentation as the prior run: sync_weights timings, ref_fwd
+# rolling stats, portfolio-block timings. Plus we'll add frozen-subprocess
+# inference latency instrumentation iteratively as we narrow root cause.
+
+algorithm:
+  clip_range: 0.2
+  ent_coef: 0.005
+  ent_coef_end: 0.001
+  gae_lambda: 0.95
+  gamma: 1
+  max_grad_norm: 0.5
+  rnad_alpha: 0.3
+  vf_coef: 0.5
+
+portfolio:
+  max_portfolio_size: 5
+  # Fast-iteration: portfolio add at every 10 updates instead of 100.
+  # First add fires at update 10, second at 20, ... fills at update 40.
+  portfolio_add_interval: 10
+  portfolio_update_strategy: recent
+
+exploration:
+  temperature_start: 1.0
+  temperature_end: 0.5
+  temperature_anneal_steps: 10000
+  top_p: 0.95
+
+optimizer:
+  type: adamw
+  weight_decay: 0.0001
+  warmup_steps: 100
+  schedule: cosine
+  backbone_lr: 0.00001
+  backbone_weight_decay: 0.0001
+  heads_lr: 0.00003
+  heads_weight_decay: 0.0
+  lr: 0.00001
+
+value_head:
+  num_value_bins: 51
+  value_min: -1.0
+  value_max: 1.0
+
+architecture:
+  transformer_layers: 4
+  transformer_heads: 8
+  transformer_ff_dim: 1024
+  transformer_dropout: 0.1
+  early_layers: [1024, 512, 512]
+  late_layers: [512, 512]
+  dropout: 0.2
+  early_attention_heads: 16
+  late_attention_heads: 32
+  grouped_encoder_hidden_dim: 256
+  grouped_encoder_aggregated_dim: 2048
+  pokemon_attention_heads: 8
+  teampreview_head_layers: [256, 128]
+  teampreview_head_dropout: 0.15
+  teampreview_attention_heads: 2
+  turn_head_layers: [512, 256, 256]
+  value_head_layers: [512, 512, 256]
+  max_seq_len: 40
+  number_bank_hp_bins: 100
+  number_bank_stat_bins: 600
+  number_bank_power_bins: 250
+  number_bank_embedding_dim: 16
+
+hardware:
+  batch_size: 32
+  batch_timeout: 0.005
+  device: cuda
+  max_battle_steps: 30
+  num_battles_per_pair: 48
+  max_concurrent_battles_per_player: 48
+  num_players: 16
+  num_servers: 4
+  num_workers: 4
+  showdown_start_port: 8000
+  compile_inference_model: default
+
+curriculum:
+  battle_format: gen9vgc2024regg
+  base_team_path: data/teams
+  team_pool_path: constrained
+  agent_team_path: data/teams/gen9vgc2024regg/constrained/naicchampion.txt
+  bc_model_path: data/models/supervised/cool-bee-85-finetune_best.pt
+  curriculum_weights:
+    # vgc_bench_baseline disabled in this fast-iteration config.
+    # After the vgcbench username-derivation fix (2026-05-16), runners
+    # actually do inference work and consume ~4.88 GB combined. With the
+    # frozen subprocess already at ~7 GB of "other" RSS, keeping vgcbench
+    # active trips the 24 GB watchdog within minutes. For the ghost-
+    # activation cliff experiment we don't need vgcbench at all; its 0.2
+    # weight is redistributed to self_play. The full curriculum will be
+    # re-enabled in may15.yaml once the cliff root cause is fixed.
+    self_play: 0.55
+    bc_player: 0.05
+    exploiters: 0
+    ghosts: 0.1
+    max_damage: 0.15
+    random_baseline: 0
+    max_base_power_baseline: 0
+    simple_heuristic_baseline: 0.15
+    vgc_bench_baseline: 0
+    train_exploiter: 0
+  adaptive_curriculum: false
+  max_exploiter_models: 5
+  max_ghosts: 5
+  vgc_bench_checkpoint_path: data/models/vgc-bench-sb3-model.zip
+  external_vgcbench_usernames:
+    - VGCBENCH
+  external_vgcbench_startup_wait_s: 10.0
+  auto_launch_external_vgcbench: false
+  external_vgcbench_python_executable: /home/cayman/Repositories/venv-vgcbench/bin/python
+  external_vgcbench_team_file: data/teams/gen9vgc2024regg/vgcbench.txt
+
+training:
+  embedder_feature_set: raw
+  initialize_path: data/models/supervised/cool-bee-85-finetune_best.pt
+  resume_from: null
+  max_updates: 100000
+  save_dir: data/models/rl
+  train_batch_size: 128
+  # Fast-iteration: checkpoint + ghost activation at every 10 updates
+  # instead of 100. This is the OTHER half of the post-portfolio-add
+  # behavior (the one that adds the first ghost to opponent_pool and
+  # syncs weights into the frozen subprocess).
+  checkpoint_interval: 10
+  log_interval: 1
+  use_wandb: true
+  wandb_project: elitefurretai-instruct
+  wandb_run_name: null
+  memory_watchdog_threshold_gb: 24.0
+
+exploiter:
+  batch_size: 64
+  graduation_threshold: 0.65
+  graduation_window: 1000
+  max_updates_per_generation: 5000
+  victim_refresh_interval: 1000
+  warmup_updates: 200
+  lr: 0.0001
+  ent_coef: 0.02

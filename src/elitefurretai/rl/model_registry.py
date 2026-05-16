@@ -57,6 +57,7 @@ Lifecycle
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple, cast
 
@@ -432,26 +433,58 @@ class ModelRegistry:
         if name not in self._service_to_group:
             raise KeyError(f"Model '{name}' is not registered")
 
+        t0 = time.perf_counter()
         # Always keep the trainer-side shadow up to date. For in-process
         # services this is the same underlying module the handler holds.
         # For subprocess services this is the CPU shadow that gets
         # pickled into the subprocess at spawn time.
         self._raw_agents[name].model.load_state_dict(state_dict)
+        t_shadow = time.perf_counter()
 
         group = self._service_to_group[name]
         if group == self._IN_PROCESS:
+            logger.info(
+                "sync_weights[%s]: in-process load=%.1fms",
+                name, (t_shadow - t0) * 1000.0,
+            )
             return
         if not self._started:
             # Subprocess hasn't been spawned yet; the shadow update
             # above will be picked up at spawn time when start_all()
             # pickles the spec's agent reference into the subprocess.
+            logger.info(
+                "sync_weights[%s]: pre-start shadow update load=%.1fms",
+                name, (t_shadow - t0) * 1000.0,
+            )
             return
         handle = self._subprocesses.get(group)
         if handle is None:
             raise RuntimeError(
                 f"Subprocess group '{group}' not registered"
             )
-        handle.sync_weights(name, state_dict)
+        # Ship CPU tensors over the control queue, NEVER CUDA tensors.
+        # torch.multiprocessing's CUDA-tensor sharing reduction calls
+        # `_new_shared_cuda` on the receiving side, which on WSL2 raises
+        # `cudaErrorInvalidResourceHandle` because the trainer's CUDA
+        # context can't be shared with the subprocess's context. The
+        # trainer-side shadow we just updated above is on CPU anyway
+        # (subprocess-bound agents are placed there by
+        # `_register_subprocess`), so we can pull a clean CPU state_dict
+        # from it. This avoids materializing redundant CPU copies of
+        # `state_dict`'s CUDA tensors at the call site.
+        cpu_state_dict = self._raw_agents[name].model.state_dict()
+        t_dict = time.perf_counter()
+        handle.sync_weights(name, cpu_state_dict)
+        t_enq = time.perf_counter()
+        logger.info(
+            "sync_weights[%s->%s]: load=%.1fms get_state_dict=%.1fms "
+            "enqueue=%.1fms total=%.1fms",
+            name, group,
+            (t_shadow - t0) * 1000.0,
+            (t_dict - t_shadow) * 1000.0,
+            (t_enq - t_dict) * 1000.0,
+            (t_enq - t0) * 1000.0,
+        )
 
     def queues_for_workers(
         self,

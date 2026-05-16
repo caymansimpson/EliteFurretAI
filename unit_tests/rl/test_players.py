@@ -94,6 +94,8 @@ def _make_player_for_popup_tests():
         "completed_trajectory_steps": 0.0,
         "message_handler_timeouts": 0.0,
         "battle_lock_tasks_cancelled": 0.0,
+        "server_leavebattle_sent": 0.0,
+        "server_leavebattle_send_failed": 0.0,
     }
     player._room_lost_battles = set()
     player._battles = {}

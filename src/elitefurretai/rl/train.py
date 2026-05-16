@@ -1070,11 +1070,23 @@ def main():
             config.hardware.num_servers, config.hardware.showdown_start_port
         )
 
-    # Optionally auto-launch external vgc-bench runners (isolated environment)
+    # Auto-launch external vgc-bench runners based on curriculum.
+    # Previously gated on a separate `auto_launch_external_vgcbench`
+    # flag, which let the two go out of sync: curriculum requests
+    # vgc_bench battles but flag is False → workers spam "Popup: The
+    # user 'VGCBENCH' was not found"; vgc_bench=0 but flag True →
+    # ~3.7 GB host RAM consumed for nothing. The curriculum weight is
+    # the source of truth — if you ask for vgc_bench battles, the
+    # runners launch to serve them. The legacy flag is still in the
+    # config but no longer consulted here (it defaults True in the
+    # dataclass anyway; left in for backward-compat of config files).
     external_runner_processes: List[subprocess.Popen] = []
     external_runner_log_files: List[TextIO] = []
+    vgc_bench_curriculum_weight = config.curriculum.curriculum_weights.get(
+        OpponentPool.VGC_BENCH_BASELINE, 0.0
+    )
     if (
-        config.curriculum.auto_launch_external_vgcbench
+        vgc_bench_curriculum_weight > 0
         and config.hardware.battle_backend != RUST_ENGINE_BACKEND
     ):
         server_ports = [
@@ -1764,9 +1776,16 @@ def main():
                     logger.info(
                         "[Update %d] Adding new reference to portfolio...", updates
                     )
+                    _t_add_ref = time.perf_counter()
                     learner.add_reference_model(
                         RNaDAgent(copy.deepcopy(agent.model))
                     )  # Snapshot current policy
+                    logger.info(
+                        "[Update %d] add_reference_model: %.1fms (portfolio_size=%d)",
+                        updates,
+                        (time.perf_counter() - _t_add_ref) * 1000.0,
+                        len(learner.ref_models),
+                    )
 
                 # ===== SAVE CHECKPOINT =====
                 # Periodically save model, optimizer state, and training progress
@@ -1776,8 +1795,10 @@ def main():
                     logger.info(
                         "[Update %d] Saving checkpoint and updating curriculum...", updates
                     )
+                    _t_block_start = time.perf_counter()
 
                     # Save model, for safety and to use to battle against
+                    _t_save = time.perf_counter()
                     ghost_checkpoint_path = save_checkpoint(
                         agent,
                         learner,
@@ -1785,6 +1806,11 @@ def main():
                         config,
                         opponent_pool.curriculum,
                         os.path.join(str(config.training.run_dir), "ghosts"),
+                    )
+                    logger.info(
+                        "[Update %d] save_checkpoint: %.1fms",
+                        updates,
+                        (time.perf_counter() - _t_save) * 1000.0,
                     )
 
                     # Add checkpoint to ghosts pool for opponent diversity
@@ -1834,7 +1860,13 @@ def main():
                     logger.info(
                         "[Update %d] Broadcasting weights to worker processes...", updates
                     )
+                    _t_cpu_move = time.perf_counter()
                     cpu_weights = {k: v.cpu() for k, v in agent.model.state_dict().items()}
+                    logger.info(
+                        "[Update %d] main->cpu state_dict: %.1fms",
+                        updates,
+                        (time.perf_counter() - _t_cpu_move) * 1000.0,
+                    )
                     # Centralized inference: sync the trainer-side
                     # InferenceService model(s) from the learner. Same
                     # cadence as the worker broadcast — workers in
@@ -1884,6 +1916,7 @@ def main():
                         # Cleared after queueing: each refresh is broadcast
                         # exactly once, then we wait for the next refresh tick.
                         victim_needs_broadcast = False
+                    _t_wq = time.perf_counter()
                     for i, wq in enumerate(weight_queues):
                         try:
                             # Clear old weights to avoid queue overflow
@@ -1897,6 +1930,14 @@ def main():
                             wq.put_nowait(update_payload)
                         except Exception as e:
                             logger.warning("Failed to broadcast to worker %d: %s", i, e)
+                    logger.info(
+                        "[Update %d] worker queue broadcast (%d workers): %.1fms | "
+                        "checkpoint+broadcast block total=%.1fms",
+                        updates,
+                        len(weight_queues),
+                        (time.perf_counter() - _t_wq) * 1000.0,
+                        (time.perf_counter() - _t_block_start) * 1000.0,
+                    )
 
                 # ===== VICTIM REFRESH =====
                 # The exploiter trains against a stationary target (the
