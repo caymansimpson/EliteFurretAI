@@ -65,3 +65,16 @@ def test_module_smoke_import():
     assert hasattr(mod, "DeferredVerboseModelPlayer")
     assert hasattr(mod, "HumanVsModelPlayer")
     assert hasattr(mod, "main")
+
+
+def test_simple_model_player_is_verbose_parent():
+    """VerboseModelPlayer should inherit from SimpleModelPlayer.
+
+    This factoring lets analyze/benchmark scripts use SimpleModelPlayer
+    (no per-turn print noise) without copying the inference loop.
+    """
+    from elitefurretai.rl.analyze.play_model import VerboseModelPlayer
+    from elitefurretai.rl.players import SimpleModelPlayer
+
+    assert issubclass(VerboseModelPlayer, SimpleModelPlayer)
+    assert issubclass(DeferredVerboseModelPlayer, SimpleModelPlayer)

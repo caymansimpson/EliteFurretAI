@@ -19,6 +19,7 @@ from poke_env.battle import (
     SideCondition,
     Status,
 )
+from poke_env.data import GenData
 from poke_env.stats import compute_raw_stats
 
 from elitefurretai.inference.speed_inference import SpeedInference
@@ -240,9 +241,10 @@ def get_effective_speed_for_pokemon(
     # Get base speed with boosts
     speed_stat = pokemon.stats["spe"]
     if speed_stat is None:
+        gen_data = GenData.from_gen(pokemon.gen)
         if pokemon.base_stats["spe"] >= 75:
             speed_stat = compute_raw_stats(
-                pokemon.species, [252] * 6, [31] * 6, pokemon.level, "jolly", pokemon._data
+                pokemon.species, [252] * 6, [31] * 6, pokemon.level, "jolly", gen_data
             )[-1]
         else:
             speed_stat = compute_raw_stats(
@@ -251,7 +253,7 @@ def get_effective_speed_for_pokemon(
                 [31] * 6,
                 pokemon.level,
                 "serious",
-                pokemon._data,
+                gen_data,
             )[-1]
 
     speed_boost = pokemon.boosts.get("spe", 0)

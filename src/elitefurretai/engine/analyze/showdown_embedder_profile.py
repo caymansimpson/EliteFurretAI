@@ -159,9 +159,10 @@ async def _run_profile(args: argparse.Namespace) -> None:
         "size": 0.0,
     }
     for embedder in created_embedders:
-        if not hasattr(embedder, "get_damage_cache_stats"):
+        get_stats = getattr(embedder, "get_damage_cache_stats", None)
+        if get_stats is None:
             continue
-        cache_stats = embedder.get_damage_cache_stats()
+        cache_stats = get_stats()
         aggregate_cache_stats["hits"] += float(cache_stats.get("hits", 0))
         aggregate_cache_stats["misses"] += float(cache_stats.get("misses", 0))
         aggregate_cache_stats["evictions"] += float(cache_stats.get("evictions", 0))

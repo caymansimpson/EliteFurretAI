@@ -1,28 +1,24 @@
 import argparse
 import asyncio
 from subprocess import Popen
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, List, Optional
 
 import numpy as np
-import torch
-from poke_env.battle import AbstractBattle, DoubleBattle
-from poke_env.player import Player
-from poke_env.player.battle_order import DefaultBattleOrder
+from poke_env.battle import DoubleBattle
 from poke_env.ps_client import AccountConfiguration, ServerConfiguration
 
 from elitefurretai.engine.showdown_server_manager import (
     launch_showdown_servers,
     shutdown_showdown_servers,
 )
-from elitefurretai.etl import Embedder
 from elitefurretai.etl.encoder import MDBO
 from elitefurretai.inference.inference_utils import battle_to_str
-from elitefurretai.rl.learners import load_agent_from_checkpoint
-from elitefurretai.rl.masking import fast_get_action_mask
-from elitefurretai.rl.players import RNaDAgent
+from elitefurretai.rl.players import SimpleModelPlayer
 
 
-class VerboseModelPlayer(Player):
+class VerboseModelPlayer(SimpleModelPlayer):
+    """SimpleModelPlayer that prints top-k action probabilities each turn."""
+
     def __init__(
         self,
         model_path: str,
@@ -38,7 +34,10 @@ class VerboseModelPlayer(Player):
         team: Optional[str] = None,
     ):
         super().__init__(
+            model_path=model_path,
+            device=device,
             battle_format=battle_format,
+            probabilistic=probabilistic,
             account_configuration=account_configuration,
             server_configuration=server_configuration,
             accept_open_team_sheet=True,
@@ -46,20 +45,8 @@ class VerboseModelPlayer(Player):
             start_timer_on_battle_start=start_timer_on_battle_start,
             team=team,
         )
-        self.agent: RNaDAgent = load_agent_from_checkpoint(model_path, device)
-        self.device = device
-        self.embedder = Embedder(
-            format=battle_format, feature_set=Embedder.FULL, omniscient=False
-        )
-        self.probabilistic = probabilistic
         self.top_k = top_k
         self.print_summary = print_summary
-        self.hidden_states: Dict[str, Tuple[torch.Tensor, torch.Tensor]] = {}
-
-    def _get_hidden(self, battle_tag: str) -> Tuple[torch.Tensor, torch.Tensor]:
-        if battle_tag not in self.hidden_states:
-            self.hidden_states[battle_tag] = self.agent.get_initial_state(1, self.device)
-        return self.hidden_states[battle_tag]
 
     def _describe_action(
         self, battle: DoubleBattle, action_idx: int, is_teampreview: bool
@@ -79,7 +66,7 @@ class VerboseModelPlayer(Player):
     def _print_debug(
         self,
         battle: DoubleBattle,
-        probs: np.ndarray,
+        probs: "np.ndarray[Any, Any]",
         value: float,
         selected: int,
         is_teampreview: bool,
@@ -103,52 +90,15 @@ class VerboseModelPlayer(Player):
             print("\nBattle summary:")
             print(battle_to_str(battle))
 
-    def choose_move(self, battle: AbstractBattle) -> Any:
-        if not isinstance(battle, DoubleBattle):
-            return self.choose_random_move(battle)
-
-        if battle.battle_tag in self.hidden_states and battle.finished:
-            del self.hidden_states[battle.battle_tag]
-
-        state = self.embedder.feature_dict_to_vector(self.embedder.embed(battle))
-        state_tensor = (
-            torch.tensor(state, dtype=torch.float32, device=self.device)
-            .unsqueeze(0)
-            .unsqueeze(0)
-        )
-        hidden = self._get_hidden(battle.battle_tag)
-
-        with torch.no_grad():
-            turn_logits, tp_logits, value, next_hidden = self.agent(state_tensor, hidden)
-
-        self.hidden_states[battle.battle_tag] = (next_hidden[0], next_hidden[1])
-
-        is_teampreview = battle.teampreview
-        if is_teampreview:
-            probs = torch.softmax(tp_logits[0, 0], dim=-1).cpu().numpy()
-        else:
-            probs = torch.softmax(turn_logits[0, 0], dim=-1).cpu().numpy()
-            mask = fast_get_action_mask(battle)
-            probs = probs * mask
-            probs = probs / probs.sum() if probs.sum() > 0 else mask / mask.sum()
-
-        selected = (
-            int(np.random.choice(np.arange(len(probs)), p=probs))
-            if self.probabilistic
-            else int(np.argmax(probs))
-        )
-        state_value = float(value[0, 0].item())
-        self._print_debug(battle, probs, state_value, selected, is_teampreview)
-
-        try:
-            if is_teampreview:
-                return MDBO.from_int(selected, type=MDBO.TEAMPREVIEW).message
-
-            action_type = MDBO.FORCE_SWITCH if any(battle.force_switch) else MDBO.TURN
-            mdbo = MDBO.from_int(selected, type=action_type)
-            return mdbo.to_double_battle_order(battle)
-        except Exception:
-            return DefaultBattleOrder()
+    def _on_action_selected(
+        self,
+        battle: DoubleBattle,
+        probs: "np.ndarray[Any, Any]",
+        value: float,
+        selected: int,
+        is_teampreview: bool,
+    ) -> None:
+        self._print_debug(battle, probs, value, selected, is_teampreview)
 
 
 def _build_model_player(args, server_config: ServerConfiguration) -> VerboseModelPlayer:

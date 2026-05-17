@@ -6,6 +6,7 @@ This allows you to play battles manually via CLI against random players or other
 import asyncio
 
 from poke_env.player import RandomPlayer
+
 from elitefurretai.agents import HumanPlayer
 
 

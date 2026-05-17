@@ -36,7 +36,7 @@ import time
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union, cast
+from typing import Any, Awaitable, Dict, List, Optional, Sequence, Tuple, Union, cast
 
 import numpy as np
 from poke_env import AccountConfiguration, ServerConfiguration
@@ -46,7 +46,7 @@ from poke_env.player import Player
 from poke_env.player.battle_order import BattleOrder, DefaultBattleOrder
 from poke_env.teambuilder.teambuilder import Teambuilder
 
-from elitefurretai.engine.analyze.showdown_benchmark import _build_agent, _load_team_text
+from elitefurretai.engine.analyze.showdown_benchmark import _load_team_text
 from elitefurretai.engine.showdown_server_manager import (
     launch_showdown_servers,
     shutdown_showdown_servers,
@@ -56,7 +56,40 @@ from elitefurretai.etl.encoder import MDBO
 from elitefurretai.etl.team_repo import TeamRepo
 from elitefurretai.rl.config import RNaDConfig
 from elitefurretai.rl.masking import fast_get_action_mask
-from elitefurretai.rl.players import BatchInferencePlayer
+from elitefurretai.rl.players import SimpleModelPlayer
+
+
+async def _capture_invalid_choice_errors_before_super(
+    player: Player,
+    split_messages: List[List[str]],
+    on_invalid_choice: "callable[[AbstractBattle, str], None]",  # type: ignore[valid-type]
+) -> None:
+    """Walk a poke-env split_messages list for [Invalid choice] errors.
+
+    Calls ``on_invalid_choice(battle, error_message_str)`` for each one,
+    *before* poke-env's own error handler reacts (which clobbers the
+    last-sent-message state used to attribute the rejection).
+
+    Skips the init-battle message because no battle object exists yet.
+    Subclasses use this from their own ``_handle_battle_message`` override.
+    """
+    if not split_messages or not split_messages[0]:
+        return
+    is_init = (
+        len(split_messages) > 1
+        and len(split_messages[1]) > 1
+        and split_messages[1][1] == "init"
+    )
+    if is_init:
+        return
+    battle = await player._get_battle(split_messages[0][0])
+    for split_msg in split_messages[1:]:
+        if (
+            len(split_msg) >= 3
+            and split_msg[1] == "error"
+            and split_msg[2].startswith("[Invalid choice]")
+        ):
+            on_invalid_choice(battle, split_msg[2])
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -360,7 +393,15 @@ def _render_record(record: Dict[str, Any]) -> str:
     return "\n".join(parts)
 
 
-class DiagnosticBatchInferencePlayer(BatchInferencePlayer):
+class DiagnosticSimpleModelPlayer(SimpleModelPlayer):
+    """SimpleModelPlayer that captures invalid-choice errors with full context.
+
+    Records the last sent message per battle (via _handle_battle_request
+    override) and snapshots battle state on every [Invalid choice] error
+    (via _handle_battle_message override) so the message that was rejected
+    can be attributed to the request that produced it.
+    """
+
     def __init__(self, *, diagnostic_records: List[Dict[str, Any]], **kwargs: Any):
         self._diagnostic_records = diagnostic_records
         self._last_messages: Dict[str, Optional[str]] = {}
@@ -368,41 +409,27 @@ class DiagnosticBatchInferencePlayer(BatchInferencePlayer):
 
     async def _handle_battle_request(
         self, battle: AbstractBattle, maybe_default_order: bool = False
-    ):
+    ) -> None:
         if getattr(battle, "finished", False):
             return
-
-        request_generation = self._request_generation.get(battle.battle_tag, 0) + 1
-        self._request_generation[battle.battle_tag] = request_generation
 
         if maybe_default_order and random.random() < self.DEFAULT_CHOICE_CHANCE:
             message = self.choose_default_move().message
-            self._last_messages[battle.battle_tag] = message
-            try:
-                await self.ps_client.send_message(message, battle.battle_tag)
-            except Exception:
-                self.current_trajectories.pop(battle.battle_tag, None)
-                self.hidden_states.pop(battle.battle_tag, None)
-            return
-
-        choice = await self._choose_move_async(
-            battle,
-            request_generation=request_generation,
-        )
-
-        if self._request_generation.get(battle.battle_tag, -1) != request_generation:
-            return
-
-        if getattr(battle, "finished", False):
-            return
-
-        if isinstance(choice, str):
-            message = choice
-        elif hasattr(choice, "message"):
-            message = choice.message
+        elif battle.teampreview:
+            tp_result = self.teampreview(battle)
+            if isinstance(tp_result, Awaitable):
+                tp_result = await tp_result
+            message = cast(str, tp_result)
         else:
-            message = str(choice)
+            choice = self.choose_move(battle)
+            if isinstance(choice, Awaitable):
+                choice = await choice
+            message = choice.message if hasattr(choice, "message") else str(choice)
 
+        # Patch around two showdown quirks where masking can produce a
+        # technically-legal-but-rejected message:
+        # - force_switch + a move choice
+        # - "terastallize" when no slot has can_tera
         if (
             isinstance(battle, DoubleBattle)
             and any(battle.force_switch)
@@ -426,35 +453,32 @@ class DiagnosticBatchInferencePlayer(BatchInferencePlayer):
             try:
                 await self.ps_client.send_message(message, battle.battle_tag)
             except Exception:
-                self.current_trajectories.pop(battle.battle_tag, None)
                 self.hidden_states.pop(battle.battle_tag, None)
 
-    async def _handle_battle_error(
-        self, battle: AbstractBattle, split_message: List[str]
-    ) -> None:
-        message = split_message[2] if len(split_message) > 2 else ""
-        if message.startswith("[Invalid choice]"):
-            record = {
-                "battle_tag": battle.battle_tag,
-                "turn": getattr(battle, "turn", -1),
-                "player_role": getattr(battle, "player_role", None),
-                "error_message": message,
-                "attempted_message": self._last_messages.get(battle.battle_tag),
-                "request_type": _request_type_from_request(
-                    getattr(battle, "last_request", {}) or {}
-                ),
-                "request": deepcopy(getattr(battle, "last_request", {}) or {}),
-                "battle_state": _battle_state_to_string(battle),
-                "request_state": _request_state_to_string(
-                    getattr(battle, "last_request", {}) or {}
-                ),
-                "observations": _observations_to_string(
-                    battle, getattr(battle, "turn", 0)
-                ),
-            }
-            self._diagnostic_records.append(record)
+    def _record_invalid_choice(self, battle: AbstractBattle, error_message: str) -> None:
+        record = {
+            "battle_tag": battle.battle_tag,
+            "turn": getattr(battle, "turn", -1),
+            "player_role": getattr(battle, "player_role", None),
+            "error_message": error_message,
+            "attempted_message": self._last_messages.get(battle.battle_tag),
+            "request_type": _request_type_from_request(
+                getattr(battle, "last_request", {}) or {}
+            ),
+            "request": deepcopy(getattr(battle, "last_request", {}) or {}),
+            "battle_state": _battle_state_to_string(battle),
+            "request_state": _request_state_to_string(
+                getattr(battle, "last_request", {}) or {}
+            ),
+            "observations": _observations_to_string(battle, getattr(battle, "turn", 0)),
+        }
+        self._diagnostic_records.append(record)
 
-        await super()._handle_battle_error(battle, split_message)
+    async def _handle_battle_message(self, split_messages: List[List[str]]) -> None:
+        await _capture_invalid_choice_errors_before_super(
+            self, split_messages, self._record_invalid_choice
+        )
+        await super()._handle_battle_message(split_messages)
 
 
 class MaskedRandomPlayer(Player):
@@ -557,22 +581,23 @@ class MaskedRandomPlayer(Player):
         }
         self._fuzz_records.append(record)
 
-    async def _handle_battle_error(
-        self, battle: AbstractBattle, split_message: List[str]
+    def _record_invalid_choice(
+        self, battle: AbstractBattle, error_message: str
     ) -> None:
-        message = split_message[2] if len(split_message) > 2 else ""
-        if message.startswith("[Invalid choice]"):
-            mask = self._last_masks.get(battle.battle_tag)
-            self._record_failure(
-                battle=battle,
-                request_snapshot=self._last_request_snapshots.get(battle.battle_tag),
-                mask=mask,
-                sampled_index=self._last_actions.get(battle.battle_tag, -1),
-                attempted_message=self._last_messages.get(battle.battle_tag),
-                error_message=message,
-            )
+        self._record_failure(
+            battle=battle,
+            request_snapshot=self._last_request_snapshots.get(battle.battle_tag),
+            mask=self._last_masks.get(battle.battle_tag),
+            sampled_index=self._last_actions.get(battle.battle_tag, -1),
+            attempted_message=self._last_messages.get(battle.battle_tag),
+            error_message=error_message,
+        )
 
-        await super()._handle_battle_error(battle, split_message)
+    async def _handle_battle_message(self, split_messages: List[List[str]]) -> None:
+        await _capture_invalid_choice_errors_before_super(
+            self, split_messages, self._record_invalid_choice
+        )
+        await super()._handle_battle_message(split_messages)
 
 
 def _render_fuzz_failure_report(record: Dict[str, Any]) -> str:
@@ -636,18 +661,17 @@ async def _run(args: argparse.Namespace) -> None:
     rng = random.Random(args.seed)
     config = RNaDConfig.load(args.config)
     feature_set = args.feature_set or config.training.embedder_feature_set
-    temperature = (
-        args.temperature if args.temperature is not None else config.temperature_at_step(0)
-    )
-    top_p = args.top_p if args.top_p is not None else config.exploration.top_p
+
+    if args.checkpoint is None:
+        raise SystemExit("--checkpoint is required for --player model")
 
     team_subdirectory = args.team_subdirectory
     if team_subdirectory is None and args.random_teams:
-        team_subdirectory = config.curriculum.team_pool_path
+        team_subdirectory = config.curriculum.opponent_team_pool_path
 
     opponent_team_subdirectory = args.opponent_team_subdirectory
     if opponent_team_subdirectory is None and args.random_opponent_teams:
-        opponent_team_subdirectory = config.curriculum.team_pool_path
+        opponent_team_subdirectory = config.curriculum.opponent_team_pool_path
 
     p1_team = _build_team_source(
         repo=repo,
@@ -669,7 +693,7 @@ async def _run(args: argparse.Namespace) -> None:
     elif args.no_mirror:
         p2_team = repo.sample_team(
             args.format,
-            subdirectory=config.curriculum.team_pool_path,
+            subdirectory=config.curriculum.opponent_team_pool_path,
         )
     else:
         p2_team = p1_team
@@ -703,20 +727,14 @@ async def _run(args: argparse.Namespace) -> None:
             feature_set=feature_set,
             omniscient=False,
         )
-        p1_agent = _build_agent(config, args.device, args.checkpoint)
-        p2_agent = _build_agent(
-            config, args.device, args.opponent_checkpoint or args.checkpoint
-        )
+        opponent_checkpoint = args.opponent_checkpoint or args.checkpoint
 
-        player1 = DiagnosticBatchInferencePlayer(
-            model=p1_agent,
+        player1 = DiagnosticSimpleModelPlayer(
+            model_path=args.checkpoint,
             device=args.device,
-            batch_size=args.batch_size,
-            batch_timeout=args.batch_timeout,
+            battle_format=config.curriculum.battle_format,
             probabilistic=not args.greedy,
             embedder=embedder,
-            max_battle_steps=args.max_battle_steps,
-            battle_format=config.curriculum.battle_format,
             team=p1_team,
             max_concurrent_battles=args.max_concurrent_battles,
             server_configuration=server_config,
@@ -724,30 +742,18 @@ async def _run(args: argparse.Namespace) -> None:
             log_level=args.log_level,
             diagnostic_records=diagnostic_records,
         )
-        player2 = BatchInferencePlayer(
-            p2_agent,
+        player2 = SimpleModelPlayer(
+            model_path=opponent_checkpoint,
             device=args.device,
-            batch_size=args.batch_size,
-            batch_timeout=args.batch_timeout,
+            battle_format=config.curriculum.battle_format,
             probabilistic=not args.greedy,
             embedder=embedder,
-            max_battle_steps=args.max_battle_steps,
-            battle_format=config.curriculum.battle_format,
             team=p2_team,
             max_concurrent_battles=args.max_concurrent_battles,
             server_configuration=server_config,
             account_configuration=AccountConfiguration(f"showdiagp2{suffix}", None),
             log_level=args.log_level,
         )
-
-        p1_model_player = cast(BatchInferencePlayer, player1)
-        p2_model_player = cast(BatchInferencePlayer, player2)
-        p1_model_player.temperature = temperature
-        p1_model_player.top_p = top_p
-        p2_model_player.temperature = temperature
-        p2_model_player.top_p = top_p
-        p1_model_player.start_inference_loop()
-        p2_model_player.start_inference_loop()
 
         await player1.ps_client.wait_for_login()
         await player2.ps_client.wait_for_login()
@@ -758,10 +764,6 @@ async def _run(args: argparse.Namespace) -> None:
         battle_loop_seconds = time.perf_counter() - battle_loop_start
     finally:
         teardown_start = time.perf_counter()
-        if isinstance(player1, BatchInferencePlayer):
-            player1.teardown_runtime()
-        if isinstance(player2, BatchInferencePlayer):
-            player2.teardown_runtime()
         shutdown_showdown_servers(server_processes)
         teardown_seconds = time.perf_counter() - teardown_start
 

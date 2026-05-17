@@ -73,7 +73,7 @@ exclude = [
     "src/elitefurretai/rl/analyze",
     "src/elitefurretai/supervised/analyze",
 ]
-pythonVersion = "3.7"
+pythonVersion = "3.10"
 
 [tool.pytest.ini_options]
 minversion = "6.0"

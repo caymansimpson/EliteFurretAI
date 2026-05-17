@@ -6,7 +6,6 @@ import random
 import resource
 import time
 from pathlib import Path
-from typing import cast
 
 from poke_env import AccountConfiguration, ServerConfiguration
 from poke_env.player import Player, RandomPlayer
@@ -18,27 +17,13 @@ from elitefurretai.engine.showdown_server_manager import (
 from elitefurretai.etl import Embedder
 from elitefurretai.etl.team_repo import TeamRepo
 from elitefurretai.rl.config import RNaDConfig
-from elitefurretai.rl.learners import build_model_from_config, load_agent_from_checkpoint
-from elitefurretai.rl.players import BatchInferencePlayer, RNaDAgent
+from elitefurretai.rl.players import SimpleModelPlayer
 
 
 def _load_team_text(format_id: str, team_path: str | None, repo: TeamRepo) -> str:
     if team_path is None:
         return repo.sample_team(format_id)
     return Path(team_path).read_text()
-
-
-def _build_agent(config: RNaDConfig, device: str, checkpoint: str | None) -> RNaDAgent:
-    if checkpoint is not None:
-        return load_agent_from_checkpoint(checkpoint, device)
-
-    embedder = Embedder(
-        format=config.curriculum.battle_format,
-        feature_set=config.training.embedder_feature_set,
-        omniscient=False,
-    )
-    model = build_model_from_config(config.to_dict(), embedder, device, None)
-    return RNaDAgent(model)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -93,6 +78,7 @@ async def _run_benchmark(args: argparse.Namespace) -> None:
     player_setup_seconds = 0.0
     player1: Player | None = None
     player2: Player | None = None
+    config: RNaDConfig | None = None
 
     try:
         setup_start = time.perf_counter()
@@ -119,57 +105,41 @@ async def _run_benchmark(args: argparse.Namespace) -> None:
         else:
             if args.config is None:
                 raise ValueError("--config is required for --policy model")
+            if args.checkpoint is None:
+                raise ValueError("--checkpoint is required for --policy model")
 
             config = RNaDConfig.load(args.config)
             feature_set = args.feature_set or config.training.embedder_feature_set
-            temperature = args.temperature if args.temperature is not None else config.temperature_at_step(0)
-            top_p = args.top_p if args.top_p is not None else config.exploration.top_p
-
-            p1_agent = _build_agent(config, args.device, args.checkpoint)
-            p2_agent = _build_agent(config, args.device, args.opponent_checkpoint or args.checkpoint)
             embedder = Embedder(
                 format=config.curriculum.battle_format,
                 feature_set=feature_set,
                 omniscient=False,
             )
-            player1 = BatchInferencePlayer(
-                p1_agent,
+            opponent_checkpoint = args.opponent_checkpoint or args.checkpoint
+            player1 = SimpleModelPlayer(
+                model_path=args.checkpoint,
                 device=args.device,
-                batch_size=args.batch_size,
-                batch_timeout=args.batch_timeout,
+                battle_format=config.curriculum.battle_format,
                 probabilistic=not args.greedy,
                 embedder=embedder,
-                max_battle_steps=args.max_battle_steps,
-                battle_format=config.curriculum.battle_format,
                 team=p1_team,
                 max_concurrent_battles=args.max_concurrent_battles,
                 server_configuration=server_config,
                 account_configuration=AccountConfiguration(f"showbenchp1{suffix}", None),
                 log_level=args.log_level,
             )
-            player2 = BatchInferencePlayer(
-                p2_agent,
+            player2 = SimpleModelPlayer(
+                model_path=opponent_checkpoint,
                 device=args.device,
-                batch_size=args.batch_size,
-                batch_timeout=args.batch_timeout,
+                battle_format=config.curriculum.battle_format,
                 probabilistic=not args.greedy,
                 embedder=embedder,
-                max_battle_steps=args.max_battle_steps,
-                battle_format=config.curriculum.battle_format,
                 team=p2_team,
                 max_concurrent_battles=args.max_concurrent_battles,
                 server_configuration=server_config,
                 account_configuration=AccountConfiguration(f"showbenchp2{suffix}", None),
                 log_level=args.log_level,
             )
-            model_player1 = cast(BatchInferencePlayer, player1)
-            model_player2 = cast(BatchInferencePlayer, player2)
-            model_player1.temperature = temperature
-            model_player1.top_p = top_p
-            model_player2.temperature = temperature
-            model_player2.top_p = top_p
-            model_player1.start_inference_loop()
-            model_player2.start_inference_loop()
 
         assert player1 is not None
         assert player2 is not None
@@ -207,19 +177,15 @@ async def _run_benchmark(args: argparse.Namespace) -> None:
         print(f"policy={args.policy}")
         print(f"max_concurrent_battles={args.max_concurrent_battles}")
         if args.policy == "model":
-            print(f"batch_size={args.batch_size}")
-            print(f"batch_timeout={args.batch_timeout}")
+            assert config is not None
             print(f"device={args.device}")
             print(f"feature_set={args.feature_set or config.training.embedder_feature_set}")
-            print(f"temperature={temperature}")
-            print(f"top_p={top_p}")
+            print(f"checkpoint={args.checkpoint}")
+            print(f"opponent_checkpoint={args.opponent_checkpoint or args.checkpoint}")
+            print(f"greedy={args.greedy}")
         print(f"profile_output={args.profile_output or 'disabled'}")
     finally:
         teardown_start = time.perf_counter()
-        if isinstance(player1, BatchInferencePlayer):
-            player1.teardown_runtime()
-        if isinstance(player2, BatchInferencePlayer):
-            player2.teardown_runtime()
         shutdown_showdown_servers(server_processes)
         teardown_seconds = time.perf_counter() - teardown_start
         print(f"teardown_seconds={teardown_seconds:.3f}")

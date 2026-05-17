@@ -24,7 +24,8 @@ from sklearn.metrics import (
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader
 
-from elitefurretai.etl import BattleDataset, format_time
+from elitefurretai.etl import BattleDataset
+from elitefurretai.supervised.utils import format_time
 
 
 def evaluate(y_true, y_pred):
@@ -123,7 +124,7 @@ def main():
     # Train a HistGradientBoostingClassifier (fast, robust tree-based model)
     model = HistGradientBoostingClassifier(
         learning_rate=0.01,
-        early_stopping=True,
+        early_stopping="auto",
         max_features=0.01,  # Use a small fraction of features per split for speed
         n_iter_no_change=10,
         l2_regularization=1.0,

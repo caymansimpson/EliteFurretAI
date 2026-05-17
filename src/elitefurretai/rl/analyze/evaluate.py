@@ -12,13 +12,13 @@ from poke_env.player.baselines import SimpleHeuristicsPlayer
 from poke_env.ps_client import AccountConfiguration, ServerConfiguration
 
 from elitefurretai.engine.showdown_server_manager import (
+    EXTERNAL_VGCBENCH_USERNAMES,
     launch_showdown_servers,
     shutdown_showdown_servers,
 )
 from elitefurretai.etl import TeamRepo
-from elitefurretai.rl.learners import load_agent_from_checkpoint
 from elitefurretai.rl.opponents import _create_vgc_bench_player
-from elitefurretai.rl.players import BatchInferencePlayer, MaxDamagePlayer
+from elitefurretai.rl.players import MaxDamagePlayer, SimpleModelPlayer
 
 
 @dataclass
@@ -100,39 +100,31 @@ def _run_worker_model_vs_model(
     run_tag: str,
 ) -> EvalResult:
     async def _run() -> EvalResult:
-        model1 = load_agent_from_checkpoint(model1_path, device)
-        model2 = load_agent_from_checkpoint(model2_path, device)
         team1 = _load_sample_team(battle_format)
         team2 = _load_sample_team(battle_format)
 
         server_config = ServerConfiguration(f"ws://{server_url}/showdown/websocket", "")
-        player1 = BatchInferencePlayer(
-            model=model1,
+        player1 = SimpleModelPlayer(
+            model_path=model1_path,
             device=device,
-            batch_size=batch_size,
+            battle_format=battle_format,
             probabilistic=False,
-            worker_id=worker_id * 2,
             account_configuration=AccountConfiguration(_username("EM1", worker_id, run_tag), None),
             server_configuration=server_config,
-            battle_format=battle_format,
             team=team1,
             accept_open_team_sheet=True,
         )
-        player2 = BatchInferencePlayer(
-            model=model2,
+        player2 = SimpleModelPlayer(
+            model_path=model2_path,
             device=device,
-            batch_size=batch_size,
+            battle_format=battle_format,
             probabilistic=False,
-            worker_id=worker_id * 2 + 1,
             account_configuration=AccountConfiguration(_username("EM2", worker_id, run_tag), None),
             server_configuration=server_config,
-            battle_format=battle_format,
             team=team2,
             accept_open_team_sheet=True,
         )
 
-        player1.start_inference_loop()
-        player2.start_inference_loop()
         await player1.battle_against(player2, n_battles=battles)
 
         played = player1.n_finished_battles
@@ -159,7 +151,6 @@ def _run_worker_model_vs_baseline(
     run_tag: str,
 ) -> EvalResult:
     async def _run() -> EvalResult:
-        model = load_agent_from_checkpoint(model_path, device)
         server_config = ServerConfiguration(f"ws://{server_url}/showdown/websocket", "")
         model_team = _load_sample_team(battle_format)
         baseline_team_provider = _build_baseline_team_provider(
@@ -168,22 +159,19 @@ def _run_worker_model_vs_baseline(
             baseline_team_dir=baseline_team_dir,
         )
 
-        model_player = BatchInferencePlayer(
-            model=model,
+        model_player = SimpleModelPlayer(
+            model_path=model_path,
             device=device,
-            batch_size=batch_size,
+            battle_format=battle_format,
             probabilistic=False,
-            worker_id=worker_id,
             account_configuration=AccountConfiguration(
                 _username(f"EM{_baseline_user_tag(baseline_name.lower())}", worker_id, run_tag),
                 None,
             ),
             server_configuration=server_config,
-            battle_format=battle_format,
             team=model_team,
             accept_open_team_sheet=False,
         )
-        model_player.start_inference_loop()
 
         baseline_key = baseline_name.lower()
         baseline_prefix = f"EB{_baseline_user_tag(baseline_key)}"
@@ -433,12 +421,6 @@ def main() -> None:
         default=None,
         help="Optional TeamRepo root directory to sample a new baseline team each battle.",
     )
-    parser.add_argument(
-        "--external-vgcbench-usernames",
-        type=str,
-        default="",
-        help="Comma-separated external Showdown usernames for vgcbench baseline (uses send_challenges instead of local vgc-bench policy player).",
-    )
     parser.add_argument("--output", type=str, default=None)
     args = parser.parse_args()
 
@@ -446,11 +428,7 @@ def main() -> None:
         raise ValueError("Use only one of --baseline-team-file or --baseline-team-dir")
 
     run_tag = format(int(time.time() * 1000) % 65536, "04x")
-    external_vgcbench_usernames = [
-        u.strip()
-        for u in args.external_vgcbench_usernames.split(",")
-        if u.strip()
-    ]
+    external_vgcbench_usernames = list(EXTERNAL_VGCBENCH_USERNAMES)
 
     server_processes = []
     if args.launch_servers:
