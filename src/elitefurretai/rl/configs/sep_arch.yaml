@@ -36,6 +36,7 @@ algorithm:
   gamma: 1
   max_grad_norm: 0.5
   rnad_alpha: 0.3
+  ppo_epochs: 3
   vf_coef: 0.5
 
 portfolio:
@@ -166,8 +167,8 @@ hardware:
 curriculum:
   battle_format: gen9vgc2024regg
   base_team_path: data/teams
-  team_pool_path: constrained
-  agent_team_path: data/teams/gen9vgc2024regg/constrained/naicchampion.txt
+  opponent_team_pool_path: constrained
+  agent_team_path: constrained/naicchampion.txt
   bc_model_path: data/models/supervised/cool-bee-85-finetune_best.pt
   curriculum_weights:
     # 2026-05-15 Run C: full original curriculum restored to test the
@@ -182,9 +183,10 @@ curriculum:
     # Expected: ghosts AND exploiters re-enabled, throughput should not
     # collapse the way Run B post-400 (3.72 traj/s) and the pre-fix
     # exploiter-on baseline (3.94 traj/s) did. Target: hold ≥5 traj/s.
-    # 2026-05-15 Plan C step 5 test: vgc_bench dropped (0.2 → 0,
-    # auto_launch_external_vgcbench false below) to save ~3.7 GB host
-    # RAM that the external runners consume — needed so the trainer +
+    # 2026-05-15 Plan C step 5 test: vgc_bench dropped (0.2 → 0) to
+    # save ~3.7 GB host RAM that the external runners consume (launch
+    # is now triggered by curriculum_weights['vgc_bench_baseline'] > 0)
+    # — needed so the trainer +
     # workers + showdown + 2 inference subprocesses fit under the
     # 22 GB watchdog AND under the 23 GB WSL2 physical-RAM ceiling.
     # Other weights scaled by 1/0.8 = 1.25 to keep relative mix.
@@ -204,10 +206,6 @@ curriculum:
   max_exploiter_models: 5
   max_ghosts: 5
   vgc_bench_checkpoint_path: data/models/vgc-bench-sb3-model.zip
-  external_vgcbench_usernames:
-    - VGCBENCH
-  external_vgcbench_startup_wait_s: 10.0
-  auto_launch_external_vgcbench: false
   external_vgcbench_python_executable: /home/cayman/Repositories/venv-vgcbench/bin/python
   external_vgcbench_team_file: data/teams/gen9vgc2024regg/vgcbench.txt
 

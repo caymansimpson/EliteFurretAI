@@ -277,12 +277,14 @@ def test_large_tensor(temp_dir):
     Test handling of large tensors.
 
     Training batches can be quite large (e.g., 512 trajectories × 17 steps × 15000 features).
-    This tests a moderately large tensor.
+    This tests a moderately large tensor — sized to exercise the multi-MB
+    compression/decompression path without dominating the fast test suite.
 
     Expected: Large tensor preserved through compression.
     """
-    # ~60MB uncompressed (1000 * 1000 * 15 * 4 bytes)
-    large_tensor = torch.randn(1000, 1000, 15)
+    # ~12MB uncompressed (200 * 1000 * 15 * 4 bytes) — large enough to exercise
+    # the multi-MB compression path; small enough to stay under ~0.3s.
+    large_tensor = torch.randn(200, 1000, 15)
     filepath = os.path.join(temp_dir, "large.pt.zst")
 
     save_compressed(large_tensor, filepath)

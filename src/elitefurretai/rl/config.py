@@ -114,6 +114,9 @@ class PortfolioConfig:
       - "best"    : evict the reference that has been selected (i.e. been the
                     closest KL anchor) least often. Keeps the most-load-bearing
                     anchors around longer.
+      - "random"  : evict a uniformly-random reference. Cheapest unbiased
+                    alternative to "recent" — keeps a wider mix of anchor
+                    ages on average without preferring any selection signal.
       - "diverse" : reserved name for a diversity-maximising eviction policy
                     (e.g. drop the reference whose representations are closest
                     to another's). NOT YET IMPLEMENTED — selecting it raises
@@ -454,13 +457,24 @@ class HardwareConfig:
 
 @dataclass
 class CurriculumConfig:
-    """Opponent sampling, team pools, BC models, and ghost/exploiter directories."""
+    """Opponent sampling, team pools, BC models, and ghost/exploiter directories.
 
-    # Battle format and team sources
+    Path conventions
+    ----------------
+    Both `opponent_team_pool_path` and `agent_team_path` are *relative* to
+    `<base_team_path>/<battle_format>/`. Callers should resolve via
+    `resolved_agent_team_path()` (file or directory) and pass
+    `opponent_team_pool_path` as the `subdirectory=` arg to TeamRepo.
+    """
+
+    # Battle format and team sources. agent_team_path is a relative path
+    # (file or directory) under <base_team_path>/<battle_format>/.
     agent_team_path: Optional[str] = None
     base_team_path: str = "data/teams"
     battle_format: str = "gen9vgc2023regc"
-    team_pool_path: Optional[str] = None
+    # Subdirectory under <base_team_path>/<battle_format>/ sampled from for
+    # opponent teams.
+    opponent_team_pool_path: Optional[str] = None
     # Behavior cloning model used as opponent
     bc_model_path: Optional[str] = "data/models/bc_model.pt"
     # Opponent sampling distribution (must sum to 1.0).
@@ -497,15 +511,26 @@ class CurriculumConfig:
     max_exploiter_models: int = 10
     max_ghosts: int = 10
     # VGC bench external runner — launches a separate venv'd VGCBench
-    # instance and registers it under OpponentPool.VGC_BENCH_BASELINE. All
-    # knobs here are environment-level (paths, usernames, startup timing);
-    # they are not training-algorithm knobs and rarely change between runs.
-    auto_launch_external_vgcbench: bool = False
+    # instance and registers it under OpponentPool.VGC_BENCH_BASELINE.
+    # Usernames and startup wait are hardcoded module constants in
+    # `engine.showdown_server_manager` (they don't vary across runs); the
+    # paths here are environment-level and can change between machines.
+    # Launch is triggered automatically when curriculum_weights gives
+    # vgc_bench_baseline a positive weight.
     external_vgcbench_python_executable: Optional[str] = None
-    external_vgcbench_startup_wait_s: float = 5.0
     external_vgcbench_team_file: str = "data/teams/gen9vgc2024regg/vgcbench.txt"
-    external_vgcbench_usernames: Optional[List[str]] = None
     vgc_bench_checkpoint_path: str = "data/models/vgc-bench-sb3-model.zip"
+
+    def resolved_agent_team_path(self) -> Optional[str]:
+        """Full filesystem path for `agent_team_path`, or None if unset.
+
+        Joins the relative `agent_team_path` with
+        `<base_team_path>/<battle_format>/`. Returns the resolved path
+        whether the underlying target is a single file or a directory.
+        """
+        if not self.agent_team_path:
+            return None
+        return os.path.join(self.base_team_path, self.battle_format, self.agent_team_path)
 
 
 @dataclass
@@ -691,21 +716,22 @@ class RNaDConfig:
             f"Base team path not found: {cur.base_team_path}"
         )
 
-        if cur.team_pool_path:
+        if cur.opponent_team_pool_path:
             full_pool = os.path.join(
-                cur.base_team_path, cur.battle_format, cur.team_pool_path
+                cur.base_team_path, cur.battle_format, cur.opponent_team_pool_path
             )
-            assert os.path.exists(full_pool), f"Team pool path not found: {full_pool}"
-        if cur.agent_team_path:
-            assert os.path.exists(cur.agent_team_path), (
-                f"Agent team path not found: {cur.agent_team_path}"
+            assert os.path.exists(full_pool), (
+                f"Opponent team pool path not found: {full_pool}"
             )
-            if os.path.isdir(cur.agent_team_path):
-                team_files = [
-                    f for f in os.listdir(cur.agent_team_path) if f.endswith(".txt")
-                ]
+        agent_team_path = cur.resolved_agent_team_path()
+        if agent_team_path is not None:
+            assert os.path.exists(agent_team_path), (
+                f"Agent team path not found: {agent_team_path}"
+            )
+            if os.path.isdir(agent_team_path):
+                team_files = [f for f in os.listdir(agent_team_path) if f.endswith(".txt")]
                 assert len(team_files) > 0, (
-                    f"No .txt team files in agent_team_path: {cur.agent_team_path}"
+                    f"No .txt team files in agent_team_path: {agent_team_path}"
                 )
         if trn.resume_from:
             assert os.path.exists(trn.resume_from), (
@@ -716,15 +742,12 @@ class RNaDConfig:
                 f"Initialize checkpoint not found: {trn.initialize_path}"
             )
 
-        if cur.auto_launch_external_vgcbench:
-            assert (
-                cur.external_vgcbench_usernames
-                and len(cur.external_vgcbench_usernames) > 0
-            ), (
-                "external_vgcbench_usernames must be set when auto_launch_external_vgcbench=True"
-            )
+        # External vgc-bench runners launch automatically when the
+        # curriculum gives vgc_bench_baseline positive weight.
+        if cur.curriculum_weights.get("vgc_bench_baseline", 0.0) > 0:
             assert cur.external_vgcbench_python_executable, (
-                "external_vgcbench_python_executable must be set when auto_launch_external_vgcbench=True"
+                "external_vgcbench_python_executable must be set when "
+                "curriculum_weights['vgc_bench_baseline'] > 0"
             )
             assert os.path.exists(cur.external_vgcbench_python_executable), (
                 f"external_vgcbench_python_executable not found: {cur.external_vgcbench_python_executable}"

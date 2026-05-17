@@ -125,6 +125,7 @@ _SMOKE_YAML = textwrap.dedent("""\
 
 
 @pytest.mark.smoke
+@pytest.mark.slow
 def test_rl_train_smoke(tmp_path):
     """RL training runs 3 gradient updates and writes a final checkpoint."""
     save_dir = tmp_path / "models"

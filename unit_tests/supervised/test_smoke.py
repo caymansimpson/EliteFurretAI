@@ -53,6 +53,7 @@ class _FakeBattleDataLoader:
 
 
 @pytest.mark.smoke
+@pytest.mark.slow
 def test_supervised_train_smoke(tmp_path):
     """Supervised training runs 1 epoch end-to-end without errors and saves a checkpoint."""
     from elitefurretai.supervised.train import main

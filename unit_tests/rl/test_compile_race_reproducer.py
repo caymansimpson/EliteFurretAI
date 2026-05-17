@@ -35,6 +35,7 @@ class TinyAgent(nn.Module):
         return self.l2(torch.relu(self.l1(x)))
 
 
+@pytest.mark.slow
 def test_two_compiled_models_concurrent_calls_no_race():
     """Two distinct compiled models called from two threads should not
     raise. Fails today; the fix from Task 2.2/2.3/2.4 should make it pass.
@@ -165,6 +166,7 @@ def test_two_real_rnad_agents_concurrent_calls_no_race():
     assert errors == [], f"compile race triggered: {errors[0]!r}"
 
 
+@pytest.mark.slow
 @pytest.mark.xfail(
     reason=(
         "Per-model lock does not fix the dynamo trace-entry race. "
@@ -239,6 +241,7 @@ def test_two_real_rnad_agents_with_per_model_lock():
     assert errors == [], f"compile race triggered with per-model lock: {errors[0]!r}"
 
 
+@pytest.mark.slow
 @pytest.mark.xfail(
     reason=(
         "cudagraph_mark_step_begin does not fix the dynamo trace-entry race. "
@@ -313,6 +316,7 @@ def test_two_real_rnad_agents_with_cudagraph_mark_step():
     assert errors == [], f"compile race triggered with cudagraph_mark_step: {errors[0]!r}"
 
 
+@pytest.mark.slow
 def test_two_real_rnad_agents_with_global_lock():
     """One shared lock across ALL compiled-model calls. Diagnoses
     Task 2.2's finding that dynamo trace state is global, not per-model.

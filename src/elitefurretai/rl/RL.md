@@ -4,6 +4,11 @@ This document is the **comprehensive, one-stop guide** to EliteFurretAI's reinfo
 
 ## Table of Contents
 
+0.  [**Infrastructure Primer (Read First)**](#0-infrastructure-primer-read-first)
+    -   The Fundamental Problems
+    -   The Picture
+    -   How A Single Battle Flows
+    -   Why The Infrastructure Looks Like This — Six Decisions
 1.  [**Hardware & Environment**](#1-hardware--environment)
 2.  [**Architecture Overview**](#2-architecture-overview)
     -   IMPALA-Style Multiprocessing
@@ -67,6 +72,137 @@ This document is the **comprehensive, one-stop guide** to EliteFurretAI's reinfo
     -   Core Principles
     -   Lessons Learned
     -   Future Directions
+
+---
+
+## 0. Infrastructure Primer (Read First)
+
+This section explains **what the infrastructure has to solve and why it looks the way it does**, before any algorithm, component, or benchmark detail. If you skim only one section in this doc, skim this one.
+
+### The Fundamental Problems
+
+The entire architecture exists to dodge two awkward constraints.
+
+**1. Pokémon Showdown is slow and single-threaded.** Showdown is a Node.js simulator — one server process maxes one CPU core no matter how many battles you point at it. To get throughput, we have to run multiple Showdown servers in parallel on different ports.
+
+**2. Python's GIL forces a tradeoff between battle-stepping speed and inference speed inside a single process.** The Global Interpreter Lock (GIL) is a mutex inside CPython that allows only **one thread to execute Python bytecode at a time**. Even on an 8-core machine, Python threads doing Python work take turns on a single core — they don't run in parallel.
+
+The work in this pipeline splits roughly into two phases, both Python-heavy:
+
+- **Battle work**: parsing Showdown protocol messages, embedding battle states into feature vectors, computing action masks, managing the asyncio loop that drives WebSocket I/O.
+- **Inference work**: packing input tensors, launching the forward pass (CUDA releases the GIL, but the Python wrapper around it does not), unpacking outputs, sampling actions.
+
+In a single process these phases fight for the same lock. Every microsecond inference spends executing Python bytecode is a microsecond every battle is stalled, and vice versa. Workarounds that *feel* parallel don't help:
+
+- **async/await** is still one thread cooperatively yielding — no parallelism.
+- **threading** doesn't help either: even with 16 "concurrent" battles in 16 threads, they share one interpreter and serialize on the GIL.
+
+The escape hatch is **multiprocessing**: each process gets its own Python interpreter and its own GIL. With N worker processes, you get N independent Python execution streams running truly in parallel on N cores. Everything below is structured around separate processes communicating over `mp.Queue`.
+
+### The Picture
+
+```
+┌─────────────────── TRAINER PROCESS (owns the GPU) ───────────────────┐
+│                                                                      │
+│   ┌─ Learner ─────────┐    ┌─ ModelRegistry ───────────────────────┐ │
+│   │ main_model (FP32) │    │  InferenceService["main"] ──┐         │ │
+│   │ ref_model(s)      │◄───┤  InferenceService["bc"]   ──┤ daemon  │ │
+│   │ optimizer state   │    │  InferenceService["expl"] ──┤ threads │ │
+│   └───────▲───────────┘    │  InferenceService["vict"] ──┘         │ │
+│           │ trajectories   └────────▲──────────────────┬───────────┘ │
+│           │                         │ requests         │ responses   │
+└───────────┼─────────────────────────┼──────────────────┼─────────────┘
+            │                         │                  ▼
+   ┌────────┴─────┐  ┌────────────────┴────────┐ ┌───────────────┐
+   │ traj_queue   │  │ inference req queue     │ │ per-worker    │
+   │ (mp.Queue)   │  │ (mp.Queue, one/service) │ │ resp queues   │
+   └────────▲─────┘  └────────────────▲────────┘ └────────┬──────┘
+            │                         │                   │
+   ┌────────┴─────────┐ ┌─────────────┴─────┐ ┌───────────┴─────────┐
+   │   WORKER 0       │ │   WORKER 1        │ │   WORKER N          │
+   │  (own process)   │ │  (own process)    │ │  (own process)      │
+   │                  │ │                   │ │                     │
+   │ BatchInfPlayer × │ │ BatchInfPlayer ×  │ │ BatchInfPlayer ×    │
+   │ many battles     │ │ many battles      │ │ many battles        │
+   │       │          │ │       │           │ │       │             │
+   │       ▼          │ │       ▼           │ │       ▼             │
+   │ Showdown :8000   │ │ Showdown :8001    │ │ Showdown :800N      │
+   └──────────────────┘ └───────────────────┘ └─────────────────────┘
+```
+
+### How A Single Battle Flows
+
+Trace one decision to feel how the parts hook up.
+
+1. **Worker N** has, say, 16 concurrent battles running against its dedicated Showdown server (`localhost:800N`).
+2. Showdown sends "it's your turn" over WebSocket to a `BatchInferencePlayer` (`players.py`).
+3. The player computes the **action mask** (`masking.py`) — figures out which of the 2,025 possible turn actions are legal *for this exact battle state*. This is the 52,000× speedup; it reads `battle.last_request` directly instead of probing every action.
+4. The player **embeds** the battle state into a feature vector via the Embedder (in `etl/`).
+5. The player calls `client.submit(features, mask, ...)` — this packages an `InferenceRequest` (`inference_ipc.py`) and puts it on an `mp.Queue` heading back to the trainer process.
+6. The player **awaits an asyncio future** for the response. Other concurrent battles in this worker do their own thing meanwhile.
+7. Trainer-side, the `InferenceService` daemon thread (`inference_trainer.py`) drains the queue, **batches** up to `batch_size` requests (or waits at most `batch_timeout`), and runs ONE forward pass on the GPU.
+8. Results go back through per-worker response queues. The future resolves. The player picks an action (with temperature + top-p sampling) and sends the order to Showdown.
+9. After each step, the player saves `(state, action, log_prob, value, mask, ...)` to a per-battle buffer.
+10. When the battle ends, the worker pushes the **full trajectory** onto `mp_traj_queue`.
+
+The **learner** drains `mp_traj_queue`, accumulates trajectories into training batches, computes the RNaD loss, backprops, and every N steps calls `registry.sync_weights("main", state_dict)` — which updates the `InferenceService`'s model copy in place. Workers never touch model weights directly.
+
+### Why The Infrastructure Looks Like This — Six Decisions
+
+These are the choices that shape everything else.
+
+#### 1. Workers are separate processes, not threads
+
+Because of the GIL (see *The Fundamental Problems* above), threads in Python share one interpreter — you cannot get true parallelism for the CPU-heavy parts of a battle. With `mp.Process`, each worker has its own Python interpreter, so they actually run in parallel on different cores.
+
+This is **IMPALA-style**: separate actor and learner processes communicating only by queues.
+
+#### 2. One Showdown server per worker, on different ports
+
+Showdown is single-threaded Node.js. One server pegged at 100% CPU is the real ceiling. We launch 4–8 servers (`launch_servers.py`) on different ports and give each worker its own — distributing battle simulation load across all CPU cores. Empirically, this matters more than raw worker count; see [Section 9](#9-scaling-experiments--benchmarks).
+
+#### 3. Inference is centralized on the trainer's GPU (shipped May 2026)
+
+This is the most counter-intuitive piece — why send inference *back* to the trainer process?
+
+The pre-May-2026 architecture had each worker hold its own CPU copy of the model and run its own per-player batched-inference thread. That meant:
+
+- 4 workers × ~530 MB of model weights = 2 GB redundant RAM
+- 4 separate inference loops, each batching only over one worker's concurrent battles → small batches → poor GPU utilization (if you tried GPU there) or slow CPU forward passes
+- Weight updates required broadcasting the full state_dict to every worker
+
+Centralizing flipped this:
+
+- **One model copy per name** lives in the trainer process. The `ModelRegistry` holds an `InferenceService` per registered name: `main`, `bc`, `exploiter`, `victim`, etc.
+- Each service runs as a **daemon thread** that batches requests **across all workers** → much larger batches → far better GPU utilization.
+- **Weight sync** becomes one in-process `load_state_dict` call instead of a multi-process broadcast.
+- **Hidden state** (the transformer's growing context per battle) lives trainer-side, keyed by `(worker_id, player_id, battle_tag)`. Workers only carry a tiny battle_tag string on the wire, not the `(1, T, hidden_size)` tensor.
+
+Result: **+34% throughput, +45% learner steps/sec** on the full curriculum. Full detail in [Section 8b](#8b-centralized-inference-may-2026).
+
+The trade-off is GPU contention with the learner — but on the 3090, the learner doesn't saturate the GPU, so the spare capacity was free.
+
+#### 4. Trajectories are the IPC currency
+
+Workers don't send raw battle state. They send completed trajectory dicts: `steps`, `opponent_type`, `won`, `battle_length`, `forfeited`. The learner doesn't care how the trajectory was produced — Rust engine or Showdown, self-play or vs. exploiter — it just trains on the `(state, action, reward)` tuples. This is the clean seam that lets us swap backends.
+
+#### 5. The opponent pool and curriculum run inside each worker
+
+Self-play with one opponent collapses. So `opponents.py` maintains a curriculum: `self`, `bc` (frozen BC model), `max_damage`, `simple_heuristic`, `vgc_bench`, ghosts (past checkpoints), exploiters. Each worker has a `WorkerOpponentFactory` that picks an opponent per battle pair from curriculum weights pushed down from the trainer. Centralized inference made this cheap: switching opponents is just `opponent.inference_client = clients.get("bc")`, no model reload.
+
+#### 6. VGCBench runs in its own venv, reached only over the Showdown protocol
+
+`vgc-bench` is an external evaluation benchmark — it provides baseline VGC AI opponents (notably a Stable-Baselines3-trained model). The problem: `vgc-bench` depends on a different fork of `poke-env` than EliteFurretAI uses. You can't import both into one Python process without API conflicts.
+
+The solution: run `vgc-bench` in its own venv (`../venv-vgcbench/`) as a completely separate process. From the RL trainer side, we don't import `vgc-bench` code at all — we just challenge the VGCBench player's hardcoded Showdown username (`EXTERNAL_VGCBENCH_USERNAMES` in `engine/showdown_server_manager.py`) over the Showdown server like any other opponent. From the VGCBench side, `analyze/vgcbench_external_runner.py` sits in a loop accepting challenges from those usernames.
+
+Why this matters for infrastructure:
+
+- It's the **same trick as multiprocessing**: when shared state (GIL, package versions) makes coexistence impossible, isolate by process boundary and communicate over a clean protocol — here, the Showdown WebSocket itself.
+- It's expensive: VGCBench external runners eat ~5.5 GB RAM each, which is why the memory watchdog was bumped from 20 GB → 22 GB in `sep_arch.yaml`.
+- It's a throughput cost on the curriculum: full-curriculum runs (VGCBench enabled) hit ~3.5 traj/s vs. ~5.4 with ghosts-off and ~6.1 with ghost-fallback only.
+
+See [Section 12 → External `vgc-bench` Opponents](#external-vgc-bench-opponents-fork-safe) for the runner command and config schema.
 
 ---
 
@@ -872,7 +1008,7 @@ train_exploiters: false
 ```yaml
 # Model
 checkpoint_path: "data/models/bc_action_model.pt"
-team_pool_path: "data/teams/gen9vgc2023regc"
+opponent_team_pool_path: "data/teams/gen9vgc2023regc"
 
 # Training
 learning_rate: 0.0001
@@ -952,13 +1088,7 @@ python src/elitefurretai/rl/analyze/vgcbench_external_runner.py \
     --n-challenges 100
 ```
 
-2. In RL config, set external usernames to bypass in-process vgc-bench player creation:
-```yaml
-external_vgcbench_usernames:
-    - VGCBENCHX
-```
-
-When `external_vgcbench_usernames` is set, worker curriculum entries for `vgc_bench_baseline` use `send_challenges(...)` to those usernames instead of constructing local vgc-bench policy players.
+2. Usernames are hardcoded as `EXTERNAL_VGCBENCH_USERNAMES` in `engine/showdown_server_manager.py` (currently `["VGCBENCH"]`). When the training-side curriculum gives `vgc_bench_baseline` positive weight, workers' `WorkerOpponentFactory` uses `send_challenges(...)` to those usernames instead of constructing local vgc-bench policy players. The external runner processes are also launched automatically by `train.py` under the same curriculum-weight condition.
 
 ### torch.compile() Results
 

@@ -49,7 +49,7 @@ hardware:
 curriculum:
   battle_format: gen9vgc2024regg
   base_team_path: data/teams
-  team_pool_path: null
+  opponent_team_pool_path: null
   agent_team_path: null
   bc_model_path: data/models/supervised/cool-bee-85-finetune_best.pt
   curriculum_weights:
@@ -67,10 +67,6 @@ curriculum:
   max_exploiter_models: 5
   max_ghosts: 5
   vgc_bench_checkpoint_path: data/models/vgc-bench-sb3-model.zip
-  external_vgcbench_usernames:
-    - VGCBENCH
-  external_vgcbench_startup_wait_s: 10.0
-  auto_launch_external_vgcbench: true
   external_vgcbench_python_executable: /home/cayman/Repositories/venv-vgcbench/bin/python
   external_vgcbench_team_file: data/teams/gen9vgc2024regg/vgcbench.txt
 

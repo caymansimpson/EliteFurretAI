@@ -1,57 +1,4 @@
 # may15.yaml — fresh BC-initialized run with raised RNaD regularization.
-#
-# Why this config exists
-# ----------------------
-# firm-field-41 (the 12h sep_arch run resumed from pretty-jazz-4) showed
-# loss-vs-capability divergence: total/policy/value losses improved but
-# win rates against fixed baselines collapsed (vgc_bench 0.11→0.04 in 674
-# steps; bc_player 0.50→0.41). Diagnosis in
-# planning/stage2/2026-05-15-10-49-per-run-dir-and-firm-field-41-diagnosis.md:
-#
-#   1. Value-gradient dominance through the shared trunk
-#      (vf_coef × value_loss / |policy_loss| sustained at 4-10×).
-#   2. R-NaD regularization was functionally off — α × rnad_loss
-#      contributed ~0.005 of total loss (0.5%), so there was no tether
-#      preventing the policy from drifting away from BC-anchored play.
-#
-# This config tests the cheapest intervention first: re-anchor with raised
-# RNaD α from a clean BC initialization, no chain-of-resume confounders.
-#
-# What changes vs sep_arch.yaml
-# -----------------------------
-# - `resume_from: null` — fresh start. step counter from 0.
-# - `initialize_path: cool-bee-85-finetune_best.pt` — BC weights load
-#   into encoder + trunk + policy head; new value_ff_stack + reshaped
-#   win_head are fresh-initialized (same partial-load path as sep_arch).
-# - `rnad_alpha: 0.3` (6× the prior 0.05). With rnad_loss ≈ 0.1 at
-#   convergence, this lifts the RNaD contribution from 0.005 → ~0.03 of
-#   total loss (~3%) — actually meaningful regularization.
-# - Architecture / heads / topology / optimizer match sep_arch's
-#   *current* state (heads kept at original shapes for clean BC load —
-#   the [768, ...] deepening was reverted because strict=False can't
-#   span size mismatches on shared keys).
-#
-# Note on the new per-run-dir behavior
-# ------------------------------------
-# As of 2026-05-15, train.py writes each wandb run to its own
-# save_dir/<wandb_run_name>/ subdir regardless of resume status (see
-# planning doc above). Since this is a fresh run (no resume_from), the
-# per-run-dir change is transparent — checkpoints land cleanly in their
-# own directory from step 0.
-#
-# What to compare against
-# -----------------------
-# Primary comparison is firm-field-41 (sep_arch + rnad_alpha=0.05 +
-# resume from pretty-jazz-4/step_365). Success looks like:
-#   - win_rate_vgc_bench_baseline stabilizing ≥ 0.10 (firm-field-41
-#     decayed to 0.04)
-#   - win_rate_bc_player ≥ 0.50 and not trending down
-#   - gradient-dominance ratio shrinking from the ~10× start as the
-#     fresh value head converges and the RNaD tether bites
-# If after ~200 updates the win-rate trajectory still looks like
-# firm-field-41's, the cheap intervention isn't enough and the next
-# move is gradient routing (either GradScale on value→trunk, or the
-# per-head-transformer architecture discussed in the planning doc).
 
 algorithm:
   clip_range: 0.2
@@ -60,16 +7,13 @@ algorithm:
   gae_lambda: 0.95
   gamma: 1
   max_grad_norm: 0.5
-  # Raised 0.05 → 0.3. With rnad_loss observed at ~0.05-0.1 across
-  # firm-field-41, this lifts the regularization contribution from
-  # essentially-zero to a meaningful fraction (~3%) of total loss.
   rnad_alpha: 0.3
-  ppo_epochs: 10
+  ppo_epochs: 5
   vf_coef: 0.5
 
 portfolio:
-  max_portfolio_size: 5
-  portfolio_add_interval: 100
+  max_portfolio_size: 10
+  portfolio_add_interval: 50
   portfolio_update_strategy: recent
 
 exploration:
@@ -145,25 +89,19 @@ hardware:
 curriculum:
   battle_format: gen9vgc2024regg
   base_team_path: data/teams
-  team_pool_path: constrained # TODO: rename to oppononent_team_pool_path
-  agent_team_path: data/teams/gen9vgc2024regg/constrained # TODO: change to behavior of team_pool_path
+  opponent_team_pool_path: constrained
+  agent_team_path: constrained
   bc_model_path: data/models/supervised/cool-bee-85-finetune_best.pt
   curriculum_weights:
-    # Fresh-start curriculum: ghosts/ and exploiters/ directories are
-    # empty on a fresh run, so ghosts/exploiters opponents fall back to
-    # self_play until snapshots accumulate. train_exploiter still spawns
-    # a fresh exploiter learner that will begin producing snaps from
-    # scratch. Weights match sep_arch's Plan C mix; opponent pool's
-    # fallback handles the empty-pool case gracefully.
-    self_play: 0.35
+    self_play: 0.4
     bc_player: 0.05
     exploiters: 0
-    ghosts: 0.1
-    max_damage: 0.15
+    ghosts: 0.3
+    max_damage: 0.05
     random_baseline: 0
     max_base_power_baseline: 0
-    simple_heuristic_baseline: 0.15
-    vgc_bench_baseline: 0.2
+    simple_heuristic_baseline: 0.1
+    vgc_bench_baseline: 0.1
     train_exploiter: 0
   adaptive_curriculum: false
   max_exploiter_models: 5

@@ -236,6 +236,7 @@ def _client_subprocess_main(
         result_q.put(("error", repr(exc)))
 
 
+@pytest.mark.slow
 def test_cross_process_round_trip():
     """Real subprocess → trainer-process service → response queue →
     subprocess. First test that exercises pickling + tensor IPC across

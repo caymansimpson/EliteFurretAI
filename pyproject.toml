@@ -83,7 +83,7 @@ testpaths = [
 ]
 markers = [
     "smoke: end-to-end training smoke tests (deselect with '-m not smoke')",
-    "slow: tests taking >10s; skipped by default, run with '-m slow'",
+    "slow: tests taking >1s; skipped by default, run with '-m slow'",
 ]
 
 [tool.setuptools.dynamic]

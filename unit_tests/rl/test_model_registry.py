@@ -294,6 +294,7 @@ def test_registry_to_worker_round_trip(small_agent_factory):
 # ─────────────────────────────────────────────────────────────────────
 
 
+@pytest.mark.slow
 def test_registry_mixed_process_groups(small_agent_factory):
     """Register two in-process services and one subprocess service;
     start_all() builds both backends; a request to each comes back."""
@@ -346,6 +347,7 @@ def test_registry_mixed_process_groups(small_agent_factory):
         registry.stop_all()
 
 
+@pytest.mark.slow
 def test_registry_subprocess_sync_weights(small_agent_factory):
     """sync_weights for a process_group service routes via the
     subprocess's control queue; subsequent requests reflect new weights.

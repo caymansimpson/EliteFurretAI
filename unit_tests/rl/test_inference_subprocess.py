@@ -22,6 +22,7 @@ import time
 from typing import Tuple
 
 import numpy as np
+import pytest
 import torch
 from torch import multiprocessing as torch_mp
 
@@ -122,6 +123,7 @@ def _build_spec(
 # ─────────────────────────────────────────────────────────────────────
 
 
+@pytest.mark.slow
 def test_subprocess_spawn_and_serve_one_request():
     ctx = torch_mp.get_context("spawn")
     agent, embedder = _make_small_agent()
@@ -148,6 +150,7 @@ def test_subprocess_spawn_and_serve_one_request():
 # ─────────────────────────────────────────────────────────────────────
 
 
+@pytest.mark.slow
 def test_subprocess_sync_weights_changes_outputs():
     """Sanity: send a request, capture value. Sync to a NEW agent's
     weights (different random init). Send same request, get a different
@@ -199,6 +202,7 @@ def test_subprocess_sync_weights_changes_outputs():
 # ─────────────────────────────────────────────────────────────────────
 
 
+@pytest.mark.slow
 def test_subprocess_shutdown_exits_cleanly():
     ctx = torch_mp.get_context("spawn")
     agent, _ = _make_small_agent()
@@ -215,6 +219,7 @@ def test_subprocess_shutdown_exits_cleanly():
 # ─────────────────────────────────────────────────────────────────────
 
 
+@pytest.mark.slow
 def test_subprocess_external_kill_detected():
     """SIGKILL the subprocess externally; is_alive() should flip to
     False. The shutdown() path must handle a dead-subprocess case
@@ -249,6 +254,7 @@ def test_subprocess_external_kill_detected():
 # ─────────────────────────────────────────────────────────────────────
 
 
+@pytest.mark.slow
 def test_subprocess_hosts_multiple_services():
     """Verify the 4-process layout's core assumption: one subprocess
     can host N services, each with its own request/response queues."""

@@ -588,13 +588,17 @@ class BattleIterator:
             ):
                 disabled = True
 
-            # TODO: implement disable to emulate the request
-            if Effect.DISABLE in mon.effects:
-                pass  # |-start|p1a: Vikavolt|Disable|Flash Cannon
-
-            # TODO: implement encore to emulate the request
-            if Effect.ENCORE in mon.effects:
-                pass  # |-start|p1a: Vikavolt|Encore|Flash Cannon
+            # NOTE: Known limitation: the synthesized request is over-permissive for
+            # any per-move restricting effect that isn't already handled above
+            # (assault vest + status, Taunt + status, choice items). Disable,
+            # Encore, Heal Block, Throat Chop, Imprison, and Torment are NOT
+            # synthesized — affected moves come back with disabled=False. Fixing
+            # this requires per-effect log scanning since poke-env doesn't track
+            # which specific move is restricted. See e.g.:
+            #   |-start|p1a: Vikavolt|Disable|Flash Cannon
+            #   |-start|p1a: Vikavolt|Encore   (encored move = last |move| line)
+            # Downstream consumers (embedder, encoder) treating disabled flags
+            # as ground truth will mis-label these rare cases.
 
             json["moves"].append(
                 {

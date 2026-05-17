@@ -13,7 +13,11 @@ from elitefurretai.etl import (
 )
 from elitefurretai.etl.battle_order_validator import is_valid_order
 
-# List of all vgc_json_anon fixtures in conftest.py
+# List of all vgc_json_anon fixtures in conftest.py.
+# Fixtures whose per-case runtime exceeds ~1s are marked slow so they
+# only run with `pytest -m slow`. The remaining cases keep BattleDataset
+# regression coverage in the default fast suite. Update _SLOW_FIXTURES
+# if a battle's runtime changes meaningfully.
 VGC_JSON_FIXTURES = [
     "vgc_json_anon",
     "vgc_json_anon2",
@@ -40,8 +44,35 @@ VGC_JSON_FIXTURES = [
     "vgc_json_anon23",
 ]
 
+_SLOW_FIXTURES = {
+    "vgc_json_anon2",
+    "vgc_json_anon3",
+    "vgc_json_anon4",
+    "vgc_json_anon5",
+    "vgc_json_anon6",
+    "vgc_json_anon7",
+    "vgc_json_anon8",
+    "vgc_json_anon9",
+    "vgc_json_anon11",
+    "vgc_json_anon12",
+    "vgc_json_anon15",
+    "vgc_json_anon16",
+    "vgc_json_anon17",
+    "vgc_json_anon18",
+    "vgc_json_anon19",
+    "vgc_json_anon21",
+    "vgc_json_anon22",
+    "vgc_json_anon23",
+}
 
-@pytest.mark.parametrize("fixture_name", VGC_JSON_FIXTURES)
+
+@pytest.mark.parametrize(
+    "fixture_name",
+    [
+        pytest.param(name, marks=pytest.mark.slow) if name in _SLOW_FIXTURES else name
+        for name in VGC_JSON_FIXTURES
+    ],
+)
 def test_battle_dataset_actions_and_wins(request, fixture_name):
     battle_json = request.getfixturevalue(fixture_name)
 

@@ -175,9 +175,7 @@ def test_compile_inference_model_default_and_roundtrip():
         config_path = os.path.join(tmpdir, "compile.yaml")
         config.hardware.compile_inference_model = "default"
         config.save(config_path)
-        assert (
-            RNaDConfig.load(config_path).hardware.compile_inference_model == "default"
-        )
+        assert RNaDConfig.load(config_path).hardware.compile_inference_model == "default"
 
         config.hardware.compile_inference_model = "reduce-overhead"
         config.save(config_path)
@@ -188,9 +186,7 @@ def test_compile_inference_model_default_and_roundtrip():
 
         config.hardware.compile_inference_model = None
         config.save(config_path)
-        assert (
-            RNaDConfig.load(config_path).hardware.compile_inference_model is None
-        )
+        assert RNaDConfig.load(config_path).hardware.compile_inference_model is None
 
 
 def test_memory_watchdog_threshold_default_and_roundtrip():
@@ -376,9 +372,9 @@ def test_default_paths_are_strings():
     assert isinstance(config.training.save_dir, str)
 
 
-def test_team_pool_path_can_be_none():
+def test_opponent_team_pool_path_can_be_none():
     """
-    Test that team_pool_path can be None.
+    Test that opponent_team_pool_path can be None.
 
     When None, all teams in the format directory are sampled.
     When set, only teams in that subdirectory are used.
@@ -388,8 +384,8 @@ def test_team_pool_path_can_be_none():
     config = get_default_config()
 
     # Default should be None or a string
-    assert config.curriculum.team_pool_path is None or isinstance(
-        config.curriculum.team_pool_path, str
+    assert config.curriculum.opponent_team_pool_path is None or isinstance(
+        config.curriculum.opponent_team_pool_path, str
     )
 
 
@@ -427,7 +423,12 @@ def test_portfolio_config_options():
 
     assert isinstance(config.portfolio.max_portfolio_size, int)
     assert config.portfolio.max_portfolio_size > 0
-    assert config.portfolio.portfolio_update_strategy in ["diverse", "best", "recent"]
+    assert config.portfolio.portfolio_update_strategy in [
+        "diverse",
+        "best",
+        "recent",
+        "random",
+    ]
 
 
 # =============================================================================

@@ -159,7 +159,7 @@ class _RustPolicyOpponentPool:
         account = AccountConfiguration(f"rust-baseline-{random.getrandbits(16):04x}", None)
         sample_team = self.team_repo.sample_team(
             self.config.curriculum.battle_format,
-            subdirectory=self.config.curriculum.team_pool_path,
+            subdirectory=self.config.curriculum.opponent_team_pool_path,
         )
         self._baseline_controllers[OpponentPool.MAX_DAMAGE] = SyncBaselineController(
             MaxDamagePlayer(
@@ -255,7 +255,7 @@ class _RustPolicyOpponentPool:
 
         team_text = self.team_repo.sample_team(
             self.config.curriculum.battle_format,
-            subdirectory=self.config.curriculum.team_pool_path,
+            subdirectory=self.config.curriculum.opponent_team_pool_path,
         )
 
         if (
@@ -634,9 +634,7 @@ class _ShowdownBackend(_BackendBase):
             f"ws://localhost:{self._server_port}/showdown/websocket", ""
         )
         external_vgcbench_usernames: List[str] = list(EXTERNAL_VGCBENCH_USERNAMES)
-        vgc_bench_weight = cur.curriculum_weights.get(
-            OpponentPool.VGC_BENCH_BASELINE, 0.0
-        )
+        vgc_bench_weight = cur.curriculum_weights.get(OpponentPool.VGC_BENCH_BASELINE, 0.0)
         # Only one server hosts an external vgcbench runner (memory
         # mitigation — see showdown_server_manager.VGCBENCH_RUNNER_SERVER_INDEX).
         # Workers on other servers can't challenge a user logged into a
@@ -653,11 +651,7 @@ class _ShowdownBackend(_BackendBase):
         # so we mirror that condition exactly when computing the runner port.
         runner_port = hw.showdown_start_port + VGCBENCH_RUNNER_SERVER_INDEX
         this_worker_has_runner = self._server_port == runner_port
-        if (
-            external_vgcbench_usernames
-            and vgc_bench_weight > 0
-            and hw.num_servers > 1
-        ):
+        if external_vgcbench_usernames and vgc_bench_weight > 0 and hw.num_servers > 1:
             if this_worker_has_runner:
                 external_vgcbench_usernames = [
                     derive_external_vgcbench_username(username, runner_port)
@@ -678,7 +672,7 @@ class _ShowdownBackend(_BackendBase):
         self._factory = WorkerOpponentFactory(
             team_repo=self._team_repo,
             battle_format=cur.battle_format,
-            team_subdirectory=cur.team_pool_path,
+            team_subdirectory=cur.opponent_team_pool_path,
             server_config=server_config,
             main_agent=self._agent,
             bc_agent=self._bc_agent,
@@ -693,7 +687,7 @@ class _ShowdownBackend(_BackendBase):
             vgc_bench_checkpoint_path=cur.vgc_bench_checkpoint_path,
             external_vgcbench_usernames=external_vgcbench_usernames,
             model_config=self._model_config,
-            agent_team_path=cur.agent_team_path,
+            agent_team_path=cur.resolved_agent_team_path(),
             exploiter_agent=self._exploiter_agent,
             victim_agent=self._victim_agent,
             max_concurrent_battles_per_player=hw.max_concurrent_battles_per_player,
@@ -867,18 +861,18 @@ class _RustBackend(_BackendBase):
     async def setup(self) -> None:
         cur = self._config.curriculum
         hw = self._config.hardware
-        fixed_team, team_options = _load_agent_team_sources(cur.agent_team_path)
+        fixed_team, team_options = _load_agent_team_sources(cur.resolved_agent_team_path())
         agent_team_supplier = _build_team_supplier(
             team_repo=self._team_repo,
             battle_format=cur.battle_format,
-            team_subdirectory=cur.team_pool_path,
+            team_subdirectory=cur.opponent_team_pool_path,
             fixed_team=fixed_team,
             team_options=team_options,
         )
         opponent_team_supplier = _build_team_supplier(
             team_repo=self._team_repo,
             battle_format=cur.battle_format,
-            team_subdirectory=cur.team_pool_path,
+            team_subdirectory=cur.opponent_team_pool_path,
         )
         initial_temp = self._config.temperature_at_step(0)
         self._p1_policy = SyncPolicyPlayer(

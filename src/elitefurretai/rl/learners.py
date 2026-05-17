@@ -255,6 +255,8 @@ class PortfolioRNaDLearner:
             idx = 0
         elif self.portfolio_update_strategy == "best":
             idx = int(np.argmin(self.portfolio_selection_counts))
+        elif self.portfolio_update_strategy == "random":
+            idx = int(np.random.randint(len(self.ref_models)))
         elif self.portfolio_update_strategy == "diverse":
             raise NotImplementedError("Diverse strategy not implemented yet")
         else:
