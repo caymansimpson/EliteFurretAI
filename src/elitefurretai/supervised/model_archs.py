@@ -15,6 +15,36 @@ from elitefurretai.etl import MDBO
 from elitefurretai.etl.embedder import Embedder
 
 
+class _ValueTrunkGradScale(torch.autograd.Function):
+    """Identity forward; scales gradient by `scale` on the backward pass.
+
+    Inserted on the value-head path between the shared `late_ff_stack` and
+    the value-specific `value_ff_stack`. Gradient flowing further upstream
+    (into `late_ff_stack` parameters from this call, and the shared trunk
+    via `t_out`) is multiplied by `scale`; the value-specific layers and
+    `win_head` see full-magnitude gradient because they are downstream.
+    Set `scale=1.0` to disable. Configured via
+    `architecture.value_to_trunk_grad_scale` in YAML; see
+    `planning/stage2/2026-05-16-22-30-value-grad-scale-and-mean-kl.md`.
+    """
+
+    @staticmethod
+    def forward(ctx, x: torch.Tensor, scale: float) -> torch.Tensor:  # type: ignore[override]
+        ctx.scale = scale
+        return x
+
+    @staticmethod
+    def backward(ctx, grad_output: torch.Tensor) -> Tuple[torch.Tensor, None]:  # type: ignore[override]
+        return grad_output * ctx.scale, None
+
+
+def scale_value_trunk_gradient(x: torch.Tensor, scale: float) -> torch.Tensor:
+    """Functional wrapper around `_ValueTrunkGradScale`. No-op when scale == 1.0."""
+    if scale == 1.0:
+        return x
+    return _ValueTrunkGradScale.apply(x, scale)  # type: ignore[return-value]
+
+
 def init_linear_layer(
     layer: torch.nn.Linear,
     nonlinearity: Literal[
@@ -901,6 +931,12 @@ class TransformerThreeHeadedModel(torch.nn.Module):
         transformer_dropout: float = 0.1,
         use_decision_tokens: bool = True,
         use_causal_mask: bool = True,
+        # Multiplier applied to the value-head gradient as it flows back into
+        # the shared `late_ff_stack` and trunk. 1.0 = stock behavior; <1.0
+        # dampens the value branch's contribution to shared-representation
+        # gradients. Configured via `architecture.value_to_trunk_grad_scale`.
+        # See planning/stage2/2026-05-16-22-30-value-grad-scale-and-mean-kl.md.
+        value_to_trunk_grad_scale: float = 1.0,
     ):
         super().__init__()
 
@@ -916,6 +952,7 @@ class TransformerThreeHeadedModel(torch.nn.Module):
         self.value_head_layers = value_head_layers or []
         self.use_decision_tokens = use_decision_tokens
         self.use_causal_mask = use_causal_mask
+        self.value_to_trunk_grad_scale = value_to_trunk_grad_scale
 
         # ---- Feature encoder ----
         if embedder.feature_set != Embedder.SIMPLE:
@@ -1234,6 +1271,7 @@ class TransformerThreeHeadedModel(torch.nn.Module):
         turn_action_logits = self.turn_action_head(turn_features)
 
         out_critic = self.late_ff_stack(critic_out)
+        out_critic = scale_value_trunk_gradient(out_critic, self.value_to_trunk_grad_scale)
         out_critic = self.value_ff_stack(out_critic)
         win_dist_logits = self.win_head(out_critic)
         win_probs = torch.softmax(win_dist_logits, dim=-1)
@@ -1365,6 +1403,7 @@ class TransformerThreeHeadedModel(torch.nn.Module):
         turn_action_logits = self.turn_action_head(turn_features)
 
         out_critic = self.late_ff_stack(critic_out)
+        out_critic = scale_value_trunk_gradient(out_critic, self.value_to_trunk_grad_scale)
         out_critic = self.value_ff_stack(out_critic)
         win_dist_logits = self.win_head(out_critic)
         win_probs = torch.softmax(win_dist_logits, dim=-1)

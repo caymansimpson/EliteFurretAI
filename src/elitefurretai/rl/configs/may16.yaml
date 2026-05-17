@@ -1,4 +1,23 @@
-# may15.yaml — fresh BC-initialized run with raised RNaD regularization.
+# may16.yaml — fork of may15 with two structural fixes for the value-trunk
+# hijack diagnosed in hopeful-wood-69. Loss-routing changes only; architecture
+# and weight-shape config match may15.yaml exactly so the same BC partial-load
+# from `cool-bee-85-finetune_best.pt` is used.
+#
+# Changes vs may15.yaml:
+#   1. algorithm.value_to_trunk_grad_scale: 1.0 → 0.15
+#      Dampens value-head gradient flowing into the shared `late_ff_stack`
+#      and trunk to 15% of its raw magnitude. Targets gradient-dominance
+#      ratio (vf_coef × value_loss / |policy_loss|) ~1.5× instead of the
+#      5–21× measured in hopeful-wood-69. Forward-identity; affects backward
+#      only. See planning/stage2/2026-05-16-22-...-value-grad-scale-and-
+#      mean-kl.md for the diagnostic data.
+#   2. learners.py: PortfolioRNaDLearner._compute_portfolio_kl now returns
+#      MEAN-KL across all references instead of MIN-KL. Tightens the
+#      portfolio anchor — drift from any single old reference (e.g. BC while
+#      it remains in the portfolio) now costs loss, not just drift from the
+#      most-recent self-snapshot.
+#
+# This file is otherwise byte-identical to may15.yaml at commit time.
 
 algorithm:
   clip_range: 0.2
@@ -39,10 +58,11 @@ value_head:
   value_max: 1.0
 
 architecture:
-  # Multiplier on value-head gradient flowing back into the shared trunk;
-  # 1.0 = legacy behavior. hopeful-wood-69 ran with the implicit 1.0 default
-  # and exhibited value-trunk hijacking (see 2026-05-16-22-30 planning doc).
-  value_to_trunk_grad_scale: 1.0
+  # 2026-05-16: value-trunk grad-scale fix for trunk hijacking diagnosed in
+  # hopeful-wood-69 (5–21× gradient-dominance ratio across 959 updates).
+  # 0.15 = middle of recommended 0.1–0.2; tune downward if ratio still >2×.
+  # Forward-identity; affects backward only.
+  value_to_trunk_grad_scale: 0.15
   # Trunk: matches cool-bee-85-finetune for clean BC partial-load.
   transformer_layers: 4
   transformer_heads: 8

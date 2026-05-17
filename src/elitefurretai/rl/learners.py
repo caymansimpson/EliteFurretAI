@@ -274,35 +274,49 @@ class PortfolioRNaDLearner:
         ref_logits_list: list,
         track: bool = True,
     ) -> torch.Tensor:
-        """Return min KL from curr_dist to any reference policy.
+        """Return MEAN KL from curr_dist to all reference policies.
+
+        Mean-KL (not min-KL) anchors the policy against the average of the
+        portfolio. The previous min-KL was permissive — drifting away from
+        all references was free as long as the policy stayed close to the
+        single most-recent self-snapshot. Mean-KL costs scale with distance
+        from every reference, including older anchors like BC while it's in
+        the portfolio. See planning/stage2/2026-05-16-22-30-value-grad-
+        scale-and-mean-kl.md.
 
         track=True records the per-ref KL into history and bumps the
-        selection counter — set False on PPO inner-loop epochs >0 to keep
-        bookkeeping aligned with one-update-per-counter semantics.
+        selection counter for the closest reference — set False on PPO
+        inner-loop epochs >0 to keep bookkeeping aligned with
+        one-update-per-counter semantics. The "selected" counter still
+        tracks the nearest reference for diagnostics even though the loss
+        no longer uses it.
         """
         if len(ref_logits_list) == 0:
             return torch.tensor(0.0, device=self.device)
 
-        min_kl = None
+        kls: List[torch.Tensor] = []
         best_ref_idx = 0
+        best_kl_val: Optional[float] = None
 
         for ref_idx, ref_logits in enumerate(ref_logits_list):
             ref_dist = Categorical(logits=ref_logits)
             kl = torch.distributions.kl_divergence(curr_dist, ref_dist).mean()
+            kls.append(kl)
 
+            kl_val = kl.item()
             if track:
-                self.portfolio_kl_history[ref_idx].append(kl.item())
+                self.portfolio_kl_history[ref_idx].append(kl_val)
                 if len(self.portfolio_kl_history[ref_idx]) > 100:
                     self.portfolio_kl_history[ref_idx].pop(0)
 
-            if min_kl is None or kl < min_kl:
-                min_kl = kl
+            if best_kl_val is None or kl_val < best_kl_val:
+                best_kl_val = kl_val
                 best_ref_idx = ref_idx
 
         if track:
             self.portfolio_selection_counts[best_ref_idx] += 1
 
-        return min_kl if min_kl is not None else torch.tensor(0.0, device=self.device)
+        return torch.stack(kls).mean()
 
     def update(self, batch: Dict[str, torch.Tensor]) -> Dict[str, Any]:
         """One gradient update from a batch of trajectories.
@@ -804,6 +818,7 @@ def build_model_from_config(
         transformer_dropout=model_config.get("transformer_dropout", 0.1),
         use_decision_tokens=model_config.get("use_decision_tokens", True),
         use_causal_mask=model_config.get("use_causal_mask", True),
+        value_to_trunk_grad_scale=model_config.get("value_to_trunk_grad_scale", 1.0),
     ).to(device)
 
     if state_dict:

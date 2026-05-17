@@ -739,5 +739,203 @@ def test_load_resume_state_does_not_touch_model_or_ref(agent, ref_agent, sample_
         )
 
 
+# =============================================================================
+# VALUE-TO-TRUNK GRADIENT SCALE
+# =============================================================================
+#
+# These tests pin down the behavior introduced by `value_to_trunk_grad_scale`
+# in TransformerThreeHeadedModel — added 2026-05-16 in response to the
+# hopeful-wood-69 value-gradient-dominance diagnosis. The semantics:
+#
+#   - Forward is identity. No change to logits or value outputs.
+#   - Backward through the inserted node multiplies grad by `scale`.
+#   - Placement is BETWEEN `late_ff_stack` and `value_ff_stack` on the value
+#     path → trunk and `late_ff_stack` see scaled value-side gradient;
+#     `value_ff_stack` and `win_head` see full magnitude.
+
+
+def _trunk_param(model):
+    """A parameter that's strictly upstream of the value path's grad-scale
+    insertion (i.e. lives in the transformer trunk, before `late_ff_stack`).
+    Used to verify trunk-side scaling."""
+    return model.transformer.layers[0].linear1.weight
+
+
+def _value_head_param(model):
+    """A parameter strictly downstream of the grad-scale insertion (value
+    branch only). Should receive FULL-magnitude gradient regardless of
+    scale. `win_head` is a Sequential in the legacy 2-layer path and a
+    Linear in the deep-value-head path; return the first leaf weight either
+    way."""
+    for p in model.win_head.parameters():
+        if p.requires_grad and p.dim() >= 2:
+            return p
+    raise RuntimeError("No suitable win_head weight found")
+
+
+def _grad_norm_from_value_loss(model, scale: float, simple_embedder):
+    """Forward a tiny batch, compute a synthetic value loss, backprop, and
+    return (trunk_grad_norm, value_head_grad_norm). Uses the same input each
+    call so only `scale` varies."""
+    torch.manual_seed(0)
+    model.value_to_trunk_grad_scale = scale
+    # Fresh grads.
+    for p in model.parameters():
+        if p.grad is not None:
+            p.grad = None
+    # Dummy input matching the model's embedder.
+    B, S = 2, 5
+    feature_dim = simple_embedder.embedding_size
+    x = torch.randn(B, S, feature_dim)
+    mask = torch.ones(B, S, dtype=torch.bool)
+    out = model(x, mask)
+    win_dist_logits = out[3]  # (B, S, num_value_bins) — see model forward
+    # Simple scalar loss that pulls gradient through win_head + value_ff_stack
+    # + late_ff_stack + trunk.
+    loss = win_dist_logits.pow(2).mean()
+    loss.backward()
+    trunk_g = _trunk_param(model).grad
+    value_g = _value_head_param(model).grad
+    assert trunk_g is not None and value_g is not None
+    return trunk_g.norm().item(), value_g.norm().item()
+
+
+def test_value_grad_scale_default_is_one(small_model):
+    """Default attribute exists and is 1.0 so existing configs are no-ops."""
+    assert hasattr(small_model, "value_to_trunk_grad_scale")
+    assert small_model.value_to_trunk_grad_scale == 1.0
+
+
+def test_value_grad_scale_does_not_affect_forward(small_model, simple_embedder):
+    """Scale is a backward-only op; forward outputs must be identical."""
+    torch.manual_seed(42)
+    B, S = 2, 5
+    x = torch.randn(B, S, simple_embedder.embedding_size)
+    mask = torch.ones(B, S, dtype=torch.bool)
+
+    small_model.eval()
+    small_model.value_to_trunk_grad_scale = 1.0
+    out_one = small_model(x, mask)
+    small_model.value_to_trunk_grad_scale = 0.1
+    out_scaled = small_model(x, mask)
+    for a, b in zip(out_one, out_scaled):
+        assert torch.allclose(a, b), "Forward must be invariant to grad scale"
+
+
+def test_value_grad_scale_dampens_trunk_gradient(small_model, simple_embedder):
+    """Trunk grad from value-only loss must scale linearly with the knob."""
+    small_model.train()
+    trunk_g_one, vhead_g_one = _grad_norm_from_value_loss(
+        small_model, scale=1.0, simple_embedder=simple_embedder
+    )
+    trunk_g_quarter, vhead_g_quarter = _grad_norm_from_value_loss(
+        small_model, scale=0.25, simple_embedder=simple_embedder
+    )
+    # Trunk grad should be ~4x smaller at scale=0.25. Allow loose tolerance for
+    # numerical noise; the relationship is exact in theory.
+    ratio = trunk_g_one / max(trunk_g_quarter, 1e-12)
+    assert 3.5 < ratio < 4.5, (
+        f"Trunk grad norm should scale ~linearly with grad scale; "
+        f"got ratio {ratio:.3f} (expected ~4.0)"
+    )
+
+
+def test_value_grad_scale_leaves_value_head_unscaled(small_model, simple_embedder):
+    """Value-head params are DOWNSTREAM of the scale op — full grad regardless."""
+    small_model.train()
+    _, vhead_g_one = _grad_norm_from_value_loss(
+        small_model, scale=1.0, simple_embedder=simple_embedder
+    )
+    _, vhead_g_quarter = _grad_norm_from_value_loss(
+        small_model, scale=0.25, simple_embedder=simple_embedder
+    )
+    # win_head sits below value_ff_stack which sits below the grad-scale node.
+    # Backward stops accumulating at the scale node for win_head — meaning
+    # win_head receives the SAME gradient regardless of scale.
+    rel = abs(vhead_g_one - vhead_g_quarter) / max(vhead_g_one, 1e-12)
+    assert rel < 1e-5, (
+        f"win_head grad should be invariant to value_to_trunk_grad_scale; "
+        f"got relative diff {rel:.6f}"
+    )
+
+
+# =============================================================================
+# PORTFOLIO KL: MEAN-KL OVER MIN-KL
+# =============================================================================
+
+
+def test_portfolio_kl_returns_mean_not_min(learner):
+    """With multiple references, the returned KL should be the MEAN of per-ref
+    KLs, not the MIN. Constructs three refs at controlled distances from the
+    current policy; mean and min are far apart, so the assertion is decisive.
+    """
+    from torch.distributions import Categorical
+
+    # Current policy: peaked on action 0.
+    curr_logits = torch.tensor([[10.0, 0.0, 0.0, 0.0]])
+    curr_dist = Categorical(logits=curr_logits)
+
+    # Three refs: one identical (KL ~ 0), two very different (KL large).
+    ref_logits_list = [
+        torch.tensor([[10.0, 0.0, 0.0, 0.0]]),  # identical to current
+        torch.tensor([[0.0, 10.0, 0.0, 0.0]]),  # peaked on action 1
+        torch.tensor([[0.0, 0.0, 10.0, 0.0]]),  # peaked on action 2
+    ]
+
+    # Re-seed history slots to match the new ref count.
+    learner.portfolio_kl_history = [[] for _ in ref_logits_list]
+    learner.portfolio_selection_counts = [0] * len(ref_logits_list)
+
+    result = learner._compute_portfolio_kl(curr_dist, ref_logits_list, track=False)
+
+    # Compute reference values directly.
+    per_ref_kls = []
+    for rl in ref_logits_list:
+        rd = Categorical(logits=rl)
+        per_ref_kls.append(torch.distributions.kl_divergence(curr_dist, rd).mean().item())
+    expected_mean = sum(per_ref_kls) / len(per_ref_kls)
+    expected_min = min(per_ref_kls)
+
+    # Mean and min are far apart in this construction, so the test is decisive.
+    assert expected_mean - expected_min > 1.0, (
+        "Fixture should produce mean-min gap >> 1 to make assertion decisive"
+    )
+    assert abs(result.item() - expected_mean) < 1e-4, (
+        f"_compute_portfolio_kl must return MEAN ({expected_mean:.4f}), got "
+        f"{result.item():.4f} (min was {expected_min:.4f})"
+    )
+
+
+def test_portfolio_kl_selection_counter_tracks_closest_ref(learner):
+    """Even though loss uses mean-KL, the diagnostic selection counter should
+    still bump the closest reference (preserves prior bookkeeping semantics)."""
+    from torch.distributions import Categorical
+
+    curr_logits = torch.tensor([[10.0, 0.0, 0.0, 0.0]])
+    curr_dist = Categorical(logits=curr_logits)
+    ref_logits_list = [
+        torch.tensor([[0.0, 10.0, 0.0, 0.0]]),  # far
+        torch.tensor([[10.0, 0.0, 0.0, 0.0]]),  # closest (KL ~ 0)
+        torch.tensor([[0.0, 0.0, 10.0, 0.0]]),  # far
+    ]
+    learner.portfolio_kl_history = [[] for _ in ref_logits_list]
+    learner.portfolio_selection_counts = [0] * len(ref_logits_list)
+
+    learner._compute_portfolio_kl(curr_dist, ref_logits_list, track=True)
+
+    assert learner.portfolio_selection_counts == [0, 1, 0], (
+        f"Closest ref (idx 1) should be selected; got {learner.portfolio_selection_counts}"
+    )
+
+
+def test_portfolio_kl_empty_refs_returns_zero(learner):
+    """No references → KL is 0 (no anchor)."""
+    from torch.distributions import Categorical
+
+    curr_dist = Categorical(logits=torch.tensor([[1.0, 0.0, 0.0]]))
+    result = learner._compute_portfolio_kl(curr_dist, [], track=True)
+    assert result.item() == 0.0
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

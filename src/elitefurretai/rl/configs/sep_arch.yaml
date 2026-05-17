@@ -67,6 +67,10 @@ value_head:
   value_max: 1.0
 
 architecture:
+  # Multiplier on value-head gradient flowing back into the shared trunk;
+  # 1.0 = legacy behavior. Override <1.0 to dampen value-side dominance of
+  # shared representations (see may16.yaml + 2026-05-16-22-30 planning doc).
+  value_to_trunk_grad_scale: 1.0
   # Transformer backbone (matching cool-bee-85-finetune for clean BC load
   # of the trunk).
   transformer_layers: 4

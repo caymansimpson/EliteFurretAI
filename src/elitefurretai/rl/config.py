@@ -333,6 +333,17 @@ class ArchitectureConfig:
     # representation capacity with the policy head. When empty, the legacy
     # 2-layer MLP (output_size -> 128 -> num_value_bins) is used.
     value_head_layers: List[int] = field(default_factory=lambda: [])
+    # Multiplier applied to the value-head gradient as it flows back into the
+    # shared `late_ff_stack` and the transformer trunk. Forward is identity;
+    # backward through the inserted node multiplies grad by this value.
+    # 1.0 reproduces the legacy behavior; <1.0 dampens value-side
+    # contribution to shared representations, addressing trunk hijacking when
+    # `vf_coef * value_loss / |policy_loss|` runs >> 1. Differing values are
+    # checkpoint-compatible because weight shapes are unchanged. Lives in
+    # ArchitectureConfig because it is a model-construction attribute set on
+    # `self` (parallels `use_decision_tokens`), not a loss coefficient. See
+    # planning/stage2/2026-05-16-22-30-value-grad-scale-and-mean-kl.md.
+    value_to_trunk_grad_scale: float = 1.0
     # Number bank embeddings
     number_bank_embedding_dim: int = 16
     number_bank_hp_bins: int = 100
