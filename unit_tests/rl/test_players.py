@@ -22,12 +22,12 @@ class _Recorder:
 
 def test_score_available_actions_filters_moves_not_in_request():
     player = MaxDamagePlayer.__new__(MaxDamagePlayer)
-    player.debug = False
+    player.debug = False  # type: ignore[attr-defined]
     player.switch_threshold = 100.0
-    player.create_order = lambda move, move_target=None: SimpleNamespace(
+    player.create_order = lambda move, move_target=None: SimpleNamespace(  # type: ignore[method-assign]
         order=move, move_target=move_target
     )
-    player._get_best_move_damage = lambda battle, switch_mon: (0.0, None)
+    player._get_best_move_damage = lambda battle, switch_mon: (0.0, None)  # type: ignore[method-assign]
 
     battle = MagicMock(spec=DoubleBattle)
     battle.last_request = {
@@ -62,7 +62,10 @@ def test_score_available_actions_filters_moves_not_in_request():
         candidates = player._score_available_actions(battle, 0, set())
 
     assert candidates
-    assert all(candidate[0].order.id == "meteorbeam" for candidate in candidates)
+    # `candidate[0]` is the SimpleNamespace stub from the create_order lambda
+    # above (whose `.order` is the Move). The base BattleOrder type pyright
+    # infers here doesn't expose `.order`, so the access is type-ignored.
+    assert all(candidate[0].order.id == "meteorbeam" for candidate in candidates)  # type: ignore[attr-defined]
 
 
 # ── Popup-recovery tests ────────────────────────────────────────────────────
@@ -109,7 +112,7 @@ def _make_player_for_popup_tests():
     player.opponent_type = "self_play"
     # Centralized-inference attribute: tests bypass __init__ via __new__,
     # so we set it explicitly. None = legacy mode (no inference client).
-    player.inference_client = None
+    player.inference_client = None  # type: ignore[assignment]
     player._original_handle_message = MagicMock()
     # Minimal ps_client stand-in. `_battle_locks` and `_active_tasks` are read
     # by _recover_room_lost_battle to free queued lock waiters. `logger`

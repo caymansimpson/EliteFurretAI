@@ -1176,7 +1176,7 @@ def test_get_priority_and_identifier():
     battle = DoubleBattle("tag", "username", logger, gen=gen)
 
     furret = Pokemon(gen=9, species="furret")
-    furret._moves = {
+    furret._moves = {  # type: ignore[attr-defined]
         "tailwind": Move("tailwind", gen),
         "grassyglide": Move("grassyglide", gen),
         "gigadrain": Move("gigadrain", gen),

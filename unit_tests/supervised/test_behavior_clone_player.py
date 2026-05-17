@@ -90,7 +90,7 @@ def test_bcplayer_requires_model_filepath():
     Expected: TypeError raised about missing positional argument.
     """
     with pytest.raises(TypeError, match="model_filepath"):
-        BCPlayer(battle_format="gen9vgc2023regc")
+        BCPlayer(battle_format="gen9vgc2023regc")  # type: ignore[call-arg]
 
 
 # =============================================================================

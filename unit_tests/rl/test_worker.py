@@ -10,7 +10,6 @@ These tests verify:
 5. Integration with MDBO encoder for action conversion
 """
 
-import asyncio
 from typing import Dict
 from unittest.mock import MagicMock, patch
 
@@ -158,7 +157,7 @@ def test_player_initialization(mock_model, player_config, server_config, traject
     with patch.object(BatchInferencePlayer, "__init__", lambda self, **kwargs: None):
         # Manually set attributes that __init__ would set
         player = BatchInferencePlayer.__new__(BatchInferencePlayer)
-        player.model = mock_model
+        player.inference_client = mock_model
         player.device = "cpu"
         player.batch_size = 16
         player.batch_timeout = 0.01
@@ -167,10 +166,9 @@ def test_player_initialization(mock_model, player_config, server_config, traject
         player.current_trajectories = {}
         player.completed_trajectories = []
         player.hidden_states = {}
-        player.queue = asyncio.Queue()
-        player._inference_task = None
+        player._inference_future = None
 
-        assert player.model == mock_model
+        assert player.inference_client == mock_model
         assert player.device == "cpu"
         assert player.batch_size == 16
         assert player.probabilistic is True
