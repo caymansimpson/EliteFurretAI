@@ -17,8 +17,8 @@ from elitefurretai.engine.showdown_server_manager import (
 from elitefurretai.etl import Embedder
 from elitefurretai.etl.encoder import MDBO
 from elitefurretai.inference.inference_utils import battle_to_str
-from elitefurretai.rl.masking import fast_get_action_mask
 from elitefurretai.rl.learners import load_agent_from_checkpoint
+from elitefurretai.rl.masking import fast_get_action_mask
 from elitefurretai.rl.players import RNaDAgent
 
 
@@ -35,6 +35,7 @@ class VerboseModelPlayer(Player):
         server_configuration: ServerConfiguration,
         max_concurrent_battles: int,
         start_timer_on_battle_start: bool,
+        team: Optional[str] = None,
     ):
         super().__init__(
             battle_format=battle_format,
@@ -43,10 +44,13 @@ class VerboseModelPlayer(Player):
             accept_open_team_sheet=True,
             max_concurrent_battles=max_concurrent_battles,
             start_timer_on_battle_start=start_timer_on_battle_start,
+            team=team,
         )
         self.agent: RNaDAgent = load_agent_from_checkpoint(model_path, device)
         self.device = device
-        self.embedder = Embedder(format=battle_format, feature_set=Embedder.FULL, omniscient=False)
+        self.embedder = Embedder(
+            format=battle_format, feature_set=Embedder.FULL, omniscient=False
+        )
         self.probabilistic = probabilistic
         self.top_k = top_k
         self.print_summary = print_summary
@@ -57,7 +61,9 @@ class VerboseModelPlayer(Player):
             self.hidden_states[battle_tag] = self.agent.get_initial_state(1, self.device)
         return self.hidden_states[battle_tag]
 
-    def _describe_action(self, battle: DoubleBattle, action_idx: int, is_teampreview: bool) -> str:
+    def _describe_action(
+        self, battle: DoubleBattle, action_idx: int, is_teampreview: bool
+    ) -> str:
         try:
             if is_teampreview:
                 return MDBO.from_int(action_idx, type=MDBO.TEAMPREVIEW).message
@@ -79,7 +85,9 @@ class VerboseModelPlayer(Player):
         is_teampreview: bool,
     ) -> None:
         print("\n" + "=" * 80)
-        print(f"Battle: {battle.battle_tag} | Turn: {battle.turn} | Teampreview: {battle.teampreview}")
+        print(
+            f"Battle: {battle.battle_tag} | Turn: {battle.turn} | Teampreview: {battle.teampreview}"
+        )
         print(f"State value estimate: {value:.4f}")
 
         topk_indices = np.argsort(probs)[-self.top_k :][::-1]
@@ -103,7 +111,11 @@ class VerboseModelPlayer(Player):
             del self.hidden_states[battle.battle_tag]
 
         state = self.embedder.feature_dict_to_vector(self.embedder.embed(battle))
-        state_tensor = torch.tensor(state, dtype=torch.float32, device=self.device).unsqueeze(0).unsqueeze(0)
+        state_tensor = (
+            torch.tensor(state, dtype=torch.float32, device=self.device)
+            .unsqueeze(0)
+            .unsqueeze(0)
+        )
         hidden = self._get_hidden(battle.battle_tag)
 
         with torch.no_grad():
@@ -120,7 +132,11 @@ class VerboseModelPlayer(Player):
             probs = probs * mask
             probs = probs / probs.sum() if probs.sum() > 0 else mask / mask.sum()
 
-        selected = int(np.random.choice(np.arange(len(probs)), p=probs)) if self.probabilistic else int(np.argmax(probs))
+        selected = (
+            int(np.random.choice(np.arange(len(probs)), p=probs))
+            if self.probabilistic
+            else int(np.argmax(probs))
+        )
         state_value = float(value[0, 0].item())
         self._print_debug(battle, probs, state_value, selected, is_teampreview)
 
@@ -195,7 +211,9 @@ def main() -> None:
         choices=["challenge", "ladder", "vs-bot"],
         help="challenge: accept incoming challenges; ladder: play ladder games; vs-bot: play a local scripted opponent",
     )
-    parser.add_argument("--username", type=str, default="VerboseModel", help="Bot account username")
+    parser.add_argument(
+        "--username", type=str, default="VerboseModel", help="Bot account username"
+    )
     parser.add_argument("--password", type=str, default="", help="Bot account password")
     parser.add_argument(
         "--challenge-opponent",
@@ -222,7 +240,9 @@ def main() -> None:
         default=None,
         help="Path to opponent model checkpoint when --mode=vs-bot and --opponent=model",
     )
-    parser.add_argument("--num-battles", type=int, default=1, help="Number of games/challenges")
+    parser.add_argument(
+        "--num-battles", type=int, default=1, help="Number of games/challenges"
+    )
     parser.add_argument("--battle-format", type=str, default="gen9vgc2023regc")
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--server", type=str, default="localhost:8000")
