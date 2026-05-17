@@ -33,6 +33,8 @@ from poke_env import AccountConfiguration, ServerConfiguration
 from poke_env.player import MaxBasePowerPlayer, RandomPlayer
 
 from elitefurretai.engine.showdown_server_manager import (
+    EXTERNAL_VGCBENCH_USERNAMES,
+    VGCBENCH_RUNNER_SERVER_INDEX,
     derive_external_vgcbench_username,
 )
 from elitefurretai.engine.sync_battle_driver import (
@@ -631,27 +633,48 @@ class _ShowdownBackend(_BackendBase):
         server_config = ServerConfiguration(
             f"ws://localhost:{self._server_port}/showdown/websocket", ""
         )
-        external_vgcbench_usernames = cur.external_vgcbench_usernames
-        # Mirror the launcher's port-suffix derivation
-        # (showdown_server_manager.launch_external_vgcbench_runners) so the
-        # username workers challenge matches the username the runner logs in
-        # under. Trigger on curriculum weight, not `auto_launch_external_vgcbench`
-        # — that legacy flag is no longer the launcher's source of truth
-        # (train.py launches based on curriculum weight > 0). Keeping a
-        # different gate here desynchronizes worker challenges from runner
-        # identities and yields "user not found" popups.
+        external_vgcbench_usernames: List[str] = list(EXTERNAL_VGCBENCH_USERNAMES)
         vgc_bench_weight = cur.curriculum_weights.get(
             OpponentPool.VGC_BENCH_BASELINE, 0.0
         )
+        # Only one server hosts an external vgcbench runner (memory
+        # mitigation — see showdown_server_manager.VGCBENCH_RUNNER_SERVER_INDEX).
+        # Workers on other servers can't challenge a user logged into a
+        # different Showdown server, so:
+        #   - the worker on the runner's server: derive the suffixed
+        #     username and keep the vgc_bench_baseline weight as-is.
+        #   - workers on every other server: clear the username list AND
+        #     zero out the local vgc_bench_baseline weight so they don't
+        #     sample an opponent they can't play. The freed mass falls
+        #     through to self_play via OpponentPool.sample_opponent_type's
+        #     un-normalized random.random() (anything past the cumulative
+        #     defaults to SELF_PLAY).
+        # The launcher's port-suffix derivation runs whenever num_servers > 1,
+        # so we mirror that condition exactly when computing the runner port.
+        runner_port = hw.showdown_start_port + VGCBENCH_RUNNER_SERVER_INDEX
+        this_worker_has_runner = self._server_port == runner_port
         if (
             external_vgcbench_usernames
             and vgc_bench_weight > 0
             and hw.num_servers > 1
         ):
-            external_vgcbench_usernames = [
-                derive_external_vgcbench_username(username, self._server_port)
-                for username in external_vgcbench_usernames
-            ]
+            if this_worker_has_runner:
+                external_vgcbench_usernames = [
+                    derive_external_vgcbench_username(username, runner_port)
+                    for username in external_vgcbench_usernames
+                ]
+            else:
+                external_vgcbench_usernames = []
+                if self._curriculum.get(OpponentPool.VGC_BENCH_BASELINE, 0.0) > 0:
+                    logger.info(
+                        "worker %s on port %d has no vgcbench runner "
+                        "(runner_port=%d); zeroing local vgc_bench_baseline "
+                        "weight (mass redistributes to self_play)",
+                        self._worker_id,
+                        self._server_port,
+                        runner_port,
+                    )
+                    self._curriculum[OpponentPool.VGC_BENCH_BASELINE] = 0.0
         self._factory = WorkerOpponentFactory(
             team_repo=self._team_repo,
             battle_format=cur.battle_format,

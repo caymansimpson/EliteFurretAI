@@ -145,8 +145,8 @@ hardware:
 curriculum:
   battle_format: gen9vgc2024regg
   base_team_path: data/teams
-  team_pool_path: constrained # TODO: rename to oppononent_team_pool_path
-  agent_team_path: data/teams/gen9vgc2024regg/constrained # TODO: change to behavior of team_pool_path
+  team_pool_path: constrained
+  agent_team_path: data/teams/gen9vgc2024regg/constrained/naicchampion.txt
   bc_model_path: data/models/supervised/cool-bee-85-finetune_best.pt
   curriculum_weights:
     # Fresh-start curriculum: ghosts/ and exploiters/ directories are
@@ -190,16 +190,14 @@ training:
   use_wandb: true
   wandb_project: elitefurretai-instruct
   wandb_run_name: null
-  # 2026-05-16: watchdog now measures combined *Pss* (proportional set
-  # size) instead of summed RSS — see train.py:_sum_process_tree_rss_bytes
-  # for why. Pss splits shared library pages across sharers, so the value
-  # equals physical RAM actually held. Empirical baseline from a may15-
-  # profile snapshot (4 showdown + 4 vgcbench + 4 workers + frozen
-  # subprocess + ~20 inductor compile workers): combined Pss = 14.2 GB.
-  # With vgcbench cut to 1 runner (showdown_server_manager.VGCBENCH_RUNNER_SERVER_INDEX),
-  # expected baseline drops to ~11 GB. 20 GB threshold gives ~9 GB headroom
-  # over baseline for transient compile peaks and ghost rotation.
-  memory_watchdog_threshold_gb: 20.0
+  # 2026-05-15: 22 → 24 GB to tolerate the frozen subprocess's transient
+  # compile peak. Breakdown at peak (light-capybara-58 / dulcet-sun-59):
+  # trainer 3.8 + showdown 3.8 + vgcbench 3.2 + workers 4.1 + frozen
+  # subprocess 7.2 (compile peak) ≈ 22.1 GB combined RSS. Post-compile
+  # the frozen subprocess drops to ~2-3 GB → steady-state ~17-18 GB,
+  # well under 23 GB physical. Combined RSS double-counts shared pages,
+  # so 24 GB combined ≈ ~18 GB actual; physical RAM isn't at risk.
+  memory_watchdog_threshold_gb: 30.0  # PROFILING-ONLY: avoid trip while we snapshot
 
 exploiter:
   batch_size: 64

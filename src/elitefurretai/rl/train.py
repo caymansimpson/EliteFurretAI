@@ -116,22 +116,68 @@ def generate_shutdown_signal():
     return shutdown_requested
 
 
-def _sum_process_tree_rss_bytes() -> Tuple[int, Dict[str, int]]:
-    """Sum RSS of the current process and all recursive children.
+def _read_pss_bytes(pid: int) -> Optional[int]:
+    """Read Pss (proportional set size) from /proc/<pid>/smaps_rollup.
 
-    Returns (total_bytes, breakdown_by_role_bytes). The breakdown classifies
-    each child by a substring of its command line so the watchdog log can
-    point at which subsystem is dominant.
+    Pss splits each shared page across the processes sharing it, so summing
+    Pss across the process tree equals the *physical* RAM the tree is
+    holding (no double-counting). Returns None if smaps_rollup is
+    unreadable (process exited / permission denied / not Linux).
+    """
+    try:
+        with open(f"/proc/{pid}/smaps_rollup", "r", encoding="ascii") as f:
+            for line in f:
+                if line.startswith("Pss:"):
+                    # "Pss:           12345 kB\n"
+                    return int(line.split()[1]) * 1024
+    except (FileNotFoundError, PermissionError, ProcessLookupError, OSError):
+        return None
+    return None
+
+
+def _sum_process_tree_rss_bytes() -> Tuple[int, Dict[str, int]]:
+    """Sum proportional RSS (Pss) of the current process and all recursive
+    children. Returns (total_bytes, breakdown_by_role_bytes).
+
+    Why Pss, not Rss
+    ----------------
+    Linux RSS counts each shared page in full for every process mapping it,
+    so summing child RSS double-counts shared libraries and shared mmaps.
+    On a typical RL training tree (1 trainer + 4 workers + frozen
+    subprocess + ~20 inductor compile workers + 4 vgcbench runners + 4
+    showdown servers with ~7 helper procs each), sum(RSS) overstates
+    physical RAM by ~8-10 GB because every Python interpreter shares the
+    same libpython, libcuda, libstdc++, etc.
+
+    Pss (proportional set size) from /proc/<pid>/smaps_rollup splits each
+    shared page fairly across its sharers. sum(Pss) across a process tree
+    equals the physical RAM the tree actually occupies.
+
+    Empirical comparison from a may15-profile snapshot (4 showdown, 4
+    vgcbench, 4 workers, frozen subprocess, 20+ inductor workers):
+        sum(RSS) = 24.2 GB   sum(Pss) = 14.2 GB
+    sum(RSS) had been tripping the 22-24 GB watchdog while real WSL2 RAM
+    usage stayed comfortably below the 23 GB physical ceiling.
+
+    Fallback to RSS only happens on a per-process basis if smaps_rollup
+    is unreadable (rare on Linux; possible if /proc isn't mounted or if
+    the process exited mid-read).
     """
     me = psutil.Process(os.getpid())
-    total = me.memory_info().rss
+    pss = _read_pss_bytes(me.pid)
+    total = pss if pss is not None else me.memory_info().rss
     breakdown: Dict[str, int] = {"trainer": total}
     for child in me.children(recursive=True):
         try:
-            rss = child.memory_info().rss
             cmdline = " ".join(child.cmdline())
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
+        child_pss = _read_pss_bytes(child.pid)
+        if child_pss is None:
+            try:
+                child_pss = child.memory_info().rss
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
         if "node" in cmdline or "pokemon-showdown" in cmdline:
             role = "showdown"
         elif "vgc" in cmdline.lower() or "vgcbench" in cmdline.lower():
@@ -140,8 +186,8 @@ def _sum_process_tree_rss_bytes() -> Tuple[int, Dict[str, int]]:
             role = "workers"
         else:
             role = "other"
-        breakdown[role] = breakdown.get(role, 0) + rss
-        total += rss
+        breakdown[role] = breakdown.get(role, 0) + child_pss
+        total += child_pss
     return total, breakdown
 
 
@@ -162,7 +208,7 @@ def start_memory_watchdog(
 
     threshold_bytes = int(threshold_gb * 1024**3)
     logger.info(
-        "Memory watchdog armed at %.1f GB combined RSS (poll every %.0fs)",
+        "Memory watchdog armed at %.1f GB combined Pss (poll every %.0fs)",
         threshold_gb,
         poll_interval_s,
     )
@@ -178,7 +224,7 @@ def start_memory_watchdog(
                     f"{role}={rss / 1024**3:.2f}GB" for role, rss in breakdown.items()
                 )
                 logger.critical(
-                    "Memory watchdog: combined RSS %.2f GB >= %.1f GB threshold "
+                    "Memory watchdog: combined Pss %.2f GB >= %.1f GB threshold "
                     "(%s). Requesting graceful shutdown.",
                     total / 1024**3,
                     threshold_gb,
@@ -1070,16 +1116,10 @@ def main():
             config.hardware.num_servers, config.hardware.showdown_start_port
         )
 
-    # Auto-launch external vgc-bench runners based on curriculum.
-    # Previously gated on a separate `auto_launch_external_vgcbench`
-    # flag, which let the two go out of sync: curriculum requests
-    # vgc_bench battles but flag is False → workers spam "Popup: The
-    # user 'VGCBENCH' was not found"; vgc_bench=0 but flag True →
-    # ~3.7 GB host RAM consumed for nothing. The curriculum weight is
-    # the source of truth — if you ask for vgc_bench battles, the
-    # runners launch to serve them. The legacy flag is still in the
-    # config but no longer consulted here (it defaults True in the
-    # dataclass anyway; left in for backward-compat of config files).
+    # Auto-launch external vgc-bench runners based on curriculum: when
+    # vgc_bench_baseline has positive curriculum weight the runners
+    # come up; otherwise they're skipped to avoid ~3.7 GB host RAM for
+    # opponents nobody is asking for.
     external_runner_processes: List[subprocess.Popen] = []
     external_runner_log_files: List[TextIO] = []
     vgc_bench_curriculum_weight = config.curriculum.curriculum_weights.get(

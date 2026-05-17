@@ -18,6 +18,23 @@ _VGCBENCH_LOG_DIR = "data/logs/vgcbench_runners"
 _VGCBENCH_LOG_TO_FILES = True
 _VGCBENCH_ACCEPT_OPEN_TEAM_SHEET = False
 
+# Only the *first* showdown server hosts an external vgcbench runner.
+# Each SB3 PolicyPlayer runner costs ~1.2 GB resident PSS (model + policy
+# stack), and at num_servers=4 we used to launch 4 of them — ~4.8 GB just
+# for opponents that play 20% of battles. Workers on other servers detect
+# this and zero out their local vgc_bench_baseline curriculum weight (the
+# mass falls through to self_play via the un-normalized random.random()
+# sampling in OpponentPool.sample_opponent_type).
+VGCBENCH_RUNNER_SERVER_INDEX = 0
+
+# Showdown usernames for the external vgc-bench runners. One runner is
+# launched per username (on the server at VGCBENCH_RUNNER_SERVER_INDEX).
+EXTERNAL_VGCBENCH_USERNAMES: List[str] = ["VGCBENCH"]
+
+# Seconds workers wait after env.setup() before issuing the first battle so
+# the external vgc-bench runner has time to log in and join the lobby.
+EXTERNAL_VGCBENCH_STARTUP_WAIT_S: float = 10.0
+
 
 def derive_external_vgcbench_username(base_username: str, server_port: int) -> str:
     """Generate a server-scoped external runner username (Showdown max length is 18)."""
@@ -158,13 +175,10 @@ def launch_external_vgcbench_runners(
     """Launch external vgc-bench runner processes and return (processes, log files).
 
     Caller decides whether to launch (typically based on curriculum
-    weight). This function only checks that a username list is
-    configured — if there's nothing to launch, return empty lists.
+    weight). The username list is the module-level
+    EXTERNAL_VGCBENCH_USERNAMES constant.
     """
-    if (
-        not config.curriculum.external_vgcbench_usernames
-        or len(config.curriculum.external_vgcbench_usernames) == 0
-    ):
+    if not EXTERNAL_VGCBENCH_USERNAMES:
         return [], []
 
     assert config.curriculum.external_vgcbench_python_executable is not None
@@ -177,8 +191,16 @@ def launch_external_vgcbench_runners(
 
     append_port_to_username = len(server_ports) > 1
 
-    for port in server_ports:
-        for username in config.curriculum.external_vgcbench_usernames:
+    # Memory mitigation (2026-05-16): launch only on the first server, not
+    # one runner per server. The 4-runners-for-4-servers layout was costing
+    # ~4.8 GB PSS for opponents that play 20% of battles; routing all
+    # vgcbench challenges through a single runner cuts that to ~1.2 GB. See
+    # planning/stage2/2026-05-16-08-13-update100-cliff-was-vgcbench-not-ghosts.md
+    # for the memory profile that motivated this.
+    runner_server_ports = [server_ports[VGCBENCH_RUNNER_SERVER_INDEX]]
+
+    for port in runner_server_ports:
+        for username in EXTERNAL_VGCBENCH_USERNAMES:
             actual_username = (
                 derive_external_vgcbench_username(username, port)
                 if append_port_to_username

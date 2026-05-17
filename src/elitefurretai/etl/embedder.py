@@ -16,7 +16,8 @@ Key responsibilities:
 """
 
 import logging
-from typing import Any, Dict, List, Optional
+import operator
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 from poke_env.battle import (
@@ -124,7 +125,25 @@ class Embedder:
         self._transition_embedding_size = len(
             self.generate_transition_features(dummy_battle)
         )
-        self._feature_names = self._compute_grouped_feature_names(dummy_battle)
+        self._feature_names: List[str] = self._compute_grouped_feature_names(dummy_battle)
+        # Cached fast-path for embed_to_array / embed_to_vector. The genexpr
+        # form `(float(features[key]) for key in self._feature_names)` showed
+        # up as the single hottest self-time frame (~16% of worker CPU per
+        # 2026-05-16 py-spy record on may15.yaml steady state). itemgetter
+        # does the N dict lookups at C speed in one call; np.array handles
+        # the numeric conversion. Together these eliminate the per-feature
+        # Python-frame overhead and the redundant float() cast (most values
+        # are already float anyway).
+        self._feature_names_tuple: Tuple[str, ...] = tuple(self._feature_names)
+        self._feature_getter: Callable[[Dict[str, Any]], Tuple[Any, ...]]
+        if len(self._feature_names_tuple) == 1:
+            # itemgetter(single_key) returns a scalar, not a 1-tuple — wrap.
+            _single = operator.itemgetter(self._feature_names_tuple[0])
+            self._feature_getter = lambda d, _g=_single: (_g(d),)
+        elif len(self._feature_names_tuple) == 0:
+            self._feature_getter = lambda _: ()
+        else:
+            self._feature_getter = operator.itemgetter(*self._feature_names_tuple)
 
     @staticmethod
     def _prep(string) -> str:
@@ -334,7 +353,10 @@ class Embedder:
                 "feature_dict_to_vector expects the full embedding output from embed(); "
                 "for partial feature dicts, convert explicitly by sorting keys"
             )
-        return [float(features[key]) for key in self._feature_names]
+        # itemgetter does N dict lookups at C speed (one call, no per-key
+        # Python frame). float() applied at list-construction time keeps the
+        # return type identical to the prior `[float(x) for x in ...]` shape.
+        return [float(v) for v in self._feature_getter(features)]
 
     def embed_to_array(
         self, battle: DoubleBattle, bi: Optional["BattleInference"] = None
@@ -345,10 +367,14 @@ class Embedder:
         hands the result back to NumPy or PyTorch.
         """
         features = self.embed(battle, bi)
-        return np.fromiter(
-            (float(features[key]) for key in self._feature_names),
-            dtype=np.float32,
-            count=len(self._feature_names),
+        # Fast path: cached itemgetter + np.array. Replaces the prior
+        # `np.fromiter((float(features[k]) for k in self._feature_names),
+        # dtype=np.float32, count=N)` which showed up at 15.8% self time per
+        # worker py-spy. np.array of a tuple of floats does the numeric
+        # conversion to float32 in C; the redundant Python-level float() cast
+        # is dropped (values returned by the generators are already float).
+        return np.array(
+            self._feature_getter(features), dtype=np.float32
         )
 
     def embed_to_vector(
