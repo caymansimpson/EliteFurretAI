@@ -581,9 +581,7 @@ class MaskedRandomPlayer(Player):
         }
         self._fuzz_records.append(record)
 
-    def _record_invalid_choice(
-        self, battle: AbstractBattle, error_message: str
-    ) -> None:
+    def _record_invalid_choice(self, battle: AbstractBattle, error_message: str) -> None:
         self._record_failure(
             battle=battle,
             request_snapshot=self._last_request_snapshots.get(battle.battle_tag),

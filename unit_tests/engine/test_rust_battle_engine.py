@@ -252,7 +252,12 @@ class FakeCorruptedRustBattle:
                 {
                     "moves": [
                         {"id": "woodhammer", "target": "", "disabled": False, "pp": 16},
-                        {"id": "highhorsepower", "target": "", "disabled": False, "pp": 16},
+                        {
+                            "id": "highhorsepower",
+                            "target": "",
+                            "disabled": False,
+                            "pp": 16,
+                        },
                     ],
                     "canTerastallize": "Water",
                 },
@@ -337,10 +342,26 @@ def test_rust_battle_engine_sanitizes_move_request_for_snapshot_and_cache():
     pokemon_list = cast(List[Dict[str, Any]], request["side"]["pokemon"])
     active_moves = cast(List[Dict[str, Any]], request["active"])
 
-    assert [pokemon["ident"] for pokemon in pokemon_list[:2]] == ["p1: Amoonguss", "p1: Rillaboom"]
-    assert [pokemon["active"] for pokemon in pokemon_list[:4]] == [True, True, False, False]
-    assert [pokemon["condition"] for pokemon in pokemon_list[:4]] == ["219/219", "158/207", "0 fnt", "0 fnt"]
-    assert [active_moves[0]["moves"][0]["id"], active_moves[1]["moves"][0]["id"]] == ["spore", "woodhammer"]
+    assert [pokemon["ident"] for pokemon in pokemon_list[:2]] == [
+        "p1: Amoonguss",
+        "p1: Rillaboom",
+    ]
+    assert [pokemon["active"] for pokemon in pokemon_list[:4]] == [
+        True,
+        True,
+        False,
+        False,
+    ]
+    assert [pokemon["condition"] for pokemon in pokemon_list[:4]] == [
+        "219/219",
+        "158/207",
+        "0 fnt",
+        "0 fnt",
+    ]
+    assert [active_moves[0]["moves"][0]["id"], active_moves[1]["moves"][0]["id"]] == [
+        "spore",
+        "woodhammer",
+    ]
     assert [pokemon["_request_index"] for pokemon in pokemon_list[:2]] == [2, 5]
     assert snapshot.request == request
     assert snapshot.raw_request == '{"raw": true}'

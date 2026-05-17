@@ -12,7 +12,9 @@ from elitefurretai.etl.system_utils import (
 )
 
 
-def _trajectory_collate_fn(batch: List[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
+def _trajectory_collate_fn(
+    batch: List[Dict[str, torch.Tensor]],
+) -> Dict[str, torch.Tensor]:
     """
     Custom collate function that efficiently stacks trajectory dictionaries.
 

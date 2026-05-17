@@ -157,8 +157,7 @@ def test_diagnostics_record_batches(ipc_setup):
     assert snap["inference_batch_items"] == 20
     assert snap["inference_batch_size_max"] >= 1
     assert (
-        snap["inference_batches_filled_to_max"]
-        + snap["inference_batches_flushed_timeout"]
+        snap["inference_batches_filled_to_max"] + snap["inference_batches_flushed_timeout"]
         == snap["inference_batches"]
     )
 

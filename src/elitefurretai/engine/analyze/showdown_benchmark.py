@@ -83,7 +83,9 @@ async def _run_benchmark(args: argparse.Namespace) -> None:
     try:
         setup_start = time.perf_counter()
         suffix = rng.randint(100000, 999999)
-        server_config = ServerConfiguration(f"ws://localhost:{args.port}/showdown/websocket", "")
+        server_config = ServerConfiguration(
+            f"ws://localhost:{args.port}/showdown/websocket", ""
+        )
 
         if args.policy == "random":
             player1 = RandomPlayer(
@@ -168,7 +170,9 @@ async def _run_benchmark(args: argparse.Namespace) -> None:
         print(f"completed_battles={player1.n_finished_battles}")
         print(f"p1_wins={player1.n_won_battles}")
         print(f"duration_seconds={total_duration:.3f}")
-        print(f"battles_per_second={player1.n_finished_battles / max(total_duration, 1e-9):.3f}")
+        print(
+            f"battles_per_second={player1.n_finished_battles / max(total_duration, 1e-9):.3f}"
+        )
         print(f"server_launch_seconds={server_launch_seconds:.3f}")
         print(f"player_setup_seconds={player_setup_seconds:.3f}")
         print(f"battle_loop_seconds={battle_loop_seconds:.3f}")
@@ -179,7 +183,9 @@ async def _run_benchmark(args: argparse.Namespace) -> None:
         if args.policy == "model":
             assert config is not None
             print(f"device={args.device}")
-            print(f"feature_set={args.feature_set or config.training.embedder_feature_set}")
+            print(
+                f"feature_set={args.feature_set or config.training.embedder_feature_set}"
+            )
             print(f"checkpoint={args.checkpoint}")
             print(f"opponent_checkpoint={args.opponent_checkpoint or args.checkpoint}")
             print(f"greedy={args.greedy}")

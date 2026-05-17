@@ -9,6 +9,7 @@ models are invoked concurrently from separate threads.
 This test is expected to FAIL on plain torch + concurrent calls; the
 goal of Task 2.2-2.4 is to find a wrapper that makes it pass.
 """
+
 from __future__ import annotations
 
 import random
@@ -39,12 +40,8 @@ def test_two_compiled_models_concurrent_calls_no_race():
     raise. Fails today; the fix from Task 2.2/2.3/2.4 should make it pass.
     """
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    m1 = torch.compile(
-        TinyAgent().to(device).eval(), mode="default", dynamic=True
-    )
-    m2 = torch.compile(
-        TinyAgent().to(device).eval(), mode="default", dynamic=True
-    )
+    m1 = torch.compile(TinyAgent().to(device).eval(), mode="default", dynamic=True)
+    m2 = torch.compile(TinyAgent().to(device).eval(), mode="default", dynamic=True)
     # Warm up each on a fixed shape (single-threaded, no race)
     with torch.no_grad():
         m1(torch.zeros(1, 64, device=device))
@@ -168,6 +165,14 @@ def test_two_real_rnad_agents_concurrent_calls_no_race():
     assert errors == [], f"compile race triggered: {errors[0]!r}"
 
 
+@pytest.mark.xfail(
+    reason=(
+        "Per-model lock does not fix the dynamo trace-entry race. "
+        "Confirmed by Run C (2026-05-15) — bottleneck is the GIL, not the "
+        "compile lock. See planning/stage2/ throughput investigation."
+    ),
+    strict=False,
+)
 def test_two_real_rnad_agents_with_per_model_lock():
     """Same as test_two_real_rnad_agents_concurrent_calls_no_race but
     each compiled model has its own threading.Lock serializing entry.
@@ -234,6 +239,14 @@ def test_two_real_rnad_agents_with_per_model_lock():
     assert errors == [], f"compile race triggered with per-model lock: {errors[0]!r}"
 
 
+@pytest.mark.xfail(
+    reason=(
+        "cudagraph_mark_step_begin does not fix the dynamo trace-entry race. "
+        "Workaround does not address the GIL-bound contention identified by "
+        "Run C (2026-05-15). See planning/stage2/ throughput investigation."
+    ),
+    strict=False,
+)
 def test_two_real_rnad_agents_with_cudagraph_mark_step():
     """Insert torch.compiler.cudagraph_mark_step_begin() before each
     compiled call. Tests whether the race is in CUDA graph capture state —

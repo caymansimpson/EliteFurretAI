@@ -9,7 +9,6 @@ See `ENGINE.md` in this package for the current backend recommendation and the
 consolidated Stage 2 engine learnings.
 """
 
-from elitefurretai.engine.vgc_environment import VGCEnvironment
 from elitefurretai.engine.showdown_server_manager import (
     allocate_server_ports,
     derive_external_vgcbench_username,
@@ -23,6 +22,7 @@ from elitefurretai.engine.sync_battle_driver import (
     SyncPolicyPlayer,
     SyncRustBattleDriver,
 )
+from elitefurretai.engine.vgc_environment import VGCEnvironment
 
 __all__ = [
     "VGCEnvironment",

@@ -109,7 +109,9 @@ def _run_worker_model_vs_model(
             device=device,
             battle_format=battle_format,
             probabilistic=False,
-            account_configuration=AccountConfiguration(_username("EM1", worker_id, run_tag), None),
+            account_configuration=AccountConfiguration(
+                _username("EM1", worker_id, run_tag), None
+            ),
             server_configuration=server_config,
             team=team1,
             accept_open_team_sheet=True,
@@ -119,7 +121,9 @@ def _run_worker_model_vs_model(
             device=device,
             battle_format=battle_format,
             probabilistic=False,
-            account_configuration=AccountConfiguration(_username("EM2", worker_id, run_tag), None),
+            account_configuration=AccountConfiguration(
+                _username("EM2", worker_id, run_tag), None
+            ),
             server_configuration=server_config,
             team=team2,
             accept_open_team_sheet=True,
@@ -165,7 +169,9 @@ def _run_worker_model_vs_baseline(
             battle_format=battle_format,
             probabilistic=False,
             account_configuration=AccountConfiguration(
-                _username(f"EM{_baseline_user_tag(baseline_name.lower())}", worker_id, run_tag),
+                _username(
+                    f"EM{_baseline_user_tag(baseline_name.lower())}", worker_id, run_tag
+                ),
                 None,
             ),
             server_configuration=server_config,
@@ -249,7 +255,9 @@ def _run_worker_model_vs_baseline(
                 try:
                     await model_player.battle_against(opponent, n_battles=1)
                 except Exception as exc:
-                    print(f"[eval] baseline={baseline_key} worker={worker_id} failed: {exc}")
+                    print(
+                        f"[eval] baseline={baseline_key} worker={worker_id} failed: {exc}"
+                    )
 
         played = model_player.n_finished_battles
         wins = model_player.n_won_battles
@@ -435,7 +443,9 @@ def main() -> None:
         server_processes = launch_showdown_servers(args.num_servers, args.start_port)
 
     try:
-        server_urls = _build_server_urls(args.server_base, args.num_servers, args.start_port)
+        server_urls = _build_server_urls(
+            args.server_base, args.num_servers, args.start_port
+        )
         all_results: Dict[str, Any] = {}
 
         print("\n=== Model Evaluation ===")
@@ -456,7 +466,9 @@ def main() -> None:
                 "win_rate": mm_result.win_rate
             }
 
-        baseline_names = [b.strip().lower() for b in args.baselines.split(",") if b.strip()]
+        baseline_names = [
+            b.strip().lower() for b in args.baselines.split(",") if b.strip()
+        ]
         if baseline_names:
             print("\n=== Baseline Evaluation ===")
             baseline_results: Dict[str, Any] = {}
@@ -477,7 +489,9 @@ def main() -> None:
                     run_tag=run_tag,
                 )
                 _print_result(result, baseline)
-                baseline_results[baseline] = result.__dict__ | {"win_rate": result.win_rate}
+                baseline_results[baseline] = result.__dict__ | {
+                    "win_rate": result.win_rate
+                }
             all_results["baselines"] = baseline_results
 
         if args.output:

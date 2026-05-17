@@ -425,7 +425,12 @@ def evaluate(
         # Brier score against the trajectory-final binary outcome (matches
         # win_model_diagnostics.prediction_vs_actual_overall.brier_score).
         # Computed before flattening so we keep the per-trajectory structure.
-        if has_win_head and win_logits is not None and wins is not None and masks is not None:
+        if (
+            has_win_head
+            and win_logits is not None
+            and wins is not None
+            and masks is not None
+        ):
             valid_lengths = masks.sum(dim=1).long()
             has_valid = valid_lengths > 0
             if has_valid.any():

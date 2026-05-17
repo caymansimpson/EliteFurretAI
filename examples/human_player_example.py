@@ -3,6 +3,7 @@ Example script demonstrating how to use the HumanPlayer for interactive battles.
 
 This allows you to play battles manually via CLI against random players or other agents.
 """
+
 import asyncio
 
 from poke_env.player import RandomPlayer
@@ -47,7 +48,7 @@ async def battle_against_custom_team():
     # You can specify a custom team from a file
     human = HumanPlayer(
         battle_format="gen9vgc2023regc",
-        team="data/teams/sample_team.txt"  # Optional: specify your team
+        team="data/teams/sample_team.txt",  # Optional: specify your team
     )
 
     # Battle against a stronger opponent

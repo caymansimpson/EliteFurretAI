@@ -12,7 +12,6 @@ These tests verify that fast_get_action_mask correctly:
 7. Handles edge cases (fainted Pokemon, no valid actions)
 """
 
-
 import numpy as np
 import pytest
 from poke_env.battle.double_battle import DoubleBattle
@@ -26,8 +25,8 @@ from elitefurretai.rl.masking import (
     SWITCH_ACTION_BASE,
     TARGET_TO_OFFSET,
     fast_get_action_mask,
-    get_valid_targets_for_request_move,
     get_valid_slot_actions,
+    get_valid_targets_for_request_move,
     slot_is_commanding,
 )
 

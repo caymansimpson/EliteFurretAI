@@ -10,10 +10,10 @@ Expected wall-clock time: 5–30 s.
 
 import types
 from typing import Iterator
+from unittest.mock import MagicMock, patch
 
 import pytest
 import torch
-from unittest.mock import MagicMock, patch
 
 
 class _FakeBattleDataLoader:
@@ -85,7 +85,10 @@ def test_supervised_train_smoke(tmp_path):
     wandb_run = types.SimpleNamespace(name="smoke-test")
 
     with (
-        patch("elitefurretai.supervised.train.OptimizedBattleDataLoader", _FakeBattleDataLoader),
+        patch(
+            "elitefurretai.supervised.train.OptimizedBattleDataLoader",
+            _FakeBattleDataLoader,
+        ),
         patch("wandb.init"),
         patch("wandb.save"),
         patch("wandb.watch"),

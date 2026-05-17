@@ -251,16 +251,16 @@ class TestRequestSnapshotDecoding:
             "uproar": original_move,
             "protect": mutated_move,
         }
-        active_mon.available_moves_from_request.side_effect = (
-            lambda request: [active_mon.moves[request["moves"][0]["id"]]]
-        )
+        active_mon.available_moves_from_request.side_effect = lambda request: [
+            active_mon.moves[request["moves"][0]["id"]]
+        ]
 
         ally_mon = MagicMock(spec=Pokemon)
         ally_mon.species = "incineroar"
         ally_mon.moves = {"knockoff": ally_move}
-        ally_mon.available_moves_from_request.side_effect = (
-            lambda request: [ally_mon.moves[request["moves"][0]["id"]]]
-        )
+        ally_mon.available_moves_from_request.side_effect = lambda request: [
+            ally_mon.moves[request["moves"][0]["id"]]
+        ]
 
         battle.active_pokemon = [active_mon, ally_mon]
         battle.available_moves = [[original_move], [ally_move]]
@@ -341,6 +341,7 @@ class TestMoveOrderInvariantDecoding:
         assert order.first_order.move_target == 0  # type: ignore[attr-defined, union-attr]
         assert order.first_order.message == "/choose move protect"  # type: ignore[attr-defined, union-attr]
 
+
 class TestRestrictedRequestMoveDecoding:
     def test_single_legal_request_move_uses_request_slot_index(self):
         battle = MagicMock(spec=DoubleBattle)
@@ -372,7 +373,11 @@ class TestRestrictedRequestMoveDecoding:
         battle.last_request = {
             "active": [
                 {"moves": [{"move": "Outrage", "id": "outrage"}], "trapped": True},
-                {"moves": [{"move": "Protect", "id": "protect", "disabled": False, "pp": 16}]},
+                {
+                    "moves": [
+                        {"move": "Protect", "id": "protect", "disabled": False, "pp": 16}
+                    ]
+                },
             ]
         }
 
@@ -413,11 +418,25 @@ class TestRestrictedRequestMoveDecoding:
             "active": [
                 {
                     "moves": [
-                        {"move": "Dragon Claw", "id": "dragonclaw", "disabled": False, "pp": 16},
-                        {"move": "Heavy Slam", "id": "heavyslam", "disabled": False, "pp": 16},
+                        {
+                            "move": "Dragon Claw",
+                            "id": "dragonclaw",
+                            "disabled": False,
+                            "pp": 16,
+                        },
+                        {
+                            "move": "Heavy Slam",
+                            "id": "heavyslam",
+                            "disabled": False,
+                            "pp": 16,
+                        },
                     ]
                 },
-                {"moves": [{"move": "Tailwind", "id": "tailwind", "disabled": False, "pp": 24}]},
+                {
+                    "moves": [
+                        {"move": "Tailwind", "id": "tailwind", "disabled": False, "pp": 24}
+                    ]
+                },
             ]
         }
 
@@ -515,9 +534,7 @@ class TestRestrictedRequestMoveDecoding:
                         }
                     ]
                 },
-                {
-                    "moves": [{"move": "Surf", "id": "surf", "disabled": False, "pp": 24}]
-                },
+                {"moves": [{"move": "Surf", "id": "surf", "disabled": False, "pp": 24}]},
             ]
         }
 

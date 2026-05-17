@@ -373,9 +373,7 @@ class Embedder:
         # worker py-spy. np.array of a tuple of floats does the numeric
         # conversion to float32 in C; the redundant Python-level float() cast
         # is dropped (values returned by the generators are already float).
-        return np.array(
-            self._feature_getter(features), dtype=np.float32
-        )
+        return np.array(self._feature_getter(features), dtype=np.float32)
 
     def embed_to_vector(
         self, battle: DoubleBattle, bi: Optional["BattleInference"] = None

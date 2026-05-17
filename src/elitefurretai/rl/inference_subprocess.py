@@ -272,9 +272,7 @@ class InferenceSubprocessHandle:
 
     def start(self) -> None:
         if self._process is not None:
-            raise RuntimeError(
-                f"InferenceSubprocess[{self.group_name}] already started"
-            )
+            raise RuntimeError(f"InferenceSubprocess[{self.group_name}] already started")
         proc = self._ctx.Process(
             target=run_subprocess,
             args=(self.spec,),
@@ -284,9 +282,7 @@ class InferenceSubprocessHandle:
         proc.start()
         self._process = proc
 
-    def sync_weights(
-        self, service_name: str, state_dict: Dict[str, torch.Tensor]
-    ) -> None:
+    def sync_weights(self, service_name: str, state_dict: Dict[str, torch.Tensor]) -> None:
         if self._process is None or not self._process.is_alive():
             raise RuntimeError(
                 f"InferenceSubprocess[{self.group_name}] not running; cannot sync"

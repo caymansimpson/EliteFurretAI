@@ -70,6 +70,10 @@ from typing import Any, Dict, List, Optional, cast
 import psutil
 import torch
 
+from elitefurretai.engine.showdown_server_manager import (
+    EXTERNAL_VGCBENCH_STARTUP_WAIT_S,
+    EXTERNAL_VGCBENCH_USERNAMES,
+)
 from elitefurretai.engine.vgc_environment import VGCEnvironment
 from elitefurretai.etl import Embedder, TeamRepo
 from elitefurretai.etl.system_utils import suppress_third_party_warnings
@@ -166,13 +170,11 @@ def mp_worker_process(
         suppress_third_party_warnings(suppress_pydantic_field_warnings=True)
 
         battle_format = config.curriculum.battle_format
-        team_pool_path = config.curriculum.base_team_path
+        base_team_path = config.curriculum.base_team_path
         num_battles_per_pair = config.hardware.num_battles_per_pair
         curriculum = config.curriculum.curriculum_weights
-        external_vgcbench_usernames = config.curriculum.external_vgcbench_usernames
-        external_vgcbench_startup_wait_s = (
-            config.curriculum.external_vgcbench_startup_wait_s
-        )
+        external_vgcbench_usernames = EXTERNAL_VGCBENCH_USERNAMES
+        external_vgcbench_startup_wait_s = EXTERNAL_VGCBENCH_STARTUP_WAIT_S
 
         if verbose:
             logger.debug(
@@ -251,8 +253,10 @@ def mp_worker_process(
         # and `model_config` for ghost loading paths. Detected from
         # spawn args: when both inference queues are present, build a
         # client and skip the model build.
-        assert main_inference_request_queue is not None and main_inference_response_queue is not None, \
-            "Centralized inference required; main inference queues missing from spawn args"
+        assert (
+            main_inference_request_queue is not None
+            and main_inference_response_queue is not None
+        ), "Centralized inference required; main inference queues missing from spawn args"
 
         model: Optional[Any] = None
         agent: Optional[RNaDAgent] = None
@@ -313,10 +317,10 @@ def mp_worker_process(
             logger.debug(
                 "[MPWorker %d] Loading teams from %s... Memory: %s",
                 worker_id,
-                team_pool_path,
+                base_team_path,
                 get_memory_usage_mb(),
             )
-        team_repo = TeamRepo(team_pool_path)
+        team_repo = TeamRepo(base_team_path)
 
         # ── PHASE 2: ENVIRONMENT SETUP ────────────────────────────────────────────────
         # VGCEnvironment wraps both backends (Showdown websocket and Rust in-process)
@@ -356,9 +360,7 @@ def mp_worker_process(
                 if initial_active_ghost_slots:
                     _wfactory.set_active_ghost_slots(initial_active_ghost_slots)
                 if initial_active_exploiter_slots:
-                    _wfactory.set_active_exploiter_slots(
-                        initial_active_exploiter_slots
-                    )
+                    _wfactory.set_active_exploiter_slots(initial_active_exploiter_slots)
 
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
@@ -429,20 +431,25 @@ def mp_worker_process(
                                     new_curriculum = incoming_payload.get("curriculum")
                                     if isinstance(new_curriculum, dict):
                                         env.update_curriculum(new_curriculum)
-                                    if "active_ghost_slots" in incoming_payload or \
-                                            "active_exploiter_slots" in incoming_payload:
+                                    if (
+                                        "active_ghost_slots" in incoming_payload
+                                        or "active_exploiter_slots" in incoming_payload
+                                    ):
                                         _backend = getattr(env, "_backend", None)
-                                        _wfactory = getattr(
-                                            _backend, "_factory", None
-                                        )
+                                        _wfactory = getattr(_backend, "_factory", None)
                                         if _wfactory is not None:
                                             if "active_ghost_slots" in incoming_payload:
                                                 _wfactory.set_active_ghost_slots(
                                                     incoming_payload["active_ghost_slots"]
                                                 )
-                                            if "active_exploiter_slots" in incoming_payload:
+                                            if (
+                                                "active_exploiter_slots"
+                                                in incoming_payload
+                                            ):
                                                 _wfactory.set_active_exploiter_slots(
-                                                    incoming_payload["active_exploiter_slots"]
+                                                    incoming_payload[
+                                                        "active_exploiter_slots"
+                                                    ]
                                                 )
                                     env.update_sampling(
                                         temperature=incoming_payload.get("temperature"),

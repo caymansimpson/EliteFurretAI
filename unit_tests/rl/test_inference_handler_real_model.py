@@ -113,10 +113,7 @@ def test_handler_batch_of_mixed_shapes(small_transformer_agent):
     np.random.seed(0)
 
     priors = [None, torch.randn(1, 2, 32), torch.randn(1, 5, 32), None]
-    reqs = [
-        _make_request(embedder, request_id=i, battle_tag=f"b-{i}")
-        for i in range(4)
-    ]
+    reqs = [_make_request(embedder, request_id=i, battle_tag=f"b-{i}") for i in range(4)]
     for i, prior in enumerate(priors):
         if prior is not None:
             handler.hidden_states[(0, "p", f"b-{i}")] = prior

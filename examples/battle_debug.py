@@ -29,7 +29,9 @@ from elitefurretai.rl.players import MaxDamagePlayer
 # =============================================================================
 
 
-def launch_showdown_servers(num_servers: int = 1, start_port: int = 8000) -> List[subprocess.Popen]:
+def launch_showdown_servers(
+    num_servers: int = 1, start_port: int = 8000
+) -> List[subprocess.Popen]:
     """Launch Showdown servers on consecutive ports.
 
     Args:
@@ -61,11 +63,18 @@ def launch_showdown_servers(num_servers: int = 1, start_port: int = 8000) -> Lis
         try:
             # Launch server with stdout/stderr redirected to suppress logs
             process = subprocess.Popen(
-                ["node", "pokemon-showdown", "start", "--no-security", "--port", str(port)],
+                [
+                    "node",
+                    "pokemon-showdown",
+                    "start",
+                    "--no-security",
+                    "--port",
+                    str(port),
+                ],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 cwd=showdown_dir,
-                preexec_fn=os.setsid
+                preexec_fn=os.setsid,
             )
             server_processes.append(process)
             print(f"✓ Launched Showdown server on port {port} (PID: {process.pid})")
@@ -102,7 +111,9 @@ def shutdown_showdown_servers(server_processes: List[subprocess.Popen]) -> None:
     for i, process in enumerate(server_processes):
         if process.poll() is None:  # Process is still running
             try:
-                print(f"Terminating server {i + 1}/{len(server_processes)} (PID: {process.pid})...")
+                print(
+                    f"Terminating server {i + 1}/{len(server_processes)} (PID: {process.pid})..."
+                )
                 os.killpg(os.getpgid(process.pid), signal.SIGTERM)
 
                 # Wait up to 3 seconds for graceful shutdown
@@ -110,7 +121,9 @@ def shutdown_showdown_servers(server_processes: List[subprocess.Popen]) -> None:
                     process.wait(timeout=3)
                     print(f"✓ Server on PID {process.pid} terminated gracefully")
                 except subprocess.TimeoutExpired:
-                    print(f"⚠ Server on PID {process.pid} didn't respond, force killing...")
+                    print(
+                        f"⚠ Server on PID {process.pid} didn't respond, force killing..."
+                    )
                     os.killpg(os.getpgid(process.pid), signal.SIGKILL)
                     process.wait()
             except ProcessLookupError:
@@ -127,7 +140,6 @@ def shutdown_showdown_servers(server_processes: List[subprocess.Popen]) -> None:
 
 
 class CustomPlayer(RandomPlayer):
-
     def __init__(
         self,
         account_configuration: Optional[AccountConfiguration] = None,

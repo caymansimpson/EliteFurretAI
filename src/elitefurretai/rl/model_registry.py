@@ -445,7 +445,8 @@ class ModelRegistry:
         if group == self._IN_PROCESS:
             logger.info(
                 "sync_weights[%s]: in-process load=%.1fms",
-                name, (t_shadow - t0) * 1000.0,
+                name,
+                (t_shadow - t0) * 1000.0,
             )
             return
         if not self._started:
@@ -454,14 +455,13 @@ class ModelRegistry:
             # pickles the spec's agent reference into the subprocess.
             logger.info(
                 "sync_weights[%s]: pre-start shadow update load=%.1fms",
-                name, (t_shadow - t0) * 1000.0,
+                name,
+                (t_shadow - t0) * 1000.0,
             )
             return
         handle = self._subprocesses.get(group)
         if handle is None:
-            raise RuntimeError(
-                f"Subprocess group '{group}' not registered"
-            )
+            raise RuntimeError(f"Subprocess group '{group}' not registered")
         # Ship CPU tensors over the control queue, NEVER CUDA tensors.
         # torch.multiprocessing's CUDA-tensor sharing reduction calls
         # `_new_shared_cuda` on the receiving side, which on WSL2 raises
@@ -479,7 +479,8 @@ class ModelRegistry:
         logger.info(
             "sync_weights[%s->%s]: load=%.1fms get_state_dict=%.1fms "
             "enqueue=%.1fms total=%.1fms",
-            name, group,
+            name,
+            group,
             (t_shadow - t0) * 1000.0,
             (t_dict - t_shadow) * 1000.0,
             (t_enq - t_dict) * 1000.0,
@@ -510,8 +511,7 @@ class ModelRegistry:
         a `DiagnosticsRequestMsg` round-trip; left as future work.
         """
         return {
-            name: svc.get_diagnostics_snapshot()
-            for name, svc in self._services.items()
+            name: svc.get_diagnostics_snapshot() for name, svc in self._services.items()
         }
 
     def names(self) -> List[str]:

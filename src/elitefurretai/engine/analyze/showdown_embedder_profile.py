@@ -47,7 +47,9 @@ class EmbedderProfiler:
             result[name] = {
                 "calls": float(stat.calls),
                 "total_seconds": stat.total_seconds,
-                "avg_ms": (stat.total_seconds * 1000.0 / stat.calls) if stat.calls else 0.0,
+                "avg_ms": (stat.total_seconds * 1000.0 / stat.calls)
+                if stat.calls
+                else 0.0,
             }
         return result
 

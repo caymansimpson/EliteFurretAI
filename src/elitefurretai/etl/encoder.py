@@ -345,9 +345,7 @@ def _get_request_move_by_slot_from_request(
 
     active_requests = request.get("active", [])
     if slot >= len(active_requests):
-        raise ValueError(
-            f"Missing active request for slot {slot} on {moving_mon.species}"
-        )
+        raise ValueError(f"Missing active request for slot {slot} on {moving_mon.species}")
 
     slot_request = active_requests[slot]
     if not isinstance(slot_request, dict) or "moves" not in slot_request:

@@ -1183,7 +1183,6 @@ def test_next_input_23(vgc_json_anon23):
     iter.next_input()
     assert iter.last_input == ">p1 pass, switch 4"
 
-    # TODO: problem: input_nums are 7-9 when they should be 8-10
     iter.next_input()
     assert iter.last_input == ">p1 move curse +2, move rockslide"
 

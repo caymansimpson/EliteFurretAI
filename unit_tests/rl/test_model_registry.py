@@ -163,12 +163,9 @@ def test_registry_stop_all_idempotent(small_agent_factory):
 # ─────────────────────────────────────────────────────────────────────
 
 
-def _per_worker_slice(
-    bundles: Dict[str, Tuple], worker_id: int
-) -> Dict[str, Tuple]:
+def _per_worker_slice(bundles: Dict[str, Tuple], worker_id: int) -> Dict[str, Tuple]:
     return {
-        name: (req_q, resp_qs[worker_id])
-        for name, (req_q, resp_qs) in bundles.items()
+        name: (req_q, resp_qs[worker_id]) for name, (req_q, resp_qs) in bundles.items()
     }
 
 
@@ -254,11 +251,10 @@ def test_registry_to_worker_round_trip(small_agent_factory):
             slice_ = _per_worker_slice(registry.queues_for_workers(), 0)
             clients = WorkerInferenceClients(0, slice_, loop=loop)
             try:
+
                 async def submit_to(name: str) -> int:
                     resp = await clients.get(name).submit(
-                        state=np.random.randn(embedder.embedding_size).astype(
-                            np.float32
-                        ),
+                        state=np.random.randn(embedder.embedding_size).astype(np.float32),
                         mask=np.ones(2025, dtype=np.float32),
                         is_teampreview=False,
                         player_id="p",
@@ -271,9 +267,7 @@ def test_registry_to_worker_round_trip(small_agent_factory):
                 np.random.seed(0)
 
                 async def both():
-                    return await asyncio.gather(
-                        submit_to("main"), submit_to("bc")
-                    )
+                    return await asyncio.gather(submit_to("main"), submit_to("bc"))
 
                 main_action, bc_action = loop.run_until_complete(both())
                 assert 0 <= main_action < 2025
@@ -312,9 +306,7 @@ def test_registry_mixed_process_groups(small_agent_factory):
     try:
         registry.register("main", make(), compile=False)
         registry.register("bc", make(), compile=False)
-        registry.register(
-            "ghost_0", make(), compile=False, process_group="ghosts"
-        )
+        registry.register("ghost_0", make(), compile=False, process_group="ghosts")
 
         # Before start_all(): names visible but services not running.
         assert set(registry.names()) == {"main", "bc", "ghost_0"}
@@ -366,9 +358,7 @@ def test_registry_subprocess_sync_weights(small_agent_factory):
     registry = ModelRegistry(num_workers=1, batch_size=4, batch_timeout=0.005)
     try:
         agent_a = make()
-        registry.register(
-            "ghost_0", agent_a, compile=False, process_group="ghosts"
-        )
+        registry.register("ghost_0", agent_a, compile=False, process_group="ghosts")
         registry.start_all()
 
         bundles = registry.queues_for_workers()
@@ -380,9 +370,9 @@ def test_registry_subprocess_sync_weights(small_agent_factory):
                 worker_id=0,
                 player_id="p",
                 battle_tag=f"tag-{req_id}",
-                state=np.random.RandomState(seed=req_id).randn(
-                    embedder.embedding_size
-                ).astype(np.float32),
+                state=np.random.RandomState(seed=req_id)
+                .randn(embedder.embedding_size)
+                .astype(np.float32),
                 mask=np.ones(2025, dtype=np.float32),
                 is_teampreview=False,
                 temperature=1.0,

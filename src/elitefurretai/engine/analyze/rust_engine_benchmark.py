@@ -82,7 +82,9 @@ def main() -> None:
     print(f"policy_embed_seconds={stats.profile.policy_embed_seconds:.3f}")
     print(f"policy_inference_seconds={stats.profile.policy_inference_seconds:.3f}")
     print(f"policy_action_decode_seconds={stats.profile.policy_action_decode_seconds:.3f}")
-    print(f"policy_rollout_record_seconds={stats.profile.policy_rollout_record_seconds:.3f}")
+    print(
+        f"policy_rollout_record_seconds={stats.profile.policy_rollout_record_seconds:.3f}"
+    )
     print(f"total_profiled_seconds={stats.profile.total_profiled_seconds:.3f}")
 
 

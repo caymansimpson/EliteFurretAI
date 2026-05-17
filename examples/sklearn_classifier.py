@@ -34,9 +34,9 @@ def evaluate(y_true, y_pred):
     """
     cm = confusion_matrix(y_true, y_pred)
     accuracy = accuracy_score(y_true, y_pred)
-    precision = precision_score(y_true, y_pred, average='macro')
-    recall = recall_score(y_true, y_pred, average='macro')
-    f1 = f1_score(y_true, y_pred, average='macro')
+    precision = precision_score(y_true, y_pred, average="macro")
+    recall = recall_score(y_true, y_pred, average="macro")
+    f1 = f1_score(y_true, y_pred, average="macro")
     fpr, tpr, _ = roc_curve(y_true, y_pred)
     roc_auc = auc(fpr, tpr)
 
@@ -79,7 +79,9 @@ def main():
         dataset, batch_size=batch_size, num_workers=min(os.cpu_count() or 1, 4)
     )
 
-    print(f"Finished preparing dataset in {format_time(time.time() - benchmark)}! Now loading data...")
+    print(
+        f"Finished preparing dataset in {format_time(time.time() - benchmark)}! Now loading data..."
+    )
     benchmark = time.time()
 
     # Lists to accumulate features and labels from all batches
@@ -144,7 +146,9 @@ def main():
     # Evaluate on test set
     evaluate(model.predict(X_test), y_test)
 
-    print(f"Finished evaluating on test set in {format_time(time.time() - benchmark)}! Results:")
+    print(
+        f"Finished evaluating on test set in {format_time(time.time() - benchmark)}! Results:"
+    )
     benchmark = time.time()
 
     # Evaluate on a separate evaluation set of new battles

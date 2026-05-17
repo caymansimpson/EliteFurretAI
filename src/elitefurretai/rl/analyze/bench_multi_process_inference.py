@@ -181,7 +181,10 @@ def run_forwards(
         for j in range(batch_size):
             _ = int(torch.multinomial(torch.softmax(turn_cpu[j], dim=0), 1).item())
         # 6. Build "responses"
-        _ = [{"sample": j, "value": float(value_logits[j, 0].item())} for j in range(batch_size)]
+        _ = [
+            {"sample": j, "value": float(value_logits[j, 0].item())}
+            for j in range(batch_size)
+        ]
     if device.startswith("cuda"):
         torch.cuda.synchronize()
     return time.perf_counter() - start
@@ -212,9 +215,7 @@ def run_threaded(
             models[i], device, n_forwards_per_thread, batch_size, shared_lock
         )
 
-    threads = [
-        threading.Thread(target=thread_worker, args=(i,)) for i in range(n_threads)
-    ]
+    threads = [threading.Thread(target=thread_worker, args=(i,)) for i in range(n_threads)]
     start = time.perf_counter()
     for t in threads:
         t.start()
@@ -304,9 +305,13 @@ def main() -> None:
     batch_size = 32  # production batch_size cap; pessimistic GIL load per forward
     scaling = [1, 2, 4]
 
-    print(f"device={device} batch_size={batch_size} forwards_per_unit={n_forwards_per_unit}")
+    print(
+        f"device={device} batch_size={batch_size} forwards_per_unit={n_forwards_per_unit}"
+    )
     print(f"scaling sweep: N ∈ {scaling}")
-    print("Per-forward Python wrapper includes np.stack + dict lookups + sampling + response build")
+    print(
+        "Per-forward Python wrapper includes np.stack + dict lookups + sampling + response build"
+    )
     print("(matches RealModelBatchHandler.__call__ overhead)\n")
 
     rows: List[dict] = []
@@ -316,16 +321,24 @@ def main() -> None:
         print(f"────── N = {N} ──────")
 
         # Mode A: N threads, shared lock
-        wall_A, times_A = run_threaded(N, n_forwards_per_unit, batch_size, device, use_lock=True)
+        wall_A, times_A = run_threaded(
+            N, n_forwards_per_unit, batch_size, device, use_lock=True
+        )
         steady_A = _steady_state_throughput(max(times_A), total_forwards)
-        print(f"  A (threads + lock):   wall={wall_A:.2f}s  steady={steady_A:.1f} fwd/s  "
-              f"per-unit_max={max(times_A):.2f}s")
+        print(
+            f"  A (threads + lock):   wall={wall_A:.2f}s  steady={steady_A:.1f} fwd/s  "
+            f"per-unit_max={max(times_A):.2f}s"
+        )
 
         # Mode B: N threads, no lock
-        wall_B, times_B = run_threaded(N, n_forwards_per_unit, batch_size, device, use_lock=False)
+        wall_B, times_B = run_threaded(
+            N, n_forwards_per_unit, batch_size, device, use_lock=False
+        )
         steady_B = _steady_state_throughput(max(times_B), total_forwards)
-        print(f"  B (threads, no lock): wall={wall_B:.2f}s  steady={steady_B:.1f} fwd/s  "
-              f"per-unit_max={max(times_B):.2f}s")
+        print(
+            f"  B (threads, no lock): wall={wall_B:.2f}s  steady={steady_B:.1f} fwd/s  "
+            f"per-unit_max={max(times_B):.2f}s"
+        )
 
         # Mode C: N subprocesses
         wall_C, results_C = run_multiprocess(N, n_forwards_per_unit, batch_size, device)
@@ -333,9 +346,11 @@ def main() -> None:
         steady_C = _steady_state_throughput(max(forward_times_C), total_forwards)
         rss_mean = statistics.mean(r["rss_mb"] for r in results_C)
         gpu_mean = statistics.mean(r["gpu_alloc_mb"] for r in results_C)
-        print(f"  C (subprocesses):     wall={wall_C:.2f}s  steady={steady_C:.1f} fwd/s  "
-              f"per-unit_max={max(forward_times_C):.2f}s  "
-              f"(includes ~{wall_C - max(forward_times_C):.1f}s one-time spawn/import/compile)")
+        print(
+            f"  C (subprocesses):     wall={wall_C:.2f}s  steady={steady_C:.1f} fwd/s  "
+            f"per-unit_max={max(forward_times_C):.2f}s  "
+            f"(includes ~{wall_C - max(forward_times_C):.1f}s one-time spawn/import/compile)"
+        )
         print(f"     per-subprocess RSS={rss_mean:.0f} MB  GPU_alloc={gpu_mean:.0f} MB")
 
         rows.append(
@@ -353,15 +368,19 @@ def main() -> None:
     print("\n" + "═" * 80)
     print("SCALING SUMMARY (steady-state fwd/s, ignoring subprocess startup)")
     print("═" * 80)
-    print(f"{'N':>3} | {'A (lock)':>10} | {'B (no lock)':>11} | {'C (procs)':>10} | "
-          f"{'B/A':>5} | {'C/A':>5} | {'C/B':>5} | {'RSS(MB)':>8}")
+    print(
+        f"{'N':>3} | {'A (lock)':>10} | {'B (no lock)':>11} | {'C (procs)':>10} | "
+        f"{'B/A':>5} | {'C/A':>5} | {'C/B':>5} | {'RSS(MB)':>8}"
+    )
     print("─" * 80)
     for r in rows:
         ratio_BA = r["B"] / r["A"] if r["A"] > 0 else 0
         ratio_CA = r["C"] / r["A"] if r["A"] > 0 else 0
         ratio_CB = r["C"] / r["B"] if r["B"] > 0 else 0
-        print(f"{r['N']:>3} | {r['A']:>10.1f} | {r['B']:>11.1f} | {r['C']:>10.1f} | "
-              f"{ratio_BA:>5.2f} | {ratio_CA:>5.2f} | {ratio_CB:>5.2f} | {r['rss_mb']:>8.0f}")
+        print(
+            f"{r['N']:>3} | {r['A']:>10.1f} | {r['B']:>11.1f} | {r['C']:>10.1f} | "
+            f"{ratio_BA:>5.2f} | {ratio_CA:>5.2f} | {ratio_CB:>5.2f} | {r['rss_mb']:>8.0f}"
+        )
 
     print("\nDecision rule from 2026-05-15-00-12 plan:")
     print("  C/A >= 1.5x AND C/B >= 1.2x at N=2  →  Plan C is validated")

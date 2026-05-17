@@ -1183,7 +1183,8 @@ def main():
                     )
                     continue
                 files = sorted(
-                    f for f in os.listdir(src_dir)
+                    f
+                    for f in os.listdir(src_dir)
                     if os.path.isfile(os.path.join(src_dir, f))
                 )
                 if not files:
@@ -1197,12 +1198,17 @@ def main():
                     total_bytes += size
                     logger.info(
                         "Resume copy: %s/%s (%.1f MB) → %s",
-                        subdir, fname, size / 1e6, dst_dir,
+                        subdir,
+                        fname,
+                        size / 1e6,
+                        dst_dir,
                     )
                     shutil.copy2(src_path, dst_path)
                 logger.info(
                     "Resume copy: %d file(s), %.1f MB total copied into %s",
-                    len(files), total_bytes / 1e6, dst_dir,
+                    len(files),
+                    total_bytes / 1e6,
+                    dst_dir,
                 )
         else:
             logger.info(

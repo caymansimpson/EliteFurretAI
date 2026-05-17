@@ -75,7 +75,9 @@ def _event_tail(events: List[Any], n: int = 3) -> List[Any]:
     return events[-n:] if events else []
 
 
-def _snapshot(battle: Union[Battle, DoubleBattle], *, call_idx: int, hook: str) -> Dict[str, Any]:
+def _snapshot(
+    battle: Union[Battle, DoubleBattle], *, call_idx: int, hook: str
+) -> Dict[str, Any]:
     obs_keys = sorted(battle.observations.keys())
     if obs_keys:
         max_obs = battle.observations[obs_keys[-1]]

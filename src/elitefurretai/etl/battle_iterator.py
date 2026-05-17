@@ -588,11 +588,11 @@ class BattleIterator:
             ):
                 disabled = True
 
-            # TODO: implement these
+            # TODO: implement disable to emulate the request
             if Effect.DISABLE in mon.effects:
                 pass  # |-start|p1a: Vikavolt|Disable|Flash Cannon
 
-            # TODO: implement these
+            # TODO: implement encore to emulate the request
             if Effect.ENCORE in mon.effects:
                 pass  # |-start|p1a: Vikavolt|Encore|Flash Cannon
 

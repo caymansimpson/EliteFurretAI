@@ -148,7 +148,9 @@ def test_load_exploiter_models_from_directory(
     assert len(pool.exploiter_models) == 3
 
 
-def test_opponent_pool_tracks_active_ghost_slots(tmp_path, mock_main_model, temp_exploiters_dir):
+def test_opponent_pool_tracks_active_ghost_slots(
+    tmp_path, mock_main_model, temp_exploiters_dir
+):
     """OpponentPool exposes active_ghost_slots reflecting which slots
     hold real ghost weights, and rotates LRU when full."""
     ghosts_dir = str(tmp_path / "ghosts")
@@ -180,7 +182,9 @@ def test_opponent_pool_tracks_active_ghost_slots(tmp_path, mock_main_model, temp
     assert pool.slot_for_ghost_path[str(p4)] == 0
 
 
-def test_opponent_pool_tracks_active_exploiter_slots(tmp_path, mock_main_model, temp_exploiters_dir):
+def test_opponent_pool_tracks_active_exploiter_slots(
+    tmp_path, mock_main_model, temp_exploiters_dir
+):
     """OpponentPool exposes active_exploiter_slots reflecting which slots
     hold real exploiter snapshot weights, and rotates LRU when full."""
     pool = OpponentPool(
@@ -199,6 +203,7 @@ def test_opponent_pool_tracks_active_exploiter_slots(tmp_path, mock_main_model, 
         p = tmp_path / name
         p.write_bytes(b"x")
         import time
+
         os.utime(p, (time.time() + i, time.time() + i))
         pool.add_exploiter(str(p))
     assert pool.active_exploiter_slots() == {0, 1, 2}
@@ -208,6 +213,7 @@ def test_opponent_pool_tracks_active_exploiter_slots(tmp_path, mock_main_model, 
     p4 = tmp_path / "e40.pt"
     p4.write_bytes(b"x")
     import time
+
     os.utime(p4, (time.time() + 4, time.time() + 4))
     pool.add_exploiter(str(p4))
     assert pool.active_exploiter_slots() == {0, 1, 2}  # still full

@@ -880,9 +880,7 @@ class BatchInferencePlayer(Player):
             self._diagnostics["server_leavebattle_sent"] += 1
         except Exception as exc:  # noqa: BLE001
             self._diagnostics["server_leavebattle_send_failed"] += 1
-            self.logger.debug(
-                "leavebattle send failed for %s: %s", battle_tag, exc
-            )
+            self.logger.debug("leavebattle send failed for %s: %s", battle_tag, exc)
 
     def _battle_finished_callback(self, battle: AbstractBattle):
         # ── End-of-battle: assign rewards and ship the trajectory ────────────

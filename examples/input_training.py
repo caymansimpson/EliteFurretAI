@@ -16,7 +16,6 @@ from elitefurretai.etl import (
 # This function reads through a single BattleData file and generates training data from that file
 def one_file_example(filename):
     for perspective in ["p1", "p2"]:
-
         bd = None
         with open(filename, "r") as f:
             bd = BattleData.from_showdown_json(orjson.loads(f.read()))
@@ -27,7 +26,6 @@ def one_file_example(filename):
         embedder = Embedder(format=iter.battle.format, feature_set="full", omniscient=True)
 
         while iter.next_input() and not iter.battle.finished:
-
             # Get the last input command found by the iterator
             input = iter.last_input
             if input is None:
@@ -61,7 +59,6 @@ def list_of_files(files):
 
     # Iterate through batches of battles with data_loader
     for states, actions, action_masks, wins, masks in dataloader:
-
         # Do training things
         pass
 

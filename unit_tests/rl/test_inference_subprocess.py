@@ -62,9 +62,11 @@ def _make_request(
     worker_id: int = 0,
     is_teampreview: bool = False,
 ) -> InferenceRequest:
-    state = np.random.RandomState(seed=request_id).randn(
-        embedder.embedding_size
-    ).astype(np.float32)
+    state = (
+        np.random.RandomState(seed=request_id)
+        .randn(embedder.embedding_size)
+        .astype(np.float32)
+    )
     mask = np.ones(2025, dtype=np.float32) if not is_teampreview else None
     return InferenceRequest(
         request_id=request_id,

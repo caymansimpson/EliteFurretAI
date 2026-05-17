@@ -18,6 +18,7 @@ class _DummyPlayer:
     def __init__(self, model=None):
         self.opponent_type = "self_play"
         self.model = model
+        self.inference_client: object = None
 
 
 class _DummyOpponent:
@@ -48,19 +49,35 @@ def _make_factory(
 
 
 def test_configure_opponent_for_batch_supports_train_exploiter():
-    """When TRAIN_EXPLOITER is sampled and both co-training agents are
-    provisioned, player swaps to the live exploiter and opponent to the
-    frozen victim. The trajectory tag (`opponent_type`) is what main-process
-    routing uses to direct the trajectory to the exploiter learner."""
-    exploiter = SimpleNamespace(name="exploiter")
-    victim = SimpleNamespace(name="victim")
-    factory = _make_factory(
-        {"train_exploiter": 1.0},
-        exploiter_agent=exploiter,
-        victim_agent=victim,
+    """When TRAIN_EXPLOITER is sampled and both co-training InferenceClients
+    are provisioned, player swaps to the exploiter client and opponent to
+    the victim client. The trajectory tag (`opponent_type`) is what
+    main-process routing uses to direct the trajectory to the exploiter
+    learner."""
+    from unittest.mock import MagicMock
+
+    exploiter_client = MagicMock(name="exploiter_client")
+    victim_client = MagicMock(name="victim_client")
+    main_client = MagicMock(name="main_client")
+
+    clients = MagicMock()
+    clients.has = MagicMock(side_effect=lambda n: n in {"main", "exploiter", "victim"})
+    clients.get = MagicMock(
+        side_effect=lambda n: {
+            "main": main_client,
+            "exploiter": exploiter_client,
+            "victim": victim_client,
+        }[n]
     )
 
-    player = _DummyPlayer(model=factory.main_agent)
+    factory = _make_factory(
+        {"train_exploiter": 1.0},
+        exploiter_agent=SimpleNamespace(name="exploiter"),
+        victim_agent=SimpleNamespace(name="victim"),
+        worker_inference_clients=clients,
+    )
+
+    player = _DummyPlayer()
     opponent = _DummyOpponent(model=factory.main_agent)
 
     selected = factory.configure_opponent_for_batch(
@@ -70,8 +87,8 @@ def test_configure_opponent_for_batch_supports_train_exploiter():
 
     assert selected == factory.TRAIN_EXPLOITER
     assert player.opponent_type == factory.TRAIN_EXPLOITER
-    assert player.model is exploiter
-    assert opponent.model is victim
+    assert player.inference_client is exploiter_client
+    assert opponent.inference_client is victim_client
 
 
 def test_update_exploiter_weights_loads_into_agent_model():
@@ -120,13 +137,21 @@ def test_update_victim_weights_no_op_when_disabled():
 
 def test_configure_opponent_for_batch_train_exploiter_falls_back_when_unprovisioned():
     """If the curriculum activates train_exploiter before the main process
-    has provisioned exploiter/victim agents, fall back to self-play. The
-    trajectory routes as main; main process is responsible for ensuring
-    this race doesn't matter (warmup gate keeps weight at 0 until ready)."""
-    factory = _make_factory({"train_exploiter": 1.0})  # no agents passed
+    has provisioned exploiter/victim InferenceClients, fall back to
+    self-play and point opponent at the main client. The trajectory
+    routes as main; main process is responsible for ensuring this race
+    doesn't matter (warmup gate keeps weight at 0 until ready)."""
+    from unittest.mock import MagicMock
 
-    player = _DummyPlayer(model=factory.main_agent)
-    opponent = _DummyOpponent(model=SimpleNamespace(name="other"))
+    main_client = MagicMock(name="main_client")
+    clients = MagicMock()
+    clients.has = MagicMock(side_effect=lambda n: n == "main")
+    clients.get = MagicMock(return_value=main_client)
+
+    factory = _make_factory({"train_exploiter": 1.0}, worker_inference_clients=clients)
+
+    player = _DummyPlayer()
+    opponent = _DummyOpponent(model=factory.main_agent)
 
     selected = factory.configure_opponent_for_batch(
         cast(BatchInferencePlayer, player),
@@ -135,7 +160,7 @@ def test_configure_opponent_for_batch_train_exploiter_falls_back_when_unprovisio
 
     assert selected == factory.SELF_PLAY
     assert player.opponent_type == factory.SELF_PLAY
-    assert opponent.model is factory.main_agent
+    assert opponent.inference_client is main_client
 
 
 def _patch_batch_inference_player(monkeypatch):
@@ -276,7 +301,8 @@ def test_configure_opponent_for_batch_exploiters_routes_via_active_slot():
 
     clients = MagicMock()
     clients.has = MagicMock(
-        side_effect=lambda n: n in {"main", "exploiter_snap_0", "exploiter_snap_1", "exploiter_snap_2"}
+        side_effect=lambda n: n
+        in {"main", "exploiter_snap_0", "exploiter_snap_1", "exploiter_snap_2"}
     )
     clients.get = MagicMock(side_effect=lambda n: snap_clients.get(n, main_client))
 

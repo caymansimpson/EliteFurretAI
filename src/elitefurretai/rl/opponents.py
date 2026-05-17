@@ -1177,9 +1177,7 @@ class WorkerOpponentFactory:
                 selected_type = self.SELF_PLAY
             else:
                 slot = random.choice(tuple(self._active_exploiter_slots))
-                opponent_swapped = self._swap_to(
-                    opponent, f"exploiter_snap_{slot}"
-                )
+                opponent_swapped = self._swap_to(opponent, f"exploiter_snap_{slot}")
                 if not opponent_swapped:
                     selected_type = self.SELF_PLAY
         elif selected_type == self.TRAIN_EXPLOITER:

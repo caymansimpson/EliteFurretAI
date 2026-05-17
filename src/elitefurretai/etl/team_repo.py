@@ -206,9 +206,7 @@ class TeamRepo:
         normalized = team_string.replace("\r\n", "\n")
 
         ability_count = sum(
-            1
-            for line in normalized.split("\n")
-            if line.strip().startswith("Ability:")
+            1 for line in normalized.split("\n") if line.strip().startswith("Ability:")
         )
         if ability_count > 0:
             return ability_count
@@ -243,13 +241,13 @@ class TeamRepo:
         """
         # Split by double newline to separate Pokemon blocks
         # Strip to remove leading/trailing whitespace
-        pokemon_blocks = team_string.strip().split('\n\n')
+        pokemon_blocks = team_string.strip().split("\n\n")
 
         # Shuffle in place
         random.shuffle(pokemon_blocks)
 
         # Rejoin with double newlines
-        return '\n\n'.join(pokemon_blocks)
+        return "\n\n".join(pokemon_blocks)
 
     def validate_team(
         self,

@@ -91,7 +91,9 @@ def _measure_sync_latencies(
         for _ in range(n_iters):
             torch.manual_seed(int(time.time_ns()) % (2**31))
             ag = _make_production_shape_agent()
-            new_state_dicts.append({k: v.clone() for k, v in ag.model.state_dict().items()})
+            new_state_dicts.append(
+                {k: v.clone() for k, v in ag.model.state_dict().items()}
+            )
 
     latencies: List[float] = []
     for sd in new_state_dicts[:n_iters]:
@@ -146,13 +148,20 @@ def main() -> None:
     # ── In-process baseline ───────────────────────────────────────────
     print("\n=== In-process baseline (process_group=None) ===")
     registry = ModelRegistry(
-        num_workers=1, batch_size=4, batch_timeout=0.005, device="cpu",
+        num_workers=1,
+        batch_size=4,
+        batch_timeout=0.005,
+        device="cpu",
     )
     try:
         registry.register("test_inproc", initial_agent, compile=False)
         registry.start_all()
         latencies_in = _measure_sync_latencies(
-            registry, "test_inproc", initial_agent, n_iters=n_iters, new_state_dicts=new_sds,
+            registry,
+            "test_inproc",
+            initial_agent,
+            n_iters=n_iters,
+            new_state_dicts=new_sds,
         )
         _print_stats("in_process", latencies_in)
     finally:
@@ -162,7 +171,10 @@ def main() -> None:
     print("\n=== Subprocess (process_group='ghosts') ===")
     initial_agent_sub = _make_production_shape_agent()
     registry2 = ModelRegistry(
-        num_workers=1, batch_size=4, batch_timeout=0.005, device="cpu",
+        num_workers=1,
+        batch_size=4,
+        batch_timeout=0.005,
+        device="cpu",
     )
     try:
         registry2.register(
@@ -173,7 +185,11 @@ def main() -> None:
         # want startup cost contaminating the first sample.
         time.sleep(5.0)
         latencies_sub = _measure_sync_latencies(
-            registry2, "test_subproc", initial_agent_sub, n_iters=n_iters, new_state_dicts=new_sds,
+            registry2,
+            "test_subproc",
+            initial_agent_sub,
+            n_iters=n_iters,
+            new_state_dicts=new_sds,
         )
         _print_stats("subprocess (trainer-side)", latencies_sub)
     finally:
@@ -186,7 +202,9 @@ def main() -> None:
     mean_in = statistics.mean(latencies_in) * 1000
     mean_sub = statistics.mean(latencies_sub) * 1000
     print(f"  In-process mean:  {mean_in:.1f} ms  (load_state_dict only)")
-    print(f"  Subprocess mean:  {mean_sub:.1f} ms  (pickle + queue.put + CPU shadow update)")
+    print(
+        f"  Subprocess mean:  {mean_sub:.1f} ms  (pickle + queue.put + CPU shadow update)"
+    )
     print(f"  Overhead:         +{mean_sub - mean_in:.1f} ms  ({mean_sub / mean_in:.2f}x)")
     if mean_sub < 1000:
         print(f"  ✓ PASS — subprocess sync mean < 1.0 s ({mean_sub:.0f} ms)")

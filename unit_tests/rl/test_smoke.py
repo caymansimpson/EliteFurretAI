@@ -11,8 +11,8 @@ Marked `smoke` — run with `pytest -m smoke` or skip with `pytest -m "not smoke
 Expected wall-clock time: 20–60 s.
 """
 
-import sys
 import subprocess
+import sys
 import textwrap
 from pathlib import Path
 
@@ -96,7 +96,7 @@ _SMOKE_YAML = textwrap.dedent("""\
     curriculum:
       battle_format: gen9vgc2024regg
       base_team_path: data/teams
-      team_pool_path: null
+      opponent_team_pool_path: null
       agent_team_path: null
       bc_model_path: null
       curriculum_weights:
@@ -105,9 +105,6 @@ _SMOKE_YAML = textwrap.dedent("""\
       max_exploiter_models: 0
       max_ghosts: 0
       vgc_bench_checkpoint_path: null
-      external_vgcbench_usernames: []
-      external_vgcbench_startup_wait_s: 0.0
-      auto_launch_external_vgcbench: false
       external_vgcbench_python_executable: python
       external_vgcbench_team_file: ""
 
@@ -144,7 +141,9 @@ def test_rl_train_smoke(tmp_path):
         text=True,
     )
 
-    tail = lambda s: s[-3000:] if len(s) > 3000 else s
+    def tail(s: str) -> str:
+        return s[-3000:] if len(s) > 3000 else s
+
     assert result.returncode == 0, (
         f"RL smoke test exited with code {result.returncode}\n"
         f"--- stdout (tail) ---\n{tail(result.stdout)}\n"

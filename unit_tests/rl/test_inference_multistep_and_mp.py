@@ -99,9 +99,7 @@ def test_multistep_equivalence_with_growing_context(small_transformer_agent):
     legacy_results: List[Tuple[int, float, float]] = []
     legacy_hidden = None
     for t in range(n_steps):
-        state_t = (
-            torch.from_numpy(states[t]).to("cpu").unsqueeze(0).unsqueeze(1).float()
-        )
+        state_t = torch.from_numpy(states[t]).to("cpu").unsqueeze(0).unsqueeze(1).float()
         if legacy_hidden is None:
             h_mask = None
         else:
@@ -120,9 +118,7 @@ def test_multistep_equivalence_with_growing_context(small_transformer_agent):
         legacy_hidden = next_hidden
 
     for t, (cent, leg) in enumerate(zip(centralized_results, legacy_results)):
-        assert cent[0] == leg[0], (
-            f"step {t}: action centralized={cent[0]} legacy={leg[0]}"
-        )
+        assert cent[0] == leg[0], f"step {t}: action centralized={cent[0]} legacy={leg[0]}"
         assert cent[1] == pytest.approx(leg[1], abs=1e-5), (
             f"step {t}: log_prob diff {abs(cent[1] - leg[1])}"
         )
@@ -144,9 +140,7 @@ def test_multistep_equivalence_batched_agrees_with_per_request(
     requests = []
     for i in range(n):
         state = (
-            np.random.RandomState(seed=i)
-            .randn(embedder.embedding_size)
-            .astype(np.float32)
+            np.random.RandomState(seed=i).randn(embedder.embedding_size).astype(np.float32)
         )
         # Pre-populate prior hidden (length i+1) for batches index >0.
         if i > 0:
