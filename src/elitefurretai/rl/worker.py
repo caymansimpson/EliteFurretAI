@@ -70,16 +70,12 @@ from typing import Any, Dict, List, Optional, cast
 import psutil
 import torch
 
-from elitefurretai.engine.showdown_server_manager import (
-    EXTERNAL_VGCBENCH_STARTUP_WAIT_S,
-    EXTERNAL_VGCBENCH_USERNAMES,
-)
 from elitefurretai.engine.vgc_environment import VGCEnvironment
 from elitefurretai.etl import Embedder, TeamRepo
 from elitefurretai.etl.system_utils import suppress_third_party_warnings
 from elitefurretai.rl.config import RNaDConfig
 from elitefurretai.rl.opponents import OpponentPool
-from elitefurretai.rl.players import RNaDAgent
+from elitefurretai.rl.players import RNaDAgent, VGCBenchManager
 
 logger = logging.getLogger(__name__)
 
@@ -173,8 +169,8 @@ def mp_worker_process(
         base_team_path = config.curriculum.base_team_path
         num_battles_per_pair = config.hardware.num_battles_per_pair
         curriculum = config.curriculum.curriculum_weights
-        external_vgcbench_usernames = EXTERNAL_VGCBENCH_USERNAMES
-        external_vgcbench_startup_wait_s = EXTERNAL_VGCBENCH_STARTUP_WAIT_S
+        external_vgcbench_usernames = VGCBenchManager.USERNAMES
+        external_vgcbench_startup_wait_s = VGCBenchManager.STARTUP_WAIT_S
 
         if verbose:
             logger.debug(

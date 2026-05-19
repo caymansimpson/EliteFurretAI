@@ -1,46 +1,16 @@
-"""Pokemon Showdown server lifecycle and allocation helpers."""
+"""Pokemon Showdown server lifecycle and allocation helpers.
+
+External vgc-bench runner lifecycle (subprocess launch in a separate venv,
+username derivation, accept-challenges loop) lives on
+`elitefurretai.rl.players.VGCBenchManager`. This module only handles the
+Showdown server processes themselves and worker→server port allocation.
+"""
 
 import os
 import signal
 import subprocess
 import time
-from typing import List, Optional, TextIO, Tuple, Union
-
-from elitefurretai.rl.config import RNaDConfig
-
-# External vgc-bench runner constants. Hardcoded because they don't vary
-# across training runs. accept_open_team_sheet must match the main agent's
-# BatchInferencePlayer (currently False) — a mismatched handshake drops battles.
-_VGCBENCH_N_CHALLENGES = 1_000_000
-_VGCBENCH_RUNNER_WAIT_FOR_SERVER_TIMEOUT = 180.0
-_VGCBENCH_RUNNER_SCRIPT = "src/elitefurretai/rl/analyze/vgcbench_external_runner.py"
-_VGCBENCH_LOG_DIR = "data/logs/vgcbench_runners"
-_VGCBENCH_LOG_TO_FILES = True
-_VGCBENCH_ACCEPT_OPEN_TEAM_SHEET = False
-
-# Only the *first* showdown server hosts an external vgcbench runner.
-# Each SB3 PolicyPlayer runner costs ~1.2 GB resident PSS (model + policy
-# stack), and at num_servers=4 we used to launch 4 of them — ~4.8 GB just
-# for opponents that play 20% of battles. Workers on other servers detect
-# this and zero out their local vgc_bench_baseline curriculum weight (the
-# mass falls through to self_play via the un-normalized random.random()
-# sampling in OpponentPool.sample_opponent_type).
-VGCBENCH_RUNNER_SERVER_INDEX = 0
-
-# Showdown usernames for the external vgc-bench runners. One runner is
-# launched per username (on the server at VGCBENCH_RUNNER_SERVER_INDEX).
-EXTERNAL_VGCBENCH_USERNAMES: List[str] = ["VGCBENCH"]
-
-# Seconds workers wait after env.setup() before issuing the first battle so
-# the external vgc-bench runner has time to log in and join the lobby.
-EXTERNAL_VGCBENCH_STARTUP_WAIT_S: float = 10.0
-
-
-def derive_external_vgcbench_username(base_username: str, server_port: int) -> str:
-    """Generate a server-scoped external runner username (Showdown max length is 18)."""
-    suffix = f"_{server_port}"
-    max_base_len = max(1, 18 - len(suffix))
-    return f"{base_username[:max_base_len]}{suffix}"
+from typing import List, Optional, Tuple
 
 
 def launch_showdown_servers(
@@ -168,127 +138,8 @@ def allocate_server_ports(
     return worker_ports, server_loads
 
 
-def launch_external_vgcbench_runners(
-    config: RNaDConfig,
-    server_ports: List[int],
-) -> Tuple[List[subprocess.Popen], List[TextIO]]:
-    """Launch external vgc-bench runner processes and return (processes, log files).
-
-    Caller decides whether to launch (typically based on curriculum
-    weight). The username list is the module-level
-    EXTERNAL_VGCBENCH_USERNAMES constant.
-    """
-    if not EXTERNAL_VGCBENCH_USERNAMES:
-        return [], []
-
-    assert config.curriculum.external_vgcbench_python_executable is not None
-
-    if _VGCBENCH_LOG_TO_FILES:
-        os.makedirs(_VGCBENCH_LOG_DIR, exist_ok=True)
-
-    processes: List[subprocess.Popen] = []
-    log_files: List[TextIO] = []
-
-    append_port_to_username = len(server_ports) > 1
-
-    # Memory mitigation (2026-05-16): launch only on the first server, not
-    # one runner per server. The 4-runners-for-4-servers layout was costing
-    # ~4.8 GB PSS for opponents that play 20% of battles; routing all
-    # vgcbench challenges through a single runner cuts that to ~1.2 GB. See
-    # planning/stage2/2026-05-16-08-13-update100-cliff-was-vgcbench-not-ghosts.md
-    # for the memory profile that motivated this.
-    runner_server_ports = [server_ports[VGCBENCH_RUNNER_SERVER_INDEX]]
-
-    for port in runner_server_ports:
-        for username in EXTERNAL_VGCBENCH_USERNAMES:
-            actual_username = (
-                derive_external_vgcbench_username(username, port)
-                if append_port_to_username
-                else username
-            )
-            sanitized_username = actual_username.replace("/", "_")
-            log_path = "<disabled>"
-            log_handle: Union[TextIO, int]
-            if _VGCBENCH_LOG_TO_FILES:
-                log_path = os.path.join(
-                    _VGCBENCH_LOG_DIR,
-                    f"runner_{sanitized_username}_{port}.log",
-                )
-                log_handle = open(log_path, "a", encoding="utf-8")
-                log_files.append(log_handle)
-            else:
-                log_handle = subprocess.DEVNULL
-
-            command = [
-                config.curriculum.external_vgcbench_python_executable,
-                _VGCBENCH_RUNNER_SCRIPT,
-                "--username",
-                actual_username,
-                "--server",
-                f"localhost:{port}",
-                "--battle-format",
-                config.curriculum.battle_format,
-                "--checkpoint-path",
-                config.curriculum.vgc_bench_checkpoint_path,
-                "--team-file",
-                config.curriculum.external_vgcbench_team_file,
-                "--n-challenges",
-                str(_VGCBENCH_N_CHALLENGES),
-                "--wait-for-server-timeout",
-                str(_VGCBENCH_RUNNER_WAIT_FOR_SERVER_TIMEOUT),
-            ]
-            if _VGCBENCH_ACCEPT_OPEN_TEAM_SHEET:
-                command.append("--accept-open-team-sheet")
-
-            process = subprocess.Popen(
-                command,
-                stdout=log_handle,
-                stderr=log_handle,
-                start_new_session=True,
-                env={**os.environ, "PYTHONUNBUFFERED": "1"},
-            )
-            processes.append(process)
-            print(
-                "✓ Launched external vgc-bench runner "
-                f"'{actual_username}' on localhost:{port} (PID: {process.pid}) "
-                f"log={log_path}"
-            )
-
-    return processes, log_files
-
-
-def shutdown_external_vgcbench_runners(
-    processes: List[subprocess.Popen],
-    log_files: List[TextIO],
-) -> None:
-    """Terminate external vgc-bench runners and close their log files."""
-    for process in processes:
-        if process.poll() is not None:
-            continue
-
-        try:
-            process.terminate()
-            process.wait(timeout=3)
-        except Exception:
-            try:
-                process.kill()
-                process.wait(timeout=2)
-            except Exception:
-                pass
-
-    for log_handle in log_files:
-        try:
-            log_handle.flush()
-            log_handle.close()
-        except Exception:
-            pass
-
-
 __all__ = [
-    "derive_external_vgcbench_username",
     "launch_showdown_servers",
     "shutdown_showdown_servers",
     "allocate_server_ports",
-    "launch_external_vgcbench_runners",
-    "shutdown_external_vgcbench_runners",
 ]

@@ -67,7 +67,7 @@ from collections import deque
 from datetime import datetime
 from multiprocessing import Queue as MPQueue
 from multiprocessing.synchronize import Event as MPEvent
-from typing import Any, Dict, List, Optional, TextIO, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import psutil
@@ -76,9 +76,7 @@ import torch
 import wandb
 from elitefurretai.engine.showdown_server_manager import (
     allocate_server_ports,
-    launch_external_vgcbench_runners,
     launch_showdown_servers,
-    shutdown_external_vgcbench_runners,
     shutdown_showdown_servers,
 )
 from elitefurretai.etl import Embedder
@@ -96,7 +94,7 @@ from elitefurretai.rl.learners import (
 )
 from elitefurretai.rl.model_registry import ModelRegistry
 from elitefurretai.rl.opponents import OpponentPool
-from elitefurretai.rl.players import RNaDAgent, cleanup_worker_executors
+from elitefurretai.rl.players import RNaDAgent, VGCBenchManager, cleanup_worker_executors
 from elitefurretai.rl.worker import mp_worker_process
 from elitefurretai.supervised import format_time
 
@@ -1120,8 +1118,7 @@ def main():
     # vgc_bench_baseline has positive curriculum weight the runners
     # come up; otherwise they're skipped to avoid ~3.7 GB host RAM for
     # opponents nobody is asking for.
-    external_runner_processes: List[subprocess.Popen] = []
-    external_runner_log_files: List[TextIO] = []
+    vgcbench_manager: Optional[VGCBenchManager] = None
     vgc_bench_curriculum_weight = config.curriculum.curriculum_weights.get(
         OpponentPool.VGC_BENCH_BASELINE, 0.0
     )
@@ -1133,10 +1130,8 @@ def main():
             config.hardware.showdown_start_port + i
             for i in range(config.hardware.num_servers)
         ]
-        (
-            external_runner_processes,
-            external_runner_log_files,
-        ) = launch_external_vgcbench_runners(config, server_ports)
+        vgcbench_manager = VGCBenchManager(config, server_ports)
+        vgcbench_manager.launch()
 
     # Generate unique run ID to avoid stale-account collisions on Showdown server.
     # Include date + high-resolution random bits so rapid restarts don't reuse IDs.
@@ -2097,10 +2092,8 @@ def main():
         if registry is not None:
             registry.stop_all()
             logger.info("ModelRegistry stopped (services: %s)", registry.names())
-        shutdown_external_vgcbench_runners(
-            external_runner_processes,
-            external_runner_log_files,
-        )
+        if vgcbench_manager is not None:
+            vgcbench_manager.shutdown()
         if server_processes:
             shutdown_showdown_servers(server_processes)
 

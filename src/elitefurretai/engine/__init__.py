@@ -11,10 +11,7 @@ consolidated Stage 2 engine learnings.
 
 from elitefurretai.engine.showdown_server_manager import (
     allocate_server_ports,
-    derive_external_vgcbench_username,
-    launch_external_vgcbench_runners,
     launch_showdown_servers,
-    shutdown_external_vgcbench_runners,
     shutdown_showdown_servers,
 )
 from elitefurretai.engine.sync_battle_driver import (
@@ -27,10 +24,7 @@ from elitefurretai.engine.vgc_environment import VGCEnvironment
 __all__ = [
     "VGCEnvironment",
     "allocate_server_ports",
-    "derive_external_vgcbench_username",
-    "launch_external_vgcbench_runners",
     "launch_showdown_servers",
-    "shutdown_external_vgcbench_runners",
     "shutdown_showdown_servers",
     "SyncBaselineController",
     "SyncPolicyPlayer",

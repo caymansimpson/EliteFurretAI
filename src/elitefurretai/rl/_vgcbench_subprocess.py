@@ -1,3 +1,45 @@
+"""Standalone subprocess entry point for a vgc-bench bot serving EFA as an opponent.
+
+This file is **not** user-invokable — it is spawned automatically by
+``elitefurretai.rl.players.VGCBenchManager.launch()`` as part of training.
+The leading underscore in the filename signals "internal".
+
+Why this exists as a separate script
+------------------------------------
+vgc-bench was written against ``poke_env 0.11.x`` while EFA runs
+``poke_env 0.15.x``. To isolate the version gap, the trainer spawns this
+script in vgc-bench's own venv (``../venv-vgcbench/`` by convention,
+configured via ``curriculum.external_vgcbench_python_executable``). The
+subprocess logs into a Showdown server, loads a SB3 PPO checkpoint via
+vgc-bench's ``PolicyPlayer``, and sits in ``accept_challenges`` accepting
+battles from EFA workers.
+
+How it plugs into training
+--------------------------
+``OpponentPool.external_vgcbench_usernames`` (``rl/opponents.py``) holds the
+usernames these runners log in as, populated by ``VGCBenchManager.launch()``.
+When ``VGC_BENCH_BASELINE`` is sampled from the curriculum, EFA workers route
+the battle to one of those usernames via ``/challenge`` instead of
+constructing an in-process ``PolicyPlayer``.
+
+Relationship to ``rl/players.py:_create_vgc_bench_player``
+----------------------------------------------------------
+This file deliberately re-implements ``_temporary_cwd``,
+``_resolve_vgc_bench_root``, and the ``PolicyPlayer`` construction that also
+live in ``rl/players.py`` (``_create_vgc_bench_player``, the in-process
+evaluation path used by ``analyze/player_factory.py``). The duplication is
+intentional: this script runs in a separate venv that cannot import
+``elitefurretai``. Keep the two in sync if vgc-bench's loader contract
+changes — they are siblings, not the same code path.
+
+CLI
+---
+Required: ``--username``, ``--checkpoint-path``, ``--team-file``.
+The script waits up to ``--wait-for-server-timeout`` seconds for the Showdown
+server's TCP port to come up before connecting (useful because this runner
+is typically spawned alongside the server by ``train.py``).
+"""
+
 import argparse
 import asyncio
 import importlib

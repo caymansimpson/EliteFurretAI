@@ -46,28 +46,37 @@ Trajectory collection
 ---------------------
 Every step that produces a real decision is appended to that battle's trajectory
 buffer. When the battle ends, rewards are filled in (terminal reward = +1 win /
--1 loss, plus per-step shaping) and the full trajectory is shipped to the
+-1 loss; 0 on all other steps) and the full trajectory is shipped to the
 trajectory_queue for the learner to train on.
 """
 
 import asyncio
 import concurrent.futures
+import importlib
+import importlib.util
 import logging
 import math
+import os
 import random
 import re
+import subprocess
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from copy import deepcopy
+from pathlib import Path
 from threading import Lock
 from typing import (
     TYPE_CHECKING,
     Any,
+    ClassVar,
     Dict,
     List,
     Optional,
     Sequence,
     Set,
+    TextIO,
     Tuple,
+    Union,
     cast,
 )
 
@@ -86,10 +95,13 @@ from poke_env.player.battle_order import (
     PassBattleOrder,
     SingleBattleOrder,
 )
+from poke_env.ps_client import AccountConfiguration, ServerConfiguration
 from poke_env.stats import compute_raw_stats
 
 from elitefurretai.etl import Embedder
 from elitefurretai.etl.encoder import MDBO
+from elitefurretai.inference.inference_utils import battle_to_str
+from elitefurretai.rl.config import RNaDConfig
 from elitefurretai.rl.masking import (
     fast_get_action_mask,
     get_valid_targets,
@@ -891,15 +903,8 @@ class BatchInferencePlayer(Player):
         #   3. Push the completed trajectory to the trajectory_queue, where the
         #      worker will eventually forward it to the learner via mp.Queue.
         #
-        # Reward shaping (a small but important design choice):
-        #   - per-step penalty   = -0.005   (encourages winning quickly)
-        #   - terminal bonus     = +1 win / -1 loss
-        #   - KO bonus           = +0.05 per opponent fainted *this step*
-        #
-        # The KO bonus is computed by diffing this step's opponent_fainted
-        # count against the previous step's. Why per-step delta and not
-        # "did anyone faint just now": cleanly handles double-KOs and is
-        # robust to multi-turn effects.
+        # Reward: terminal step gets +1 on win, -1 otherwise (loss/tie/forfeit).
+        # All other steps get 0. battle.won is False for both losses and ties.
         # ─────────────────────────────────────────────────────────────────────
         self._request_generation.pop(battle.battle_tag, None)
 
@@ -931,18 +936,10 @@ class BatchInferencePlayer(Player):
             for t, step in enumerate(traj):
                 if step is None:
                     continue
-                step_reward = -0.005
                 if t == len(traj) - 1:
-                    step_reward += 1.0 if battle.won else -1.0
-                # KO reward: +0.05 for each opponent pokemon KO'd this step
-                prev_fainted = 0
-                prev_step = traj[t - 1] if t > 0 else None
-                if prev_step is not None:
-                    prev_fainted = prev_step["opponent_fainted"]
-                ko_delta = step["opponent_fainted"] - prev_fainted
-                if ko_delta > 0:
-                    step_reward += 0.05 * ko_delta
-                step["reward"] = step_reward
+                    step["reward"] = 1.0 if battle.won else -1.0
+                else:
+                    step["reward"] = 0.0
 
             filtered_traj = [step for step in traj if step is not None]
             self._diagnostics["completed_trajectories"] += 1
@@ -1105,6 +1102,91 @@ class SimpleModelPlayer(Player):
         selected, probs, value, is_teampreview = self._select_action(battle)
         self._on_action_selected(battle, probs, value, selected, is_teampreview)
         return self._build_order(battle, selected, is_teampreview)
+
+
+class VerboseModelPlayer(SimpleModelPlayer):
+    """SimpleModelPlayer that prints top-k action probabilities each turn."""
+
+    def __init__(
+        self,
+        model_path: str,
+        device: str,
+        battle_format: str,
+        probabilistic: bool,
+        top_k: int,
+        print_summary: bool,
+        account_configuration: AccountConfiguration,
+        server_configuration: ServerConfiguration,
+        max_concurrent_battles: int,
+        start_timer_on_battle_start: bool,
+        team: Optional[str] = None,
+    ):
+        super().__init__(
+            model_path=model_path,
+            device=device,
+            battle_format=battle_format,
+            probabilistic=probabilistic,
+            account_configuration=account_configuration,
+            server_configuration=server_configuration,
+            accept_open_team_sheet=True,
+            max_concurrent_battles=max_concurrent_battles,
+            start_timer_on_battle_start=start_timer_on_battle_start,
+            team=team,
+        )
+        self.top_k = top_k
+        self.print_summary = print_summary
+
+    def _describe_action(
+        self, battle: DoubleBattle, action_idx: int, is_teampreview: bool
+    ) -> str:
+        try:
+            if is_teampreview:
+                return MDBO.from_int(action_idx, type=MDBO.TEAMPREVIEW).message
+            action_type = MDBO.FORCE_SWITCH if any(battle.force_switch) else MDBO.TURN
+            mdbo = MDBO.from_int(action_idx, type=action_type)
+            order = mdbo.to_double_battle_order(battle)
+            if hasattr(order, "message"):
+                return str(order.message)
+            return str(order)
+        except Exception:
+            return f"action[{action_idx}]"
+
+    def _print_debug(
+        self,
+        battle: DoubleBattle,
+        probs: "np.ndarray[Any, Any]",
+        value: float,
+        selected: int,
+        is_teampreview: bool,
+    ) -> None:
+        print("\n" + "=" * 80)
+        print(
+            f"Battle: {battle.battle_tag} | Turn: {battle.turn} | Teampreview: {battle.teampreview}"
+        )
+        print(f"State value estimate: {value:.4f}")
+
+        topk_indices = np.argsort(probs)[-self.top_k :][::-1]
+        print(f"Top-{self.top_k} actions:")
+        for rank, idx in enumerate(topk_indices, start=1):
+            desc = self._describe_action(battle, int(idx), is_teampreview)
+            print(f"  {rank}. p={probs[idx]:.4f} | {desc}")
+
+        selected_desc = self._describe_action(battle, int(selected), is_teampreview)
+        print(f"Selected: p={probs[selected]:.4f} | {selected_desc}")
+
+        if self.print_summary:
+            print("\nBattle summary:")
+            print(battle_to_str(battle))
+
+    def _on_action_selected(
+        self,
+        battle: DoubleBattle,
+        probs: "np.ndarray[Any, Any]",
+        value: float,
+        selected: int,
+        is_teampreview: bool,
+    ) -> None:
+        self._print_debug(battle, probs, value, selected, is_teampreview)
 
 
 class MaxDamagePlayer(Player):
@@ -1580,10 +1662,287 @@ class MaxDamagePlayer(Player):
         return getattr(order, "order", None)
 
 
+# ── vgc-bench opponent construction ──────────────────────────────────────────
+#
+# vgc-bench is a third-party SB3-trained baseline used as `vgc_bench_baseline`
+# in training and as a player kind in eval. It needs poke_env 0.11.x while EFA
+# runs poke_env 0.15.x, so the canonical path is `VGCBenchManager` below: it
+# spawns a subprocess in vgc-bench's own venv that logs into Showdown and
+# accepts challenges from EFA workers.
+#
+# `_create_vgc_bench_player` is the legacy in-process fallback used by
+# `analyze/player_factory.py` for evaluation matchups where head-to-head play
+# inside a single process is convenient. It is *only* safe to call from a
+# Python interpreter whose poke_env matches what vgc-bench expects; running it
+# from EFA's training venv will silently produce a broken PolicyPlayer.
+
+# Cached vgc-bench policies keyed by (checkpoint_path, device).
+# Loading a stable_baselines3 PPO checkpoint is slow (hundreds of ms); cache
+# them so swapping vgc-bench opponents in/out of the curriculum is cheap.
+_VGC_BENCH_POLICY_CACHE: Dict[Tuple[str, str], Any] = {}
+
+
+@contextmanager
+def _temporary_cwd(path: Path):
+    previous = Path.cwd()
+    os.chdir(path)
+    try:
+        yield
+    finally:
+        os.chdir(previous)
+
+
+def _resolve_vgc_bench_root() -> Optional[Path]:
+    spec = importlib.util.find_spec("vgc_bench")
+    if spec is None or not spec.submodule_search_locations:
+        return None
+
+    package_path = Path(next(iter(spec.submodule_search_locations))).resolve()
+    return package_path.parent
+
+
+def _create_vgc_bench_player(
+    device: str,
+    player_config: AccountConfiguration,
+    server_config: ServerConfiguration,
+    team: str,
+    battle_format: str = "gen9vgc2024regg",
+    checkpoint_path: str = "data/models/vgc-bench-sb3-model.zip",
+    accept_open_team_sheet: bool = True,
+) -> Player:
+    if not os.path.exists(checkpoint_path):
+        raise FileNotFoundError(f"vgc-bench checkpoint not found: {checkpoint_path}")
+
+    cache_key = (checkpoint_path, device)
+
+    ppo_module = importlib.import_module("stable_baselines3")
+    ppo_cls = getattr(ppo_module, "PPO")
+
+    vgc_bench_root = _resolve_vgc_bench_root()
+    if vgc_bench_root is None:
+        raise ModuleNotFoundError("Could not resolve vgc_bench package path")
+
+    with _temporary_cwd(vgc_bench_root):
+        policy_player_module = importlib.import_module("vgc_bench.src.policy_player")
+        policy_player_cls = getattr(policy_player_module, "PolicyPlayer")
+
+        policy = _VGC_BENCH_POLICY_CACHE.get(cache_key)
+        if policy is None:
+            policy = ppo_cls.load(cache_key[0], device=device).policy
+            _VGC_BENCH_POLICY_CACHE[cache_key] = policy
+
+    player = policy_player_cls(
+        policy=policy,
+        battle_format=battle_format,
+        account_configuration=player_config,
+        server_configuration=server_config,
+        accept_open_team_sheet=accept_open_team_sheet,
+        team=team,
+    )
+    return cast(Player, player)
+
+
+class VGCBenchManager:
+    """Launcher and proxy for external vgc-bench bots.
+
+    vgc-bench requires poke_env 0.11.x; EFA runs poke_env 0.15.x. To
+    isolate the version gap, vgc-bench is launched as a subprocess in
+    its own venv. This manager owns that subprocess lifecycle. EFA-side
+    code only interacts with vgc-bench by Showdown username — workers
+    `/challenge` `manager.usernames[i]` like any other opponent.
+
+    Usage
+    -----
+        manager = VGCBenchManager(config, server_ports)
+        manager.launch()         # spawns subprocesses, populates .usernames
+        ...                       # training loop runs
+        manager.shutdown()        # terminates and closes log handles
+
+    Per-worker resolution (which subset of usernames *this* worker can
+    reach) currently lives in `engine/vgc_environment.py:setup()`. The
+    static helper `derive_username()` and class constant
+    `RUNNER_SERVER_INDEX` are exposed here so that file can resolve the
+    same values without re-deriving them.
+    """
+
+    # Path to the standalone subprocess entry point, relative to the
+    # repository root (subprocess inherits the trainer's CWD).
+    SUBPROCESS_SCRIPT: ClassVar[str] = "src/elitefurretai/rl/_vgcbench_subprocess.py"
+
+    # Base usernames each runner logs into Showdown as. One subprocess
+    # per name. The port is appended (`{name}_{port}`) when num_servers
+    # > 1 so concurrent runs on different ports don't collide.
+    USERNAMES: ClassVar[List[str]] = ["VGCBENCH"]
+
+    # How many challenges the runner accepts before exiting. Set to a
+    # number larger than any plausible training run.
+    N_CHALLENGES: ClassVar[int] = 1_000_000
+
+    # Seconds the runner waits for the Showdown server's TCP port to
+    # come up before giving up. Larger than launch_showdown_servers'
+    # `time.sleep(2)` warmup to allow for slow boots.
+    WAIT_FOR_SERVER_TIMEOUT_S: ClassVar[float] = 180.0
+
+    # Directory for runner stdout/stderr. Created on launch.
+    LOG_DIR: ClassVar[str] = "data/logs/vgcbench_runners"
+    LOG_TO_FILES: ClassVar[bool] = True
+
+    # accept_open_team_sheet must match the main agent's
+    # BatchInferencePlayer (currently False); a mismatched handshake
+    # drops battles.
+    ACCEPT_OPEN_TEAM_SHEET: ClassVar[bool] = False
+
+    # Seconds a worker waits after env.setup() before sending its first
+    # challenge, giving the subprocess time to log in.
+    STARTUP_WAIT_S: ClassVar[float] = 10.0
+
+    # Only the first Showdown server hosts a runner. Each SB3
+    # PolicyPlayer runner costs ~1.2 GB resident PSS; launching one per
+    # server (the pre-2026-05-16 layout) cost ~4.8 GB just for an
+    # opponent that plays ~20% of battles. Workers on other servers
+    # detect this and zero out their local vgc_bench_baseline weight.
+    # See planning/stage2/2026-05-16-08-13-update100-cliff-was-vgcbench-not-ghosts.md.
+    RUNNER_SERVER_INDEX: ClassVar[int] = 0
+
+    def __init__(self, config: RNaDConfig, server_ports: List[int]) -> None:
+        self._config = config
+        self._server_ports = server_ports
+        self._processes: List[subprocess.Popen] = []
+        self._log_files: List[TextIO] = []
+        self._usernames: List[str] = []
+
+    @staticmethod
+    def derive_username(base_username: str, server_port: int) -> str:
+        """Generate a server-scoped runner username (Showdown max length is 18)."""
+        suffix = f"_{server_port}"
+        max_base_len = max(1, 18 - len(suffix))
+        return f"{base_username[:max_base_len]}{suffix}"
+
+    @classmethod
+    def should_suffix_port(cls, num_servers: int) -> bool:
+        """Whether the launcher appends `_{port}` to usernames.
+
+        Single source of truth for the suffix condition. Both `launch`
+        and worker-side username resolution (vgc_environment.py) must
+        agree exactly — drift between them produces "user not found"
+        stalls (see planning/stage2/2026-05-16-08-13-...).
+        """
+        return num_servers > 1
+
+    @property
+    def usernames(self) -> List[str]:
+        """Resolved usernames the subprocess(es) logged into Showdown as.
+
+        Empty until `launch()` has been called.
+        """
+        return list(self._usernames)
+
+    def launch(self) -> List[str]:
+        """Spawn subprocess(es) and return the list of usernames they logged in as."""
+        if not self.USERNAMES:
+            return []
+
+        cur = self._config.curriculum
+        assert cur.external_vgcbench_python_executable is not None, (
+            "external_vgcbench_python_executable must be set when launching VGCBenchManager"
+        )
+
+        if self.LOG_TO_FILES:
+            os.makedirs(self.LOG_DIR, exist_ok=True)
+
+        append_port = self.should_suffix_port(len(self._server_ports))
+        runner_port = self._server_ports[self.RUNNER_SERVER_INDEX]
+        usernames: List[str] = []
+
+        for username in self.USERNAMES:
+            actual_username = (
+                self.derive_username(username, runner_port) if append_port else username
+            )
+            sanitized = actual_username.replace("/", "_")
+
+            log_path = "<disabled>"
+            log_handle: Union[TextIO, int]
+            if self.LOG_TO_FILES:
+                log_path = os.path.join(
+                    self.LOG_DIR,
+                    f"runner_{sanitized}_{runner_port}.log",
+                )
+                log_handle = open(log_path, "a", encoding="utf-8")
+                self._log_files.append(log_handle)
+            else:
+                log_handle = subprocess.DEVNULL
+
+            command = [
+                cur.external_vgcbench_python_executable,
+                self.SUBPROCESS_SCRIPT,
+                "--username",
+                actual_username,
+                "--server",
+                f"localhost:{runner_port}",
+                "--battle-format",
+                cur.battle_format,
+                "--checkpoint-path",
+                cur.vgc_bench_checkpoint_path,
+                "--team-file",
+                cur.external_vgcbench_team_file,
+                "--n-challenges",
+                str(self.N_CHALLENGES),
+                "--wait-for-server-timeout",
+                str(self.WAIT_FOR_SERVER_TIMEOUT_S),
+            ]
+            if self.ACCEPT_OPEN_TEAM_SHEET:
+                command.append("--accept-open-team-sheet")
+
+            process = subprocess.Popen(
+                command,
+                stdout=log_handle,
+                stderr=log_handle,
+                start_new_session=True,
+                env={**os.environ, "PYTHONUNBUFFERED": "1"},
+            )
+            self._processes.append(process)
+            usernames.append(actual_username)
+            print(
+                "✓ Launched external vgc-bench runner "
+                f"'{actual_username}' on localhost:{runner_port} (PID: {process.pid}) "
+                f"log={log_path}"
+            )
+
+        self._usernames = usernames
+        return usernames
+
+    def shutdown(self) -> None:
+        """Terminate subprocess(es) and close log files."""
+        for process in self._processes:
+            if process.poll() is not None:
+                continue
+            try:
+                process.terminate()
+                process.wait(timeout=3)
+            except Exception:
+                try:
+                    process.kill()
+                    process.wait(timeout=2)
+                except Exception:
+                    pass
+
+        for log_handle in self._log_files:
+            try:
+                log_handle.flush()
+                log_handle.close()
+            except Exception:
+                pass
+
+        self._processes.clear()
+        self._log_files.clear()
+
+
 __all__ = [
     "RNaDAgent",
     "SimpleModelPlayer",
+    "VerboseModelPlayer",
     "MaxDamagePlayer",
     "BatchInferencePlayer",
+    "VGCBenchManager",
     "cleanup_worker_executors",
 ]

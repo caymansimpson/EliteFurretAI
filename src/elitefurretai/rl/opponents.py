@@ -50,16 +50,12 @@ Glossary of opponent types
 
 import asyncio
 import gc
-import importlib
-import importlib.util
 import logging
 import os
 import queue
 import random
 from collections import deque
-from contextlib import contextmanager
-from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple, cast
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple
 
 if TYPE_CHECKING:
     from elitefurretai.rl.inference_worker import (
@@ -85,79 +81,11 @@ logger = logging.getLogger(__name__)
 
 SimpleHeuristicBaselineCls: Optional[type]
 try:
-    _baselines_module = importlib.import_module("poke_env.player.baselines")
-    SimpleHeuristicBaselineCls = cast(
-        Optional[type],
-        getattr(_baselines_module, "SimpleHeuristicsPlayer", None),
-    )
+    from poke_env.player.baselines import SimpleHeuristicsPlayer as _SimpleHeuristicsPlayer
+
+    SimpleHeuristicBaselineCls = _SimpleHeuristicsPlayer
 except Exception:
     SimpleHeuristicBaselineCls = None
-
-
-# Cached vgc-bench policies keyed by (checkpoint_path, device).
-# Loading a stable_baselines3 PPO checkpoint is slow (hundreds of ms); cache
-# them so swapping vgc-bench opponents in/out of the curriculum is cheap.
-_VGC_BENCH_POLICY_CACHE: Dict[Tuple[str, str], Any] = {}
-
-
-@contextmanager
-def _temporary_cwd(path: Path):
-    previous = Path.cwd()
-    os.chdir(path)
-    try:
-        yield
-    finally:
-        os.chdir(previous)
-
-
-def _resolve_vgc_bench_root() -> Optional[Path]:
-    spec = importlib.util.find_spec("vgc_bench")
-    if spec is None or not spec.submodule_search_locations:
-        return None
-
-    package_path = Path(next(iter(spec.submodule_search_locations))).resolve()
-    return package_path.parent
-
-
-def _create_vgc_bench_player(
-    device: str,
-    player_config: AccountConfiguration,
-    server_config: ServerConfiguration,
-    team: str,
-    battle_format: str = "gen9vgc2024regg",
-    checkpoint_path: str = "data/models/vgc-bench-sb3-model.zip",
-    accept_open_team_sheet: bool = True,
-) -> Player:
-    if not os.path.exists(checkpoint_path):
-        raise FileNotFoundError(f"vgc-bench checkpoint not found: {checkpoint_path}")
-
-    cache_key = (checkpoint_path, device)
-
-    ppo_module = importlib.import_module("stable_baselines3")
-    ppo_cls = getattr(ppo_module, "PPO")
-
-    vgc_bench_root = _resolve_vgc_bench_root()
-    if vgc_bench_root is None:
-        raise ModuleNotFoundError("Could not resolve vgc_bench package path")
-
-    with _temporary_cwd(vgc_bench_root):
-        policy_player_module = importlib.import_module("vgc_bench.src.policy_player")
-        policy_player_cls = getattr(policy_player_module, "PolicyPlayer")
-
-        policy = _VGC_BENCH_POLICY_CACHE.get(cache_key)
-        if policy is None:
-            policy = ppo_cls.load(cache_key[0], device=device).policy
-            _VGC_BENCH_POLICY_CACHE[cache_key] = policy
-
-    player = policy_player_cls(
-        policy=policy,
-        battle_format=battle_format,
-        account_configuration=player_config,
-        server_configuration=server_config,
-        accept_open_team_sheet=accept_open_team_sheet,
-        team=team,
-    )
-    return cast(Player, player)
 
 
 class OpponentPool:
@@ -1081,21 +1009,10 @@ class WorkerOpponentFactory:
                     )
                 )
 
-        if (
-            self.curriculum.get(self.VGC_BENCH_BASELINE, 0) > 0
-            and not self.external_vgcbench_usernames
-        ):
-            for i in range(num_opponents):
-                vgc_player = _create_vgc_bench_player(
-                    device=self.device,
-                    battle_format=self.battle_format,
-                    player_config=AccountConfiguration(self._account_name("VG", i), None),
-                    server_config=self.server_config,
-                    team=self.sample_team(),
-                    checkpoint_path=self.vgc_bench_checkpoint_path
-                    or "data/models/vgc-bench-sb3-model.zip",
-                )
-                self.vgc_bench_baseline_opponents.append(vgc_player)
+        # vgc_bench_baseline opponents are not constructed in-process here.
+        # Workers reach them by `/challenge`-ing the usernames in
+        # `external_vgcbench_usernames`, populated by VGCBenchManager (see
+        # `prepare_batch_tasks` and `players.VGCBenchManager`).
 
     def sample_opponent_type(self) -> str:
         rand = random.random()

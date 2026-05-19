@@ -194,7 +194,7 @@ Self-play with one opponent collapses. So `opponents.py` maintains a curriculum:
 
 `vgc-bench` is an external evaluation benchmark — it provides baseline VGC AI opponents (notably a Stable-Baselines3-trained model). The problem: `vgc-bench` depends on a different fork of `poke-env` than EliteFurretAI uses. You can't import both into one Python process without API conflicts.
 
-The solution: run `vgc-bench` in its own venv (`../venv-vgcbench/`) as a completely separate process. From the RL trainer side, we don't import `vgc-bench` code at all — we just challenge the VGCBench player's hardcoded Showdown username (`EXTERNAL_VGCBENCH_USERNAMES` in `engine/showdown_server_manager.py`) over the Showdown server like any other opponent. From the VGCBench side, `analyze/vgcbench_external_runner.py` sits in a loop accepting challenges from those usernames.
+The solution: run `vgc-bench` in its own venv (`../venv-vgcbench/`) as a completely separate process. From the RL trainer side, we don't import `vgc-bench` code at all — we just challenge the VGCBench player's hardcoded Showdown username (`VGCBenchManager.USERNAMES` in `rl/players.py`) over the Showdown server like any other opponent. From the VGCBench side, `rl/_vgcbench_subprocess.py` (spawned automatically by `VGCBenchManager.launch()`) sits in a loop accepting challenges from those usernames.
 
 Why this matters for infrastructure:
 
@@ -1076,10 +1076,10 @@ valid_turn_steps = ~is_teampreview & valid_turn_mask
 
 `vgc-bench` may require a different `poke-env` fork than EliteFurretAI. To avoid import/API conflicts, run `vgc-bench` in a separate environment and challenge it externally.
 
-1. Start external runner (in dedicated env):
+1. The runner is spawned automatically by `train.py` whenever the curriculum gives `vgc_bench_baseline` positive weight — `VGCBenchManager(config, server_ports).launch()` reads `curriculum.external_vgcbench_python_executable` to pick the interpreter and `curriculum.external_vgcbench_team_file` for the bot's team. For a manual run (debugging, ad-hoc challenges) the equivalent invocation is:
 ```bash
 source ../venv-vgcbench/bin/activate
-python src/elitefurretai/rl/analyze/vgcbench_external_runner.py \
+python src/elitefurretai/rl/_vgcbench_subprocess.py \
     --username VGCBENCHX \
     --server localhost:8000 \
     --battle-format gen9vgc2024regg \
@@ -1088,7 +1088,7 @@ python src/elitefurretai/rl/analyze/vgcbench_external_runner.py \
     --n-challenges 100
 ```
 
-2. Usernames are hardcoded as `EXTERNAL_VGCBENCH_USERNAMES` in `engine/showdown_server_manager.py` (currently `["VGCBENCH"]`). When the training-side curriculum gives `vgc_bench_baseline` positive weight, workers' `WorkerOpponentFactory` uses `send_challenges(...)` to those usernames instead of constructing local vgc-bench policy players. The external runner processes are also launched automatically by `train.py` under the same curriculum-weight condition.
+2. Usernames are class constants on `VGCBenchManager` (currently `USERNAMES = ["VGCBENCH"]`). When the training-side curriculum gives `vgc_bench_baseline` positive weight, workers' `WorkerOpponentFactory` uses `send_challenges(...)` to those usernames instead of constructing local vgc-bench policy players.
 
 ### torch.compile() Results
 
