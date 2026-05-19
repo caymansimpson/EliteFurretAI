@@ -22,7 +22,7 @@ This document is the **comprehensive, one-stop guide** to EliteFurretAI's reinfo
     -   The RNaD Loss Function
     -   Inspiration from Ataraxos
 5.  [**Core Components and Files**](#5-core-components)
-    -   `players.py`: Actor-side player + agent wrapper
+    -   `batch_inference_player.py` + `rnad_model.py`: Actor-side player + agent wrapper (split from former `players.py` on 2026-05-19; eval Players in `agents/`)
     -   `learners.py`: RNaD learner + model construction
     -   `worker.py`: Actor process body
     -   `train.py`: Trainer entrypoint and coordinator
@@ -135,7 +135,7 @@ The escape hatch is **multiprocessing**: each process gets its own Python interp
 Trace one decision to feel how the parts hook up.
 
 1. **Worker N** has, say, 16 concurrent battles running against its dedicated Showdown server (`localhost:800N`).
-2. Showdown sends "it's your turn" over WebSocket to a `BatchInferencePlayer` (`players.py`).
+2. Showdown sends "it's your turn" over WebSocket to a `BatchInferencePlayer` (`batch_inference_player.py`).
 3. The player computes the **action mask** (`masking.py`) — figures out which of the 2,025 possible turn actions are legal *for this exact battle state*. This is the 52,000× speedup; it reads `battle.last_request` directly instead of probing every action.
 4. The player **embeds** the battle state into a feature vector via the Embedder (in `etl/`).
 5. The player calls `client.submit(features, mask, ...)` — this packages an `InferenceRequest` (`inference_ipc.py`) and puts it on an `mp.Queue` heading back to the trainer process.
@@ -194,7 +194,7 @@ Self-play with one opponent collapses. So `opponents.py` maintains a curriculum:
 
 `vgc-bench` is an external evaluation benchmark — it provides baseline VGC AI opponents (notably a Stable-Baselines3-trained model). The problem: `vgc-bench` depends on a different fork of `poke-env` than EliteFurretAI uses. You can't import both into one Python process without API conflicts.
 
-The solution: run `vgc-bench` in its own venv (`../venv-vgcbench/`) as a completely separate process. From the RL trainer side, we don't import `vgc-bench` code at all — we just challenge the VGCBench player's hardcoded Showdown username (`VGCBenchManager.USERNAMES` in `rl/players.py`) over the Showdown server like any other opponent. From the VGCBench side, `rl/_vgcbench_subprocess.py` (spawned automatically by `VGCBenchManager.launch()`) sits in a loop accepting challenges from those usernames.
+The solution: run `vgc-bench` in its own venv (`../venv-vgcbench/`) as a completely separate process. From the RL trainer side, we don't import `vgc-bench` code at all — we just challenge the VGCBench player's hardcoded Showdown username (`VGCBenchManager.USERNAMES` in `agents/vgcbench_manager.py`) over the Showdown server like any other opponent. From the VGCBench side, `agents/_vgcbench_subprocess.py` (spawned automatically by `VGCBenchManager.launch()`) sits in a loop accepting challenges from those usernames.
 
 Why this matters for infrastructure:
 
@@ -432,12 +432,13 @@ The full file inventory lives in the "Files in This Module" table near
 the bottom of this doc. This section walks the main concepts in the
 order data flows through them.
 
-### `players.py`: Actor-side player + agent wrapper
+### `batch_inference_player.py` + `rnad_model.py`: Actor-side player + agent wrapper
 
-Two classes co-locate here because they pair with each other inside the
-actor:
+Two classes split across these files (formerly together in `players.py`,
+split 2026-05-19 as part of the `agents/` directory reorg — user-facing
+Players moved out):
 
-`RNaDAgent` wraps the BC-trained `TransformerThreeHeadedModel` for
+`RNaDAgent` (in `rnad_model.py`) wraps the BC-trained `TransformerThreeHeadedModel` for
 step-by-step RL inference. The BC model expects full trajectories, but
 RL requires one decision at a time; `RNaDAgent` carries the growing
 transformer context between turns. `get_initial_state` returns `None`
@@ -1079,7 +1080,7 @@ valid_turn_steps = ~is_teampreview & valid_turn_mask
 1. The runner is spawned automatically by `train.py` whenever the curriculum gives `vgc_bench_baseline` positive weight — `VGCBenchManager(config, server_ports).launch()` reads `curriculum.external_vgcbench_python_executable` to pick the interpreter and `curriculum.external_vgcbench_team_file` for the bot's team. For a manual run (debugging, ad-hoc challenges) the equivalent invocation is:
 ```bash
 source ../venv-vgcbench/bin/activate
-python src/elitefurretai/rl/_vgcbench_subprocess.py \
+python src/elitefurretai/agents/_vgcbench_subprocess.py \
     --username VGCBENCHX \
     --server localhost:8000 \
     --battle-format gen9vgc2024regg \
@@ -1147,7 +1148,8 @@ Tested on forward pass (5.85ms baseline):
 
 | File | Purpose |
 |------|---------|
-| `players.py` | `RNaDAgent` wrapper (model adapter) + `BatchInferencePlayer` (poke-env Player that bridges battles → inference). Dual-mode: legacy per-player batcher OR centralized via `inference_client`. |
+| `batch_inference_player.py` | `BatchInferencePlayer` — poke-env Player that bridges battles → inference. Dual-mode: legacy per-player batcher OR centralized via `inference_client`. (Split from the former `players.py` 2026-05-19; user-facing Players moved to `agents/`.) |
+| `rnad_model.py` | `RNaDAgent` — `torch.nn.Module` wrapper around `TransformerThreeHeadedModel`, providing a uniform `forward(x, hidden_state)` API. |
 | `learners.py` | `PortfolioRNaDLearner` with PPO + KL regularization + distributional value (C51). Model construction lives here too (`build_model_from_config`, `load_agent_from_checkpoint`). |
 | `worker.py` | `mp_worker_process` — the actor subprocess body. Spawns once per `num_workers`; sets up VGCEnvironment, runs battles, ships trajectories. In centralized mode skips loading the main model and constructs `WorkerInferenceClients` from spawn args. |
 | `train.py` | Main training coordinator. Owns the learner, the `ModelRegistry` (centralized inference), worker spawn, weight broadcast, checkpointing. |

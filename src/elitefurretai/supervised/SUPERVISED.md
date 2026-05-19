@@ -33,7 +33,7 @@ python src/elitefurretai/supervised/fine_tune.py \
 ```
 
 ### 4. Inference / Playing
-To use the trained model in a battle, use `behavior_clone_player.py`. This wraps the model in a `poke-env` Player class.
+To use the trained model in a battle, use `agents/bc_player.py` (formerly `behavior_clone_player.py` in this directory; moved 2026-05-19 — see `planning/stage2/2026-05-19-09-30-agents-directory-reorg.md`). This wraps the model in a `poke-env` Player class.
 
 ```python
 from elitefurretai.agents.bc_player import BCPlayer
@@ -105,8 +105,8 @@ Standard sinusoidal positional encoding for the Transformer backbone. Supports v
 4.  Reuses the same `train_epoch`, `evaluate`, and `analyze` infrastructure as `train.py`, including `torch.compile`, `lr_schedule` choice (`cosine`/`plateau`), mixed precision, and gradient accumulation.
 5.  `--save-best` flag saves the lowest-test-loss checkpoint mid-run.
 
-### `behavior_clone_player.py`
-**Purpose**: The agent interface for `poke-env`.
+### `agents/bc_player.py` (was `behavior_clone_player.py`)
+**Purpose**: The agent interface for `poke-env`. Now lives at `src/elitefurretai/agents/bc_player.py`.
 
 **Key Class**: `BCPlayer`
 *   **Integration**: Inherits from `poke_env.Player`.

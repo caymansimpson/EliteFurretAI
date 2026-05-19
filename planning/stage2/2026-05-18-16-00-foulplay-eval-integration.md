@@ -79,7 +79,7 @@ Three new units, one config addition, one one-time setup task. All
 opponent construction lives in `players.py`, matching the VGCBench
 consolidation pattern.
 
-**`FoulPlayManager` in `src/elitefurretai/rl/players.py`** (new class).
+**`FoulPlayManager` in `src/elitefurretai/agents/foulplay_manager.py`** (new class).
 Owns the EFA-side lifecycle of the external FoulPlay subprocess. Direct
 analog of `VGCBenchManager` from the consolidation doc.
 
@@ -98,7 +98,7 @@ class FoulPlayManager:
     down after the eval completes. Re-launchable.
     """
 
-    SUBPROCESS_SCRIPT:        ClassVar[str]  = "src/elitefurretai/rl/_foulplay_subprocess.py"
+    SUBPROCESS_SCRIPT:        ClassVar[str]  = "src/elitefurretai/agents/_foulplay_subprocess.py"
     USERNAMES:                ClassVar[List[str]] = ["FOULPLAY"]
     WAIT_FOR_SERVER_TIMEOUT_S: ClassVar[float] = 180.0
     LOG_DIR:                  ClassVar[str]  = "data/logs/foulplay_runners"
@@ -131,7 +131,7 @@ the memory rationale in
 
 [mem-rationale]: 2026-05-16-08-13-update100-cliff-was-vgcbench-not-ghosts.md
 
-**`src/elitefurretai/rl/_foulplay_subprocess.py`** (new file). Standalone
+**`src/elitefurretai/agents/_foulplay_subprocess.py`** (new file). Standalone
 Python entry point, runs under `../venv-foulplay/bin/python`. Imports
 FoulPlay's own modules (`config`, `data`, `fp`, `teams`) via
 `cwd=../foul-play-doubles`. Configures `FoulPlayConfig` from CLI args,

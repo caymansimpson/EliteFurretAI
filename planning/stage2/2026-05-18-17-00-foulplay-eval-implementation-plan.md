@@ -15,14 +15,14 @@
 ## File Structure
 
 **Create:**
-- `src/elitefurretai/rl/_foulplay_subprocess.py` — internal subprocess entry, runs under `../venv-foulplay`. Imports FoulPlay's `fp.run_battle.pokemon_battle` and websocket client; accepts N challenges, plays each as a single (non-Bo3) battle.
+- `src/elitefurretai/agents/_foulplay_subprocess.py` — internal subprocess entry, runs under `../venv-foulplay`. Imports FoulPlay's `fp.run_battle.pokemon_battle` and websocket client; accepts N challenges, plays each as a single (non-Bo3) battle.
 - `src/elitefurretai/rl/analyze/foulplay_eval.py` — eval driver exposing `run(...)` for `train.py` and `main()` for CLI.
 - `unit_tests/rl/test_foulplay_manager.py` — manager unit tests (mocked `subprocess.Popen`).
 - `unit_tests/rl/analyze/__init__.py` — test package marker (if not present).
 - `unit_tests/rl/analyze/test_foulplay_eval.py` — eval-driver unit tests (mocked manager + send_challenges).
 
 **Modify:**
-- `src/elitefurretai/rl/players.py` — add `FoulPlayManager` class.
+- `src/elitefurretai/agents/foulplay_manager.py` — add `FoulPlayManager` class.
 - `src/elitefurretai/rl/config.py` — add `FoulplayEvalConfig` dataclass + validator hook.
 - `src/elitefurretai/rl/analyze/player_factory.py` — add `external_username` field to `PlayerSpec`; add `foul_play` baseline; tighten factory contract.
 - `src/elitefurretai/rl/analyze/evaluate.py` — branch `_run_worker` on external_username (use `send_challenges` instead of `battle_against`).
@@ -34,7 +34,7 @@
 
 **Pre-existing files referenced (do not modify):**
 - `src/elitefurretai/engine/showdown_server_manager.py` — `launch_showdown_servers` for the CLI test harness.
-- `src/elitefurretai/rl/players.py` — `SimpleModelPlayer` for the model side.
+- `src/elitefurretai/agents/foulplay_manager.py` — `SimpleModelPlayer` for the model side.
 - `src/elitefurretai/rl/analyze/team_provider.py` — `parse_team_spec` for team rotation.
 
 **One-time setup (manual, documented in RL.md, not committed as a script):**
@@ -247,7 +247,7 @@ EOF
 ## Task 2: `FoulPlayManager` class in `players.py`
 
 **Files:**
-- Modify: [src/elitefurretai/rl/players.py](src/elitefurretai/rl/players.py)
+- Modify: [src/elitefurretai/agents/foulplay_manager.py](src/elitefurretai/agents/foulplay_manager.py)
 - Create: [unit_tests/rl/test_foulplay_manager.py](unit_tests/rl/test_foulplay_manager.py)
 
 - [ ] **Step 2.1: Write the failing test for username derivation**
@@ -269,7 +269,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from elitefurretai.rl.config import FoulplayEvalConfig
-from elitefurretai.rl.players import FoulPlayManager
+from elitefurretai.agents.foulplay_manager import FoulPlayManager
 
 
 def _make_config(tmp_path) -> FoulplayEvalConfig:
@@ -327,11 +327,11 @@ def test_derive_username_truncates_long_base(tmp_path):
 
 Run: `source ../venv/bin/activate && pytest unit_tests/rl/test_foulplay_manager.py -v`
 
-Expected: FAIL with `ImportError: cannot import name 'FoulPlayManager' from 'elitefurretai.rl.players'`.
+Expected: FAIL with `ImportError: cannot import name 'FoulPlayManager' from 'elitefurretai.agents.foulplay_manager'`.
 
 - [ ] **Step 2.3: Add the `FoulPlayManager` class skeleton**
 
-At the **bottom** of `src/elitefurretai/rl/players.py` (after `MaxDamagePlayer` and before the existing `__all__` list), add:
+At the **bottom** of `src/elitefurretai/agents/foulplay_manager.py` (after `MaxDamagePlayer` and before the existing `__all__` list), add:
 
 ```python
 # ── External subprocess managers ────────────────────────────────────────────
@@ -360,7 +360,7 @@ class FoulPlayManager:
     down after the eval completes. Re-launchable.
     """
 
-    SUBPROCESS_SCRIPT: ClassVar[str] = "src/elitefurretai/rl/_foulplay_subprocess.py"
+    SUBPROCESS_SCRIPT: ClassVar[str] = "src/elitefurretai/agents/_foulplay_subprocess.py"
     USERNAMES: ClassVar[List[str]] = ["FOULPLAY"]
     WAIT_FOR_SERVER_TIMEOUT_S: ClassVar[float] = 180.0
     LOG_DIR: ClassVar[str] = "data/logs/foulplay_runners"
@@ -570,7 +570,7 @@ def test_launch_builds_expected_argv(tmp_path):
     manager = FoulPlayManager(config, server_ports=[8000])
     manager.battle_format = "gen9vgc2024regg"
 
-    with patch("elitefurretai.rl.players.subprocess.Popen") as mock_popen:
+    with patch("elitefurretai.agents.foulplay_manager.subprocess.Popen") as mock_popen:
         mock_popen.return_value = MagicMock(pid=12345, poll=lambda: None)
         usernames = manager.launch()
 
@@ -606,7 +606,7 @@ def test_launch_appends_port_suffix_when_multiple_servers(tmp_path):
     config = _make_config(tmp_path)
     manager = FoulPlayManager(config, server_ports=[8000, 8001, 8002])
 
-    with patch("elitefurretai.rl.players.subprocess.Popen") as mock_popen:
+    with patch("elitefurretai.agents.foulplay_manager.subprocess.Popen") as mock_popen:
         mock_popen.return_value = MagicMock(pid=12345, poll=lambda: None)
         usernames = manager.launch()
 
@@ -624,7 +624,7 @@ def test_double_launch_raises(tmp_path):
     config = _make_config(tmp_path)
     manager = FoulPlayManager(config, server_ports=[8000])
 
-    with patch("elitefurretai.rl.players.subprocess.Popen") as mock_popen:
+    with patch("elitefurretai.agents.foulplay_manager.subprocess.Popen") as mock_popen:
         mock_popen.return_value = MagicMock(pid=12345, poll=lambda: None)
         manager.launch()
         with pytest.raises(RuntimeError, match="launch.*twice"):
@@ -653,14 +653,14 @@ Expected: 6 PASS.
 
 - [ ] **Step 2.7: Run quality gates**
 
-Run: `source ../venv/bin/activate && ruff check src/elitefurretai/rl/players.py unit_tests/rl/test_foulplay_manager.py && pyright src/elitefurretai/rl/players.py unit_tests/rl/test_foulplay_manager.py`
+Run: `source ../venv/bin/activate && ruff check src/elitefurretai/agents/foulplay_manager.py unit_tests/rl/test_foulplay_manager.py && pyright src/elitefurretai/agents/foulplay_manager.py unit_tests/rl/test_foulplay_manager.py`
 
 Expected: 0 errors.
 
 - [ ] **Step 2.8: Commit**
 
 ```bash
-git add src/elitefurretai/rl/players.py unit_tests/rl/test_foulplay_manager.py
+git add src/elitefurretai/agents/foulplay_manager.py unit_tests/rl/test_foulplay_manager.py
 git commit -m "$(cat <<'EOF'
 feat(rl): add FoulPlayManager subprocess lifecycle class
 
@@ -685,13 +685,13 @@ EOF
 ## Task 3: `_foulplay_subprocess.py` entry point
 
 **Files:**
-- Create: [src/elitefurretai/rl/_foulplay_subprocess.py](src/elitefurretai/rl/_foulplay_subprocess.py)
+- Create: [src/elitefurretai/agents/_foulplay_subprocess.py](src/elitefurretai/agents/_foulplay_subprocess.py)
 
 **Note on testing:** This script runs under `../venv-foulplay` (NOT the training venv), so unit tests in the main test suite cannot import it. We test it via a smoke test in Task 5 (manual smoke against a live Showdown server). Argv parsing is tested by manually invoking with `--help` in Task 3.4 below.
 
 - [ ] **Step 3.1: Create the subprocess script**
 
-Create `src/elitefurretai/rl/_foulplay_subprocess.py`:
+Create `src/elitefurretai/agents/_foulplay_subprocess.py`:
 
 ```python
 """Internal entry point for the foul-play-doubles subprocess.
@@ -743,7 +743,7 @@ def _resolve_foulplay_root() -> Path:
         return Path(override).resolve()
 
     here = Path(__file__).resolve()
-    # __file__ is .../EliteFurretAI/src/elitefurretai/rl/_foulplay_subprocess.py;
+    # __file__ is .../EliteFurretAI/src/elitefurretai/agents/_foulplay_subprocess.py;
     # repo root is parent[3]; foul-play-doubles is a sibling.
     repo_root = here.parents[3]
     candidate = repo_root.parent / "foul-play-doubles"
@@ -885,7 +885,7 @@ if __name__ == "__main__":
 
 - [ ] **Step 3.2: Verify the file is syntactically valid via `--help`**
 
-Run: `python3 src/elitefurretai/rl/_foulplay_subprocess.py --help`
+Run: `python3 src/elitefurretai/agents/_foulplay_subprocess.py --help`
 
 Expected: argparse help output listing all flags. (This runs under the regular Python, not the FoulPlay venv — the `_run` coroutine is never reached, so the FoulPlay imports never execute.)
 
@@ -893,14 +893,14 @@ Expected: argparse help output listing all flags. (This runs under the regular P
 
 Add a `# type: ignore[import]` comment to each `from config import …`, `from data.mods.apply_mods import …`, etc. (already present in the snippet above as `# type: ignore`). Then run:
 
-`source ../venv/bin/activate && ruff check src/elitefurretai/rl/_foulplay_subprocess.py && pyright src/elitefurretai/rl/_foulplay_subprocess.py`
+`source ../venv/bin/activate && ruff check src/elitefurretai/agents/_foulplay_subprocess.py && pyright src/elitefurretai/agents/_foulplay_subprocess.py`
 
 Expected: 0 errors. (Ruff and pyright will not chase the runtime FoulPlay imports because they're inside a function and ignored.)
 
 - [ ] **Step 3.4: Commit**
 
 ```bash
-git add src/elitefurretai/rl/_foulplay_subprocess.py
+git add src/elitefurretai/agents/_foulplay_subprocess.py
 git commit -m "$(cat <<'EOF'
 feat(rl): add _foulplay_subprocess.py internal entry point
 
@@ -1633,7 +1633,7 @@ from elitefurretai.rl.analyze.evaluate import EvalResult, run_eval_parallel
 from elitefurretai.rl.analyze.player_factory import PlayerSpec, parse_player_spec
 from elitefurretai.rl.analyze.team_provider import parse_team_spec
 from elitefurretai.rl.config import FoulplayEvalConfig
-from elitefurretai.rl.players import FoulPlayManager
+from elitefurretai.agents.foulplay_manager import FoulPlayManager
 
 
 @dataclass
@@ -1870,7 +1870,7 @@ In `src/elitefurretai/rl/train.py`, add **near the top of the file** (after exis
 
 ```python
 from elitefurretai.rl.analyze import foulplay_eval as _foulplay_eval_mod
-from elitefurretai.rl.players import FoulPlayManager
+from elitefurretai.agents.foulplay_manager import FoulPlayManager
 ```
 
 Then add a private helper just before the `main()` (or top-level training loop) function definition (search for `def main(` or the outer `if __name__ == "__main__":`):
