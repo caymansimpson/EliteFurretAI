@@ -46,6 +46,7 @@ from poke_env.player import Player
 from poke_env.player.battle_order import BattleOrder, DefaultBattleOrder
 from poke_env.teambuilder.teambuilder import Teambuilder
 
+from elitefurretai.agents.simple_model_player import SimpleModelPlayer
 from elitefurretai.engine.analyze.showdown_benchmark import _load_team_text
 from elitefurretai.engine.showdown_server_manager import (
     launch_showdown_servers,
@@ -56,7 +57,6 @@ from elitefurretai.etl.encoder import MDBO
 from elitefurretai.etl.team_repo import TeamRepo
 from elitefurretai.rl.config import RNaDConfig
 from elitefurretai.rl.masking import fast_get_action_mask
-from elitefurretai.rl.players import SimpleModelPlayer
 
 
 async def _capture_invalid_choice_errors_before_super(

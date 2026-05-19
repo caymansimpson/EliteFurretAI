@@ -6,7 +6,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 from poke_env.battle import AbstractBattle, DoubleBattle
 
-from elitefurretai.rl.players import BatchInferencePlayer, MaxDamagePlayer
+from elitefurretai.agents.max_damage_player import MaxDamagePlayer
+from elitefurretai.rl.players import BatchInferencePlayer
 
 
 class _Recorder:
@@ -58,7 +59,9 @@ def test_score_available_actions_filters_moves_not_in_request():
     battle.player_role = "p1"
     battle.opponent_role = "p2"
 
-    with patch("elitefurretai.rl.players.calculate_damage", return_value=(10, 10)):
+    with patch(
+        "elitefurretai.agents.max_damage_player.calculate_damage", return_value=(10, 10)
+    ):
         candidates = player._score_available_actions(battle, 0, set())
 
     assert candidates

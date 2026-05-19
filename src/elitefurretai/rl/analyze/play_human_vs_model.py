@@ -23,11 +23,11 @@ from poke_env.battle import AbstractBattle
 from poke_env.ps_client import AccountConfiguration, ServerConfiguration
 
 from elitefurretai.agents import HumanPlayer
+from elitefurretai.agents.verbose_model_player import VerboseModelPlayer
 from elitefurretai.engine.showdown_server_manager import (
     launch_showdown_servers,
     shutdown_showdown_servers,
 )
-from elitefurretai.rl.players import VerboseModelPlayer
 
 
 class DeferredVerboseModelPlayer(VerboseModelPlayer):

@@ -13,6 +13,7 @@ Core Components:
     - RNaDConfig: Configuration system for all hyperparameters
 """
 
+from elitefurretai.agents.max_damage_player import MaxDamagePlayer
 from elitefurretai.engine.showdown_server_manager import (
     allocate_server_ports,
     launch_showdown_servers,
@@ -32,7 +33,6 @@ from elitefurretai.rl.opponents import (
 )
 from elitefurretai.rl.players import (
     BatchInferencePlayer,
-    MaxDamagePlayer,
     RNaDAgent,
     cleanup_worker_executors,
 )

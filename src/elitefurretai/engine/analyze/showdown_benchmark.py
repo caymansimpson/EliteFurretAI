@@ -10,6 +10,7 @@ from pathlib import Path
 from poke_env import AccountConfiguration, ServerConfiguration
 from poke_env.player import Player, RandomPlayer
 
+from elitefurretai.agents.simple_model_player import SimpleModelPlayer
 from elitefurretai.engine.showdown_server_manager import (
     launch_showdown_servers,
     shutdown_showdown_servers,
@@ -17,7 +18,6 @@ from elitefurretai.engine.showdown_server_manager import (
 from elitefurretai.etl import Embedder
 from elitefurretai.etl.team_repo import TeamRepo
 from elitefurretai.rl.config import RNaDConfig
-from elitefurretai.rl.players import SimpleModelPlayer
 
 
 def _load_team_text(format_id: str, team_path: str | None, repo: TeamRepo) -> str:

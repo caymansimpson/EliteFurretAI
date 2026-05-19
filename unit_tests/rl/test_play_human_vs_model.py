@@ -73,7 +73,8 @@ def test_simple_model_player_is_verbose_parent():
     This factoring lets analyze/benchmark scripts use SimpleModelPlayer
     (no per-turn print noise) without copying the inference loop.
     """
-    from elitefurretai.rl.players import SimpleModelPlayer, VerboseModelPlayer
+    from elitefurretai.agents.simple_model_player import SimpleModelPlayer
+    from elitefurretai.agents.verbose_model_player import VerboseModelPlayer
 
     assert issubclass(VerboseModelPlayer, SimpleModelPlayer)
     assert issubclass(DeferredVerboseModelPlayer, SimpleModelPlayer)

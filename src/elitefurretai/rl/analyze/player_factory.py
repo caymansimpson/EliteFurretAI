@@ -22,11 +22,9 @@ from poke_env.player import MaxBasePowerPlayer, Player, RandomPlayer
 from poke_env.player.baselines import SimpleHeuristicsPlayer
 from poke_env.ps_client import AccountConfiguration, ServerConfiguration
 
+from elitefurretai.agents.max_damage_player import MaxDamagePlayer
+from elitefurretai.agents.simple_model_player import SimpleModelPlayer
 from elitefurretai.agents.vgcbench_manager import _create_vgc_bench_player
-from elitefurretai.rl.players import (
-    MaxDamagePlayer,
-    SimpleModelPlayer,
-)
 
 PlayerKind = Literal["model", "baseline"]
 
