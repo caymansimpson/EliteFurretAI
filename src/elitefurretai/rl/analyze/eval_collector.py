@@ -98,6 +98,8 @@ class TrajectoryCollector:
         worker_id: int,
         replay_sample_rate: float = 1.0,
         seed: Optional[int] = None,
+        call_id: str = "",
+        battle_id_prefix: str = "",
     ) -> None:
         self.eval_run_id = eval_run_id
         self.agent_ckpt = agent_ckpt
@@ -110,6 +112,22 @@ class TrajectoryCollector:
         self.worker_id = worker_id
         self.replay_sample_rate = replay_sample_rate
         self._rng = random.Random(seed) if seed is not None else random.Random()
+        # ``call_id`` disambiguates parquet shard filenames when a
+        # single run_dir hosts multiple evaluate.py invocations
+        # (e.g. one per opp_type in the four-opp_type schedule).
+        # Without it, every call writes to battles_worker_<id>.parquet
+        # and clobbers the previous opp_type's shards. Empty string is
+        # back-compat for single-call usage.
+        self.call_id = call_id
+        # ``battle_id_prefix`` is prepended to ``battle.battle_tag`` for
+        # every record (and replay filename). Necessary because each
+        # Showdown server maintains its OWN battle counter — two workers
+        # on different servers can produce identical battle_tags, which
+        # would collide in BattleRecord rows (the dedup set is per-
+        # collector instance) and overwrite each other's replay files.
+        # Conventionally set to e.g. ``"p8201_"`` so the canonical id
+        # carries server-port context.
+        self.battle_id_prefix = battle_id_prefix
 
         self._battle_rows: List[BattleRecord] = []
         self._turn_rows: List[TurnRecord] = []
@@ -157,8 +175,9 @@ class TrajectoryCollector:
         is_teampreview: bool,
     ) -> None:
         """Buffer one ``TurnRecord`` for the agent's decision this turn."""
-        if battle.battle_tag not in self._battle_start_times:
-            self._battle_start_times[battle.battle_tag] = time.time()
+        canonical_id = self.battle_id_prefix + battle.battle_tag
+        if canonical_id not in self._battle_start_times:
+            self._battle_start_times[canonical_id] = time.time()
 
         # Entropy over legal actions only. probs has illegal actions
         # masked to zero by SimpleModelPlayer._select_action, so we can
@@ -201,7 +220,7 @@ class TrajectoryCollector:
 
         self._turn_rows.append(
             TurnRecord(
-                battle_id=battle.battle_tag,
+                battle_id=canonical_id,
                 turn_number=int(battle.turn),
                 is_teampreview=bool(is_teampreview),
                 action_chosen=int(action),
@@ -223,13 +242,17 @@ class TrajectoryCollector:
     def record_battle_finished(self, battle: Any) -> None:
         """Buffer one ``BattleRecord`` for a completed battle.
 
-        Idempotent on battle_tag — poke-env can fire the finished
-        callback more than once in edge cases (forfeit + timer), so we
-        guard against double-recording.
+        Idempotent on canonical battle_id — poke-env can fire the
+        finished callback more than once in edge cases (forfeit +
+        timer), so we guard against double-recording. The canonical id
+        prepends ``self.battle_id_prefix`` (typically per-server) so
+        the same ``battle_tag`` produced by two Showdown servers'
+        independent counters doesn't collide.
         """
-        if battle.battle_tag in self._recorded_battle_tags:
+        canonical_id = self.battle_id_prefix + battle.battle_tag
+        if canonical_id in self._recorded_battle_tags:
             return
-        self._recorded_battle_tags.add(battle.battle_tag)
+        self._recorded_battle_tags.add(canonical_id)
 
         outcome = _battle_outcome(battle)
         agent_alive = sum(
@@ -243,11 +266,11 @@ class TrajectoryCollector:
 
         replay_saved = False
         if self._rng.random() < self.replay_sample_rate:
-            replay_saved = self._save_replay(battle)
+            replay_saved = self._save_replay(battle, canonical_id)
 
         self._battle_rows.append(
             BattleRecord(
-                battle_id=battle.battle_tag,
+                battle_id=canonical_id,
                 eval_run_id=self.eval_run_id,
                 agent_ckpt=self.agent_ckpt,
                 agent_team_hash=self.agent_team_hash,
@@ -260,7 +283,7 @@ class TrajectoryCollector:
                 agent_final_pokemon_alive=int(agent_alive),
                 opp_final_pokemon_alive=int(opp_alive),
                 timestamp_started=self._battle_start_times.get(
-                    battle.battle_tag, time.time()
+                    canonical_id, time.time()
                 ),
                 replay_saved=replay_saved,
             )
@@ -268,15 +291,19 @@ class TrajectoryCollector:
 
     # ── replay capture ──────────────────────────────────────────
 
-    def _save_replay(self, battle: Any) -> bool:
-        """Capture the Showdown protocol log to ``replays/<id>.log.gz``."""
+    def _save_replay(self, battle: Any, canonical_id: str) -> bool:
+        """Capture the Showdown protocol log to ``replays/<id>.log.gz``.
+
+        ``canonical_id`` is the same prefixed id used in BattleRecord
+        so the replay file lines up with the parquet row.
+        """
         try:
             replay_log = battle._build_replay_log()
         except Exception:
             return False
         replays_dir = os.path.join(self.run_dir, "replays")
         os.makedirs(replays_dir, exist_ok=True)
-        path = os.path.join(replays_dir, f"{battle.battle_tag}.log.gz")
+        path = os.path.join(replays_dir, f"{canonical_id}.log.gz")
         try:
             with gzip.open(path, "wb") as f:
                 f.write(replay_log.encode("utf-8"))
@@ -288,10 +315,13 @@ class TrajectoryCollector:
 
     def flush(self) -> None:
         """Write per-worker parquet shards. Idempotent if called twice."""
+        suffix = f"_{self.call_id}" if self.call_id else ""
         battles_path = os.path.join(
-            self.run_dir, f"battles_worker_{self.worker_id}.parquet"
+            self.run_dir, f"battles_worker_{self.worker_id}{suffix}.parquet"
         )
-        turns_path = os.path.join(self.run_dir, f"turns_worker_{self.worker_id}.parquet")
+        turns_path = os.path.join(
+            self.run_dir, f"turns_worker_{self.worker_id}{suffix}.parquet"
+        )
         write_battles_parquet(self._battle_rows, battles_path)
         write_turns_parquet(self._turn_rows, turns_path)
         # Clear buffers so a redundant flush() doesn't double-write

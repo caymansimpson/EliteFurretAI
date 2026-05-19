@@ -17,10 +17,11 @@ Key responsibilities:
 
 import logging
 import operator
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 from poke_env.battle import (
+    Battle,
     DoubleBattle,
     Effect,
     Field,
@@ -502,14 +503,30 @@ class Embedder:
                     if mon.stats["hp"] is None:
                         mon.stats["hp"] = mon.max_hp
 
-                    dmg = calculate_damage(
+                    # poke_env.calc.calculate_damage asserts both sides
+                    # have every stat defined; in-battle the opponent's
+                    # stats can be partially None until they reveal a
+                    # move/item. Fall through to the (-1, -1) "unknown"
+                    # sentinel the embedder already handles below
+                    # instead of letting the assertion crash the worker.
+                    # Check via battle.get_pokemon because that's the
+                    # lookup calculate_damage uses internally — the
+                    # objects we hold may not match what it resolves.
+                    if _calc_damage_args_safe(
+                        battle,
                         opp_mon.identifier(battle.opponent_role),
                         mon.identifier(battle.player_role),
-                        opp_mon.moves[move],
-                        battle,
-                        False,
-                    )
-                    dmg = (-1, -1) if dmg[0] is None else dmg
+                    ):
+                        dmg = calculate_damage(
+                            opp_mon.identifier(battle.opponent_role),
+                            mon.identifier(battle.player_role),
+                            opp_mon.moves[move],
+                            battle,
+                            False,
+                        )
+                        dmg = (-1, -1) if dmg[0] is None else dmg
+                    else:
+                        dmg = (-1, -1)
                     ko = int(dmg[1] > mon.current_hp)
                     if stats_flag:
                         opp_mon.stats = None
@@ -568,14 +585,24 @@ class Embedder:
                     if mon.stats["hp"] is None:
                         mon.stats["hp"] = mon.max_hp
 
-                    dmg = calculate_damage(
+                    # See the matching guard above (~line 505); same
+                    # reason — opp_mon stats can be partially None
+                    # mid-battle, which makes calculate_damage assert.
+                    if _calc_damage_args_safe(
+                        battle,
                         mon.identifier(battle.player_role),
                         opp_mon.identifier(battle.opponent_role),
-                        mon.moves[move],
-                        battle,
-                        False,
-                    )
-                    dmg = (-1, -1) if dmg[0] is None else dmg
+                    ):
+                        dmg = calculate_damage(
+                            mon.identifier(battle.player_role),
+                            opp_mon.identifier(battle.opponent_role),
+                            mon.moves[move],
+                            battle,
+                            False,
+                        )
+                        dmg = (-1, -1) if dmg[0] is None else dmg
+                    else:
+                        dmg = (-1, -1)
 
                     # Current HP fraction is 0 if a mon isn't set out to the field
                     current_hp_fraction = (
@@ -1429,6 +1456,47 @@ class Embedder:
 
 def fill_with_none(to_fill: List[Any], n: int) -> List[Any | None]:
     return to_fill + [None] * (n - len(to_fill))
+
+
+def _stats_fully_defined(mon: Pokemon) -> bool:
+    """Whether every entry in ``mon.stats`` is a numeric value.
+
+    ``poke_env.calc.calculate_damage`` asserts both attacker and
+    defender have every stat defined (HP, Atk, Def, SpA, SpD, Spe).
+    During an in-progress battle the opponent's stats can be
+    partially ``None`` until the opponent reveals an attacking move
+    that pins down the spread; callers in this file use the result
+    of this check to fall through to a "damage unknown" sentinel
+    instead of crashing on the assertion. See generate_feature_engineered_features.
+    """
+    if mon.stats is None:
+        return False
+    return all(isinstance(v, (int, float)) for v in mon.stats.values())
+
+
+def _calc_damage_args_safe(
+    battle: Union[Battle, DoubleBattle],
+    attacker_id: str,
+    defender_id: str,
+) -> bool:
+    """Whether ``calculate_damage(attacker_id, defender_id, _, battle, _)`` will pass its asserts.
+
+    Mirrors the lookup ``calculate_damage`` does internally
+    (``battle.get_pokemon(identifier)``) so we catch the case where
+    the identifier resolves to a Pokemon different from the one we
+    were holding in the embedder loop — e.g. an instance created
+    on-demand by ``get_pokemon`` with empty stats, or a teammate
+    that's been swapped in. Checking the same objects ``calculate_damage``
+    will see is the only way to be sure the assertion won't fire.
+    """
+    if battle.player_role is None or battle.opponent_role is None:
+        return False
+    try:
+        attacker = battle.get_pokemon(attacker_id)
+        defender = battle.get_pokemon(defender_id)
+    except Exception:
+        return False
+    return _stats_fully_defined(attacker) and _stats_fully_defined(defender)
 
 
 def compute_stats(mon: Pokemon, type="max") -> Dict[str, int]:

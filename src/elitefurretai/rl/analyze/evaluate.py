@@ -220,6 +220,17 @@ def _run_worker(
 
     first_agent_team, first_opp_team = cells[0]
 
+    # Per-server battle_id prefix so the same Showdown ``battle_tag``
+    # produced on two different servers doesn't collide in parquet
+    # rows or replay filenames. Each Showdown server has its own
+    # battle counter (independent restart counters and concurrent
+    # workers can produce identical ids, e.g. 1511502 on two ports).
+    try:
+        server_port = server_url.rsplit(":", 1)[1]
+    except IndexError:
+        server_port = "0"
+    battle_id_prefix = f"p{server_port}_"
+
     # One collector per worker, initialized with the first cell's teams.
     # set_cell() updates between cells; all rows go into the same shard.
     collector: Optional[TrajectoryCollector] = None
@@ -237,6 +248,8 @@ def _run_worker(
                 worker_id=worker_id,
                 replay_sample_rate=replay_sample_rate,
                 seed=worker_id,
+                call_id=run_tag,
+                battle_id_prefix=battle_id_prefix,
             )
         elif p2.kind == "model":
             # P2 is the model; agent perspective inverts.
@@ -252,6 +265,8 @@ def _run_worker(
                 worker_id=worker_id,
                 replay_sample_rate=replay_sample_rate,
                 seed=worker_id,
+                call_id=run_tag,
+                battle_id_prefix=battle_id_prefix,
             )
 
     async def _run() -> EvalResult:
