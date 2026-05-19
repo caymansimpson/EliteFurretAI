@@ -344,4 +344,71 @@ where they belong with their consumers.
 
 ## Updates
 
-(none yet — pre-implementation)
+### 2026-05-19 — implementation complete
+
+Landed in 8 commits per
+[2026-05-19-10-00-agents-directory-reorg-implementation-plan.md](2026-05-19-10-00-agents-directory-reorg-implementation-plan.md)
+(plus 7 prep commits to clear unrelated working-tree state). All
+quality gates green after every phase (`ruff check`, `ruff format --check`,
+`pyright`, `pytest unit_tests` → 527 passed, 1 skipped; unchanged from
+baseline).
+
+**Commits (chronological):**
+
+1. `449fc1c` — agents: stub AGENTS.md alongside pre-existing HumanPlayer
+2. `739b54f` — agents: move BCPlayer from supervised/ to agents/bc_player.py
+3. `79cf2d0` — agents: move VGCBenchManager + vgc-bench helpers + subprocess to agents/
+4. `90ec07e` — agents: move SimpleModelPlayer, VerboseModelPlayer, MaxDamagePlayer to agents/
+5. `0f7cdf2` — rl: split players.py into batch_inference_player.py and rnad_model.py
+6. `d9f2bb0` — agents: full __init__.py re-exports and AGENTS.md content
+7. `584aaa0` — docs: update FoulPlay plans + RL.md + SUPERVISED.md for agents/ layout
+8. (this commit) — planning: mark agents/ reorg spec complete
+
+**Deviations from the design:**
+
+- **Pre-existing `agents/` directory.** The design assumed
+  `src/elitefurretai/agents/` did not exist. It actually did — Cayman
+  had created it on 2026-05-16 (commit `7e3eb6b`) for `HumanPlayer`.
+  Phase 1's implementer subagent overwrote the existing `__init__.py`
+  without flagging it; caught via `git show --stat` inspection
+  post-commit. Phase 1 was amended to preserve `HumanPlayer`'s
+  re-export, and `HumanPlayer` was folded into the public surface in
+  Phase 6 (with a row in `AGENTS.md` and a usage section). Memory
+  saved: `feedback_check_existing_dir_before_scaffold` — grep for
+  prior usage of a "new" package's import path before assuming the
+  directory doesn't exist.
+
+- **`RNaDAgent` rename followed through.** The plan's 5.99 escape
+  hatch was not taken; `rl/players.py` is now deleted and `RNaDAgent`
+  lives at `rl/rnad_model.py`.
+
+- **Phase 3 picked up a stray Phase 2 oversight.** The Phase 2 import
+  sweep (`sed` for `behavior_clone_player`) missed
+  `src/elitefurretai/supervised/SUPERVISED.md:39`. The Phase 3 implementer
+  noticed and fixed it in passing — bundled into commit `79cf2d0`
+  rather than carving out a separate fixup commit.
+
+**Smoke verification:**
+
+Type-checking and unit tests are clean. An import-level smoke check
+confirmed:
+
+- All six public re-exports import cleanly from `elitefurretai.agents`.
+- `train.py`, `worker.py`, `engine.vgc_environment` all import.
+- `VGCBenchManager.SUBPROCESS_SCRIPT = "src/elitefurretai/agents/_vgcbench_subprocess.py"`
+  resolves to an existing file.
+
+A full 5-minute training smoke run with `single_team.yaml`
+(which would also catch any subprocess-spawn regressions in the
+vgc-bench runner path) was **not** executed in this session and is
+flagged as a follow-up. Recommend running it before the next training
+run with `vgc_bench_baseline` weight > 0.
+
+**Follow-ups (out of scope for this work):**
+
+1. Run the 5-min training smoke (above).
+2. The FoulPlay integration ([2026-05-18-16-00-foulplay-eval-integration.md](2026-05-18-16-00-foulplay-eval-integration.md))
+   now targets the post-reorg layout; can proceed when ready.
+3. `OpponentPool.vgc_bench_baseline_opponents` is still an always-empty
+   list (noted in the vgc-bench consolidation Updates section as a
+   cosmetic cleanup). Unchanged by this reorg.
