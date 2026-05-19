@@ -19,17 +19,30 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import datetime
 import json
+import os
+import subprocess
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from poke_env.ps_client import AccountConfiguration, ServerConfiguration
 
 from elitefurretai.engine.showdown_server_manager import (
     launch_showdown_servers,
     shutdown_showdown_servers,
+)
+from elitefurretai.rl.analyze.eval_collector import (
+    RecordingModelPlayer,
+    TrajectoryCollector,
+)
+from elitefurretai.rl.analyze.eval_schema import (
+    EvalRunManifest,
+    ScheduleEntry,
+    write_manifest,
 )
 from elitefurretai.rl.analyze.player_factory import PlayerSpec, parse_player_spec
 from elitefurretai.rl.analyze.team_provider import TeamProvider, parse_team_spec
@@ -94,6 +107,63 @@ def _print_result(result: EvalResult, p1_label: str, p2_label: str) -> None:
     )
 
 
+def _build_model_player(
+    spec: PlayerSpec,
+    team_str: str,
+    account: AccountConfiguration,
+    server_config: ServerConfiguration,
+    collector: Optional[TrajectoryCollector],
+) -> Any:
+    """Build a model player, optionally wired with a TrajectoryCollector.
+
+    When ``collector`` is set, returns a ``RecordingModelPlayer`` so
+    per-turn data flows into the analysis pipeline (Plan B). When
+    None, falls back to the spec's standard factory (plain
+    ``SimpleModelPlayer``). All other kinds construct unchanged.
+
+    ``team_str`` is pre-resolved by the worker so the collector and
+    the player see the same team string (and so the same team_hash
+    appears in BattleRecord and in the player's actual battle).
+    """
+    if spec.kind == "model" and collector is not None:
+        return RecordingModelPlayer(
+            model_path=spec.raw,
+            device=_detect_device_from_spec(spec),
+            battle_format=collector.battle_format,
+            probabilistic=False,
+            account_configuration=account,
+            server_configuration=server_config,
+            team=team_str,
+            accept_open_team_sheet=False,
+            collector=collector,
+        )
+    assert spec.factory is not None
+    return spec.factory(lambda: team_str, account, server_config, False)
+
+
+def _detect_device_from_spec(spec: PlayerSpec) -> str:
+    """Extract device from a model spec's factory closure.
+
+    The factory closes over ``device`` at parse time but doesn't
+    expose it. Rather than threading it through PlayerSpec, we
+    construct a probe SimpleModelPlayer-free way: ``RecordingModelPlayer``
+    needs device, so we inspect the closure. Falls back to "cpu" if
+    the closure structure is unexpected (defensive: collection
+    shouldn't crash the eval if a future refactor renames the var).
+    """
+    try:
+        # The model factory is a closure with `device` in its co_freevars.
+        # __closure__ holds the captured values in the same order.
+        names = spec.factory.__code__.co_freevars  # type: ignore[union-attr]
+        cells = spec.factory.__closure__  # type: ignore[union-attr]
+        if names and cells:
+            idx = names.index("device")
+            return cells[idx].cell_contents
+    except Exception:
+        pass
+    return "cpu"
+
+
 def _run_worker(
     worker_id: int,
     p1: PlayerSpec,
@@ -103,6 +173,10 @@ def _run_worker(
     battles: int,
     server_url: str,
     run_tag: str,
+    *,
+    collect_run_dir: Optional[str] = None,
+    eval_run_id: Optional[str] = None,
+    replay_sample_rate: float = 0.05,
 ) -> EvalResult:
     """One worker's slice of an eval matchup.
 
@@ -122,12 +196,60 @@ def _run_worker(
       in-process player and inverted if the external is P1.
     * Both external: rejected — there is no in-process side to drive
       challenges from.
+
+    When ``collect_run_dir`` is set, a ``TrajectoryCollector`` is built
+    for the model side of the matchup (whichever slot has
+    ``kind="model"``). Per-turn and per-battle data is buffered and
+    flushed to parquet shards at worker shutdown. If neither side is a
+    model, collection is silently skipped — there's nothing to record
+    from a baseline-vs-baseline matchup.
     """
     if p1.kind == "external" and p2.kind == "external":
         raise ValueError(
             "Cannot run two external players against each other — at least "
             "one side must be in-process to drive challenges."
         )
+
+    # Resolve team strings once per worker. The collector and players
+    # both reference these so the team_hash in BattleRecord matches the
+    # team actually played.
+    agent_team_str = t1()
+    opp_team_str = t2()
+
+    # Build the collector if collection is enabled AND there's a model
+    # to record. The collector is attached to whichever side is the
+    # model; if both sides are models, P1 wins the recording slot.
+    collector: Optional[TrajectoryCollector] = None
+    if collect_run_dir is not None and eval_run_id is not None:
+        if p1.kind == "model":
+            collector = TrajectoryCollector(
+                eval_run_id=eval_run_id,
+                agent_ckpt=p1.raw,
+                agent_team_str=agent_team_str,
+                opp_team_str=opp_team_str,
+                opp_player_kind=p2.kind,
+                opp_player_name=p2.name,
+                battle_format=_battle_format_from_spec(p1),
+                run_dir=collect_run_dir,
+                worker_id=worker_id,
+                replay_sample_rate=replay_sample_rate,
+                seed=worker_id,
+            )
+        elif p2.kind == "model":
+            # P2 is the model; agent perspective inverts.
+            collector = TrajectoryCollector(
+                eval_run_id=eval_run_id,
+                agent_ckpt=p2.raw,
+                agent_team_str=opp_team_str,
+                opp_team_str=agent_team_str,
+                opp_player_kind=p1.kind,
+                opp_player_name=p1.name,
+                battle_format=_battle_format_from_spec(p2),
+                run_dir=collect_run_dir,
+                worker_id=worker_id,
+                replay_sample_rate=replay_sample_rate,
+                seed=worker_id,
+            )
 
     async def _run() -> EvalResult:
         server_config = ServerConfiguration(f"ws://{server_url}/showdown/websocket", "")
@@ -141,8 +263,9 @@ def _run_worker(
                 p1_account = AccountConfiguration(
                     _username(f"E1{p1.user_tag}", worker_id, run_tag), None
                 )
-                assert p1.factory is not None
-                player1 = p1.factory(t1, p1_account, server_config, False)
+                player1 = _build_player(
+                    p1, agent_team_str, p1_account, server_config, collector
+                )
                 try:
                     await player1.send_challenges(
                         external_handle.username, n_challenges=battles
@@ -163,8 +286,9 @@ def _run_worker(
                 p2_account = AccountConfiguration(
                     _username(f"E2{p2.user_tag}", worker_id, run_tag), None
                 )
-                assert p2.factory is not None
-                player2 = p2.factory(t2, p2_account, server_config, False)
+                player2 = _build_player(
+                    p2, opp_team_str, p2_account, server_config, collector
+                )
                 try:
                     await player2.send_challenges(
                         external_handle.username, n_challenges=battles
@@ -189,9 +313,10 @@ def _run_worker(
                 p2_account = AccountConfiguration(
                     _username(f"E2{p2.user_tag}", worker_id, run_tag), None
                 )
-                assert p1.factory is not None and p2.factory is not None
-                player1 = p1.factory(t1, p1_account, server_config, False)
-                player2 = p2.factory(t2, p2_account, server_config, False)
+                player1 = _build_player(
+                    p1, agent_team_str, p1_account, server_config, collector
+                )
+                player2 = _build_player(p2, opp_team_str, p2_account, server_config, None)
                 try:
                     await player1.battle_against(player2, n_battles=battles)
                 except Exception as exc:
@@ -213,8 +338,39 @@ def _run_worker(
         finally:
             if external_handle is not None:
                 external_handle.shutdown()
+            if collector is not None:
+                collector.flush()
 
     return asyncio.run(_run())
+
+
+def _build_player(
+    spec: PlayerSpec,
+    team_str: str,
+    account: AccountConfiguration,
+    server_config: ServerConfiguration,
+    collector: Optional[TrajectoryCollector],
+) -> Any:
+    """Dispatch player construction: ``RecordingModelPlayer`` if recording
+    is on for a model spec, otherwise the spec's standard factory."""
+    return _build_model_player(spec, team_str, account, server_config, collector)
+
+
+def _battle_format_from_spec(spec: PlayerSpec) -> str:
+    """Pull ``battle_format`` out of the spec's factory closure.
+
+    Same trick as ``_detect_device_from_spec``; defaults to
+    ``gen9vgc2024regg`` if introspection fails.
+    """
+    try:
+        names = spec.factory.__code__.co_freevars  # type: ignore[union-attr]
+        cells = spec.factory.__closure__  # type: ignore[union-attr]
+        if names and cells:
+            idx = names.index("battle_format")
+            return cells[idx].cell_contents
+    except Exception:
+        pass
+    return "gen9vgc2024regg"
 
 
 def run_eval_parallel(
@@ -226,12 +382,22 @@ def run_eval_parallel(
     server_urls: List[str],
     workers: int,
     run_tag: str,
+    *,
+    collect_run_dir: Optional[str] = None,
+    eval_run_id: Optional[str] = None,
+    replay_sample_rate: float = 0.05,
 ) -> EvalResult:
     """Fan out ``num_battles`` across ``workers`` and aggregate.
 
     Workers run in a ``ThreadPoolExecutor``; each calls ``asyncio.run`` on
     its own event loop. Threading (not multiprocessing) is fine here
     because the heavy work is async network I/O against Showdown servers.
+
+    Collection (Plan B): when ``collect_run_dir`` is set, each worker
+    builds a TrajectoryCollector and writes parquet shards keyed by
+    worker_id under that directory. ``eval_run_id`` distinguishes
+    multiple invocations against the same run dir (e.g. one per
+    opp_type) and is embedded in every record.
     """
     splits = [s for s in _split_battles(num_battles, workers) if s > 0]
     if not splits:
@@ -258,6 +424,9 @@ def run_eval_parallel(
                     battles,
                     server_url,
                     run_tag,
+                    collect_run_dir=collect_run_dir,
+                    eval_run_id=eval_run_id,
+                    replay_sample_rate=replay_sample_rate,
                 )
             )
 
@@ -326,6 +495,31 @@ def main() -> None:
         default="data/models/vgc-bench-sb3-model.zip",
     )
     parser.add_argument("--output", type=str, default=None)
+    parser.add_argument(
+        "--collect-trajectories",
+        type=str,
+        default=None,
+        metavar="RUN_DIR",
+        help="Enable Plan B trajectory collection. Writes parquet shards and "
+        "(sampled) Showdown replay logs under RUN_DIR. Requires one side to "
+        "be a model checkpoint; collection silently no-ops for baseline-vs-"
+        "baseline.",
+    )
+    parser.add_argument(
+        "--replay-sample-rate",
+        type=float,
+        default=0.05,
+        help="Fraction of battles whose Showdown protocol log is gzipped to "
+        "RUN_DIR/replays/. Battles cannot be re-played deterministically so "
+        "logs must be captured live. 0 disables; 1 saves all. Default: 0.05.",
+    )
+    parser.add_argument(
+        "--eval-run-id",
+        type=str,
+        default=None,
+        help="Run identifier embedded in every parquet row. Auto-generated "
+        "(UUID4 prefix) when omitted.",
+    )
     args = parser.parse_args()
 
     p1 = parse_player_spec(
@@ -345,6 +539,23 @@ def main() -> None:
 
     run_tag = format(int(time.time() * 1000) % 65536, "04x")
 
+    # Resolve trajectory-collection settings up front so the manifest
+    # gets written before any battles fire (so a crash mid-eval still
+    # leaves audit metadata on disk).
+    collect_run_dir = args.collect_trajectories
+    eval_run_id = args.eval_run_id or f"run_{uuid.uuid4().hex[:8]}"
+    if collect_run_dir is not None:
+        os.makedirs(collect_run_dir, exist_ok=True)
+        _write_or_update_manifest(
+            run_dir=collect_run_dir,
+            eval_run_id=eval_run_id,
+            agent_ckpt_path=(p1.raw if p1.kind == "model" else p2.raw),
+            battle_format=args.battle_format,
+            replay_sample_rate=args.replay_sample_rate,
+            opp_player_name=(p2.name if p1.kind == "model" else p1.name),
+            battles=args.battles,
+        )
+
     server_processes = []
     if args.launch_servers:
         server_processes = launch_showdown_servers(args.num_servers, args.start_port)
@@ -356,6 +567,10 @@ def main() -> None:
 
         started = time.time()
         print(f"\n=== Evaluation: {p1.name} vs {p2.name} ===")
+        if collect_run_dir is not None:
+            print(
+                f"    Collecting trajectories to {collect_run_dir} (run_id={eval_run_id})"
+            )
         result = run_eval_parallel(
             p1=p1,
             p2=p2,
@@ -365,9 +580,15 @@ def main() -> None:
             server_urls=server_urls,
             workers=args.workers,
             run_tag=run_tag,
+            collect_run_dir=collect_run_dir,
+            eval_run_id=eval_run_id,
+            replay_sample_rate=args.replay_sample_rate,
         )
         duration = time.time() - started
         _print_result(result, p1.name, p2.name)
+
+        if collect_run_dir is not None:
+            _mark_manifest_finished(collect_run_dir)
 
         if args.output:
             payload: Dict[str, Any] = {
@@ -379,6 +600,8 @@ def main() -> None:
                 "duration_sec": round(duration, 2),
                 "result": asdict(result),
                 "result_p1_win_rate": result.player1_win_rate,
+                "eval_run_id": eval_run_id if collect_run_dir else None,
+                "collect_run_dir": collect_run_dir,
             }
             with open(args.output, "w") as f:
                 json.dump(payload, f, indent=2)
@@ -386,6 +609,71 @@ def main() -> None:
     finally:
         if server_processes:
             shutdown_showdown_servers(server_processes)
+
+
+def _git_sha_or_empty() -> str:
+    """Best-effort current git SHA for audit. Returns empty string outside a repo."""
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=False
+        )
+        if out.returncode == 0:
+            return out.stdout.strip()
+    except Exception:
+        pass
+    return ""
+
+
+def _write_or_update_manifest(
+    *,
+    run_dir: str,
+    eval_run_id: str,
+    agent_ckpt_path: str,
+    battle_format: str,
+    replay_sample_rate: float,
+    opp_player_name: str,
+    battles: int,
+) -> None:
+    """Write a fresh manifest if absent, else append a ScheduleEntry.
+
+    Multiple ``evaluate.py`` invocations may share a run dir (one call
+    per opp_type in the user's 4-opp_type schedule). Each call appends
+    its slice to the manifest's ``schedule`` list so the audit trail
+    captures the full run.
+    """
+    manifest_path = os.path.join(run_dir, "manifest.json")
+    if os.path.exists(manifest_path):
+        from elitefurretai.rl.analyze.eval_schema import read_manifest
+
+        manifest = read_manifest(run_dir)
+        manifest.schedule.append(
+            ScheduleEntry(opp_player_name=opp_player_name, battles_total=battles)
+        )
+    else:
+        manifest = EvalRunManifest(
+            eval_run_id=eval_run_id,
+            git_sha=_git_sha_or_empty(),
+            agent_ckpt_path=agent_ckpt_path,
+            battle_format=battle_format,
+            replay_sample_rate=replay_sample_rate,
+            schedule=[
+                ScheduleEntry(opp_player_name=opp_player_name, battles_total=battles)
+            ],
+            started_at=datetime.datetime.now().isoformat(),
+        )
+    write_manifest(manifest, run_dir)
+
+
+def _mark_manifest_finished(run_dir: str) -> None:
+    """Stamp ``finished_at`` on the manifest after a successful run."""
+    from elitefurretai.rl.analyze.eval_schema import read_manifest
+
+    manifest_path = os.path.join(run_dir, "manifest.json")
+    if not os.path.exists(manifest_path):
+        return
+    manifest = read_manifest(run_dir)
+    manifest.finished_at = datetime.datetime.now().isoformat()
+    write_manifest(manifest, run_dir)
 
 
 if __name__ == "__main__":
