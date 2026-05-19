@@ -348,17 +348,10 @@ class SyncPolicyPlayer:
         for index, step in enumerate(traj):
             if step is None:
                 continue
-            step_reward = -0.005
             if index == len(traj) - 1:
-                step_reward += 1.0 if won else -1.0
-            prev_step = traj[index - 1] if index > 0 else None
-            prev_fainted = (
-                int(prev_step["opponent_fainted"]) if prev_step is not None else 0
-            )
-            ko_delta = step["opponent_fainted"] - prev_fainted
-            if ko_delta > 0:
-                step_reward += 0.05 * ko_delta
-            step["reward"] = step_reward
+                step["reward"] = 1.0 if won else -1.0
+            else:
+                step["reward"] = 0.0
 
         filtered_traj = [step for step in traj if step is not None]
         if filtered_traj:
@@ -2134,14 +2127,10 @@ class SyncRustBattleDriver:
     @staticmethod
     def _finalize_trajectory(trajectory: Sequence[RolloutStep], won: bool) -> None:
         for index, step in enumerate(trajectory):
-            step_reward = -0.005
             if index == len(trajectory) - 1:
-                step_reward += 1.0 if won else -1.0
-            prev_fainted = trajectory[index - 1].opponent_fainted if index > 0 else 0
-            ko_delta = step.opponent_fainted - prev_fainted
-            if ko_delta > 0:
-                step_reward += 0.05 * ko_delta
-            step.reward = step_reward
+                step.reward = 1.0 if won else -1.0
+            else:
+                step.reward = 0.0
 
     def consume_completed_trajectories(self) -> List[Dict[str, Any]]:
         if self._p1_policy is None:
