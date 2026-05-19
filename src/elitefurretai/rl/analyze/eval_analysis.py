@@ -35,7 +35,7 @@ from typing import Optional, Tuple
 
 import pandas as pd
 
-from elitefurretai.rl.analyze.eval_schema import read_battles
+from elitefurretai.rl.analyze.eval_schema import read_battles, read_turns
 
 # ─── Statistics helpers ──────────────────────────────────────────────
 
@@ -89,6 +89,236 @@ def q2_opp_team_win_rate(battles: pd.DataFrame) -> pd.DataFrame:
     to surface the worst matchups for our model.
     """
     return _group_win_rate(battles, ["opp_team_hash", "opp_player_name"])
+
+
+def q5_short_loss_patterns(
+    battles: pd.DataFrame,
+    turns: Optional[pd.DataFrame] = None,
+    *,
+    max_turn: int = 5,
+) -> Tuple[pd.DataFrame, Optional[pd.DataFrame]]:
+    """Q5: short-loss (≤``max_turn`` turns) patterns.
+
+    Returns ``(opp_team_freq, action_dist)``:
+
+    * ``opp_team_freq``: per (opp_team_hash, opp_player_name) the
+      number of short losses, total battles, and the over-representation
+      ratio ``(short_loss_rate / overall_loss_rate)``. A ratio >1
+      means this opp_team crushes us *faster* than average. Sort
+      descending to surface the worst short-loss offenders.
+    * ``action_dist``: if ``turns`` is provided, per action_chosen_str
+      the count in short losses vs the same count in all battles, and
+      a chi-square-style residual. Tells you which actions are
+      over-/under-represented when we lose fast. ``None`` if no turns.
+
+    Why two tables: opp_team_freq answers "which matchups blow up
+    fast?" (team-level diagnostic); action_dist answers "what is the
+    model doing wrong on turn 1-4 when it gets crushed?" (behavior
+    diagnostic).
+    """
+    if battles.empty:
+        empty = pd.DataFrame(
+            columns=[
+                "opp_team_hash",
+                "opp_player_name",
+                "n_short_losses",
+                "n_losses",
+                "short_fraction",
+                "over_representation",
+            ]
+        )
+        return empty, None
+
+    losses_all = battles.dropna(subset=["outcome"])
+    losses_all = losses_all[losses_all["outcome"] == 0.0]
+    short_losses = losses_all[losses_all["final_turn"] <= max_turn]
+
+    # Per-opp-team frequency.
+    overall = (
+        losses_all.groupby(["opp_team_hash", "opp_player_name"], as_index=False)
+        .size()
+        .rename(columns={"size": "n_losses"})
+    )
+    short = (
+        short_losses.groupby(["opp_team_hash", "opp_player_name"], as_index=False)
+        .size()
+        .rename(columns={"size": "n_short_losses"})
+    )
+    if overall.empty:
+        opp_team_freq = pd.DataFrame(
+            columns=[
+                "opp_team_hash",
+                "opp_player_name",
+                "n_short_losses",
+                "n_losses",
+                "short_fraction",
+                "over_representation",
+            ]
+        )
+    else:
+        # Outer join so opp_teams with zero short losses still appear
+        # (over_representation = 0 for them).
+        opp_team_freq = overall.merge(
+            short, on=["opp_team_hash", "opp_player_name"], how="left"
+        )
+        opp_team_freq["n_short_losses"] = (
+            opp_team_freq["n_short_losses"].fillna(0).astype(int)
+        )
+        opp_team_freq["short_fraction"] = (
+            opp_team_freq["n_short_losses"] / opp_team_freq["n_losses"]
+        )
+        total_losses = len(losses_all)
+        total_short_losses = len(short_losses)
+        baseline_rate = total_short_losses / total_losses if total_losses > 0 else 0.0
+        # Over-representation: how much more likely is this team to
+        # short-loss us vs. the average opp_team. 1.0 = same as
+        # average; >1 = worse than average; <1 = better than average.
+        opp_team_freq["over_representation"] = (
+            opp_team_freq["short_fraction"] / baseline_rate
+            if baseline_rate > 0
+            else float("nan")
+        )
+
+    # Action distribution in short losses vs overall.
+    if turns is None or turns.empty:
+        return opp_team_freq, None
+
+    short_battle_ids = set(short_losses["battle_id"])
+    short_turn_actions = turns[turns["battle_id"].isin(short_battle_ids)][
+        "action_chosen_str"
+    ].value_counts()
+    all_turn_actions = turns["action_chosen_str"].value_counts()
+    actions_df = pd.DataFrame(
+        {
+            "action_chosen_str": all_turn_actions.index,
+            "n_short_loss_turns": [
+                int(short_turn_actions.get(a, 0)) for a in all_turn_actions.index
+            ],
+            "n_all_turns": all_turn_actions.values,
+        }
+    )
+    total_short = actions_df["n_short_loss_turns"].sum()
+    total_all = actions_df["n_all_turns"].sum()
+    if total_short > 0 and total_all > 0:
+        actions_df["short_rate"] = actions_df["n_short_loss_turns"] / total_short
+        actions_df["overall_rate"] = actions_df["n_all_turns"] / total_all
+        # Expected count under the null = overall_rate × total_short.
+        expected = actions_df["overall_rate"] * total_short
+        actions_df["chi_sq_residual"] = (
+            actions_df["n_short_loss_turns"] - expected
+        ) / expected.pow(0.5)
+    else:
+        actions_df["short_rate"] = float("nan")
+        actions_df["overall_rate"] = float("nan")
+        actions_df["chi_sq_residual"] = float("nan")
+    return opp_team_freq, actions_df
+
+
+def q7_value_calibration(
+    battles: pd.DataFrame,
+    turns: pd.DataFrame,
+    *,
+    n_bins: int = 10,
+    per_opp_type: bool = False,
+) -> Tuple[pd.DataFrame, float]:
+    """Q7: value-head calibration via reliability diagram + ECE.
+
+    For each turn we know the model's ``value_predicted`` (a scalar in
+    roughly [-1, 1]) and, by joining on ``battle_id``, the eventual
+    outcome of that turn's battle (1 / 0 / NaN). The C51 head is
+    trained to predict a distribution that integrates to expected
+    return; in expectation, ``value_predicted ≈ E[outcome | state]``,
+    so calibration is "does the predicted value match the actual win
+    rate from states with that value?"
+
+    Returns ``(reliability_df, ece)``:
+
+    * ``reliability_df``: one row per bin with columns
+      ``bin_lower, bin_upper, n_turns, mean_predicted, observed_win_rate``.
+      Bins are equal-width over the value range.
+    * ``ece``: scalar Expected Calibration Error = Σ wᵢ·|predᵢ - obsᵢ|
+      where wᵢ is the fraction of turns in bin i.
+
+    Mapping value_predicted (∈ [-1, 1]) to "win probability" assumes
+    the model's value support is symmetric and outcome is 0/1. We
+    rescale via ``(value + 1) / 2`` so bins are on the probability
+    scale and the ECE is directly interpretable.
+
+    ``per_opp_type=True`` would facet, but we currently do not — the
+    caller can compute per-slice ECE by pre-filtering ``battles`` /
+    ``turns``.
+    """
+    if turns.empty or battles.empty:
+        return pd.DataFrame(
+            columns=[
+                "bin_lower",
+                "bin_upper",
+                "n_turns",
+                "mean_predicted",
+                "observed_win_rate",
+            ]
+        ), float("nan")
+
+    # Join turn rows with their battle's outcome.
+    outcome_by_battle = battles.set_index("battle_id")["outcome"]
+    turns_with_outcome = turns.assign(outcome=turns["battle_id"].map(outcome_by_battle))
+    # Drop teampreview turns — value_predicted there is degenerate
+    # (the value head sees no in-battle state) and would skew the
+    # diagram. Also drop ties (NaN outcome).
+    turns_with_outcome = turns_with_outcome[
+        ~turns_with_outcome["is_teampreview"] & turns_with_outcome["outcome"].notna()
+    ]
+    if turns_with_outcome.empty:
+        return pd.DataFrame(), float("nan")
+
+    # Rescale value_predicted from [-1, 1] to [0, 1] (probability scale).
+    turns_with_outcome = turns_with_outcome.assign(
+        pred_prob=(turns_with_outcome["value_predicted"] + 1) / 2
+    )
+    # Clip to [0, 1] in case the value head over- or under-shoots
+    # (C51 support is [-1, 1] but numerical noise can push slightly out).
+    turns_with_outcome["pred_prob"] = turns_with_outcome["pred_prob"].clip(0.0, 1.0)
+
+    bin_edges = [i / n_bins for i in range(n_bins + 1)]
+    # right=True (default) so 1.0 falls in the last bin; left edge is
+    # inclusive only for the very first bin via include_lowest.
+    bin_idx = pd.cut(
+        turns_with_outcome["pred_prob"],
+        bins=bin_edges,
+        labels=False,
+        include_lowest=True,
+    )
+    turns_with_outcome = turns_with_outcome.assign(bin_idx=bin_idx)
+
+    grouped = turns_with_outcome.groupby("bin_idx", as_index=False).agg(
+        n_turns=("pred_prob", "size"),
+        mean_predicted=("pred_prob", "mean"),
+        observed_win_rate=("outcome", "mean"),
+    )
+    grouped["bin_lower"] = (
+        grouped["bin_idx"].astype(int).map({i: bin_edges[i] for i in range(n_bins)})
+    )
+    grouped["bin_upper"] = (
+        grouped["bin_idx"].astype(int).map({i: bin_edges[i + 1] for i in range(n_bins)})
+    )
+    grouped = (
+        grouped[
+            ["bin_lower", "bin_upper", "n_turns", "mean_predicted", "observed_win_rate"]
+        ]
+        .sort_values("bin_lower")
+        .reset_index(drop=True)
+    )
+
+    # ECE — bucket-weighted absolute calibration gap.
+    total_n = grouped["n_turns"].sum()
+    ece = float(
+        (
+            (grouped["mean_predicted"] - grouped["observed_win_rate"]).abs()
+            * grouped["n_turns"]
+            / total_n
+        ).sum()
+    )
+    return grouped, ece
 
 
 def _group_win_rate(battles: pd.DataFrame, group_cols: list) -> pd.DataFrame:
@@ -209,10 +439,24 @@ def main() -> None:
         result = q1_agent_team_win_rate(battles).sort_values("win_rate")
     elif args.cmd == "opp_team":
         result = q2_opp_team_win_rate(battles).sort_values("win_rate")
+    elif args.cmd == "short_loss":
+        turns = read_turns(args.run_dir)
+        opp_freq, actions = q5_short_loss_patterns(battles, turns)
+        opp_freq = opp_freq.sort_values("over_representation", ascending=False)
+        print("=== Over-represented opp_teams in short losses ===")
+        _emit(opp_freq, output=None, fmt=args.format)
+        if actions is not None:
+            print("\n=== Action distribution: short-loss turns vs all turns ===")
+            actions = actions.sort_values("chi_sq_residual", ascending=False).head(20)
+            _emit(actions, output=args.output, fmt=args.format)
+        return
+    elif args.cmd == "value_calibration":
+        turns = read_turns(args.run_dir)
+        reliability, ece = q7_value_calibration(battles, turns)
+        print(f"=== Value-head reliability (ECE = {ece:.4f}) ===")
+        result = reliability
     elif args.cmd in {
-        "short_loss",
         "confidence",
-        "value_calibration",
         "value_ensemble",
         "save_games",
         "report",
