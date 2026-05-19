@@ -1,43 +1,58 @@
+"""Generalized model-vs-anything evaluation entry point.
+
+Resolves both players from a single string per slot (checkpoint path
+*or* baseline name), with team sources independently specified per
+slot (file *or* directory *or* format-default). Replaces the prior
+model-vs-model / model-vs-baseline split.
+
+Example
+-------
+    python -m elitefurretai.rl.analyze.evaluate \
+        --player1 data/models/rl/may16-run/main_model_step_500.pt \
+        --player2 simple_heuristic \
+        --team1 data/teams/gen9vgc2024regg/constrained \
+        --team2 data/teams/gen9vgc2024regg/vgcbench.txt \
+        --battles 200 --workers 4 --launch-servers
+"""
+
+from __future__ import annotations
+
 import argparse
 import asyncio
 import json
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from dataclasses import asdict, dataclass
+from typing import Any, Dict, List
 
-from poke_env.player import MaxBasePowerPlayer, Player
-from poke_env.player.baselines import SimpleHeuristicsPlayer
 from poke_env.ps_client import AccountConfiguration, ServerConfiguration
 
 from elitefurretai.engine.showdown_server_manager import (
-    EXTERNAL_VGCBENCH_USERNAMES,
     launch_showdown_servers,
     shutdown_showdown_servers,
 )
-from elitefurretai.etl import TeamRepo
-from elitefurretai.rl.opponents import _create_vgc_bench_player
-from elitefurretai.rl.players import MaxDamagePlayer, SimpleModelPlayer
+from elitefurretai.rl.analyze.player_factory import PlayerSpec, parse_player_spec
+from elitefurretai.rl.analyze.team_provider import TeamProvider, parse_team_spec
 
 
 @dataclass
 class EvalResult:
+    """Outcome of a single eval matchup, aggregated across workers."""
+
     label: str
-    model_wins: int
-    opponent_wins: int
+    player1_wins: int
+    player2_wins: int
+    ties: int
     battles_played: int
 
     @property
-    def win_rate(self) -> float:
-        if self.battles_played == 0:
-            return 0.0
-        return self.model_wins / self.battles_played
+    def player1_win_rate(self) -> float:
+        return self.player1_wins / self.battles_played if self.battles_played else 0.0
 
 
 def _build_server_urls(server_base: str, num_servers: int, start_port: int) -> List[str]:
     if server_base != "localhost":
-        return [f"{server_base}"]
+        return [server_base]
     return [f"localhost:{start_port + i}" for i in range(num_servers)]
 
 
@@ -48,258 +63,111 @@ def _split_battles(total_battles: int, workers: int) -> List[int]:
     return [base + (1 if i < rem else 0) for i in range(workers)]
 
 
-def _load_sample_team(format_name: str) -> str:
-    team_repo = TeamRepo(filepath="data/teams")
-    return team_repo.sample_team(format_name)
-
-
-def _build_baseline_team_provider(
-    *,
-    battle_format: str,
-    baseline_team_file: Optional[str],
-    baseline_team_dir: Optional[str],
-) -> Callable[[], str]:
-    if baseline_team_file and baseline_team_dir:
-        raise ValueError("Use only one of --baseline-team-file or --baseline-team-dir")
-
-    if baseline_team_file:
-        fixed_team = Path(baseline_team_file).read_text()
-        return lambda: fixed_team
-
-    if baseline_team_dir:
-        team_repo = TeamRepo(filepath=baseline_team_dir)
-        return lambda: team_repo.sample_team(battle_format)
-
-    fallback_team = _load_sample_team(battle_format)
-    return lambda: fallback_team
-
-
-def _baseline_user_tag(baseline_key: str) -> str:
-    mapping = {
-        "maxdamage": "MD",
-        "maxbasepower": "MBP",
-        "shp": "SHP",
-        "vgcbench": "VGB",
-    }
-    return mapping.get(baseline_key, baseline_key[:3].upper())
-
-
 def _username(prefix: str, worker_id: int, run_tag: str) -> str:
+    """Build a Showdown username under the 18-char limit.
+
+    Showdown rejects usernames > 18 chars and silently truncates duplicates,
+    so we have to be deliberate. ``run_tag`` is a 4-hex-char per-process
+    nonce that disambiguates concurrent eval runs sharing the same server.
+    """
     return f"{prefix}{worker_id}{run_tag}"[:18]
-
-
-def _run_worker_model_vs_model(
-    worker_id: int,
-    model1_path: str,
-    model2_path: str,
-    battles: int,
-    server_url: str,
-    battle_format: str,
-    device: str,
-    batch_size: int,
-    run_tag: str,
-) -> EvalResult:
-    async def _run() -> EvalResult:
-        team1 = _load_sample_team(battle_format)
-        team2 = _load_sample_team(battle_format)
-
-        server_config = ServerConfiguration(f"ws://{server_url}/showdown/websocket", "")
-        player1 = SimpleModelPlayer(
-            model_path=model1_path,
-            device=device,
-            battle_format=battle_format,
-            probabilistic=False,
-            account_configuration=AccountConfiguration(
-                _username("EM1", worker_id, run_tag), None
-            ),
-            server_configuration=server_config,
-            team=team1,
-            accept_open_team_sheet=True,
-        )
-        player2 = SimpleModelPlayer(
-            model_path=model2_path,
-            device=device,
-            battle_format=battle_format,
-            probabilistic=False,
-            account_configuration=AccountConfiguration(
-                _username("EM2", worker_id, run_tag), None
-            ),
-            server_configuration=server_config,
-            team=team2,
-            accept_open_team_sheet=True,
-        )
-
-        await player1.battle_against(player2, n_battles=battles)
-
-        played = player1.n_finished_battles
-        wins = player1.n_won_battles
-        losses = player1.n_lost_battles
-        return EvalResult("model_vs_model", wins, losses, played)
-
-    return asyncio.run(_run())
-
-
-def _run_worker_model_vs_baseline(
-    worker_id: int,
-    model_path: str,
-    baseline_name: str,
-    battles: int,
-    server_url: str,
-    battle_format: str,
-    device: str,
-    batch_size: int,
-    vgc_bench_checkpoint_path: str,
-    baseline_team_file: Optional[str],
-    baseline_team_dir: Optional[str],
-    external_vgcbench_usernames: Optional[List[str]],
-    run_tag: str,
-) -> EvalResult:
-    async def _run() -> EvalResult:
-        server_config = ServerConfiguration(f"ws://{server_url}/showdown/websocket", "")
-        model_team = _load_sample_team(battle_format)
-        baseline_team_provider = _build_baseline_team_provider(
-            battle_format=battle_format,
-            baseline_team_file=baseline_team_file,
-            baseline_team_dir=baseline_team_dir,
-        )
-
-        model_player = SimpleModelPlayer(
-            model_path=model_path,
-            device=device,
-            battle_format=battle_format,
-            probabilistic=False,
-            account_configuration=AccountConfiguration(
-                _username(
-                    f"EM{_baseline_user_tag(baseline_name.lower())}", worker_id, run_tag
-                ),
-                None,
-            ),
-            server_configuration=server_config,
-            team=model_team,
-            accept_open_team_sheet=False,
-        )
-
-        baseline_key = baseline_name.lower()
-        baseline_prefix = f"EB{_baseline_user_tag(baseline_key)}"
-
-        if baseline_key == "vgcbench" and external_vgcbench_usernames:
-            opponent_username = external_vgcbench_usernames[
-                worker_id % len(external_vgcbench_usernames)
-            ]
-            await model_player.send_challenges(opponent_username, battles)
-
-            played = model_player.n_finished_battles
-            wins = model_player.n_won_battles
-            losses = model_player.n_lost_battles
-            return EvalResult(baseline_key, wins, losses, played)
-
-        def _make_opponent(baseline_username: str, team: str) -> Player:
-            opponent: Player
-            if baseline_key == "maxdamage":
-                opponent = MaxDamagePlayer(
-                    battle_format=battle_format,
-                    account_configuration=AccountConfiguration(baseline_username, None),
-                    server_configuration=server_config,
-                    team=team,
-                    accept_open_team_sheet=False,
-                )
-            elif baseline_key == "maxbasepower":
-                opponent = MaxBasePowerPlayer(
-                    battle_format=battle_format,
-                    account_configuration=AccountConfiguration(baseline_username, None),
-                    server_configuration=server_config,
-                    team=team,
-                    accept_open_team_sheet=False,
-                )
-            elif baseline_key == "shp":
-                opponent = SimpleHeuristicsPlayer(
-                    battle_format=battle_format,
-                    account_configuration=AccountConfiguration(baseline_username, None),
-                    server_configuration=server_config,
-                    team=team,
-                    accept_open_team_sheet=False,
-                )
-            elif baseline_key == "vgcbench":
-                opponent = _create_vgc_bench_player(
-                    device=device,
-                    player_config=AccountConfiguration(baseline_username, None),
-                    server_config=server_config,
-                    team=team,
-                    battle_format=battle_format,
-                    checkpoint_path=vgc_bench_checkpoint_path,
-                    accept_open_team_sheet=False,
-                )
-            else:
-                raise ValueError(f"Unknown baseline '{baseline_key}'")
-
-            return opponent
-
-        if baseline_team_file:
-            shared_opponent = _make_opponent(
-                _username(baseline_prefix, worker_id, run_tag), baseline_team_provider()
-            )
-            try:
-                await model_player.battle_against(shared_opponent, n_battles=battles)
-            except Exception as exc:
-                print(f"[eval] baseline={baseline_key} worker={worker_id} failed: {exc}")
-        else:
-            for battle_idx in range(battles):
-                baseline_username = _username(
-                    baseline_prefix,
-                    worker_id,
-                    f"{run_tag}{battle_idx:03d}",
-                )
-                team = baseline_team_provider()
-                opponent = _make_opponent(baseline_username, team)
-
-                try:
-                    await model_player.battle_against(opponent, n_battles=1)
-                except Exception as exc:
-                    print(
-                        f"[eval] baseline={baseline_key} worker={worker_id} failed: {exc}"
-                    )
-
-        played = model_player.n_finished_battles
-        wins = model_player.n_won_battles
-        losses = model_player.n_lost_battles
-        return EvalResult(baseline_key, wins, losses, played)
-
-    return asyncio.run(_run())
 
 
 def _aggregate_results(label: str, results: List[EvalResult]) -> EvalResult:
     return EvalResult(
         label=label,
-        model_wins=sum(r.model_wins for r in results),
-        opponent_wins=sum(r.opponent_wins for r in results),
+        player1_wins=sum(r.player1_wins for r in results),
+        player2_wins=sum(r.player2_wins for r in results),
+        ties=sum(r.ties for r in results),
         battles_played=sum(r.battles_played for r in results),
     )
 
 
-def _print_result(result: EvalResult, opponent_label: str) -> None:
+def _print_result(result: EvalResult, p1_label: str, p2_label: str) -> None:
     print(
-        f"{result.label:>16} vs {opponent_label:<16} | "
+        f"{p1_label:>20} vs {p2_label:<20} | "
         f"Battles={result.battles_played:<5} "
-        f"Wins={result.model_wins:<5} "
-        f"Losses={result.opponent_wins:<5} "
-        f"WR={result.win_rate * 100:6.2f}%"
+        f"P1Wins={result.player1_wins:<5} "
+        f"P2Wins={result.player2_wins:<5} "
+        f"Ties={result.ties:<3} "
+        f"P1WR={result.player1_win_rate * 100:6.2f}%"
     )
 
 
-def run_model_vs_model_parallel(
-    model1_path: str,
-    model2_path: str,
+def _run_worker(
+    worker_id: int,
+    p1: PlayerSpec,
+    p2: PlayerSpec,
+    t1: TeamProvider,
+    t2: TeamProvider,
+    battles: int,
+    server_url: str,
+    run_tag: str,
+) -> EvalResult:
+    """One worker's slice of an eval matchup.
+
+    Each worker instantiates fresh players (one per spec slot) and runs
+    ``battles`` games between them. Players are constructed *inside* the
+    worker so each worker holds its own poke-env client / inference state.
+    """
+
+    async def _run() -> EvalResult:
+        server_config = ServerConfiguration(f"ws://{server_url}/showdown/websocket", "")
+        p1_account = AccountConfiguration(
+            _username(f"E1{p1.user_tag}", worker_id, run_tag), None
+        )
+        p2_account = AccountConfiguration(
+            _username(f"E2{p2.user_tag}", worker_id, run_tag), None
+        )
+
+        player1 = p1.factory(t1, p1_account, server_config, False)
+        player2 = p2.factory(t2, p2_account, server_config, False)
+
+        try:
+            await player1.battle_against(player2, n_battles=battles)
+        except Exception as exc:
+            print(f"[eval] worker={worker_id} {p1.name} vs {p2.name} failed: {exc}")
+
+        played = player1.n_finished_battles
+        p1_wins = player1.n_won_battles
+        p2_wins = player1.n_lost_battles
+        ties = played - p1_wins - p2_wins
+        return EvalResult(
+            label=f"{p1.name}_vs_{p2.name}",
+            player1_wins=p1_wins,
+            player2_wins=p2_wins,
+            ties=ties,
+            battles_played=played,
+        )
+
+    return asyncio.run(_run())
+
+
+def run_eval_parallel(
+    p1: PlayerSpec,
+    p2: PlayerSpec,
+    t1: TeamProvider,
+    t2: TeamProvider,
     num_battles: int,
     server_urls: List[str],
     workers: int,
-    battle_format: str,
-    device: str,
-    batch_size: int,
     run_tag: str,
 ) -> EvalResult:
+    """Fan out ``num_battles`` across ``workers`` and aggregate.
+
+    Workers run in a ``ThreadPoolExecutor``; each calls ``asyncio.run`` on
+    its own event loop. Threading (not multiprocessing) is fine here
+    because the heavy work is async network I/O against Showdown servers.
+    """
     splits = [s for s in _split_battles(num_battles, workers) if s > 0]
     if not splits:
-        return EvalResult("model", 0, 0, 0)
+        return EvalResult(
+            label=f"{p1.name}_vs_{p2.name}",
+            player1_wins=0,
+            player2_wins=0,
+            ties=0,
+            battles_played=0,
+        )
 
     with ThreadPoolExecutor(max_workers=len(splits)) as pool:
         futures = []
@@ -307,15 +175,14 @@ def run_model_vs_model_parallel(
             server_url = server_urls[worker_id % len(server_urls)]
             futures.append(
                 pool.submit(
-                    _run_worker_model_vs_model,
+                    _run_worker,
                     worker_id,
-                    model1_path,
-                    model2_path,
+                    p1,
+                    p2,
+                    t1,
+                    t2,
                     battles,
                     server_url,
-                    battle_format,
-                    device,
-                    batch_size,
                     run_tag,
                 )
             )
@@ -325,118 +192,84 @@ def run_model_vs_model_parallel(
             try:
                 results.append(f.result())
             except Exception as exc:
-                print(f"[eval] model_vs_model worker failed: {exc}")
-                results.append(EvalResult("model_vs_model", 0, 0, 0))
-        return _aggregate_results("model", results)
-
-
-def run_model_vs_baseline_parallel(
-    model_path: str,
-    baseline_name: str,
-    num_battles: int,
-    server_urls: List[str],
-    workers: int,
-    battle_format: str,
-    device: str,
-    batch_size: int,
-    vgc_bench_checkpoint_path: str,
-    baseline_team_file: Optional[str],
-    baseline_team_dir: Optional[str],
-    external_vgcbench_usernames: Optional[List[str]],
-    run_tag: str,
-) -> EvalResult:
-    splits = [s for s in _split_battles(num_battles, workers) if s > 0]
-    if not splits:
-        return EvalResult("model", 0, 0, 0)
-
-    with ThreadPoolExecutor(max_workers=len(splits)) as pool:
-        futures = []
-        for worker_id, battles in enumerate(splits):
-            server_url = server_urls[worker_id % len(server_urls)]
-            futures.append(
-                pool.submit(
-                    _run_worker_model_vs_baseline,
-                    worker_id,
-                    model_path,
-                    baseline_name,
-                    battles,
-                    server_url,
-                    battle_format,
-                    device,
-                    batch_size,
-                    vgc_bench_checkpoint_path,
-                    baseline_team_file,
-                    baseline_team_dir,
-                    external_vgcbench_usernames,
-                    run_tag,
+                print(f"[eval] {p1.name} vs {p2.name} worker failed: {exc}")
+                results.append(
+                    EvalResult(
+                        label=f"{p1.name}_vs_{p2.name}",
+                        player1_wins=0,
+                        player2_wins=0,
+                        ties=0,
+                        battles_played=0,
+                    )
                 )
-            )
-        results: List[EvalResult] = []
-        for f in futures:
-            try:
-                results.append(f.result())
-            except Exception as exc:
-                print(f"[eval] baseline={baseline_name} worker failed: {exc}")
-                results.append(EvalResult(baseline_name, 0, 0, 0))
-        return _aggregate_results(baseline_name, results)
+        return _aggregate_results(f"{p1.name}_vs_{p2.name}", results)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Fast multi-server/multi-threaded RL model evaluation"
+        description="Generalized model/baseline evaluation runner"
     )
-    parser.add_argument("model1", type=str, help="Path to evaluated model checkpoint")
     parser.add_argument(
-        "model2",
-        nargs="?",
-        default=None,
-        help="Optional path to opponent model checkpoint",
+        "--player1",
+        required=True,
+        type=str,
+        help="Player 1 spec: checkpoint path or baseline name "
+        "(max_damage, max_base_power, simple_heuristic, vgc_bench, random)",
     )
-    parser.add_argument("--num-battles", type=int, default=100)
+    parser.add_argument(
+        "--player2",
+        required=True,
+        type=str,
+        help="Player 2 spec (same accepted values as --player1)",
+    )
+    parser.add_argument(
+        "--team1",
+        type=str,
+        default=None,
+        help="Player 1 team source: file, directory, or omit for format default",
+    )
+    parser.add_argument(
+        "--team2",
+        type=str,
+        default=None,
+        help="Player 2 team source: file, directory, or omit for format default",
+    )
+    parser.add_argument("--battles", type=int, default=100)
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--num-servers", type=int, default=4)
     parser.add_argument("--start-port", type=int, default=8000)
+    parser.add_argument("--server-base", type=str, default="localhost")
     parser.add_argument(
         "--launch-servers",
         action="store_true",
         help="Launch local Showdown servers automatically",
     )
-    parser.add_argument("--server-base", type=str, default="localhost")
     parser.add_argument("--device", type=str, default="cuda")
-    parser.add_argument("--battle-format", type=str, default="gen9vgc2023regc")
-    parser.add_argument("--batch-size", type=int, default=16)
-    parser.add_argument(
-        "--baselines",
-        type=str,
-        default="maxdamage,maxbasepower,shp,vgcbench",
-        help="Comma-separated baseline suite to run (default: maxdamage,maxbasepower,shp,vgcbench). Use empty string to disable.",
-    )
+    parser.add_argument("--battle-format", type=str, default="gen9vgc2024regg")
     parser.add_argument(
         "--vgc-bench-checkpoint-path",
         type=str,
         default="data/models/vgc-bench-sb3-model.zip",
-        help="Path to the SB3 vgc-bench checkpoint zip used for vgcbench baseline.",
-    )
-    parser.add_argument(
-        "--baseline-team-file",
-        type=str,
-        default=None,
-        help="Optional team file used by all baselines in every battle.",
-    )
-    parser.add_argument(
-        "--baseline-team-dir",
-        type=str,
-        default=None,
-        help="Optional TeamRepo root directory to sample a new baseline team each battle.",
     )
     parser.add_argument("--output", type=str, default=None)
     args = parser.parse_args()
 
-    if args.baseline_team_file and args.baseline_team_dir:
-        raise ValueError("Use only one of --baseline-team-file or --baseline-team-dir")
+    p1 = parse_player_spec(
+        args.player1,
+        device=args.device,
+        battle_format=args.battle_format,
+        vgc_bench_checkpoint_path=args.vgc_bench_checkpoint_path,
+    )
+    p2 = parse_player_spec(
+        args.player2,
+        device=args.device,
+        battle_format=args.battle_format,
+        vgc_bench_checkpoint_path=args.vgc_bench_checkpoint_path,
+    )
+    t1 = parse_team_spec(args.team1, battle_format=args.battle_format)
+    t2 = parse_team_spec(args.team2, battle_format=args.battle_format)
 
     run_tag = format(int(time.time() * 1000) % 65536, "04x")
-    external_vgcbench_usernames = list(EXTERNAL_VGCBENCH_USERNAMES)
 
     server_processes = []
     if args.launch_servers:
@@ -446,57 +279,35 @@ def main() -> None:
         server_urls = _build_server_urls(
             args.server_base, args.num_servers, args.start_port
         )
-        all_results: Dict[str, Any] = {}
 
-        print("\n=== Model Evaluation ===")
-        if args.model2:
-            mm_result = run_model_vs_model_parallel(
-                model1_path=args.model1,
-                model2_path=args.model2,
-                num_battles=args.num_battles,
-                server_urls=server_urls,
-                workers=args.workers,
-                battle_format=args.battle_format,
-                device=args.device,
-                batch_size=args.batch_size,
-                run_tag=run_tag,
-            )
-            _print_result(mm_result, "model2")
-            all_results["model_vs_model"] = mm_result.__dict__ | {
-                "win_rate": mm_result.win_rate
-            }
-
-        baseline_names = [
-            b.strip().lower() for b in args.baselines.split(",") if b.strip()
-        ]
-        if baseline_names:
-            print("\n=== Baseline Evaluation ===")
-            baseline_results: Dict[str, Any] = {}
-            for baseline in baseline_names:
-                result = run_model_vs_baseline_parallel(
-                    model_path=args.model1,
-                    baseline_name=baseline,
-                    num_battles=args.num_battles,
-                    server_urls=server_urls,
-                    workers=args.workers,
-                    battle_format=args.battle_format,
-                    device=args.device,
-                    batch_size=args.batch_size,
-                    vgc_bench_checkpoint_path=args.vgc_bench_checkpoint_path,
-                    baseline_team_file=args.baseline_team_file,
-                    baseline_team_dir=args.baseline_team_dir,
-                    external_vgcbench_usernames=external_vgcbench_usernames,
-                    run_tag=run_tag,
-                )
-                _print_result(result, baseline)
-                baseline_results[baseline] = result.__dict__ | {
-                    "win_rate": result.win_rate
-                }
-            all_results["baselines"] = baseline_results
+        started = time.time()
+        print(f"\n=== Evaluation: {p1.name} vs {p2.name} ===")
+        result = run_eval_parallel(
+            p1=p1,
+            p2=p2,
+            t1=t1,
+            t2=t2,
+            num_battles=args.battles,
+            server_urls=server_urls,
+            workers=args.workers,
+            run_tag=run_tag,
+        )
+        duration = time.time() - started
+        _print_result(result, p1.name, p2.name)
 
         if args.output:
+            payload: Dict[str, Any] = {
+                "p1": {"raw": p1.raw, "kind": p1.kind, "name": p1.name},
+                "p2": {"raw": p2.raw, "kind": p2.kind, "name": p2.name},
+                "team1_spec": args.team1,
+                "team2_spec": args.team2,
+                "battle_format": args.battle_format,
+                "duration_sec": round(duration, 2),
+                "result": asdict(result),
+                "result_p1_win_rate": result.player1_win_rate,
+            }
             with open(args.output, "w") as f:
-                json.dump(all_results, f, indent=2)
+                json.dump(payload, f, indent=2)
             print(f"\nSaved evaluation results to {args.output}")
     finally:
         if server_processes:
