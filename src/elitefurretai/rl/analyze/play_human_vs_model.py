@@ -27,7 +27,7 @@ from elitefurretai.engine.showdown_server_manager import (
     launch_showdown_servers,
     shutdown_showdown_servers,
 )
-from elitefurretai.rl.analyze.play_model import VerboseModelPlayer
+from elitefurretai.rl.players import VerboseModelPlayer
 
 
 class DeferredVerboseModelPlayer(VerboseModelPlayer):
