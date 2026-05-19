@@ -61,11 +61,22 @@ def test_parse_alias_returns_canonical_name():
     assert spec.user_tag == "MD"
 
 
-def test_parse_vgc_bench():
+def test_parse_vgc_bench_is_external():
+    """vgc_bench routes to ``kind="external"`` with a ``launch_external`` closure.
+
+    In-process construction is broken (poke-env version drift vs the
+    SB3 checkpoint), so the spec instead carries a launcher that will
+    spawn ``_vgcbench_subprocess.py`` under the vgc-bench venv. The
+    closure isn't invoked here — that requires the venv and a live
+    Showdown server.
+    """
     spec = parse_player_spec("vgc_bench", device="cpu", battle_format="gen9vgc2024regg")
-    assert spec.kind == "baseline"
+    assert spec.kind == "external"
     assert spec.name == "vgc_bench"
     assert spec.user_tag == "VGB"
+    assert spec.factory is None
+    assert spec.launch_external is not None
+    assert callable(spec.launch_external)
 
 
 def test_parse_model_path(tmp_path):

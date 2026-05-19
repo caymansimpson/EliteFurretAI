@@ -109,36 +109,110 @@ def _run_worker(
     Each worker instantiates fresh players (one per spec slot) and runs
     ``battles`` games between them. Players are constructed *inside* the
     worker so each worker holds its own poke-env client / inference state.
+
+    Two flow shapes depending on player kinds:
+
+    * **Both in-process** (``"model"`` / ``"baseline"``): standard
+      ``player1.battle_against(player2)``.
+    * **One external** (vgc_bench): launch the external subprocess in
+      this worker's server, then have the *in-process* player call
+      ``send_challenges(external.username, n_battles)``. The external
+      side is identified by Showdown username only; no Python ``Player``
+      object on our side. Win/loss accounting is taken from the
+      in-process player and inverted if the external is P1.
+    * Both external: rejected — there is no in-process side to drive
+      challenges from.
     """
+    if p1.kind == "external" and p2.kind == "external":
+        raise ValueError(
+            "Cannot run two external players against each other — at least "
+            "one side must be in-process to drive challenges."
+        )
 
     async def _run() -> EvalResult:
         server_config = ServerConfiguration(f"ws://{server_url}/showdown/websocket", "")
-        p1_account = AccountConfiguration(
-            _username(f"E1{p1.user_tag}", worker_id, run_tag), None
-        )
-        p2_account = AccountConfiguration(
-            _username(f"E2{p2.user_tag}", worker_id, run_tag), None
-        )
 
-        player1 = p1.factory(t1, p1_account, server_config, False)
-        player2 = p2.factory(t2, p2_account, server_config, False)
-
+        external_handle = None
         try:
-            await player1.battle_against(player2, n_battles=battles)
-        except Exception as exc:
-            print(f"[eval] worker={worker_id} {p1.name} vs {p2.name} failed: {exc}")
+            if p2.kind == "external":
+                # P1 is in-process, challenges P2's external username.
+                assert p2.launch_external is not None
+                external_handle = p2.launch_external(server_url)
+                p1_account = AccountConfiguration(
+                    _username(f"E1{p1.user_tag}", worker_id, run_tag), None
+                )
+                assert p1.factory is not None
+                player1 = p1.factory(t1, p1_account, server_config, False)
+                try:
+                    await player1.send_challenges(
+                        external_handle.username, n_challenges=battles
+                    )
+                except Exception as exc:
+                    print(
+                        f"[eval] worker={worker_id} {p1.name} vs {p2.name} "
+                        f"(external) failed: {exc}"
+                    )
+                played = player1.n_finished_battles
+                p1_wins = player1.n_won_battles
+                p2_wins = player1.n_lost_battles
 
-        played = player1.n_finished_battles
-        p1_wins = player1.n_won_battles
-        p2_wins = player1.n_lost_battles
-        ties = played - p1_wins - p2_wins
-        return EvalResult(
-            label=f"{p1.name}_vs_{p2.name}",
-            player1_wins=p1_wins,
-            player2_wins=p2_wins,
-            ties=ties,
-            battles_played=played,
-        )
+            elif p1.kind == "external":
+                # P2 is in-process, challenges P1's external username.
+                assert p1.launch_external is not None
+                external_handle = p1.launch_external(server_url)
+                p2_account = AccountConfiguration(
+                    _username(f"E2{p2.user_tag}", worker_id, run_tag), None
+                )
+                assert p2.factory is not None
+                player2 = p2.factory(t2, p2_account, server_config, False)
+                try:
+                    await player2.send_challenges(
+                        external_handle.username, n_challenges=battles
+                    )
+                except Exception as exc:
+                    print(
+                        f"[eval] worker={worker_id} {p1.name} (external) vs "
+                        f"{p2.name} failed: {exc}"
+                    )
+                played = player2.n_finished_battles
+                # Inverted: from EvalResult's "P1 perspective", a P2-side
+                # win for the in-process player means a *loss* for the
+                # external P1.
+                p1_wins = player2.n_lost_battles
+                p2_wins = player2.n_won_battles
+
+            else:
+                # Both in-process — original path.
+                p1_account = AccountConfiguration(
+                    _username(f"E1{p1.user_tag}", worker_id, run_tag), None
+                )
+                p2_account = AccountConfiguration(
+                    _username(f"E2{p2.user_tag}", worker_id, run_tag), None
+                )
+                assert p1.factory is not None and p2.factory is not None
+                player1 = p1.factory(t1, p1_account, server_config, False)
+                player2 = p2.factory(t2, p2_account, server_config, False)
+                try:
+                    await player1.battle_against(player2, n_battles=battles)
+                except Exception as exc:
+                    print(
+                        f"[eval] worker={worker_id} {p1.name} vs {p2.name} failed: {exc}"
+                    )
+                played = player1.n_finished_battles
+                p1_wins = player1.n_won_battles
+                p2_wins = player1.n_lost_battles
+
+            ties = played - p1_wins - p2_wins
+            return EvalResult(
+                label=f"{p1.name}_vs_{p2.name}",
+                player1_wins=p1_wins,
+                player2_wins=p2_wins,
+                ties=ties,
+                battles_played=played,
+            )
+        finally:
+            if external_handle is not None:
+                external_handle.shutdown()
 
     return asyncio.run(_run())
 
