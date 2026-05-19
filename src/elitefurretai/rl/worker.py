@@ -70,12 +70,13 @@ from typing import Any, Dict, List, Optional, cast
 import psutil
 import torch
 
+from elitefurretai.agents.vgcbench_manager import VGCBenchManager
 from elitefurretai.engine.vgc_environment import VGCEnvironment
 from elitefurretai.etl import Embedder, TeamRepo
 from elitefurretai.etl.system_utils import suppress_third_party_warnings
 from elitefurretai.rl.config import RNaDConfig
 from elitefurretai.rl.opponents import OpponentPool
-from elitefurretai.rl.players import RNaDAgent, VGCBenchManager
+from elitefurretai.rl.players import RNaDAgent
 
 logger = logging.getLogger(__name__)
 

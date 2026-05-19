@@ -1,7 +1,7 @@
 """Standalone subprocess entry point for a vgc-bench bot serving EFA as an opponent.
 
 This file is **not** user-invokable — it is spawned automatically by
-``elitefurretai.rl.players.VGCBenchManager.launch()`` as part of training.
+``elitefurretai.agents.vgcbench_manager.VGCBenchManager.launch()`` as part of training.
 The leading underscore in the filename signals "internal".
 
 Why this exists as a separate script

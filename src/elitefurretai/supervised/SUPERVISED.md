@@ -36,7 +36,7 @@ python src/elitefurretai/supervised/fine_tune.py \
 To use the trained model in a battle, use `behavior_clone_player.py`. This wraps the model in a `poke-env` Player class.
 
 ```python
-from elitefurretai.supervised.behavior_clone_player import BCPlayer
+from elitefurretai.agents.bc_player import BCPlayer
 
 player = BCPlayer(
     model_filepath="data/models/my_model.pt",

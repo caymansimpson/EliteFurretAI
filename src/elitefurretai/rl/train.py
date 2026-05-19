@@ -74,6 +74,7 @@ import psutil
 import torch
 
 import wandb
+from elitefurretai.agents.vgcbench_manager import VGCBenchManager
 from elitefurretai.engine.showdown_server_manager import (
     allocate_server_ports,
     launch_showdown_servers,
@@ -94,7 +95,7 @@ from elitefurretai.rl.learners import (
 )
 from elitefurretai.rl.model_registry import ModelRegistry
 from elitefurretai.rl.opponents import OpponentPool
-from elitefurretai.rl.players import RNaDAgent, VGCBenchManager, cleanup_worker_executors
+from elitefurretai.rl.players import RNaDAgent, cleanup_worker_executors
 from elitefurretai.rl.worker import mp_worker_process
 from elitefurretai.supervised import format_time
 

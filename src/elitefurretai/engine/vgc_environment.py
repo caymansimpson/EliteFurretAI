@@ -32,6 +32,7 @@ if TYPE_CHECKING:
 from poke_env import AccountConfiguration, ServerConfiguration
 from poke_env.player import MaxBasePowerPlayer, RandomPlayer
 
+from elitefurretai.agents.vgcbench_manager import VGCBenchManager
 from elitefurretai.engine.sync_battle_driver import (
     SyncBaselineController,
     SyncPolicyPlayer,
@@ -48,7 +49,7 @@ from elitefurretai.rl.opponents import (
     SimpleHeuristicBaselineCls,
     WorkerOpponentFactory,
 )
-from elitefurretai.rl.players import MaxDamagePlayer, RNaDAgent, VGCBenchManager
+from elitefurretai.rl.players import MaxDamagePlayer, RNaDAgent
 
 logger = logging.getLogger(__name__)
 
