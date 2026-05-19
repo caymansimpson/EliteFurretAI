@@ -176,7 +176,7 @@ def _run_worker(
     *,
     collect_run_dir: Optional[str] = None,
     eval_run_id: Optional[str] = None,
-    replay_sample_rate: float = 0.05,
+    replay_sample_rate: float = 1.0,
 ) -> EvalResult:
     """One worker iterates through its assigned (agent_team, opp_team) cells.
 
@@ -427,7 +427,7 @@ def run_eval_parallel(
     *,
     collect_run_dir: Optional[str] = None,
     eval_run_id: Optional[str] = None,
-    replay_sample_rate: float = 0.05,
+    replay_sample_rate: float = 1.0,
 ) -> EvalResult:
     """Fan out a list of (agent_team, opp_team) cells across workers.
 
@@ -624,10 +624,12 @@ def main() -> None:
     parser.add_argument(
         "--replay-sample-rate",
         type=float,
-        default=0.05,
+        default=1.0,
         help="Fraction of battles whose Showdown protocol log is gzipped to "
         "RUN_DIR/replays/. Battles cannot be re-played deterministically so "
-        "logs must be captured live. 0 disables; 1 saves all. Default: 0.05.",
+        "logs must be captured live. 0 disables; 1 saves all. Default: 1.0 "
+        "(replays are ~4 KB gzipped each — ~3 GB total across the full "
+        "4-opp_type 705k-battle schedule, well within disk budget).",
     )
     parser.add_argument(
         "--eval-run-id",

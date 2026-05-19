@@ -30,15 +30,19 @@ What gets recorded per turn
 Replay sampling
 ---------------
 At battle finish, we draw a uniform random number; if it falls under
-``replay_sample_rate`` (default 0.05) the full Showdown protocol log
-is gzipped to ``<run_dir>/replays/<battle_id>.log.gz``. This 5% sample
-gives a few hundred replays to draw from per opp_type — enough for
-Q8 to find candidates for all five save-game categories without
-ballooning storage to the full ~9 GB of all-battles logs.
+``replay_sample_rate`` (default 1.0 — every battle) the full Showdown
+protocol log is gzipped to ``<run_dir>/replays/<battle_id>.log.gz``.
 
-The 5% rate was chosen with the user's "we can't deterministically
-re-run battles" constraint in mind: replays must be captured live or
-not at all.
+Initial designs used a 5% sample to bound storage at ~150 MB total,
+but a realistic-scale storage measurement (see commit message of the
+B3b smoke run) put gzipped replay size at ~4 KB/battle — 700k full
+replays come to ~3 GB, well within disk budget. The user opted to
+save all replays so Q8 saved-game selection can use any battle as a
+candidate without "no replay available" gaps.
+
+Setting < 1.0 trades replay coverage for inode count if the run is
+extremely large. Set to 0.0 to disable replay capture entirely
+(parquet rows still record battle outcomes).
 """
 
 from __future__ import annotations
@@ -92,7 +96,7 @@ class TrajectoryCollector:
         battle_format: str,
         run_dir: str,
         worker_id: int,
-        replay_sample_rate: float = 0.05,
+        replay_sample_rate: float = 1.0,
         seed: Optional[int] = None,
     ) -> None:
         self.eval_run_id = eval_run_id
