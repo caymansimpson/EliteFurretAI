@@ -68,7 +68,7 @@ from torch.optim.lr_scheduler import LambdaLR
 
 from elitefurretai.etl import MDBO, Embedder
 from elitefurretai.rl.config import RNaDConfig
-from elitefurretai.rl.players import RNaDAgent
+from elitefurretai.rl.rnad_model import RNaDAgent
 from elitefurretai.supervised.model_archs import TransformerThreeHeadedModel, twohot_encode
 
 logger = logging.getLogger(__name__)

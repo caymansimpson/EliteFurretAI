@@ -19,6 +19,10 @@ from elitefurretai.engine.showdown_server_manager import (
     launch_showdown_servers,
     shutdown_showdown_servers,
 )
+from elitefurretai.rl.batch_inference_player import (
+    BatchInferencePlayer,
+    cleanup_worker_executors,
+)
 from elitefurretai.rl.config import RNaDConfig
 from elitefurretai.rl.learners import (
     PortfolioRNaDLearner,
@@ -31,11 +35,7 @@ from elitefurretai.rl.opponents import (
     OpponentPool,
     WorkerOpponentFactory,
 )
-from elitefurretai.rl.players import (
-    BatchInferencePlayer,
-    RNaDAgent,
-    cleanup_worker_executors,
-)
+from elitefurretai.rl.rnad_model import RNaDAgent
 
 __all__ = [
     # Core training components

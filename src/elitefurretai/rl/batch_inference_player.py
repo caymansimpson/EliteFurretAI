@@ -1,21 +1,16 @@
-"""players.py — RL battle participants (the "actors" in the IMPALA picture).
+"""batch_inference_player.py — high-throughput async Player for RL training.
 
-What this file is
------------------
-Two classes that play Pokemon battles for the RL pipeline:
+BatchInferencePlayer gathers per-turn decisions from many concurrent battles
+and *batches* them into one model forward pass for efficiency, then pushes
+finished trajectories to a queue for the learner to consume.
 
-1. RNaDAgent              — A thin nn.Module wrapper around the trained model.
-                            Hides the LSTM-vs-Transformer difference behind a
-                            uniform `forward()` interface so callers don't care.
+This is training-time plumbing: coupled to the trajectory queue, the
+InferenceClient IPC layer, and worker-process orchestration. It is NOT a
+user-facing agent — see ``elitefurretai/agents/`` for those (eval Players,
+heuristic baselines, subprocess managers).
 
-2. BatchInferencePlayer   — The high-throughput, async player used during RL
-                            training. Gathers per-turn decisions from many
-                            concurrent battles, *batches* them into one model
-                            forward pass for efficiency, and pushes finished
-                            trajectories to a queue for the learner to consume.
-
-Note: SimpleModelPlayer, VerboseModelPlayer, and MaxDamagePlayer have been
-moved to ``elitefurretai/agents/`` (see planning/stage2/2026-05-19-09-30-agents-directory-reorg.md).
+Moved here from the former ``rl/players.py`` on 2026-05-19 as part of the
+agents/ directory reorganization (see planning/stage2/2026-05-19-09-30-agents-directory-reorg.md).
 
 How this fits the bigger picture
 --------------------------------
@@ -70,7 +65,6 @@ if TYPE_CHECKING:
     from elitefurretai.rl.inference_worker import InferenceClient
 
 import numpy as np
-import torch
 from poke_env.battle import AbstractBattle, DoubleBattle
 from poke_env.concurrency import POKE_LOOP
 from poke_env.player import Player
@@ -79,7 +73,6 @@ from poke_env.player.battle_order import DefaultBattleOrder
 from elitefurretai.etl import Embedder
 from elitefurretai.etl.encoder import MDBO
 from elitefurretai.rl.masking import fast_get_action_mask
-from elitefurretai.supervised.model_archs import TransformerThreeHeadedModel
 
 logger = logging.getLogger(__name__)
 
@@ -935,40 +928,7 @@ class BatchInferencePlayer(Player):
             self._reset_battle_hidden_state(battle.battle_tag)
 
 
-class RNaDAgent(torch.nn.Module):
-    """RL Agent wrapper around TransformerThreeHeadedModel.
-
-    Why this exists
-    ---------------
-    The supervised (BC) model maintains a growing context tensor across turns.
-    RNaDAgent presents a uniform `forward(x, hidden_state)` API that callers
-    use without caring about the underlying architecture details.
-
-    `get_initial_state(batch_size, device)` returns None (empty context) to
-    start a fresh battle.
-
-    This is a wrapper, not a model — it has no parameters of its own beyond
-    those of the wrapped model.
-    """
-
-    def __init__(self, model: TransformerThreeHeadedModel):
-        super().__init__()
-        self.model = model
-
-    def get_initial_state(self, batch_size: int, device: str):
-        # Transformer has no initial hidden state — context starts as None.
-        return None
-
-    def forward(self, x, hidden_state=None, mask=None, hidden_mask=None):
-        assert isinstance(self.model, TransformerThreeHeadedModel)
-        turn_logits, tp_logits, value, win_dist_logits, next_hidden = (
-            self.model.forward_with_hidden(x, hidden_state, mask, hidden_mask)
-        )
-        return turn_logits, tp_logits, value, win_dist_logits, next_hidden
-
-
 __all__ = [
-    "RNaDAgent",
     "BatchInferencePlayer",
     "cleanup_worker_executors",
 ]

@@ -50,7 +50,7 @@ from elitefurretai.rl.opponents import (
     SimpleHeuristicBaselineCls,
     WorkerOpponentFactory,
 )
-from elitefurretai.rl.players import RNaDAgent
+from elitefurretai.rl.rnad_model import RNaDAgent
 
 logger = logging.getLogger(__name__)
 

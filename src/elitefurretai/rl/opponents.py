@@ -71,12 +71,13 @@ from poke_env.teambuilder import ConstantTeambuilder
 
 from elitefurretai.agents.max_damage_player import MaxDamagePlayer
 from elitefurretai.etl import Embedder, TeamRepo
+from elitefurretai.rl.batch_inference_player import BatchInferencePlayer
 from elitefurretai.rl.learners import (
     build_model_from_config,
     is_checkpoint_compatible_with_model_config,
     load_model_from_checkpoint,
 )
-from elitefurretai.rl.players import BatchInferencePlayer, RNaDAgent
+from elitefurretai.rl.rnad_model import RNaDAgent
 
 logger = logging.getLogger(__name__)
 

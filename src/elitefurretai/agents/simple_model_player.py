@@ -25,7 +25,7 @@ from poke_env.player.battle_order import DefaultBattleOrder
 from elitefurretai.etl import Embedder
 from elitefurretai.etl.encoder import MDBO
 from elitefurretai.rl.masking import fast_get_action_mask
-from elitefurretai.rl.players import RNaDAgent
+from elitefurretai.rl.rnad_model import RNaDAgent
 
 
 class SimpleModelPlayer(Player):

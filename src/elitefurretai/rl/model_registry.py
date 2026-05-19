@@ -71,7 +71,7 @@ from elitefurretai.rl.inference_subprocess import (
     SubprocessSpec,
 )
 from elitefurretai.rl.inference_trainer import InferenceService, RealModelBatchHandler
-from elitefurretai.rl.players import RNaDAgent
+from elitefurretai.rl.rnad_model import RNaDAgent
 
 logger = logging.getLogger(__name__)
 

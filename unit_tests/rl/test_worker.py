@@ -22,7 +22,8 @@ from poke_env.ps_client import AccountConfiguration, ServerConfiguration
 
 from elitefurretai.etl.embedder import Embedder
 from elitefurretai.etl.encoder import MDBO
-from elitefurretai.rl.players import BatchInferencePlayer, RNaDAgent
+from elitefurretai.rl.batch_inference_player import BatchInferencePlayer
+from elitefurretai.rl.rnad_model import RNaDAgent
 
 # =============================================================================
 # FIXTURES: Reusable test components

@@ -9,7 +9,7 @@ import pytest
 from poke_env.ps_client import AccountConfiguration, ServerConfiguration
 
 from elitefurretai.rl.opponents import OpponentPool
-from elitefurretai.rl.players import RNaDAgent
+from elitefurretai.rl.rnad_model import RNaDAgent
 
 
 @pytest.fixture

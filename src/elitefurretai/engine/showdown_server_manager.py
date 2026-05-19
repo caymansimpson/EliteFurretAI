@@ -2,7 +2,7 @@
 
 External vgc-bench runner lifecycle (subprocess launch in a separate venv,
 username derivation, accept-challenges loop) lives on
-`elitefurretai.rl.players.VGCBenchManager`. This module only handles the
+`elitefurretai.agents.vgcbench_manager.VGCBenchManager`. This module only handles the
 Showdown server processes themselves and worker→server port allocation.
 """
 

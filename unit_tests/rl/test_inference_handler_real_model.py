@@ -19,7 +19,7 @@ import torch
 from elitefurretai.etl.embedder import Embedder
 from elitefurretai.rl.inference_ipc import InferenceRequest
 from elitefurretai.rl.inference_trainer import RealModelBatchHandler
-from elitefurretai.rl.players import RNaDAgent
+from elitefurretai.rl.rnad_model import RNaDAgent
 from elitefurretai.supervised.model_archs import TransformerThreeHeadedModel
 
 

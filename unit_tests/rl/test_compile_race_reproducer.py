@@ -21,7 +21,7 @@ import torch
 import torch.nn as nn
 
 from elitefurretai.etl.embedder import Embedder
-from elitefurretai.rl.players import RNaDAgent
+from elitefurretai.rl.rnad_model import RNaDAgent
 from elitefurretai.supervised.model_archs import TransformerThreeHeadedModel
 
 

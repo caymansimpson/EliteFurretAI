@@ -7,7 +7,7 @@ import pytest
 from poke_env.battle import AbstractBattle, DoubleBattle
 
 from elitefurretai.agents.max_damage_player import MaxDamagePlayer
-from elitefurretai.rl.players import BatchInferencePlayer
+from elitefurretai.rl.batch_inference_player import BatchInferencePlayer
 
 
 class _Recorder:

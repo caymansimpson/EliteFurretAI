@@ -35,7 +35,7 @@ from elitefurretai.rl.inference_trainer import (
     echo_batch_handler,
 )
 from elitefurretai.rl.inference_worker import InferenceClient
-from elitefurretai.rl.players import RNaDAgent
+from elitefurretai.rl.rnad_model import RNaDAgent
 from elitefurretai.supervised.model_archs import TransformerThreeHeadedModel
 
 logger = logging.getLogger(__name__)

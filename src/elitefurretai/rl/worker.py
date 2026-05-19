@@ -76,7 +76,7 @@ from elitefurretai.etl import Embedder, TeamRepo
 from elitefurretai.etl.system_utils import suppress_third_party_warnings
 from elitefurretai.rl.config import RNaDConfig
 from elitefurretai.rl.opponents import OpponentPool
-from elitefurretai.rl.players import RNaDAgent
+from elitefurretai.rl.rnad_model import RNaDAgent
 
 logger = logging.getLogger(__name__)
 

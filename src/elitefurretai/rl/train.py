@@ -86,6 +86,7 @@ from elitefurretai.etl.system_utils import (
     configure_torch_multiprocessing,
     suppress_third_party_warnings,
 )
+from elitefurretai.rl.batch_inference_player import cleanup_worker_executors
 from elitefurretai.rl.config import RUST_ENGINE_BACKEND, RNaDConfig
 from elitefurretai.rl.learners import (
     PortfolioRNaDLearner,
@@ -95,7 +96,7 @@ from elitefurretai.rl.learners import (
 )
 from elitefurretai.rl.model_registry import ModelRegistry
 from elitefurretai.rl.opponents import OpponentPool
-from elitefurretai.rl.players import RNaDAgent, cleanup_worker_executors
+from elitefurretai.rl.rnad_model import RNaDAgent
 from elitefurretai.rl.worker import mp_worker_process
 from elitefurretai.supervised import format_time
 

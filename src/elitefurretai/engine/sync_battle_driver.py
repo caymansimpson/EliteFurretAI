@@ -40,7 +40,7 @@ from elitefurretai.rl.masking import (
     TARGET_TO_OFFSET,
     get_valid_targets_for_request_move,
 )
-from elitefurretai.rl.players import RNaDAgent
+from elitefurretai.rl.rnad_model import RNaDAgent
 
 
 def _normalize_choice_message(message: str) -> str:

@@ -5,8 +5,9 @@ from typing import cast
 from poke_env import ServerConfiguration
 
 from elitefurretai.etl import Embedder, TeamRepo
+from elitefurretai.rl.batch_inference_player import BatchInferencePlayer
 from elitefurretai.rl.opponents import WorkerOpponentFactory
-from elitefurretai.rl.players import BatchInferencePlayer, RNaDAgent
+from elitefurretai.rl.rnad_model import RNaDAgent
 
 
 class _DummyTeamRepo:

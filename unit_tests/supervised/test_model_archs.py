@@ -734,7 +734,7 @@ def test_compiled_rnad_agent_matches_eager(simple_embedder):
     This is the test we'd want to fail loudly if a future torch upgrade
     or model change breaks compile compatibility on the rollout path.
     """
-    from elitefurretai.rl.players import RNaDAgent
+    from elitefurretai.rl.rnad_model import RNaDAgent
 
     torch.manual_seed(0)
     model = TransformerThreeHeadedModel(

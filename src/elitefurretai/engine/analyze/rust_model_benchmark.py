@@ -15,7 +15,7 @@ from elitefurretai.etl import Embedder
 from elitefurretai.etl.team_repo import TeamRepo
 from elitefurretai.rl.config import RNaDConfig
 from elitefurretai.rl.learners import build_model_from_config, load_agent_from_checkpoint
-from elitefurretai.rl.players import RNaDAgent
+from elitefurretai.rl.rnad_model import RNaDAgent
 
 
 def _load_team_text(format_id: str, team_path: str | None, repo: TeamRepo) -> str:

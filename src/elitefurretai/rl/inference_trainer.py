@@ -49,7 +49,7 @@ from elitefurretai.rl.inference_ipc import (
     InferenceRequest,
     InferenceResponse,
 )
-from elitefurretai.rl.players import RNaDAgent
+from elitefurretai.rl.rnad_model import RNaDAgent
 
 logger = logging.getLogger(__name__)
 
