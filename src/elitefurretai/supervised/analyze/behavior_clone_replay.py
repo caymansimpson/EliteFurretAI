@@ -31,10 +31,10 @@ import torch
 from poke_env.battle import DoubleBattle, Move, Pokemon
 from poke_env.player import BattleOrder, DoubleBattleOrder
 
+from elitefurretai.agents.bc_player import BCPlayer
 from elitefurretai.etl.battle_data import BattleData
 from elitefurretai.etl.battle_iterator import BattleIterator
 from elitefurretai.etl.encoder import MDBO
-from elitefurretai.supervised.behavior_clone_player import BCPlayer
 
 
 def format_action_human_readable(

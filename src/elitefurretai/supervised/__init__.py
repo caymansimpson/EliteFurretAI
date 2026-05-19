@@ -6,7 +6,6 @@ This module contains supervised learning models, training utilities, and analysi
 Models:
     - three_headed_transformer: Main model architecture (teampreview + turn + win)
     - feed_forward_action: Simple feedforward baseline
-    - behavior_clone_player: Player agent using trained models
 
 Training:
     - train_utils: Training loop helpers, evaluation metrics, loss functions
@@ -17,9 +16,6 @@ Configs (YAML):
     - win.yaml: Win prediction focused config
     - finetune.yaml: Fine-tuning configuration
 """
-
-# Models
-from elitefurretai.supervised.behavior_clone_player import BCPlayer
 
 # Model architectures
 from elitefurretai.supervised.model_archs import (
@@ -41,8 +37,6 @@ from elitefurretai.supervised.utils import (
 )
 
 __all__ = [
-    # Models
-    "BCPlayer",
     # Model architectures
     "init_linear_layer",
     "ResidualBlock",

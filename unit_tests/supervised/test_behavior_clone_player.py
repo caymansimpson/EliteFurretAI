@@ -17,8 +17,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import torch
 
+from elitefurretai.agents.bc_player import BCPlayer
 from elitefurretai.etl.encoder import MDBO
-from elitefurretai.supervised.behavior_clone_player import BCPlayer
 from elitefurretai.supervised.model_archs import TransformerThreeHeadedModel
 
 # =============================================================================

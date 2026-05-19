@@ -5,7 +5,7 @@ from poke_env.player import MaxBasePowerPlayer, RandomPlayer
 from poke_env.ps_client.account_configuration import AccountConfiguration
 from poke_env.ps_client.server_configuration import LocalhostServerConfiguration
 
-from elitefurretai.supervised.behavior_clone_player import BCPlayer
+from elitefurretai.agents.bc_player import BCPlayer
 
 
 def main():
