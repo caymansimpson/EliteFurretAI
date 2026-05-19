@@ -304,3 +304,43 @@ def test_team_hashes_set_at_construction(tmp_path):
     row = collector._battle_rows[0]
     assert row.agent_team_hash == collector.agent_team_hash
     assert row.opp_team_hash == collector.opp_team_hash
+
+
+# ─── set_cell (matrix iteration) ────────────────────────────────────
+
+
+def test_set_cell_updates_hashes_for_subsequent_records(tmp_path):
+    """After set_cell, new battle records pick up the new team hashes.
+
+    Pre-existing rows in the buffer keep their original hashes — set_cell
+    only affects future writes, not retroactive ones.
+    """
+    collector = _make_collector(tmp_path)
+    initial_agent_hash = collector.agent_team_hash
+
+    # First cell: record one battle.
+    battle1 = _FakeBattle(battle_tag="b1", won=True)
+    collector.record_battle_finished(battle1)
+
+    # Swap to a new (agent_team, opp_team) cell.
+    new_agent_team = _SAMPLE_TEAM_OPP  # use the other fixture as a fresh team
+    new_opp_team = _SAMPLE_TEAM_AGENT
+    collector.set_cell(
+        agent_team_str=new_agent_team,
+        opp_team_str=new_opp_team,
+        opp_player_kind="baseline",
+        opp_player_name="max_damage",
+    )
+    assert collector.agent_team_hash != initial_agent_hash
+    assert collector.opp_player_name == "max_damage"
+
+    # Second cell: record another battle. Verify it picks up new hashes.
+    battle2 = _FakeBattle(battle_tag="b2", won=False)
+    collector.record_battle_finished(battle2)
+
+    # Pre-existing row keeps old hash; new row has new hash.
+    assert collector._battle_rows[0].agent_team_hash == initial_agent_hash
+    assert collector._battle_rows[1].agent_team_hash == collector.agent_team_hash
+    assert collector._battle_rows[0].agent_team_hash != collector._battle_rows[1].agent_team_hash
+    # opp_player_name on the new record should reflect the cell swap.
+    assert collector._battle_rows[1].opp_player_name == "max_damage"

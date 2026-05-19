@@ -116,6 +116,32 @@ class TrajectoryCollector:
         self._battle_start_times: Dict[str, float] = {}
         self._recorded_battle_tags: set = set()
 
+    # ── cell-iteration support ───────────────────────────────────
+
+    def set_cell(
+        self,
+        *,
+        agent_team_str: str,
+        opp_team_str: str,
+        opp_player_kind: str,
+        opp_player_name: str,
+    ) -> None:
+        """Update per-cell metadata between matchup cells.
+
+        When the eval CLI iterates the (agent_team × opp_team) matrix
+        in a single process, one collector instance services all cells
+        — call this between cells so subsequent records carry the right
+        team hashes / opp identifiers. Buffers and start-time map are
+        preserved across cells so the worker can flush once at the end.
+
+        Recomputing the hashes (rather than passing them in) keeps the
+        single source of truth in ``canonical_team_hash``.
+        """
+        self.agent_team_hash = canonical_team_hash(agent_team_str)
+        self.opp_team_hash = canonical_team_hash(opp_team_str)
+        self.opp_player_kind = opp_player_kind
+        self.opp_player_name = opp_player_name
+
     # ── per-turn hook ────────────────────────────────────────────
 
     def record_turn(

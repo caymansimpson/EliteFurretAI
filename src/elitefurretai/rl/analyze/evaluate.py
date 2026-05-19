@@ -27,6 +27,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from poke_env.ps_client import AccountConfiguration, ServerConfiguration
@@ -168,9 +169,8 @@ def _run_worker(
     worker_id: int,
     p1: PlayerSpec,
     p2: PlayerSpec,
-    t1: TeamProvider,
-    t2: TeamProvider,
-    battles: int,
+    cells: List[tuple],
+    battles_per_cell: int,
     server_url: str,
     run_tag: str,
     *,
@@ -178,55 +178,58 @@ def _run_worker(
     eval_run_id: Optional[str] = None,
     replay_sample_rate: float = 0.05,
 ) -> EvalResult:
-    """One worker's slice of an eval matchup.
+    """One worker iterates through its assigned (agent_team, opp_team) cells.
 
-    Each worker instantiates fresh players (one per spec slot) and runs
-    ``battles`` games between them. Players are constructed *inside* the
-    worker so each worker holds its own poke-env client / inference state.
+    Each cell runs ``battles_per_cell`` games between the same player
+    instances, just with their teams swapped via poke-env's
+    ``update_team``. This keeps the model loaded once per worker
+    instead of reloading per cell — critical at 1764 cells per opp_type.
 
     Two flow shapes depending on player kinds:
 
     * **Both in-process** (``"model"`` / ``"baseline"``): standard
       ``player1.battle_against(player2)``.
-    * **One external** (vgc_bench): launch the external subprocess in
-      this worker's server, then have the *in-process* player call
-      ``send_challenges(external.username, n_battles)``. The external
-      side is identified by Showdown username only; no Python ``Player``
-      object on our side. Win/loss accounting is taken from the
-      in-process player and inverted if the external is P1.
+    * **One external** (vgc_bench): launch the external subprocess
+      once per worker, then call ``send_challenges`` from the in-process
+      side each cell.
     * Both external: rejected — there is no in-process side to drive
       challenges from.
 
-    When ``collect_run_dir`` is set, a ``TrajectoryCollector`` is built
-    for the model side of the matchup (whichever slot has
-    ``kind="model"``). Per-turn and per-battle data is buffered and
-    flushed to parquet shards at worker shutdown. If neither side is a
-    model, collection is silently skipped — there's nothing to record
-    from a baseline-vs-baseline matchup.
+    When ``collect_run_dir`` is set, one ``TrajectoryCollector`` is
+    built per worker and ``set_cell`` is called before each cell's
+    battles so BattleRecord/TurnRecord rows carry the right team
+    hashes and opp identifiers. A single parquet shard per worker is
+    written at the end.
+
+    ``cells`` is a list of ``(agent_team_str, opp_team_str)`` tuples.
+    Single-cell mode is just ``len(cells) == 1``.
     """
     if p1.kind == "external" and p2.kind == "external":
         raise ValueError(
             "Cannot run two external players against each other — at least "
             "one side must be in-process to drive challenges."
         )
+    if not cells:
+        return EvalResult(
+            label=f"{p1.name}_vs_{p2.name}",
+            player1_wins=0,
+            player2_wins=0,
+            ties=0,
+            battles_played=0,
+        )
 
-    # Resolve team strings once per worker. The collector and players
-    # both reference these so the team_hash in BattleRecord matches the
-    # team actually played.
-    agent_team_str = t1()
-    opp_team_str = t2()
+    first_agent_team, first_opp_team = cells[0]
 
-    # Build the collector if collection is enabled AND there's a model
-    # to record. The collector is attached to whichever side is the
-    # model; if both sides are models, P1 wins the recording slot.
+    # One collector per worker, initialized with the first cell's teams.
+    # set_cell() updates between cells; all rows go into the same shard.
     collector: Optional[TrajectoryCollector] = None
     if collect_run_dir is not None and eval_run_id is not None:
         if p1.kind == "model":
             collector = TrajectoryCollector(
                 eval_run_id=eval_run_id,
                 agent_ckpt=p1.raw,
-                agent_team_str=agent_team_str,
-                opp_team_str=opp_team_str,
+                agent_team_str=first_agent_team,
+                opp_team_str=first_opp_team,
                 opp_player_kind=p2.kind,
                 opp_player_name=p2.name,
                 battle_format=_battle_format_from_spec(p1),
@@ -240,8 +243,8 @@ def _run_worker(
             collector = TrajectoryCollector(
                 eval_run_id=eval_run_id,
                 agent_ckpt=p2.raw,
-                agent_team_str=opp_team_str,
-                opp_team_str=agent_team_str,
+                agent_team_str=first_opp_team,
+                opp_team_str=first_agent_team,
                 opp_player_kind=p1.kind,
                 opp_player_name=p1.name,
                 battle_format=_battle_format_from_spec(p2),
@@ -255,85 +258,125 @@ def _run_worker(
         server_config = ServerConfiguration(f"ws://{server_url}/showdown/websocket", "")
 
         external_handle = None
+        # Built once on the first cell; reused across cells via update_team.
+        player1: Any = None
+        player2: Any = None
+        p1_account = AccountConfiguration(
+            _username(f"E1{p1.user_tag}", worker_id, run_tag), None
+        )
+        p2_account = AccountConfiguration(
+            _username(f"E2{p2.user_tag}", worker_id, run_tag), None
+        )
+
+        total_played = 0
+        total_p1_wins = 0
+        total_p2_wins = 0
+
         try:
             if p2.kind == "external":
-                # P1 is in-process, challenges P2's external username.
                 assert p2.launch_external is not None
                 external_handle = p2.launch_external(server_url)
-                p1_account = AccountConfiguration(
-                    _username(f"E1{p1.user_tag}", worker_id, run_tag), None
-                )
                 player1 = _build_player(
-                    p1, agent_team_str, p1_account, server_config, collector
+                    p1, first_agent_team, p1_account, server_config, collector
                 )
-                try:
-                    await player1.send_challenges(
-                        external_handle.username, n_challenges=battles
-                    )
-                except Exception as exc:
-                    print(
-                        f"[eval] worker={worker_id} {p1.name} vs {p2.name} "
-                        f"(external) failed: {exc}"
-                    )
-                played = player1.n_finished_battles
-                p1_wins = player1.n_won_battles
-                p2_wins = player1.n_lost_battles
-
             elif p1.kind == "external":
-                # P2 is in-process, challenges P1's external username.
                 assert p1.launch_external is not None
                 external_handle = p1.launch_external(server_url)
-                p2_account = AccountConfiguration(
-                    _username(f"E2{p2.user_tag}", worker_id, run_tag), None
+                player2 = _build_player(
+                    p2, first_opp_team, p2_account, server_config, collector
+                )
+            else:
+                player1 = _build_player(
+                    p1, first_agent_team, p1_account, server_config, collector
                 )
                 player2 = _build_player(
-                    p2, opp_team_str, p2_account, server_config, collector
+                    p2, first_opp_team, p2_account, server_config, None
                 )
-                try:
-                    await player2.send_challenges(
-                        external_handle.username, n_challenges=battles
-                    )
-                except Exception as exc:
-                    print(
-                        f"[eval] worker={worker_id} {p1.name} (external) vs "
-                        f"{p2.name} failed: {exc}"
-                    )
-                played = player2.n_finished_battles
-                # Inverted: from EvalResult's "P1 perspective", a P2-side
-                # win for the in-process player means a *loss* for the
-                # external P1.
-                p1_wins = player2.n_lost_battles
-                p2_wins = player2.n_won_battles
 
-            else:
-                # Both in-process — original path.
-                p1_account = AccountConfiguration(
-                    _username(f"E1{p1.user_tag}", worker_id, run_tag), None
-                )
-                p2_account = AccountConfiguration(
-                    _username(f"E2{p2.user_tag}", worker_id, run_tag), None
-                )
-                player1 = _build_player(
-                    p1, agent_team_str, p1_account, server_config, collector
-                )
-                player2 = _build_player(p2, opp_team_str, p2_account, server_config, None)
-                try:
-                    await player1.battle_against(player2, n_battles=battles)
-                except Exception as exc:
-                    print(
-                        f"[eval] worker={worker_id} {p1.name} vs {p2.name} failed: {exc}"
-                    )
-                played = player1.n_finished_battles
-                p1_wins = player1.n_won_battles
-                p2_wins = player1.n_lost_battles
+            for cell_idx, (agent_team, opp_team) in enumerate(cells):
+                # Swap teams on existing player instances (not the first
+                # cell — they were just built with these teams).
+                if cell_idx > 0:
+                    if player1 is not None:
+                        player1.update_team(agent_team)
+                    if player2 is not None:
+                        player2.update_team(opp_team)
 
-            ties = played - p1_wins - p2_wins
+                if collector is not None:
+                    if p1.kind == "model":
+                        collector.set_cell(
+                            agent_team_str=agent_team,
+                            opp_team_str=opp_team,
+                            opp_player_kind=p2.kind,
+                            opp_player_name=p2.name,
+                        )
+                    else:
+                        # Model is P2 — agent perspective is from P2.
+                        collector.set_cell(
+                            agent_team_str=opp_team,
+                            opp_team_str=agent_team,
+                            opp_player_kind=p1.kind,
+                            opp_player_name=p1.name,
+                        )
+
+                # Snapshot win/play counts before the cell so we can
+                # compute the delta after.
+                if p2.kind == "external":
+                    snap_played = player1.n_finished_battles
+                    snap_p1 = player1.n_won_battles
+                    snap_p2 = player1.n_lost_battles
+                    try:
+                        await player1.send_challenges(
+                            external_handle.username, n_challenges=battles_per_cell
+                        )
+                    except Exception as exc:
+                        print(
+                            f"[eval] worker={worker_id} cell={cell_idx} "
+                            f"{p1.name} vs {p2.name}(ext) failed: {exc}"
+                        )
+                    total_played += player1.n_finished_battles - snap_played
+                    total_p1_wins += player1.n_won_battles - snap_p1
+                    total_p2_wins += player1.n_lost_battles - snap_p2
+
+                elif p1.kind == "external":
+                    snap_played = player2.n_finished_battles
+                    snap_p1 = player2.n_lost_battles  # P2's loss = P1's win
+                    snap_p2 = player2.n_won_battles
+                    try:
+                        await player2.send_challenges(
+                            external_handle.username, n_challenges=battles_per_cell
+                        )
+                    except Exception as exc:
+                        print(
+                            f"[eval] worker={worker_id} cell={cell_idx} "
+                            f"{p1.name}(ext) vs {p2.name} failed: {exc}"
+                        )
+                    total_played += player2.n_finished_battles - snap_played
+                    total_p1_wins += player2.n_lost_battles - snap_p1
+                    total_p2_wins += player2.n_won_battles - snap_p2
+
+                else:
+                    snap_played = player1.n_finished_battles
+                    snap_p1 = player1.n_won_battles
+                    snap_p2 = player1.n_lost_battles
+                    try:
+                        await player1.battle_against(player2, n_battles=battles_per_cell)
+                    except Exception as exc:
+                        print(
+                            f"[eval] worker={worker_id} cell={cell_idx} "
+                            f"{p1.name} vs {p2.name} failed: {exc}"
+                        )
+                    total_played += player1.n_finished_battles - snap_played
+                    total_p1_wins += player1.n_won_battles - snap_p1
+                    total_p2_wins += player1.n_lost_battles - snap_p2
+
+            ties = total_played - total_p1_wins - total_p2_wins
             return EvalResult(
                 label=f"{p1.name}_vs_{p2.name}",
-                player1_wins=p1_wins,
-                player2_wins=p2_wins,
+                player1_wins=total_p1_wins,
+                player2_wins=total_p2_wins,
                 ties=ties,
-                battles_played=played,
+                battles_played=total_played,
             )
         finally:
             if external_handle is not None:
@@ -376,9 +419,8 @@ def _battle_format_from_spec(spec: PlayerSpec) -> str:
 def run_eval_parallel(
     p1: PlayerSpec,
     p2: PlayerSpec,
-    t1: TeamProvider,
-    t2: TeamProvider,
-    num_battles: int,
+    cells: List[tuple],
+    battles_per_cell: int,
     server_urls: List[str],
     workers: int,
     run_tag: str,
@@ -387,20 +429,26 @@ def run_eval_parallel(
     eval_run_id: Optional[str] = None,
     replay_sample_rate: float = 0.05,
 ) -> EvalResult:
-    """Fan out ``num_battles`` across ``workers`` and aggregate.
+    """Fan out a list of (agent_team, opp_team) cells across workers.
 
-    Workers run in a ``ThreadPoolExecutor``; each calls ``asyncio.run`` on
-    its own event loop. Threading (not multiprocessing) is fine here
-    because the heavy work is async network I/O against Showdown servers.
+    Workers run in a ``ThreadPoolExecutor``; each calls ``asyncio.run``
+    on its own event loop. Threading (not multiprocessing) is fine
+    because the heavy work is async network I/O against Showdown
+    servers.
 
-    Collection (Plan B): when ``collect_run_dir`` is set, each worker
-    builds a TrajectoryCollector and writes parquet shards keyed by
-    worker_id under that directory. ``eval_run_id`` distinguishes
-    multiple invocations against the same run dir (e.g. one per
-    opp_type) and is embedded in every record.
+    Cells are distributed round-robin (``cells[i::workers]``) — this
+    is balanced for the uniform workload of "run N battles per cell."
+
+    Each worker runs all of its assigned cells before returning,
+    reusing player instances across cells via ``update_team``. With
+    ``collect_run_dir`` set, one parquet shard per worker captures the
+    union of rows across that worker's cells; the analysis CLI globs
+    all shards into one DataFrame.
+
+    Single-cell calls (no matrix iteration) are just
+    ``cells = [(agent_team, opp_team)]`` — same code path.
     """
-    splits = [s for s in _split_battles(num_battles, workers) if s > 0]
-    if not splits:
+    if not cells:
         return EvalResult(
             label=f"{p1.name}_vs_{p2.name}",
             player1_wins=0,
@@ -409,9 +457,16 @@ def run_eval_parallel(
             battles_played=0,
         )
 
-    with ThreadPoolExecutor(max_workers=len(splits)) as pool:
+    # Round-robin assign cells to workers. If workers > cells, the
+    # tail workers get an empty slice and exit immediately.
+    effective_workers = max(1, min(workers, len(cells)))
+    cell_slices = [cells[i::effective_workers] for i in range(effective_workers)]
+
+    with ThreadPoolExecutor(max_workers=effective_workers) as pool:
         futures = []
-        for worker_id, battles in enumerate(splits):
+        for worker_id, my_cells in enumerate(cell_slices):
+            if not my_cells:
+                continue
             server_url = server_urls[worker_id % len(server_urls)]
             futures.append(
                 pool.submit(
@@ -419,9 +474,8 @@ def run_eval_parallel(
                     worker_id,
                     p1,
                     p2,
-                    t1,
-                    t2,
-                    battles,
+                    my_cells,
+                    battles_per_cell,
                     server_url,
                     run_tag,
                     collect_run_dir=collect_run_dir,
@@ -446,6 +500,54 @@ def run_eval_parallel(
                     )
                 )
         return _aggregate_results(f"{p1.name}_vs_{p2.name}", results)
+
+
+def build_cells(
+    t1: TeamProvider,
+    t2: TeamProvider,
+    *,
+    cell_iteration: bool,
+    team1_path: Optional[str],
+    team2_path: Optional[str],
+) -> List[tuple]:
+    """Resolve CLI team specs into a concrete list of
+    ``(agent_team_str, opp_team_str)`` cells.
+
+    Single-cell mode (default): call each team provider once. Same as
+    Plan A behavior — one team per side for the whole eval.
+
+    Cell-iteration mode: both team specs must be directories. Lists
+    every ``.txt`` file in each, reads them, and yields the Cartesian
+    product (N_agent × N_opp cells). Order is deterministic (sorted
+    filename) for reproducibility.
+    """
+    if not cell_iteration:
+        return [(t1(), t2())]
+
+    if team1_path is None or team2_path is None:
+        raise ValueError(
+            "--cell-iteration requires both --team1 and --team2 to point at "
+            "team directories."
+        )
+    p1_dir = Path(team1_path)
+    p2_dir = Path(team2_path)
+    if not p1_dir.is_dir() or not p2_dir.is_dir():
+        raise ValueError(
+            "--cell-iteration requires both --team1 and --team2 to be "
+            "directories, not single files."
+        )
+
+    p1_teams = sorted(p1_dir.glob("*.txt"))
+    p2_teams = sorted(p2_dir.glob("*.txt"))
+    if not p1_teams or not p2_teams:
+        raise ValueError(
+            f"No .txt team files found under one of --team1={team1_path!r} or "
+            f"--team2={team2_path!r}"
+        )
+
+    p1_strs = [p.read_text() for p in p1_teams]
+    p2_strs = [p.read_text() for p in p2_teams]
+    return [(a, b) for a in p1_strs for b in p2_strs]
 
 
 def main() -> None:
@@ -477,7 +579,21 @@ def main() -> None:
         default=None,
         help="Player 2 team source: file, directory, or omit for format default",
     )
-    parser.add_argument("--battles", type=int, default=100)
+    parser.add_argument(
+        "--battles",
+        type=int,
+        default=100,
+        help="Battles per (agent_team, opp_team) cell. In single-cell mode "
+        "(default) this is the total. With --cell-iteration this multiplies "
+        "by the matrix size.",
+    )
+    parser.add_argument(
+        "--cell-iteration",
+        action="store_true",
+        help="Iterate the full Cartesian product of --team1 × --team2 "
+        "directories, running --battles per cell. Players are reused across "
+        "cells via update_team so the model loads once per worker.",
+    )
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--num-servers", type=int, default=4)
     parser.add_argument("--start-port", type=int, default=8000)
@@ -537,6 +653,17 @@ def main() -> None:
     t1 = parse_team_spec(args.team1, battle_format=args.battle_format)
     t2 = parse_team_spec(args.team2, battle_format=args.battle_format)
 
+    # Resolve cell list before launching servers / collection — a bad
+    # CLI combination here should fail fast, not after Showdown is up.
+    cells = build_cells(
+        t1,
+        t2,
+        cell_iteration=args.cell_iteration,
+        team1_path=args.team1,
+        team2_path=args.team2,
+    )
+    total_battles = args.battles * len(cells)
+
     run_tag = format(int(time.time() * 1000) % 65536, "04x")
 
     # Resolve trajectory-collection settings up front so the manifest
@@ -553,7 +680,7 @@ def main() -> None:
             battle_format=args.battle_format,
             replay_sample_rate=args.replay_sample_rate,
             opp_player_name=(p2.name if p1.kind == "model" else p1.name),
-            battles=args.battles,
+            battles=total_battles,
         )
 
     server_processes = []
@@ -567,6 +694,11 @@ def main() -> None:
 
         started = time.time()
         print(f"\n=== Evaluation: {p1.name} vs {p2.name} ===")
+        if args.cell_iteration:
+            print(
+                f"    Cell iteration ON: {len(cells)} cells × "
+                f"{args.battles} battles = {total_battles} total"
+            )
         if collect_run_dir is not None:
             print(
                 f"    Collecting trajectories to {collect_run_dir} (run_id={eval_run_id})"
@@ -574,9 +706,8 @@ def main() -> None:
         result = run_eval_parallel(
             p1=p1,
             p2=p2,
-            t1=t1,
-            t2=t2,
-            num_battles=args.battles,
+            cells=cells,
+            battles_per_cell=args.battles,
             server_urls=server_urls,
             workers=args.workers,
             run_tag=run_tag,
