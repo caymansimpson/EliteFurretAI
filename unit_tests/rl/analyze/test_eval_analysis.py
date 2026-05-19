@@ -15,11 +15,15 @@ import math
 import pandas as pd
 
 from elitefurretai.rl.analyze.eval_analysis import (
+    compute_ensemble_advantage,
     q1_agent_team_win_rate,
     q2_opp_team_win_rate,
     q3_opp_type_win_rate,
     q5_short_loss_patterns,
+    q6_confidence_in_poor_situations,
     q7_value_calibration,
+    q9a_persistent_disagreement,
+    q9b_agree_then_diverge,
     wilson_ci,
 )
 
@@ -406,3 +410,295 @@ def test_q2_picks_out_consistently_losing_opp_teams():
     result = q2_opp_team_win_rate(_make_battles(rows))
     tough_wr = result.set_index("opp_team_hash").loc["tough", "win_rate"]
     assert tough_wr < 0.25  # category-(c) threshold
+
+
+# ─── compute_ensemble_advantage (helper) ────────────────────────────
+
+
+def test_ensemble_advantage_matches_battle_dataset_semantics():
+    """Ported function matches the original _compute_ensemble_advantage.
+
+    Reference values computed manually for n=5, heuristic ≡ 0,
+    outcome=+1: each blended[i] = outcome_weight × 1.0 since the
+    position term contributes 0.
+    """
+    n = 5
+    heuristic = [0.0] * n
+    out = compute_ensemble_advantage(heuristic, 1.0)
+    assert len(out) == n
+    # progress: [0/4, 1/4, 2/4, 3/4, 4/4] = [0, .25, .5, .75, 1]
+    # outcome_weight = clip(p², 0.05, 0.95)
+    # → [0.05, 0.0625, 0.25, 0.5625, 0.95]
+    expected = [0.05, 0.0625, 0.25, 0.5625, 0.95]
+    for o, e in zip(out, expected):
+        assert math.isclose(o, e, abs_tol=1e-6)
+
+
+def test_ensemble_advantage_n1_returns_outcome():
+    assert compute_ensemble_advantage([0.5], 1.0) == [1.0]
+    assert compute_ensemble_advantage([], 1.0) == []
+
+
+def test_ensemble_advantage_blends_heuristic_and_outcome():
+    """Early: mostly heuristic. Late: mostly outcome."""
+    heuristic = [0.8] * 10  # consistent "we're winning"
+    out = compute_ensemble_advantage(heuristic, -1.0)  # but we lose
+    # Early turn should weight heuristic heavily → blended positive.
+    assert out[0] > 0  # heuristic dominates
+    # Late turn should weight outcome heavily → blended negative.
+    assert out[-1] < 0
+
+
+# ─── Q6: confidence in poor situations ──────────────────────────────
+
+
+def test_q6_swing_detection_finds_collapses_in_losses():
+    """A loss where heuristic_adv drops from +0.5 to -0.5 over K=3 turns
+    should surface as a swing event."""
+    battles_df = _make_battles([{"opp_player_name": "x", "outcome": 0.0}] * 1)
+    # Turn 0: tp. Turns 1-6: heuristic goes from +0.5 → -0.5 around turn 4.
+    turn_rows = [
+        {
+            "battle_id": "b0",
+            "turn_number": 0,
+            "is_teampreview": True,
+            "value_predicted": 0.0,
+            "heuristic_adv": 0.0,
+        },
+        {
+            "battle_id": "b0",
+            "turn_number": 1,
+            "is_teampreview": False,
+            "value_predicted": 0.5,
+            "heuristic_adv": 0.5,
+        },
+        {
+            "battle_id": "b0",
+            "turn_number": 2,
+            "is_teampreview": False,
+            "value_predicted": 0.4,
+            "heuristic_adv": 0.4,
+        },
+        {
+            "battle_id": "b0",
+            "turn_number": 3,
+            "is_teampreview": False,
+            "value_predicted": 0.3,
+            "heuristic_adv": 0.3,
+        },
+        {
+            "battle_id": "b0",
+            "turn_number": 4,
+            "is_teampreview": False,
+            "value_predicted": -0.5,
+            "heuristic_adv": -0.5,
+        },
+    ]
+    _, swings, _ = q6_confidence_in_poor_situations(
+        battles_df, _make_turns(turn_rows), swing_window=3, swing_threshold=-0.5
+    )
+    assert len(swings) >= 1
+    row = swings.iloc[0]
+    assert math.isclose(row["swing"], -1.0, abs_tol=0.01)  # -0.5 - 0.5 = -1.0
+    assert math.isclose(row["heuristic_adv_before"], 0.5, abs_tol=0.01)
+    assert math.isclose(row["heuristic_adv_after"], -0.5, abs_tol=0.01)
+    # The model's value at t-K was high (0.5) → it didn't see this coming.
+    assert math.isclose(row["value_at_t_minus_k"], 0.5, abs_tol=0.01)
+
+
+def test_q6_swing_only_in_losses():
+    """Wins don't appear in swing_events even if they have negative swings."""
+    battles_df = _make_battles(
+        [{"opp_player_name": "x", "outcome": 1.0}]  # WIN
+    )
+    turn_rows = [
+        {
+            "battle_id": "b0",
+            "turn_number": t,
+            "is_teampreview": False,
+            "value_predicted": 0.0,
+            "heuristic_adv": 0.5 if t < 4 else -0.5,
+        }
+        for t in range(1, 6)
+    ]
+    _, swings, _ = q6_confidence_in_poor_situations(
+        battles_df, _make_turns(turn_rows), swing_window=3, swing_threshold=-0.5
+    )
+    assert len(swings) == 0
+
+
+def test_q6_poor_situation_summary_compares_buckets():
+    """Summary table includes both 'all' and 'poor situation' rows."""
+    battles_df = _make_battles([{"opp_player_name": "x", "outcome": 0.0}] * 2)
+    turn_rows = []
+    # Battle b0: 10 turns at heuristic_adv = +0.5 (not poor) with entropy 1.0
+    for t in range(1, 11):
+        turn_rows.append(
+            {
+                "battle_id": "b0",
+                "turn_number": t,
+                "is_teampreview": False,
+                "value_predicted": 0.0,
+                "heuristic_adv": 0.5,
+                "policy_entropy": 1.0,
+            }
+        )
+    # Battle b1: 10 turns at heuristic_adv = -0.5 (poor) with entropy 3.0
+    for t in range(1, 11):
+        turn_rows.append(
+            {
+                "battle_id": "b1",
+                "turn_number": t,
+                "is_teampreview": False,
+                "value_predicted": 0.0,
+                "heuristic_adv": -0.5,
+                "policy_entropy": 3.0,
+            }
+        )
+
+    _, _, summary = q6_confidence_in_poor_situations(
+        battles_df, _make_turns(turn_rows), poor_threshold=-0.3
+    )
+    assert len(summary) == 2
+    summary_by_subset = summary.set_index("subset")
+    assert summary_by_subset.loc["all", "n_turns"] == 20
+    # The "poor" subset is the 10 turns at -0.5 with entropy 3.0.
+    poor_row = summary_by_subset.iloc[1]
+    assert poor_row["n_turns"] == 10
+    assert math.isclose(poor_row["mean_entropy"], 3.0)
+
+
+def test_q6_empty_inputs_safe():
+    by_b, sw, summ = q6_confidence_in_poor_situations(pd.DataFrame(), pd.DataFrame())
+    assert by_b.empty
+    assert sw.empty
+    assert summ.empty
+
+
+# ─── Q9a: persistent disagreement ───────────────────────────────────
+
+
+def test_q9a_ranks_by_mean_abs_difference():
+    """The battle with the most consistent value vs ensemble gap ranks first."""
+    battles_df = _make_battles(
+        [
+            {"opp_player_name": "x", "outcome": 1.0},
+            {"opp_player_name": "x", "outcome": 1.0},
+        ]
+    )
+    # Battle b0: value=+1, ensemble blends from heuristic=+1 + outcome=+1 → ~+1. Diff ≈ 0.
+    # Battle b1: value=-1 (overconfident loss prediction), heuristic=+1, outcome=+1.
+    #            ensemble blends toward +1, so |value - ensemble| ≈ 2 throughout.
+    turn_rows = []
+    for t in range(1, 11):
+        turn_rows.append(
+            {
+                "battle_id": "b0",
+                "turn_number": t,
+                "is_teampreview": False,
+                "value_predicted": 1.0,
+                "heuristic_adv": 1.0,
+            }
+        )
+    for t in range(1, 11):
+        turn_rows.append(
+            {
+                "battle_id": "b1",
+                "turn_number": t,
+                "is_teampreview": False,
+                "value_predicted": -1.0,
+                "heuristic_adv": 1.0,
+            }
+        )
+
+    result = q9a_persistent_disagreement(battles_df, _make_turns(turn_rows))
+    assert len(result) == 2
+    # b1 should rank first (bigger gap).
+    assert result.iloc[0]["battle_id"] == "b1"
+    assert result.iloc[0]["mean_abs_diff"] > 1.5
+    assert result.iloc[1]["battle_id"] == "b0"
+    assert result.iloc[1]["mean_abs_diff"] < 0.5
+
+
+def test_q9a_ignores_ties():
+    """Battles with NaN outcome (ties) get NaN ensemble_adv → excluded."""
+    battles_df = _make_battles([{"opp_player_name": "x", "outcome": float("nan")}])
+    turn_rows = [
+        {
+            "battle_id": "b0",
+            "turn_number": t,
+            "is_teampreview": False,
+            "value_predicted": 0.0,
+            "heuristic_adv": 0.0,
+        }
+        for t in range(1, 6)
+    ]
+    result = q9a_persistent_disagreement(battles_df, _make_turns(turn_rows))
+    assert result.empty
+
+
+# ─── Q9b: agree-then-diverge ────────────────────────────────────────
+
+
+def test_q9b_detects_split_pattern():
+    """Battle where early diff is tiny and late diff is large should match."""
+    battles_df = _make_battles([{"opp_player_name": "x", "outcome": 1.0}])
+    turn_rows = []
+    # Turns 1-5: value=heuristic=+0.8 → ensemble~+0.8 → diff ~0.
+    for t in range(1, 6):
+        turn_rows.append(
+            {
+                "battle_id": "b0",
+                "turn_number": t,
+                "is_teampreview": False,
+                "value_predicted": 0.8,
+                "heuristic_adv": 0.8,
+            }
+        )
+    # Turns 6-15: value plummets to -0.9 while heuristic stays +0.8 → big diff.
+    for t in range(6, 16):
+        turn_rows.append(
+            {
+                "battle_id": "b0",
+                "turn_number": t,
+                "is_teampreview": False,
+                "value_predicted": -0.9,
+                "heuristic_adv": 0.8,
+            }
+        )
+
+    result = q9b_agree_then_diverge(
+        battles_df,
+        _make_turns(turn_rows),
+        early_window=5,
+        early_threshold=0.15,
+        late_threshold=0.30,
+    )
+    assert len(result) == 1
+    row = result.iloc[0]
+    assert row["battle_id"] == "b0"
+    assert row["pre_split_diff"] < 0.15
+    assert row["post_split_diff"] > 0.30
+    assert row["diff_increase"] > 0
+
+
+def test_q9b_skips_battles_too_short():
+    """Battles with ≤early_window in-battle turns get filtered out."""
+    battles_df = _make_battles([{"opp_player_name": "x", "outcome": 1.0}])
+    turn_rows = [
+        {
+            "battle_id": "b0",
+            "turn_number": t,
+            "is_teampreview": False,
+            "value_predicted": 0.0,
+            "heuristic_adv": 0.0,
+        }
+        for t in range(1, 4)  # only 3 in-battle turns
+    ]
+    result = q9b_agree_then_diverge(battles_df, _make_turns(turn_rows), early_window=5)
+    assert result.empty
+
+
+def test_q9b_empty_inputs_safe():
+    result = q9b_agree_then_diverge(pd.DataFrame(), pd.DataFrame())
+    assert result.empty

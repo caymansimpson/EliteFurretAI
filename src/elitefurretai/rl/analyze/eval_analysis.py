@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import argparse
 import math
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 import pandas as pd
 
@@ -321,6 +321,359 @@ def q7_value_calibration(
     return grouped, ece
 
 
+def compute_ensemble_advantage(
+    heuristic_advs: List[float], final_outcome: float
+) -> List[float]:
+    """Per-turn blended advantage: heuristic + outcome with step-dependent weights.
+
+    Ported from ``etl/battle_dataset.py:_compute_ensemble_advantage``
+    so the analysis pipeline (Q9) can compare model values against
+    the same label distribution BC was trained on. The blend ramps
+    smoothly from "pure heuristic" early to "pure outcome" late:
+
+      outcome_weight   = clip(progress², 0.05, 0.95)
+      position_weight  = 1 - outcome_weight
+      blended[t]       = position_weight × (0.5·heuristic[t] + 0.5·avg_next_3)
+                       + outcome_weight × final_outcome
+
+    where ``progress = t / (n-1)`` and ``avg_next_3`` averages
+    heuristic_advs over the 3 turns following t (inclusive). The
+    bounds [0.05, 0.95] keep heuristic from being completely ignored
+    at the end and outcome from being completely ignored at the start.
+
+    For battles with n=1 just returns ``[final_outcome]``.
+    ``final_outcome`` should be in {-1, +1} (loss/win) or 0 for ties;
+    the function does not validate this.
+    """
+    n = len(heuristic_advs)
+    if n == 0:
+        return []
+    if n == 1:
+        return [final_outcome]
+    out: List[float] = []
+    for i in range(n):
+        progress = i / max(n - 1, 1)
+        outcome_weight = min(max(progress * progress, 0.05), 0.95)
+        position_weight = 1.0 - outcome_weight
+        current = heuristic_advs[i]
+        next_window = heuristic_advs[i + 1 : min(i + 4, n)]
+        avg_next = sum(next_window) / len(next_window) if next_window else current
+        blended = (
+            position_weight * (0.5 * current + 0.5 * avg_next)
+            + outcome_weight * final_outcome
+        )
+        out.append(blended)
+    return out
+
+
+def _attach_ensemble_advantage(battles: pd.DataFrame, turns: pd.DataFrame) -> pd.DataFrame:
+    """Return turns_df with an ``ensemble_adv`` column attached.
+
+    For each battle, computes ``compute_ensemble_advantage`` over the
+    in-battle (non-teampreview) turns and writes it back per row.
+    Battles missing an outcome (ties) get NaN ensemble_adv across all
+    their turns.
+    """
+    if turns.empty:
+        return turns.assign(ensemble_adv=pd.Series(dtype=float))
+
+    # Map battle_id -> +1/-1/0(NaN-tie).
+    outcome_map = battles.set_index("battle_id")["outcome"]
+    enriched_rows: List[pd.Series] = []
+    for battle_id, group in turns.groupby("battle_id", sort=False):
+        outcome = outcome_map.get(battle_id, float("nan"))
+        if pd.isna(outcome):
+            ensemble = [float("nan")] * len(group)
+        else:
+            # +1 / -1 sign convention from _compute_ensemble_advantage.
+            signed_outcome = 1.0 if outcome > 0.5 else -1.0
+            # Compute over non-teampreview turns; teampreview turns
+            # don't have meaningful heuristic_adv, hold them at NaN.
+            in_battle = group[~group["is_teampreview"]]
+            heuristic_seq = in_battle["heuristic_adv"].tolist()
+            ensemble_seq = compute_ensemble_advantage(heuristic_seq, signed_outcome)
+            ensemble_by_index = dict(zip(in_battle.index, ensemble_seq))
+            ensemble = [ensemble_by_index.get(idx, float("nan")) for idx in group.index]
+        g = group.assign(ensemble_adv=ensemble)
+        enriched_rows.append(g)
+    return pd.concat(enriched_rows).sort_index()
+
+
+def q6_confidence_in_poor_situations(
+    battles: pd.DataFrame,
+    turns: pd.DataFrame,
+    *,
+    swing_window: int = 3,
+    swing_threshold: float = -0.5,
+    poor_threshold: float = -0.3,
+) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Q6: did the model see "poor situations" coming?
+
+    Three tables:
+
+    * ``confidence_by_bucket``: per heuristic_adv quartile, mean
+      policy_entropy and mean value_predicted. A healthy model has
+      *bimodal* entropy (confident in extremes, uncertain in messy
+      mid-game), so a flat-entropy profile is a red flag.
+
+    * ``swing_events``: per losing battle, the worst (most negative)
+      swing ``heuristic_adv[t] - heuristic_adv[t-swing_window]``. For
+      each, ``value_at_t_minus_k`` is the model's value prediction at
+      the start of the swing — was it worried (low) or oblivious
+      (high)? Top rows surface the worst "sudden collapse" battles.
+
+    * ``poor_situation_summary``: aggregate confidence comparison
+      between ``heuristic_adv < poor_threshold`` (the "poor situation"
+      bucket) and all turns. Tells you whether the model is more or
+      less confident than average when the heuristic says we're
+      losing.
+
+    All inputs use ``heuristic_adv`` (the raw position score, no
+    outcome leak) — the question is whether the model's confidence
+    *at the time* tracked the heuristic's *at the time*, not whether
+    in hindsight it should have known.
+    """
+    confidence_cols = [
+        "bucket",
+        "n_turns",
+        "mean_entropy",
+        "mean_value_predicted",
+        "mean_heuristic_adv",
+    ]
+    swing_cols = [
+        "battle_id",
+        "t_after",
+        "t_before",
+        "swing",
+        "heuristic_adv_before",
+        "heuristic_adv_after",
+        "value_at_t_minus_k",
+        "value_at_t",
+        "entropy_at_t_minus_k",
+        "entropy_at_t",
+    ]
+    summary_cols = [
+        "subset",
+        "n_turns",
+        "mean_entropy",
+        "mean_value_predicted",
+    ]
+    if turns.empty or battles.empty:
+        return (
+            pd.DataFrame(columns=confidence_cols),
+            pd.DataFrame(columns=swing_cols),
+            pd.DataFrame(columns=summary_cols),
+        )
+
+    # Drop teampreview turns from analysis — heuristic_adv is not
+    # meaningful there.
+    in_battle = turns[~turns["is_teampreview"]].copy()
+    in_battle = in_battle.dropna(subset=["heuristic_adv"])
+
+    # Table 1: confidence by heuristic_adv quartile.
+    quartiles = pd.qcut(in_battle["heuristic_adv"], q=4, duplicates="drop")
+    by_q = in_battle.groupby(quartiles, observed=True, as_index=False).agg(
+        n_turns=("policy_entropy", "size"),
+        mean_entropy=("policy_entropy", "mean"),
+        mean_value_predicted=("value_predicted", "mean"),
+        mean_heuristic_adv=("heuristic_adv", "mean"),
+    )
+    by_q = by_q.rename(columns={by_q.columns[0]: "bucket"})
+    by_q["bucket"] = by_q["bucket"].astype(str)
+    confidence_by_bucket = by_q
+
+    # Table 2: worst negative swings in losses.
+    losing_battle_ids = set(battles[battles["outcome"] == 0.0]["battle_id"].tolist())
+    swing_records = []
+    for battle_id, group in in_battle.groupby("battle_id", sort=False):
+        if battle_id not in losing_battle_ids:
+            continue
+        group = group.sort_values("turn_number").reset_index(drop=True)
+        if len(group) <= swing_window:
+            continue
+        # Compute swing[t] = adv[t] - adv[t - k]
+        shifted = group["heuristic_adv"].shift(swing_window)
+        swing = group["heuristic_adv"] - shifted
+        # Find the most negative swing.
+        worst_idx = swing.idxmin()
+        if pd.isna(worst_idx) or pd.isna(swing[worst_idx]):
+            continue
+        worst_swing = float(swing[worst_idx])
+        if worst_swing > swing_threshold:
+            continue  # Not a "large" negative swing.
+        t_before_pos = worst_idx - swing_window
+        if t_before_pos < 0:
+            continue
+        before_row = group.iloc[t_before_pos]
+        after_row = group.iloc[worst_idx]
+        swing_records.append(
+            {
+                "battle_id": battle_id,
+                "t_before": int(before_row["turn_number"]),
+                "t_after": int(after_row["turn_number"]),
+                "swing": worst_swing,
+                "heuristic_adv_before": float(before_row["heuristic_adv"]),
+                "heuristic_adv_after": float(after_row["heuristic_adv"]),
+                "value_at_t_minus_k": float(before_row["value_predicted"]),
+                "value_at_t": float(after_row["value_predicted"]),
+                "entropy_at_t_minus_k": float(before_row["policy_entropy"]),
+                "entropy_at_t": float(after_row["policy_entropy"]),
+            }
+        )
+    swing_events = pd.DataFrame(swing_records, columns=swing_cols).sort_values("swing")
+
+    # Table 3: poor-situation summary.
+    poor = in_battle[in_battle["heuristic_adv"] < poor_threshold]
+    summary_records = [
+        {
+            "subset": "all",
+            "n_turns": len(in_battle),
+            "mean_entropy": float(in_battle["policy_entropy"].mean()),
+            "mean_value_predicted": float(in_battle["value_predicted"].mean()),
+        },
+        {
+            "subset": f"heuristic_adv < {poor_threshold}",
+            "n_turns": len(poor),
+            "mean_entropy": (
+                float(poor["policy_entropy"].mean()) if len(poor) > 0 else float("nan")
+            ),
+            "mean_value_predicted": (
+                float(poor["value_predicted"].mean()) if len(poor) > 0 else float("nan")
+            ),
+        },
+    ]
+    poor_situation_summary = pd.DataFrame(summary_records, columns=summary_cols)
+    return confidence_by_bucket, swing_events, poor_situation_summary
+
+
+def q9a_persistent_disagreement(
+    battles: pd.DataFrame, turns: pd.DataFrame, *, top_n: int = 20
+) -> pd.DataFrame:
+    """Q9a: battles where the value head persistently disagrees with the
+    ensemble-advantage signal.
+
+    For each non-tied battle, compute the per-turn absolute difference
+    between rescaled value (mapped to the ensemble's [-1, +1] support)
+    and ``ensemble_adv``, then average across the battle. Returns the
+    top-N battles ranked by mean disagreement.
+
+    The rescaling matches Q7's convention (value sits on [-1, 1] from
+    C51 support; ensemble_adv sits on the same support after blending
+    heuristic + outcome). The two are directly comparable without
+    further normalization.
+    """
+    cols = [
+        "battle_id",
+        "opp_player_name",
+        "mean_abs_diff",
+        "n_turns",
+        "outcome",
+        "final_turn",
+    ]
+    if turns.empty or battles.empty:
+        return pd.DataFrame(columns=cols)
+
+    enriched = _attach_ensemble_advantage(battles, turns)
+    in_battle = enriched[~enriched["is_teampreview"]].dropna(
+        subset=["ensemble_adv", "value_predicted"]
+    )
+    if in_battle.empty:
+        return pd.DataFrame(columns=cols)
+
+    in_battle = in_battle.assign(
+        abs_diff=(in_battle["value_predicted"] - in_battle["ensemble_adv"]).abs()
+    )
+
+    agg = in_battle.groupby("battle_id", as_index=False).agg(
+        mean_abs_diff=("abs_diff", "mean"),
+        n_turns=("abs_diff", "size"),
+    )
+    meta = battles.set_index("battle_id")[["opp_player_name", "outcome", "final_turn"]]
+    agg = agg.merge(meta, left_on="battle_id", right_index=True, how="left")
+    agg = agg.sort_values("mean_abs_diff", ascending=False).head(top_n)
+    return agg[cols].reset_index(drop=True)
+
+
+def q9b_agree_then_diverge(
+    battles: pd.DataFrame,
+    turns: pd.DataFrame,
+    *,
+    early_threshold: float = 0.15,
+    late_threshold: float = 0.40,
+    early_window: int = 5,
+    top_n: int = 20,
+) -> pd.DataFrame:
+    """Q9b: battles where value and ensemble agree early then diverge.
+
+    Detection: for each battle (≥``early_window+1`` in-battle turns),
+    compute |value - ensemble| per turn. A battle "agrees-then-
+    diverges" when the mean over the first ``early_window`` turns is
+    < ``early_threshold`` AND the mean over the rest is >
+    ``late_threshold``. Returns the top-N by ``post_split_diff -
+    pre_split_diff`` (most dramatic break).
+
+    Operational meaning: the model's read of the battle started in
+    line with the heuristic-plus-outcome reference, then the value
+    head's trajectory diverged. Could indicate the model picked a
+    strategy the heuristic doesn't understand, OR the value head got
+    confused mid-battle. Either way it's worth eyeballing — Q8 will
+    save these for human inspection.
+    """
+    cols = [
+        "battle_id",
+        "opp_player_name",
+        "pre_split_diff",
+        "post_split_diff",
+        "diff_increase",
+        "n_turns",
+        "outcome",
+        "final_turn",
+    ]
+    if turns.empty or battles.empty:
+        return pd.DataFrame(columns=cols)
+
+    enriched = _attach_ensemble_advantage(battles, turns)
+    in_battle = enriched[~enriched["is_teampreview"]].dropna(
+        subset=["ensemble_adv", "value_predicted"]
+    )
+    if in_battle.empty:
+        return pd.DataFrame(columns=cols)
+    in_battle = in_battle.assign(
+        abs_diff=(in_battle["value_predicted"] - in_battle["ensemble_adv"]).abs()
+    )
+
+    records = []
+    for battle_id, group in in_battle.groupby("battle_id", sort=False):
+        group = group.sort_values("turn_number")
+        if len(group) <= early_window:
+            continue
+        pre = group.iloc[:early_window]["abs_diff"]
+        post = group.iloc[early_window:]["abs_diff"]
+        pre_mean = float(pre.mean())
+        post_mean = float(post.mean())
+        if pre_mean >= early_threshold:
+            continue
+        if post_mean <= late_threshold:
+            continue
+        records.append(
+            {
+                "battle_id": battle_id,
+                "pre_split_diff": pre_mean,
+                "post_split_diff": post_mean,
+                "diff_increase": post_mean - pre_mean,
+                "n_turns": int(len(group)),
+            }
+        )
+    if not records:
+        return pd.DataFrame(columns=cols)
+
+    df = pd.DataFrame(records)
+    meta = battles.set_index("battle_id")[["opp_player_name", "outcome", "final_turn"]]
+    df = df.merge(meta, left_on="battle_id", right_index=True, how="left")
+    df = df.sort_values("diff_increase", ascending=False).head(top_n)
+    return df[cols].reset_index(drop=True)
+
+
 def _group_win_rate(battles: pd.DataFrame, group_cols: list) -> pd.DataFrame:
     """Group + aggregate win rate with Wilson CIs.
 
@@ -455,9 +808,26 @@ def main() -> None:
         reliability, ece = q7_value_calibration(battles, turns)
         print(f"=== Value-head reliability (ECE = {ece:.4f}) ===")
         result = reliability
+    elif args.cmd == "confidence":
+        turns = read_turns(args.run_dir)
+        by_bucket, swings, summary = q6_confidence_in_poor_situations(battles, turns)
+        print("=== Confidence by heuristic_adv quartile ===")
+        _emit(by_bucket, output=None, fmt=args.format)
+        print("\n=== Poor-situation summary ===")
+        _emit(summary, output=None, fmt=args.format)
+        print("\n=== Worst negative swings in losses (top 20) ===")
+        _emit(swings.head(20), output=args.output, fmt=args.format)
+        return
+    elif args.cmd == "value_ensemble":
+        turns = read_turns(args.run_dir)
+        persistent = q9a_persistent_disagreement(battles, turns, top_n=20)
+        diverge = q9b_agree_then_diverge(battles, turns, top_n=20)
+        print("=== Q9a: persistent value-vs-ensemble disagreement (top 20) ===")
+        _emit(persistent, output=None, fmt=args.format)
+        print("\n=== Q9b: agree-then-diverge (top 20) ===")
+        _emit(diverge, output=args.output, fmt=args.format)
+        return
     elif args.cmd in {
-        "confidence",
-        "value_ensemble",
         "save_games",
         "report",
     }:
