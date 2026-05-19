@@ -10,6 +10,7 @@ formula is caught without a heavyweight dependency.
 
 from __future__ import annotations
 
+import json
 import math
 
 import pandas as pd
@@ -22,6 +23,7 @@ from elitefurretai.rl.analyze.eval_analysis import (
     q5_short_loss_patterns,
     q6_confidence_in_poor_situations,
     q7_value_calibration,
+    q8_save_games,
     q9a_persistent_disagreement,
     q9b_agree_then_diverge,
     wilson_ci,
@@ -702,3 +704,149 @@ def test_q9b_skips_battles_too_short():
 def test_q9b_empty_inputs_safe():
     result = q9b_agree_then_diverge(pd.DataFrame(), pd.DataFrame())
     assert result.empty
+
+
+# ─── Q8: save_games ──────────────────────────────────────────────────
+
+
+def _seed_run_dir_with_replays(tmp_path, battle_ids):
+    """Lay down dummy replays/<id>.log.gz files so q8 has logs to copy."""
+    replays = tmp_path / "replays"
+    replays.mkdir()
+    for bid in battle_ids:
+        (replays / f"{bid}.log.gz").write_bytes(b"\x1f\x8b\x08fake-gzip-content")
+
+
+def test_q8_short_loss_category_populated(tmp_path):
+    """A pool of short losses with replays should populate the category."""
+    rows = [{"opp_player_name": "x", "outcome": 0.0}] * 10 + [
+        {"opp_player_name": "x", "outcome": 1.0}
+    ] * 10
+    battles_df = _make_battles(rows)
+    for i in range(10):
+        battles_df.at[i, "final_turn"] = 3
+        battles_df.at[i, "replay_saved"] = True
+    _seed_run_dir_with_replays(tmp_path, [f"b{i}" for i in range(10)])
+
+    saved = q8_save_games(battles_df, _make_turns([]), run_dir=str(tmp_path), rng_seed=0)
+    assert len(saved["short_loss"]) == 3
+    # Every selected battle_id corresponds to a short loss.
+    short_loss_ids = {f"b{i}" for i in range(10)}
+    assert set(saved["short_loss"]).issubset(short_loss_ids)
+    # Files exist on disk.
+    for bid in saved["short_loss"]:
+        assert (tmp_path / "saved_games" / "short_loss" / f"{bid}.log.gz").exists()
+        sidecar = tmp_path / "saved_games" / "short_loss" / f"{bid}.json"
+        assert sidecar.exists()
+        with open(sidecar) as f:
+            data = json.load(f)
+        assert data["battle_id"] == bid
+        assert data["category"] == "short_loss"
+
+
+def test_q8_team_we_lose_with_filter(tmp_path):
+    """Category (b) selects battles where agent_team has WR < 25%."""
+    # team A: 12 battles, 1 win → 8% WR → qualifies as "bad team".
+    rows_A_losses = [{"agent_team_hash": "A", "opp_player_name": "x", "outcome": 0.0}] * 11
+    rows_A_wins = [{"agent_team_hash": "A", "opp_player_name": "x", "outcome": 1.0}] * 1
+    # team B: 12 battles, 9 wins → 75% WR → doesn't qualify.
+    rows_B_losses = [{"agent_team_hash": "B", "opp_player_name": "x", "outcome": 0.0}] * 3
+    rows_B_wins = [{"agent_team_hash": "B", "opp_player_name": "x", "outcome": 1.0}] * 9
+    battles_df = _make_battles(rows_A_losses + rows_A_wins + rows_B_losses + rows_B_wins)
+    # All battles get replays so the category filter is the load-bearing thing.
+    battles_df["replay_saved"] = True
+    _seed_run_dir_with_replays(tmp_path, list(battles_df["battle_id"]))
+
+    saved = q8_save_games(
+        battles_df,
+        _make_turns([]),
+        run_dir=str(tmp_path),
+        rng_seed=0,
+        min_battles_per_team=10,
+    )
+    # All selected battles must belong to team A (the bad team), and
+    # all must be losses.
+    for bid in saved["team_we_lose_with"]:
+        row = battles_df[battles_df["battle_id"] == bid].iloc[0]
+        assert row["agent_team_hash"] == "A"
+        assert row["outcome"] == 0.0
+
+
+def test_q8_filters_out_battles_without_replay(tmp_path):
+    """Battles with replay_saved=False are not eligible for any category."""
+    battles_df = _make_battles([{"opp_player_name": "x", "outcome": 0.0}] * 10)
+    for i in range(10):
+        battles_df.at[i, "final_turn"] = 3
+        # Only the first 2 have replays saved.
+        battles_df.at[i, "replay_saved"] = i < 2
+    _seed_run_dir_with_replays(tmp_path, ["b0", "b1"])
+
+    saved = q8_save_games(
+        battles_df,
+        _make_turns([]),
+        run_dir=str(tmp_path),
+        rng_seed=0,
+        n_per_category=5,  # ask for 5 but only 2 have replays
+    )
+    assert len(saved["short_loss"]) == 2
+    assert set(saved["short_loss"]) == {"b0", "b1"}
+
+
+def test_q8_returns_all_5_categories(tmp_path):
+    """The return dict always includes all 5 categories, even if empty."""
+    battles_df = _make_battles(
+        [{"opp_player_name": "x", "outcome": 1.0}]  # one win, no losses
+    )
+    battles_df["replay_saved"] = True
+    _seed_run_dir_with_replays(tmp_path, ["b0"])
+
+    saved = q8_save_games(battles_df, _make_turns([]), run_dir=str(tmp_path), rng_seed=0)
+    expected_categories = {
+        "short_loss",
+        "team_we_lose_with",
+        "team_we_lose_to",
+        "value_vs_ensemble_persistent",
+        "value_vs_ensemble_diverge",
+    }
+    assert set(saved.keys()) == expected_categories
+    # All empty because there are no losses, no Q9-disagreeing battles.
+    for ids in saved.values():
+        assert ids == []
+
+
+def test_q8_sidecar_contains_turn_data(tmp_path):
+    """The JSON sidecar must include the per-turn rows for the selected battle."""
+    rows = [{"opp_player_name": "x", "outcome": 0.0}] * 3
+    battles_df = _make_battles(rows)
+    for i in range(3):
+        battles_df.at[i, "final_turn"] = 3
+        battles_df.at[i, "replay_saved"] = True
+    _seed_run_dir_with_replays(tmp_path, ["b0", "b1", "b2"])
+
+    turn_rows = []
+    for i in range(3):
+        bid = f"b{i}"
+        for t in range(1, 4):
+            turn_rows.append(
+                {
+                    "battle_id": bid,
+                    "turn_number": t,
+                    "is_teampreview": False,
+                    "value_predicted": 0.1 * t,
+                    "heuristic_adv": -0.1 * t,
+                    "policy_entropy": 1.5,
+                }
+            )
+
+    saved = q8_save_games(
+        battles_df, _make_turns(turn_rows), run_dir=str(tmp_path), rng_seed=0
+    )
+    assert len(saved["short_loss"]) == 3
+    for bid in saved["short_loss"]:
+        with open(tmp_path / "saved_games" / "short_loss" / f"{bid}.json") as f:
+            data = json.load(f)
+        assert len(data["turns"]) == 3
+        # turn-level fields preserved
+        assert data["turns"][0]["turn_number"] == 1
+        assert "value_predicted" in data["turns"][0]
+        assert "heuristic_adv" in data["turns"][0]

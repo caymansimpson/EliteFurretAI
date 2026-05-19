@@ -30,8 +30,12 @@ a real eval run.
 from __future__ import annotations
 
 import argparse
+import json
 import math
-from typing import List, Optional, Tuple
+import os
+import random
+import shutil
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -674,6 +678,192 @@ def q9b_agree_then_diverge(
     return df[cols].reset_index(drop=True)
 
 
+def q8_save_games(
+    battles: pd.DataFrame,
+    turns: pd.DataFrame,
+    *,
+    run_dir: str,
+    n_per_category: int = 3,
+    short_loss_max_turn: int = 5,
+    team_wr_threshold: float = 0.25,
+    persistent_diff_min: float = 0.5,
+    diverge_diff_increase_min: float = 0.3,
+    min_battles_per_team: int = 10,
+    rng_seed: Optional[int] = 0,
+) -> Dict[str, List[str]]:
+    """Q8: dump ``n_per_category`` battles for each of 5 categories.
+
+    Categories:
+      * ``short_loss`` — outcome=0 AND final_turn ≤ short_loss_max_turn.
+      * ``team_we_lose_with`` — outcome=0 AND agent_team's overall WR
+        across ≥min_battles_per_team battles is below team_wr_threshold.
+      * ``team_we_lose_to`` — outcome=0 AND opp_team's "our-WR" across
+        ≥min_battles_per_team battles is below team_wr_threshold (i.e.
+        their WR over us is > 1-threshold).
+      * ``value_vs_ensemble_persistent`` — top Q9a battles whose
+        mean_abs_diff ≥ ``persistent_diff_min``.
+      * ``value_vs_ensemble_diverge`` — top Q9b battles whose
+        diff_increase ≥ ``diverge_diff_increase_min``.
+
+    Selection: from each candidate pool we keep only battles with
+    ``replay_saved=True`` (so we can dump the Showdown log), then
+    uniformly random-sample ``n_per_category``. Ties in ranking are
+    broken by random sample, per the user's earlier choice.
+
+    For each selected battle, write to ``<run_dir>/saved_games/<category>/``:
+      * ``<battle_id>.log.gz`` — the gzipped Showdown protocol log
+        (copied from ``<run_dir>/replays/``).
+      * ``<battle_id>.json`` — sidecar with the battle row and the
+        per-turn records (action, value, entropy, top-K, heuristic_adv,
+        ensemble_adv). Lets future-you (or someone unfamiliar with the
+        run) read the model's reasoning alongside the replay without
+        loading parquet.
+
+    Returns a dict ``{category: [battle_id, ...]}`` for the caller to
+    log / verify.
+    """
+    rng = random.Random(rng_seed) if rng_seed is not None else random.Random()
+    saved_root = os.path.join(run_dir, "saved_games")
+    os.makedirs(saved_root, exist_ok=True)
+
+    saved: Dict[str, List[str]] = {}
+
+    # Pre-compute Q1/Q2 WR tables for category filters; restrict to
+    # team_hashes with at least min_battles_per_team battles.
+    q1 = q1_agent_team_win_rate(battles)
+    q2 = q2_opp_team_win_rate(battles)
+    agent_team_overall = (
+        q1.groupby("agent_team_hash")
+        .agg(n=("n_battles", "sum"), wins=("wins", "sum"), losses=("losses", "sum"))
+        .reset_index()
+    )
+    agent_team_overall["wr"] = agent_team_overall["wins"] / (
+        agent_team_overall["wins"] + agent_team_overall["losses"]
+    ).replace(0, float("nan"))
+    bad_agent_teams = set(
+        agent_team_overall[
+            (agent_team_overall["n"] >= min_battles_per_team)
+            & (agent_team_overall["wr"] < team_wr_threshold)
+        ]["agent_team_hash"]
+    )
+
+    opp_team_overall = (
+        q2.groupby("opp_team_hash")
+        .agg(n=("n_battles", "sum"), wins=("wins", "sum"), losses=("losses", "sum"))
+        .reset_index()
+    )
+    opp_team_overall["wr"] = opp_team_overall["wins"] / (
+        opp_team_overall["wins"] + opp_team_overall["losses"]
+    ).replace(0, float("nan"))
+    tough_opp_teams = set(
+        opp_team_overall[
+            (opp_team_overall["n"] >= min_battles_per_team)
+            & (opp_team_overall["wr"] < team_wr_threshold)
+        ]["opp_team_hash"]
+    )
+
+    # Build candidate pools (battle_ids) per category.
+    only_with_replay = battles[battles["replay_saved"]]
+    decisive_losses = only_with_replay[only_with_replay["outcome"] == 0.0]
+
+    pools: Dict[str, List[str]] = {}
+    pools["short_loss"] = decisive_losses[
+        decisive_losses["final_turn"] <= short_loss_max_turn
+    ]["battle_id"].tolist()
+    pools["team_we_lose_with"] = decisive_losses[
+        decisive_losses["agent_team_hash"].isin(bad_agent_teams)
+    ]["battle_id"].tolist()
+    pools["team_we_lose_to"] = decisive_losses[
+        decisive_losses["opp_team_hash"].isin(tough_opp_teams)
+    ]["battle_id"].tolist()
+
+    # Q9-driven pools — require Q9a/Q9b to be computed with the same
+    # filter thresholds. We take a generous top_n then restrict to
+    # battles that have replays.
+    q9a = q9a_persistent_disagreement(battles, turns, top_n=200)
+    q9a_pool = q9a[q9a["mean_abs_diff"] >= persistent_diff_min]["battle_id"].tolist()
+    q9b = q9b_agree_then_diverge(battles, turns, top_n=200)
+    q9b_pool = q9b[q9b["diff_increase"] >= diverge_diff_increase_min]["battle_id"].tolist()
+    replay_ids = set(only_with_replay["battle_id"])
+    pools["value_vs_ensemble_persistent"] = [bid for bid in q9a_pool if bid in replay_ids]
+    pools["value_vs_ensemble_diverge"] = [bid for bid in q9b_pool if bid in replay_ids]
+
+    # Sample n_per_category from each pool and dump.
+    battle_by_id = battles.set_index("battle_id")
+    if turns.empty:
+        turns_by_battle: Dict[str, List[dict]] = {}
+    else:
+        turns_by_battle = {
+            bid: g.sort_values("turn_number").to_dict(orient="records")
+            for bid, g in turns.groupby("battle_id", sort=False)
+        }
+
+    for category, pool in pools.items():
+        cat_dir = os.path.join(saved_root, category)
+        os.makedirs(cat_dir, exist_ok=True)
+        n = min(n_per_category, len(pool))
+        picks = rng.sample(pool, n) if n > 0 else []
+        saved[category] = picks
+        for battle_id in picks:
+            _dump_saved_game(
+                battle_id=battle_id,
+                category=category,
+                battle_record=battle_by_id.loc[battle_id].to_dict(),
+                turn_records=turns_by_battle.get(battle_id, []),
+                run_dir=run_dir,
+                cat_dir=cat_dir,
+            )
+
+    return saved
+
+
+def _dump_saved_game(
+    *,
+    battle_id: str,
+    category: str,
+    battle_record: dict,
+    turn_records: List[dict],
+    run_dir: str,
+    cat_dir: str,
+) -> None:
+    """Copy replay log + write JSON sidecar for one saved battle."""
+    src_log = os.path.join(run_dir, "replays", f"{battle_id}.log.gz")
+    dst_log = os.path.join(cat_dir, f"{battle_id}.log.gz")
+    if os.path.exists(src_log):
+        shutil.copy2(src_log, dst_log)
+    sidecar = {
+        "battle_id": battle_id,
+        "category": category,
+        "battle": _jsonify(battle_record),
+        "turns": [_jsonify(t) for t in turn_records],
+    }
+    sidecar_path = os.path.join(cat_dir, f"{battle_id}.json")
+    with open(sidecar_path, "w") as f:
+        json.dump(sidecar, f, indent=2)
+
+
+def _jsonify(d: dict) -> dict:
+    """Best-effort conversion of non-JSON-serializable types in row dicts.
+
+    Pandas / numpy scalars (int64, float64, NaN, Timestamp) don't
+    JSON-encode by default. We coerce them to Python natives so the
+    sidecars stay readable without a custom decoder.
+    """
+    out = {}
+    for k, v in d.items():
+        if pd.isna(v):
+            out[k] = None
+        elif hasattr(v, "item"):
+            try:
+                out[k] = v.item()
+                continue
+            except (ValueError, AttributeError):
+                pass
+        else:
+            out[k] = v
+    return out
+
+
 def _group_win_rate(battles: pd.DataFrame, group_cols: list) -> pd.DataFrame:
     """Group + aggregate win rate with Wilson CIs.
 
@@ -827,11 +1017,16 @@ def main() -> None:
         print("\n=== Q9b: agree-then-diverge (top 20) ===")
         _emit(diverge, output=args.output, fmt=args.format)
         return
-    elif args.cmd in {
-        "save_games",
-        "report",
-    }:
-        print(f"{args.cmd}: {_TODO_MESSAGE}")
+    elif args.cmd == "save_games":
+        turns = read_turns(args.run_dir)
+        saved = q8_save_games(battles, turns, run_dir=args.run_dir)
+        for category, ids in saved.items():
+            print(f"=== {category}: {len(ids)} games saved ===")
+            for bid in ids:
+                print(f"  {bid}")
+        return
+    elif args.cmd == "report":
+        print(f"report: {_TODO_MESSAGE}")
         return
     else:
         raise AssertionError(f"unreachable subcommand: {args.cmd!r}")
