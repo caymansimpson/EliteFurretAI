@@ -128,6 +128,13 @@ class TrajectoryCollector:
         # Conventionally set to e.g. ``"p8201_"`` so the canonical id
         # carries server-port context.
         self.battle_id_prefix = battle_id_prefix
+        # Periodic flush state. Each flush writes a new suffixed
+        # shard (``_b<idx>``) and increments the index, so a crash
+        # mid-run only loses the in-memory tail since the last flush
+        # rather than the whole worker's history. read_battles /
+        # read_turns globs across all shards transparently.
+        self._batch_idx = 0
+        self._flush_threshold = 50
 
         self._battle_rows: List[BattleRecord] = []
         self._turn_rows: List[TurnRecord] = []
@@ -289,6 +296,13 @@ class TrajectoryCollector:
             )
         )
 
+        # Periodic flush: turn-row buffer grows ~15× faster than
+        # battle-row buffer, so trigger on battle count which is
+        # the easier-to-reason-about cap. At 50 battles/flush, a
+        # crash loses at most 50 battles' worth of in-memory state.
+        if len(self._battle_rows) >= self._flush_threshold:
+            self.flush()
+
     # ── replay capture ──────────────────────────────────────────
 
     def _save_replay(self, battle: Any, canonical_id: str) -> bool:
@@ -314,21 +328,36 @@ class TrajectoryCollector:
     # ── flush ────────────────────────────────────────────────────
 
     def flush(self) -> None:
-        """Write per-worker parquet shards. Idempotent if called twice."""
+        """Write the current buffer as a fresh batch shard, then clear.
+
+        Each call writes a new ``battles_worker_<i>_<call_id>_b<batch>.parquet``
+        file and increments ``_batch_idx``. Splitting into batch
+        shards means a mid-run flush is a real safepoint: a later
+        crash can't roll back already-written batches. ``read_battles``
+        / ``read_turns`` globs ``battles_worker_*.parquet`` so all
+        batches are unioned transparently at analysis time.
+
+        Idempotent on empty buffers — the parquet writer skips
+        zero-row inputs, so a no-op flush incurs no disk write.
+        """
         suffix = f"_{self.call_id}" if self.call_id else ""
+        batch_suffix = f"_b{self._batch_idx}"
         battles_path = os.path.join(
-            self.run_dir, f"battles_worker_{self.worker_id}{suffix}.parquet"
+            self.run_dir,
+            f"battles_worker_{self.worker_id}{suffix}{batch_suffix}.parquet",
         )
         turns_path = os.path.join(
-            self.run_dir, f"turns_worker_{self.worker_id}{suffix}.parquet"
+            self.run_dir,
+            f"turns_worker_{self.worker_id}{suffix}{batch_suffix}.parquet",
         )
         write_battles_parquet(self._battle_rows, battles_path)
         write_turns_parquet(self._turn_rows, turns_path)
-        # Clear buffers so a redundant flush() doesn't double-write
-        # rows on top of the parquet (parquet writers replace files,
-        # but clearing keeps in-memory state honest).
+        # Clear buffers — the rows are durably on disk now in a
+        # uniquely-named batch shard; the next flush writes the next
+        # batch into ``_b<idx+1>``.
         self._battle_rows.clear()
         self._turn_rows.clear()
+        self._batch_idx += 1
 
 
 # ─── Player subclass ────────────────────────────────────────────────

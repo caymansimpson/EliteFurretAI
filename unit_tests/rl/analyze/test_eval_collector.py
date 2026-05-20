@@ -243,14 +243,17 @@ def test_replay_rate_05_samples_approximately_5_percent(tmp_path):
 
     Uses a fixed seed so the test is deterministic; the assertion
     band is wide enough to catch a bug like "always saves" or "never
-    saves" but lenient enough to avoid flakiness.
+    saves" but lenient enough to avoid flakiness. Counts replay
+    files on disk because the periodic-flush logic clears the
+    in-memory ``_battle_rows`` between batches.
     """
     collector = _make_collector(tmp_path, replay_rate=0.05, seed=42)
     n = 1000
     for i in range(n):
         battle = _FakeBattle(battle_tag=f"b{i}", won=True)
         collector.record_battle_finished(battle)
-    saved = sum(1 for r in collector._battle_rows if r.replay_saved)
+    replays_dir = tmp_path / "replays"
+    saved = len(list(replays_dir.iterdir())) if replays_dir.exists() else 0
     # 5% of 1000 = 50; allow ±25 (5 SD at p=0.05, n=1000 is √(0.05*0.95*1000) ≈ 6.9).
     assert 25 <= saved <= 75, f"saved={saved} far from expected 50"
 
@@ -268,8 +271,10 @@ def test_flush_writes_per_worker_parquet_shards(tmp_path):
 
     collector.flush()
 
-    assert os.path.exists(tmp_path / "battles_worker_0.parquet")
-    assert os.path.exists(tmp_path / "turns_worker_0.parquet")
+    # New naming: shards are suffixed with batch index (`_b0` for the
+    # first flush). read_battles/turns glob across all batches.
+    assert os.path.exists(tmp_path / "battles_worker_0_b0.parquet")
+    assert os.path.exists(tmp_path / "turns_worker_0_b0.parquet")
 
     df_b = read_battles(str(tmp_path))
     assert len(df_b) == 1

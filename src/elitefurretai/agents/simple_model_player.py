@@ -25,11 +25,11 @@ from poke_env.player.battle_order import DefaultBattleOrder
 from elitefurretai.etl import Embedder
 from elitefurretai.etl.encoder import MDBO
 from elitefurretai.rl.masking import fast_get_action_mask
-from elitefurretai.rl.rnad_model import RNaDAgent
+from elitefurretai.rl.rnad_model import RNaDModel
 
 
 class SimpleModelPlayer(Player):
-    """In-process Player wrapping an RNaDAgent. Use for benchmarks/evaluations.
+    """In-process Player wrapping an RNaDModel. Use for benchmarks/evaluations.
 
     Loads a checkpoint into a torch.nn.Module and runs inference inline in
     ``choose_move`` (no IPC, no batching). Trades training-time throughput
@@ -51,11 +51,11 @@ class SimpleModelPlayer(Player):
         **player_kwargs: Any,
     ):
         super().__init__(battle_format=battle_format, **player_kwargs)
-        # Late import: learners.py imports RNaDAgent from this module,
+        # Late import: learners.py imports RNaDModel from this module,
         # so a top-level import here would be circular.
         from elitefurretai.rl.learners import load_agent_from_checkpoint
 
-        self.agent: RNaDAgent = load_agent_from_checkpoint(model_path, device)
+        self.agent: RNaDModel = load_agent_from_checkpoint(model_path, device)
         self.device = device
         self.probabilistic = probabilistic
         self.embedder = embedder or Embedder(
@@ -90,6 +90,20 @@ class SimpleModelPlayer(Player):
                 state_tensor, hidden
             )
 
+        # Cap context history at the model's max_seq_len. The
+        # positional-encoding buffer is sized for
+        # ``max_seq_len + NUM_DECISION_TOKENS + 1`` positions; an
+        # unbounded hidden_state overruns it as soon as a battle goes
+        # past that many turns. Training truncates trajectories at
+        # ``max_battle_steps`` (typically 30), but eval lets battles
+        # run to natural completion — which in VGC can easily reach
+        # 40+ turns via stall tactics. Keep the most recent
+        # ``max_seq_len`` positions; older context is lost but the
+        # causal mask means each position only attends to its past
+        # anyway, so the immediate-decision signal is preserved.
+        max_history = self.agent.model.max_seq_len
+        if next_hidden is not None and next_hidden.size(1) > max_history:
+            next_hidden = next_hidden[:, -max_history:, :].contiguous()
         self.hidden_states[battle.battle_tag] = next_hidden
 
         is_teampreview = battle.teampreview
