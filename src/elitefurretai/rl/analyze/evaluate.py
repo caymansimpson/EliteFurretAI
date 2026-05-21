@@ -21,11 +21,12 @@ import argparse
 import asyncio
 import datetime
 import json
+import multiprocessing as mp
 import os
 import subprocess
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Executor, ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -445,22 +446,29 @@ def run_eval_parallel(
     collect_run_dir: Optional[str] = None,
     eval_run_id: Optional[str] = None,
     replay_sample_rate: float = 1.0,
+    executor: str = "process",
 ) -> EvalResult:
     """Fan out a list of (agent_team, opp_team) cells across workers.
 
-    Workers run in a ``ThreadPoolExecutor``; each calls ``asyncio.run``
-    on its own event loop. Threading (not multiprocessing) is fine
-    because the heavy work is async network I/O against Showdown
-    servers.
+    Cells are distributed round-robin (``cells[i::workers]``) — balanced
+    for the uniform workload of "run N battles per cell." Each worker
+    runs all of its assigned cells before returning, reusing player
+    instances across cells via ``update_team``. With ``collect_run_dir``
+    set, one parquet shard per worker captures the union of rows across
+    that worker's cells; the analysis CLI globs all shards into one
+    DataFrame.
 
-    Cells are distributed round-robin (``cells[i::workers]``) — this
-    is balanced for the uniform workload of "run N battles per cell."
+    ``executor`` selects the parallelism model:
 
-    Each worker runs all of its assigned cells before returning,
-    reusing player instances across cells via ``update_team``. With
-    ``collect_run_dir`` set, one parquet shard per worker captures the
-    union of rows across that worker's cells; the analysis CLI globs
-    all shards into one DataFrame.
+    * ``"process"`` (default) — ``ProcessPoolExecutor`` with the
+      ``spawn`` start method. Real CPU parallelism: each worker is its
+      own OS process with its own GIL. Required at production scale —
+      the eval pipeline's embedder + max_damage damage calc are
+      GIL-bound and serialize threads onto one core.
+    * ``"thread"`` — ``ThreadPoolExecutor``. Kept for tests and
+      single-machine debugging where the ~5s spawn cost matters.
+      Throughput is capped at one core's worth of CPU work regardless
+      of ``workers``.
 
     Single-cell calls (no matrix iteration) are just
     ``cells = [(agent_team, opp_team)]`` — same code path.
@@ -479,7 +487,21 @@ def run_eval_parallel(
     effective_workers = max(1, min(workers, len(cells)))
     cell_slices = [cells[i::effective_workers] for i in range(effective_workers)]
 
-    with ThreadPoolExecutor(max_workers=effective_workers) as pool:
+    pool: Executor
+    if executor == "process":
+        # `spawn` (not `fork`) so each worker gets a fresh CUDA context.
+        # Forking after the parent touches torch.cuda corrupts CUDA in
+        # the children with "Cannot re-initialize CUDA in forked subprocess".
+        pool = ProcessPoolExecutor(
+            max_workers=effective_workers,
+            mp_context=mp.get_context("spawn"),
+        )
+    elif executor == "thread":
+        pool = ThreadPoolExecutor(max_workers=effective_workers)
+    else:
+        raise ValueError(f"--executor must be 'process' or 'thread', got {executor!r}")
+
+    with pool:
         futures = []
         for worker_id, my_cells in enumerate(cell_slices):
             if not my_cells:
@@ -612,6 +634,16 @@ def main() -> None:
         "cells via update_team so the model loads once per worker.",
     )
     parser.add_argument("--workers", type=int, default=4)
+    parser.add_argument(
+        "--executor",
+        choices=("process", "thread"),
+        default="process",
+        help="Worker dispatch model. 'process' (default) gives real CPU "
+        "parallelism via ProcessPoolExecutor+spawn — required at >1 "
+        "worker for the GIL-bound embedder + max_damage damage calc. "
+        "'thread' uses ThreadPoolExecutor (legacy path; ~3-4x slower at "
+        "workers=4 but no spawn cost, useful for tests).",
+    )
     parser.add_argument("--num-servers", type=int, default=4)
     parser.add_argument("--start-port", type=int, default=8000)
     parser.add_argument("--server-base", type=str, default="localhost")
@@ -733,6 +765,7 @@ def main() -> None:
             collect_run_dir=collect_run_dir,
             eval_run_id=eval_run_id,
             replay_sample_rate=args.replay_sample_rate,
+            executor=args.executor,
         )
         duration = time.time() - started
         _print_result(result, p1.name, p2.name)
