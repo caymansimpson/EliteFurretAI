@@ -42,7 +42,7 @@ def test_canonicalize_baseline_handles_aliases_and_casing(raw, expected):
     assert canonicalize_baseline(raw) == expected
 
 
-def test_parse_baseline_returns_spec_with_factory():
+def test_parse_baseline_returns_spec_with_params():
     spec = parse_player_spec(
         "simple_heuristic", device="cpu", battle_format="gen9vgc2024regg"
     )
@@ -50,7 +50,8 @@ def test_parse_baseline_returns_spec_with_factory():
     assert spec.kind == "baseline"
     assert spec.name == "simple_heuristic"
     assert spec.user_tag == "SHP"
-    assert callable(spec.factory)
+    assert spec.params["canonical"] == "simple_heuristic"
+    assert spec.params["battle_format"] == "gen9vgc2024regg"
 
 
 def test_parse_alias_returns_canonical_name():
@@ -62,32 +63,36 @@ def test_parse_alias_returns_canonical_name():
 
 
 def test_parse_vgc_bench_is_external():
-    """vgc_bench routes to ``kind="external"`` with a ``launch_external`` closure.
+    """vgc_bench routes to ``kind="external"`` carrying subprocess params.
 
     In-process construction is broken (poke-env version drift vs the
-    SB3 checkpoint), so the spec instead carries a launcher that will
-    spawn ``_vgcbench_subprocess.py`` under the vgc-bench venv. The
-    closure isn't invoked here — that requires the venv and a live
-    Showdown server.
+    SB3 checkpoint), so the spec carries the subprocess args needed
+    by ``launch_external_player`` (called by the worker once Showdown
+    is up). We just verify the params are populated here — actually
+    launching requires the vgc-bench venv and a live Showdown server.
     """
     spec = parse_player_spec("vgc_bench", device="cpu", battle_format="gen9vgc2024regg")
     assert spec.kind == "external"
     assert spec.name == "vgc_bench"
     assert spec.user_tag == "VGB"
-    assert spec.factory is None
-    assert spec.launch_external is not None
-    assert callable(spec.launch_external)
+    assert spec.params["battle_format"] == "gen9vgc2024regg"
+    assert "checkpoint_path" in spec.params
+    assert "team_file" in spec.params
+    assert "python_executable" in spec.params
 
 
 def test_parse_model_path(tmp_path):
     # File must exist for the path branch to fire.
     ckpt = tmp_path / "fake_model.pt"
-    ckpt.write_bytes(b"")  # contents irrelevant — we don't invoke factory
+    ckpt.write_bytes(b"")  # contents irrelevant — we don't invoke build_player
     spec = parse_player_spec(str(ckpt), device="cpu", battle_format="gen9vgc2024regg")
     assert spec.kind == "model"
     assert spec.name == "fake_model"
     assert spec.user_tag == "MDL"
     assert spec.raw == str(ckpt)
+    assert spec.params["path"] == str(ckpt)
+    assert spec.params["device"] == "cpu"
+    assert spec.params["battle_format"] == "gen9vgc2024regg"
 
 
 def test_parse_unknown_raises():

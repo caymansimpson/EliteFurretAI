@@ -7,22 +7,21 @@ fixed set of baseline names. ``parse_player_spec`` does the routing.
 
 Three player kinds are supported:
 
-* ``"model"`` — a trained RL checkpoint. The factory returns a
+* ``"model"`` — a trained RL checkpoint. ``build_player`` returns a
   ``SimpleModelPlayer`` that runs inference inline.
 * ``"baseline"`` — a heuristic poke-env Player (``max_damage``,
-  ``max_base_power``, ``simple_heuristic``, ``random``). The factory
+  ``max_base_power``, ``simple_heuristic``, ``random``). ``build_player``
   returns a fresh instance per worker.
 * ``"external"`` — vgc-bench, which can't run inline because its SB3
-  policy requires a different poke-env vintage. The factory launches a
-  subprocess in the ``../venv-vgcbench`` venv and exposes a username
-  for the other player to challenge. The worker side of the eval
-  handles this asymmetry — see ``_run_worker`` in ``evaluate.py``.
+  policy requires a different poke-env vintage.
+  ``launch_external_player`` spawns a subprocess in the
+  ``../venv-vgcbench`` venv and exposes a username for the in-process
+  side to challenge. The worker handles this asymmetry — see
+  ``_run_worker`` in ``evaluate.py``.
 
-The factory signature is uniform across ``"model"`` and ``"baseline"``
-so callers don't switch on ``kind`` to construct players. ``"external"``
-needs special handling at the worker level (``send_challenges`` instead
-of ``battle_against``), so it carries a ``launch_external`` closure
-instead of a ``factory``.
+PlayerSpec carries only pickleable data (no closures), so it can be
+shipped across process boundaries — required by the ProcessPoolExecutor
+fan-out in ``run_eval_parallel``.
 """
 
 from __future__ import annotations
@@ -31,7 +30,7 @@ import os
 import subprocess
 import time
 from dataclasses import dataclass
-from typing import Callable, Literal, Optional
+from typing import Any, Callable, Literal, Mapping, Optional
 
 from poke_env.player import MaxBasePowerPlayer, Player, RandomPlayer
 from poke_env.player.baselines import SimpleHeuristicsPlayer
@@ -79,12 +78,6 @@ _BASELINE_USER_TAG = {
 }
 
 
-PlayerFactory = Callable[
-    [Callable[[], str], AccountConfiguration, ServerConfiguration, bool],
-    Player,
-]
-
-
 @dataclass
 class RunningExternal:
     """Handle to a running external opponent subprocess.
@@ -98,16 +91,9 @@ class RunningExternal:
     shutdown: Callable[[], None]
 
 
-# An external launcher takes a server URL (e.g. ``localhost:8200``)
-# and returns a ``RunningExternal``. Implementations are responsible
-# for waiting until the subprocess has logged into Showdown before
-# returning (or surfacing an actionable error).
-ExternalLauncher = Callable[[str], RunningExternal]
-
-
 @dataclass(frozen=True)
 class PlayerSpec:
-    """Parsed player specification.
+    """Parsed player specification — pure data, no closures.
 
     Fields:
         raw: original CLI string (for logging / serialization).
@@ -116,20 +102,23 @@ class PlayerSpec:
             checkpoint filename (without extension); for baselines /
             external it is the canonical snake_case name.
         user_tag: short uppercase tag used as a username prefix.
-        factory: callable that constructs a poke-env ``Player``.
-            Populated for ``"model"`` and ``"baseline"`` kinds; ``None``
-            for ``"external"``.
-        launch_external: callable that launches the external opponent
-            subprocess and returns a ``RunningExternal``. Populated
-            only for ``"external"``; ``None`` otherwise.
+        params: kind-specific config used by ``build_player`` /
+            ``launch_external_player`` to construct the Player. Only
+            primitive types — must be picklable.
+
+    Per-kind ``params`` schema:
+
+    * ``"model"`` → ``path`` (str), ``device`` (str), ``battle_format`` (str)
+    * ``"baseline"`` → ``canonical`` (str), ``battle_format`` (str)
+    * ``"external"`` → ``checkpoint_path`` (str), ``team_file`` (str),
+      ``python_executable`` (str), ``battle_format`` (str)
     """
 
     raw: str
     kind: PlayerKind
     name: str
     user_tag: str
-    factory: Optional[PlayerFactory] = None
-    launch_external: Optional[ExternalLauncher] = None
+    params: Mapping[str, Any]
 
 
 def canonicalize_baseline(raw: str) -> Optional[str]:
@@ -192,56 +181,22 @@ def parse_player_spec(
 
 def _model_spec(path: str, *, device: str, battle_format: str) -> PlayerSpec:
     name = os.path.splitext(os.path.basename(path))[0]
-
-    def factory(
-        team_provider: Callable[[], str],
-        account_configuration: AccountConfiguration,
-        server_configuration: ServerConfiguration,
-        accept_open_team_sheet: bool,
-    ) -> Player:
-        return SimpleModelPlayer(
-            model_path=path,
-            device=device,
-            battle_format=battle_format,
-            probabilistic=False,
-            account_configuration=account_configuration,
-            server_configuration=server_configuration,
-            team=team_provider(),
-            accept_open_team_sheet=accept_open_team_sheet,
-        )
-
-    return PlayerSpec(raw=path, kind="model", name=name, user_tag="MDL", factory=factory)
+    return PlayerSpec(
+        raw=path,
+        kind="model",
+        name=name,
+        user_tag="MDL",
+        params={"path": path, "device": device, "battle_format": battle_format},
+    )
 
 
 def _baseline_spec(raw: str, canonical: str, *, battle_format: str) -> PlayerSpec:
-    user_tag = _BASELINE_USER_TAG[canonical]
-
-    def factory(
-        team_provider: Callable[[], str],
-        account_configuration: AccountConfiguration,
-        server_configuration: ServerConfiguration,
-        accept_open_team_sheet: bool,
-    ) -> Player:
-        team = team_provider()
-        common = dict(
-            battle_format=battle_format,
-            account_configuration=account_configuration,
-            server_configuration=server_configuration,
-            team=team,
-            accept_open_team_sheet=accept_open_team_sheet,
-        )
-        if canonical == "max_damage":
-            return MaxDamagePlayer(**common)
-        if canonical == "max_base_power":
-            return MaxBasePowerPlayer(**common)
-        if canonical == "simple_heuristic":
-            return SimpleHeuristicsPlayer(**common)
-        if canonical == "random":
-            return RandomPlayer(**common)
-        raise AssertionError(f"unreachable: unknown canonical baseline {canonical!r}")
-
     return PlayerSpec(
-        raw=raw, kind="baseline", name=canonical, user_tag=user_tag, factory=factory
+        raw=raw,
+        kind="baseline",
+        name=canonical,
+        user_tag=_BASELINE_USER_TAG[canonical],
+        params={"canonical": canonical, "battle_format": battle_format},
     )
 
 
@@ -257,22 +212,95 @@ def _external_spec(
     assert canonical == "vgc_bench", (
         f"unreachable: unknown external baseline {canonical!r}"
     )
-
-    def launch(server_url: str) -> RunningExternal:
-        return _launch_vgc_bench_subprocess(
-            server_url=server_url,
-            battle_format=battle_format,
-            checkpoint_path=checkpoint_path,
-            team_file=team_file,
-            python_executable=python_executable,
-        )
-
     return PlayerSpec(
         raw=raw,
         kind="external",
         name=canonical,
         user_tag=_BASELINE_USER_TAG[canonical],
-        launch_external=launch,
+        params={
+            "checkpoint_path": checkpoint_path,
+            "team_file": team_file,
+            "python_executable": python_executable,
+            "battle_format": battle_format,
+        },
+    )
+
+
+def build_player(
+    spec: PlayerSpec,
+    *,
+    team: str,
+    account_configuration: AccountConfiguration,
+    server_configuration: ServerConfiguration,
+    accept_open_team_sheet: bool = False,
+) -> Player:
+    """Construct a poke-env ``Player`` from a ``PlayerSpec``.
+
+    Handles ``kind="model"`` and ``kind="baseline"``. For ``kind="external"``
+    use ``launch_external_player`` — there is no in-process Player.
+
+    This is a top-level function (not a closure on the spec) so the spec
+    itself remains pickleable and process-pool friendly.
+    """
+    if spec.kind == "model":
+        return SimpleModelPlayer(
+            model_path=spec.params["path"],
+            device=spec.params["device"],
+            battle_format=spec.params["battle_format"],
+            probabilistic=False,
+            account_configuration=account_configuration,
+            server_configuration=server_configuration,
+            team=team,
+            accept_open_team_sheet=accept_open_team_sheet,
+        )
+
+    if spec.kind == "baseline":
+        canonical = spec.params["canonical"]
+        common = dict(
+            battle_format=spec.params["battle_format"],
+            account_configuration=account_configuration,
+            server_configuration=server_configuration,
+            team=team,
+            accept_open_team_sheet=accept_open_team_sheet,
+        )
+        if canonical == "max_damage":
+            # Deterministic argmax — evaluation needs a fixed-policy baseline,
+            # not the curriculum's softmax-sampled default (temperature=0.5).
+            return MaxDamagePlayer(temperature=0.0, **common)
+        if canonical == "max_base_power":
+            return MaxBasePowerPlayer(**common)
+        if canonical == "simple_heuristic":
+            return SimpleHeuristicsPlayer(**common)
+        if canonical == "random":
+            return RandomPlayer(**common)
+        raise AssertionError(f"unreachable: unknown canonical baseline {canonical!r}")
+
+    raise ValueError(
+        f"build_player() does not handle kind={spec.kind!r}; "
+        "use launch_external_player() for external opponents."
+    )
+
+
+def launch_external_player(spec: PlayerSpec, server_url: str) -> RunningExternal:
+    """Spawn the external opponent subprocess and return a handle.
+
+    Requires ``spec.kind == "external"``. Currently the only external
+    opponent is ``vgc_bench``; this dispatch grows when more arrive.
+    """
+    if spec.kind != "external":
+        raise ValueError(
+            f"launch_external_player() requires kind='external', got {spec.kind!r}"
+        )
+    if spec.name != "vgc_bench":
+        raise ValueError(
+            f"launch_external_player() does not handle external opponent {spec.name!r}"
+        )
+    return _launch_vgc_bench_subprocess(
+        server_url=server_url,
+        battle_format=spec.params["battle_format"],
+        checkpoint_path=spec.params["checkpoint_path"],
+        team_file=spec.params["team_file"],
+        python_executable=spec.params["python_executable"],
     )
 
 

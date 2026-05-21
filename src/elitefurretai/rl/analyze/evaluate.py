@@ -45,7 +45,12 @@ from elitefurretai.rl.analyze.eval_schema import (
     ScheduleEntry,
     write_manifest,
 )
-from elitefurretai.rl.analyze.player_factory import PlayerSpec, parse_player_spec
+from elitefurretai.rl.analyze.player_factory import (
+    PlayerSpec,
+    build_player,
+    launch_external_player,
+    parse_player_spec,
+)
 from elitefurretai.rl.analyze.team_provider import TeamProvider, parse_team_spec
 
 
@@ -138,30 +143,24 @@ def _build_model_player(
             accept_open_team_sheet=False,
             collector=collector,
         )
-    assert spec.factory is not None
-    return spec.factory(lambda: team_str, account, server_config, False)
+    return build_player(
+        spec,
+        team=team_str,
+        account_configuration=account,
+        server_configuration=server_config,
+        accept_open_team_sheet=False,
+    )
 
 
 def _detect_device_from_spec(spec: PlayerSpec) -> str:
-    """Extract device from a model spec's factory closure.
+    """Extract device from a model spec.
 
-    The factory closes over ``device`` at parse time but doesn't
-    expose it. Rather than threading it through PlayerSpec, we
-    construct a probe SimpleModelPlayer-free way: ``RecordingModelPlayer``
-    needs device, so we inspect the closure. Falls back to "cpu" if
-    the closure structure is unexpected (defensive: collection
-    shouldn't crash the eval if a future refactor renames the var).
+    For ``kind="model"`` the device was set at parse time and lives in
+    ``spec.params["device"]``. For other kinds (baseline / external)
+    there is no model, so fall back to ``"cpu"``.
     """
-    try:
-        # The model factory is a closure with `device` in its co_freevars.
-        # __closure__ holds the captured values in the same order.
-        names = spec.factory.__code__.co_freevars  # type: ignore[union-attr]
-        cells = spec.factory.__closure__  # type: ignore[union-attr]
-        if names and cells:
-            idx = names.index("device")
-            return cells[idx].cell_contents
-    except Exception:
-        pass
+    if spec.kind == "model":
+        return str(spec.params.get("device", "cpu"))
     return "cpu"
 
 
@@ -289,14 +288,12 @@ def _run_worker(
 
         try:
             if p2.kind == "external":
-                assert p2.launch_external is not None
-                external_handle = p2.launch_external(server_url)
+                external_handle = launch_external_player(p2, server_url)
                 player1 = _build_player(
                     p1, first_agent_team, p1_account, server_config, collector
                 )
             elif p1.kind == "external":
-                assert p1.launch_external is not None
-                external_handle = p1.launch_external(server_url)
+                external_handle = launch_external_player(p1, server_url)
                 player2 = _build_player(
                     p2, first_opp_team, p2_account, server_config, collector
                 )
@@ -428,20 +425,12 @@ def _build_player(
 
 
 def _battle_format_from_spec(spec: PlayerSpec) -> str:
-    """Pull ``battle_format`` out of the spec's factory closure.
+    """Read ``battle_format`` directly from the spec's params.
 
-    Same trick as ``_detect_device_from_spec``; defaults to
-    ``gen9vgc2024regg`` if introspection fails.
+    All three spec kinds carry ``battle_format`` in ``params``.
+    Defaults to ``gen9vgc2024regg`` if unexpectedly missing.
     """
-    try:
-        names = spec.factory.__code__.co_freevars  # type: ignore[union-attr]
-        cells = spec.factory.__closure__  # type: ignore[union-attr]
-        if names and cells:
-            idx = names.index("battle_format")
-            return cells[idx].cell_contents
-    except Exception:
-        pass
-    return "gen9vgc2024regg"
+    return str(spec.params.get("battle_format", "gen9vgc2024regg"))
 
 
 def run_eval_parallel(
