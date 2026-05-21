@@ -316,6 +316,19 @@ def _run_worker(
                         player1.update_team(agent_team)
                     if player2 is not None:
                         player2.update_team(opp_team)
+                    # Clear poke-env's per-Player battles dict — it
+                    # accumulates finished `Battle` objects across all
+                    # cells of this worker (~150 KB each in practice).
+                    # At 1764 cells × 100 battles = 176,400 battles this
+                    # leaks 25+ GB and crushes the process via swap.
+                    # `reset_battles` raises if any battle is still
+                    # running, which can't happen here — battle_against
+                    # / send_challenges complete before we reach the
+                    # next cell. See memory/feedback_poke_env_battles_leak.md.
+                    if player1 is not None:
+                        player1.reset_battles()
+                    if player2 is not None:
+                        player2.reset_battles()
 
                 if collector is not None:
                     if p1.kind == "model":
