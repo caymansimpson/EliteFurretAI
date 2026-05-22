@@ -450,8 +450,7 @@ class CurriculumConfig:
       key (validated in ``__post_init__``).
 
     Use ``resolved_agent_team_paths()`` (plural) to obtain a ``{fmt: abs_path}``
-    dict. The legacy ``resolved_agent_team_path()`` (singular) returns the path
-    for ``primary_format`` only and is scheduled for removal in Task 5.
+    dict.
 
     ``opponent_team_pool_path`` values are subdirectory strings passed as the
     ``subdirectory=`` argument to ``TeamRepo.sample_team``; they are NOT full
@@ -607,16 +606,6 @@ class CurriculumConfig:
         if isinstance(self.opponent_team_pool_path, dict):
             return {fmt: self.opponent_team_pool_path[fmt] for fmt in self.battle_formats}
         return {fmt: self.opponent_team_pool_path for fmt in self.battle_formats}
-
-    def resolved_agent_team_path(self) -> Optional[str]:
-        """Legacy single-format alias. Returns the path for ``primary_format``,
-        or ``None`` if ``agent_team_path`` is unset.
-
-        Scheduled for removal in Task 5; kept now to preserve the single external
-        caller in ``engine/vgc_environment.py``.
-        """
-        paths = self.resolved_agent_team_paths()
-        return paths.get(self.primary_format)
 
 
 @dataclass

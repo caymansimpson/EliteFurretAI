@@ -217,8 +217,8 @@ class _ShowdownBackend:
 
         self._factory = WorkerOpponentFactory(
             team_repo=team_repo,
-            battle_format=cur.battle_format,
-            team_subdirectory=cur.opponent_team_pool_path,
+            battle_formats=cur.battle_formats,
+            opponent_team_subdirectories=cur.resolved_opponent_team_pool_paths(),
             server_config=ServerConfiguration(
                 f"ws://localhost:{server_port}/showdown/websocket", ""
             ),
@@ -228,7 +228,7 @@ class _ShowdownBackend:
             run_id=run_id,
             max_battle_steps=hw.max_battle_steps,
             external_vgcbench_usernames=external_vgcbench_usernames,
-            agent_team_path=cur.resolved_agent_team_path(),
+            agent_team_paths=cur.resolved_agent_team_paths() or None,
             max_concurrent_battles_per_player=hw.max_concurrent_battles_per_player,
             worker_inference_clients=worker_inference_clients,
         )

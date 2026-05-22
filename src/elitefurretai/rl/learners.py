@@ -894,7 +894,7 @@ def load_model_from_checkpoint(
     if embedder is None:
         cfg = RNaDConfig.from_dict(config_dict)
         embedder = Embedder(
-            format=cfg.curriculum.battle_format,
+            format=cfg.curriculum.primary_format,
             feature_set=cfg.training.embedder_feature_set,
             omniscient=False,
         )

@@ -303,7 +303,8 @@ class VGCBenchManager:
                 "--server",
                 f"localhost:{runner_port}",
                 "--battle-format",
-                cur.battle_format,
+                # VGCBench v1 is single-format; bind it to primary_format. Off-format pairs cannot challenge this subprocess (see plan risk register).
+                cur.primary_format,
                 "--checkpoint-path",
                 cur.vgc_bench_checkpoint_path,
                 "--team-file",

@@ -160,7 +160,7 @@ def initialize_training_state(
     if config.training.resume_from:
         logger.info("Resuming model+optimizer from %s...", config.training.resume_from)
         embedder = Embedder(
-            format=config.curriculum.battle_format,
+            format=config.curriculum.primary_format,
             feature_set=config.training.embedder_feature_set,
             omniscient=False,
         )
@@ -206,7 +206,7 @@ def initialize_training_state(
                 "embedder_feature_set", config.training.embedder_feature_set
             )
         embedder = Embedder(
-            format=config.curriculum.battle_format,
+            format=config.curriculum.primary_format,
             feature_set=ckpt_feature_set,
             omniscient=False,
         )
@@ -230,7 +230,7 @@ def initialize_training_state(
     else:
         logger.info("Initializing fresh model from config...")
         embedder = Embedder(
-            format=config.curriculum.battle_format,
+            format=config.curriculum.primary_format,
             feature_set=config.training.embedder_feature_set,
             omniscient=False,
         )
@@ -338,7 +338,7 @@ def setup_model_registry(
     """
     inference_device = config.hardware.device
     inference_embedder = Embedder(
-        format=config.curriculum.battle_format,
+        format=config.curriculum.primary_format,
         feature_set=config.training.embedder_feature_set,
         omniscient=False,
     )
