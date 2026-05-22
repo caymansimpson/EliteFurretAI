@@ -583,5 +583,60 @@ def test_battle_formats_validation_rejects_short_format_string():
         CurriculumConfig(battle_formats={"foo": 1.0})
 
 
+# =============================================================================
+# PER-FORMAT RESOLVED PATH TESTS (Task 2)
+# =============================================================================
+
+
+def test_resolved_agent_team_paths_string_form_broadcasts_to_all_formats():
+    cur = CurriculumConfig(
+        battle_formats={"gen9vgc2024regg": 0.5, "gen9vgc2024regh": 0.5},
+        base_team_path="data/teams",
+        agent_team_path="constrained",
+    )
+    paths = cur.resolved_agent_team_paths()
+    assert paths == {
+        "gen9vgc2024regg": "data/teams/gen9vgc2024regg/constrained",
+        "gen9vgc2024regh": "data/teams/gen9vgc2024regh/constrained",
+    }
+
+
+def test_resolved_agent_team_paths_dict_form_used_verbatim_per_format():
+    cur = CurriculumConfig(
+        battle_formats={"gen9vgc2024regg": 0.7, "gen9vgc2024regh": 0.3},
+        base_team_path="data/teams",
+        agent_team_path={"gen9vgc2024regg": "constrained", "gen9vgc2024regh": "rentals"},
+    )
+    paths = cur.resolved_agent_team_paths()
+    assert paths == {
+        "gen9vgc2024regg": "data/teams/gen9vgc2024regg/constrained",
+        "gen9vgc2024regh": "data/teams/gen9vgc2024regh/rentals",
+    }
+
+
+def test_resolved_agent_team_paths_dict_form_rejects_missing_format():
+    with pytest.raises(ValueError, match="missing entry for format"):
+        CurriculumConfig(
+            battle_formats={"gen9vgc2024regg": 0.5, "gen9vgc2024regh": 0.5},
+            agent_team_path={"gen9vgc2024regg": "constrained"},  # missing regh
+        )
+
+
+def test_resolved_agent_team_paths_none_returns_empty_dict():
+    cur = CurriculumConfig(battle_formats={"gen9vgc2024regg": 1.0}, agent_team_path=None)
+    assert cur.resolved_agent_team_paths() == {}
+
+
+def test_resolved_opponent_team_pool_paths_matches_format_keys():
+    cur = CurriculumConfig(
+        battle_formats={"gen9vgc2024regg": 0.6, "gen9vgc2024regh": 0.4},
+        opponent_team_pool_path={"gen9vgc2024regg": "ranked", "gen9vgc2024regh": None},
+    )
+    assert cur.resolved_opponent_team_pool_paths() == {
+        "gen9vgc2024regg": "ranked",
+        "gen9vgc2024regh": None,
+    }
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

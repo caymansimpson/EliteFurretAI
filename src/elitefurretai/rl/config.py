@@ -37,7 +37,7 @@ to read across multiple sub-configs.
 import math
 import os
 from dataclasses import asdict, dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 import yaml
 
@@ -437,18 +437,31 @@ class CurriculumConfig:
 
     Path conventions
     ----------------
-    Both `opponent_team_pool_path` and `agent_team_path` are *relative* to
-    `<base_team_path>/<primary_format>/`. Callers should resolve via
-    `resolved_agent_team_path()` (file or directory) and pass
-    `opponent_team_pool_path` as the `subdirectory=` arg to TeamRepo.
-    Team files are located at `<base_team_path>/<format>/` for every key
-    in `battle_formats`. (Task 2 generalizes path resolution to a
-    per-format dict; for now single-format callers use `primary_format`.)
+    Both ``agent_team_path`` and ``opponent_team_pool_path`` are *relative* paths
+    under ``<base_team_path>/<format>/``. Each accepts three forms:
+
+    - ``None``: no path configured. ``resolved_agent_team_paths()`` returns ``{}``;
+      ``resolved_opponent_team_pool_paths()`` maps every format to ``None``.
+    - ``str``: a single subdirectory name broadcast to every format in
+      ``battle_formats``. Resolved to ``<base_team_path>/<fmt>/<path>`` for each
+      format.
+    - ``Dict[str, str]`` (or ``Dict[str, Optional[str]]`` for the opponent pool):
+      per-format paths. Every active format in ``battle_formats`` MUST appear as a
+      key (validated in ``__post_init__``).
+
+    Use ``resolved_agent_team_paths()`` (plural) to obtain a ``{fmt: abs_path}``
+    dict. The legacy ``resolved_agent_team_path()`` (singular) returns the path
+    for ``primary_format`` only and is scheduled for removal in Task 5.
+
+    ``opponent_team_pool_path`` values are subdirectory strings passed as the
+    ``subdirectory=`` argument to ``TeamRepo.sample_team``; they are NOT full
+    filesystem paths.
     """
 
-    # Battle format and team sources. agent_team_path is a relative path
-    # (file or directory) under <base_team_path>/<primary_format>/.
-    agent_team_path: Optional[str] = None
+    # Relative path (file or directory) under <base_team_path>/<fmt>/ for the
+    # agent's team. Accepts None, a single string (broadcast), or a per-format
+    # dict; see class docstring.
+    agent_team_path: Optional[Union[str, Dict[str, str]]] = None
     base_team_path: str = "data/teams"
     # Probability distribution over battle formats. Must sum to 1.0.
     # Each rollout pair is pinned to one sampled format at create_agents time
@@ -458,9 +471,10 @@ class CurriculumConfig:
     battle_formats: Dict[str, float] = field(
         default_factory=lambda: {"gen9vgc2023regc": 1.0}
     )
-    # Subdirectory under <base_team_path>/<primary_format>/ sampled from for
-    # opponent teams.
-    opponent_team_pool_path: Optional[str] = None
+    # Subdirectory under <base_team_path>/<fmt>/ sampled from for opponent
+    # teams. Accepts None, a single string (broadcast), or a per-format dict
+    # (values may be None to disable the subdirectory filter for that format).
+    opponent_team_pool_path: Optional[Union[str, Dict[str, Optional[str]]]] = None
     # Behavior cloning model used as opponent
     bc_model_path: Optional[str] = "data/models/bc_model.pt"
     # Opponent sampling distribution (must sum to 1.0).
@@ -536,6 +550,15 @@ class CurriculumConfig:
             raise ValueError(
                 f"All battle_formats must share the same gen (format[3]); got {gens}"
             )
+        for attr in ("agent_team_path", "opponent_team_pool_path"):
+            value = getattr(self, attr)
+            if isinstance(value, dict):
+                missing = set(self.battle_formats) - set(value)
+                if missing:
+                    raise ValueError(
+                        f"{attr} (dict form) is missing entry for format(s) "
+                        f"{sorted(missing)}; got keys {sorted(value)}"
+                    )
 
     @property
     def primary_format(self) -> str:
@@ -548,16 +571,49 @@ class CurriculumConfig:
         """
         return max(self.battle_formats.items(), key=lambda kv: kv[1])[0]
 
-    def resolved_agent_team_path(self) -> Optional[str]:
-        """Full filesystem path for `agent_team_path`, or None if unset.
+    def resolved_agent_team_paths(self) -> Dict[str, str]:
+        """Return absolute agent-team paths per format, or {} if unset.
 
-        Joins the relative `agent_team_path` with
-        `<base_team_path>/<primary_format>/`. (Task 2 generalizes this to a
-        per-format dict; for now this preserves single-format callers.)
+        - ``agent_team_path is None`` → ``{}``
+        - ``agent_team_path: str`` → ``{fmt: <base>/<fmt>/<path> for fmt in battle_formats}``
+        - ``agent_team_path: Dict[str, str]`` → ``{fmt: <base>/<fmt>/<path[fmt]>}``
         """
-        if not self.agent_team_path:
-            return None
-        return os.path.join(self.base_team_path, self.primary_format, self.agent_team_path)
+        if self.agent_team_path is None:
+            return {}
+        if isinstance(self.agent_team_path, dict):
+            return {
+                fmt: os.path.join(self.base_team_path, fmt, self.agent_team_path[fmt])
+                for fmt in self.battle_formats
+            }
+        return {
+            fmt: os.path.join(self.base_team_path, fmt, self.agent_team_path)
+            for fmt in self.battle_formats
+        }
+
+    def resolved_opponent_team_pool_paths(self) -> Dict[str, Optional[str]]:
+        """Return per-format opponent-team subdirectory values for TeamRepo.
+
+        These are subdirectory strings (NOT full paths) since
+        ``TeamRepo.sample_team`` takes ``(format, subdirectory=...)``. When
+        ``opponent_team_pool_path`` is ``None``, every format maps to ``None``.
+        When it's a string, it broadcasts to all formats. When it's a dict,
+        it is used verbatim.
+        """
+        if self.opponent_team_pool_path is None:
+            return {fmt: None for fmt in self.battle_formats}
+        if isinstance(self.opponent_team_pool_path, dict):
+            return {fmt: self.opponent_team_pool_path[fmt] for fmt in self.battle_formats}
+        return {fmt: self.opponent_team_pool_path for fmt in self.battle_formats}
+
+    def resolved_agent_team_path(self) -> Optional[str]:
+        """Legacy single-format alias. Returns the path for ``primary_format``,
+        or ``None`` if ``agent_team_path`` is unset.
+
+        Scheduled for removal in Task 5; kept now to preserve the single external
+        caller in ``engine/vgc_environment.py``.
+        """
+        paths = self.resolved_agent_team_paths()
+        return paths.get(self.primary_format)
 
 
 @dataclass
@@ -737,13 +793,12 @@ class RNaDConfig:
             f"Base team path not found: {cur.base_team_path}"
         )
 
-        if cur.opponent_team_pool_path:
-            full_pool = os.path.join(
-                cur.base_team_path, cur.primary_format, cur.opponent_team_pool_path
-            )
-            assert os.path.exists(full_pool), (
-                f"Opponent team pool path not found: {full_pool}"
-            )
+        for fmt, pool_subdir in cur.resolved_opponent_team_pool_paths().items():
+            if pool_subdir is not None:
+                full_pool = os.path.join(cur.base_team_path, fmt, pool_subdir)
+                assert os.path.exists(full_pool), (
+                    f"Opponent team pool path not found: {full_pool}"
+                )
         agent_team_path = cur.resolved_agent_team_path()
         if agent_team_path is not None:
             assert os.path.exists(agent_team_path), (
