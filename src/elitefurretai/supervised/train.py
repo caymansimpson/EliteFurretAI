@@ -579,7 +579,7 @@ def main(train_path, test_path, val_path, config={}, save_best=False):
         compiled_model = torch.compile(model)
         model = cast(torch.nn.Module, compiled_model)
 
-    wandb.watch(model, log="all", log_freq=1000)
+    wandb.watch(model, log=None)
 
     # Count Parameters
     num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
