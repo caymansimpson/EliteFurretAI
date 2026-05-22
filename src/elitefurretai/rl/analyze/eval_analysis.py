@@ -77,6 +77,78 @@ def q3_opp_type_win_rate(battles: pd.DataFrame) -> pd.DataFrame:
     return _group_win_rate(battles, ["opp_player_name"])
 
 
+def q_format_opp_type_win_rate(battles: pd.DataFrame) -> pd.DataFrame:
+    """Win rate grouped by (battle_format, opp_player_name).
+
+    Used for the Stage II per-format graduation check. Returns
+    ``n_battles, wins, losses, ties, win_rate, ci_low, ci_high`` per cell.
+    Requires a ``battle_format`` column on the input DataFrame, which the
+    eval pipeline already populates (see eval_schema.py).
+    """
+    return _group_win_rate(battles, ["battle_format", "opp_player_name"])
+
+
+def graduation_summary(
+    battles: pd.DataFrame,
+    threshold: float = 0.60,
+    required_opp_types: tuple = (
+        "max_damage",
+        "vgc_bench",
+        "bc_player",
+        "simple_heuristic",
+    ),
+) -> dict:
+    """Stage II graduation check across (format x opp_type) cells.
+
+    For each (battle_format, opp_type) present in ``battles`` whose
+    ``opp_player_name`` is in ``required_opp_types``, emit a cell:
+    ``{battle_format, opp_player_name, n_battles, win_rate, passed}``.
+    For any (format, opp_type) pair where opp_type is required but no
+    battles exist, emit a cell with ``missing=True, passed=False``.
+
+    Overall ``passed`` is True iff every cell passes (no missing
+    required opp_types, every win_rate >= threshold).
+    """
+    per_cell = q_format_opp_type_win_rate(battles)
+    formats = sorted({str(f) for f in battles["battle_format"].unique()})
+    cells: List[dict] = []
+    for fmt in formats:
+        for opp in required_opp_types:
+            row = per_cell[
+                (per_cell["battle_format"] == fmt) & (per_cell["opp_player_name"] == opp)
+            ]
+            if row.empty:
+                cells.append(
+                    {
+                        "battle_format": fmt,
+                        "opp_player_name": opp,
+                        "n_battles": 0,
+                        "win_rate": float("nan"),
+                        "passed": False,
+                        "missing": True,
+                    }
+                )
+            else:
+                wr = float(row["win_rate"].iloc[0])
+                cells.append(
+                    {
+                        "battle_format": fmt,
+                        "opp_player_name": opp,
+                        "n_battles": int(row["n_battles"].iloc[0]),
+                        "win_rate": wr,
+                        "passed": wr >= threshold,
+                        "missing": False,
+                    }
+                )
+    return {
+        "threshold": threshold,
+        "required_opp_types": list(required_opp_types),
+        "formats": formats,
+        "cells": cells,
+        "passed": all(c["passed"] for c in cells),
+    }
+
+
 def q1_agent_team_win_rate(battles: pd.DataFrame) -> pd.DataFrame:
     """Q1: win rate by (agent_team_hash, opp_player_name).
 

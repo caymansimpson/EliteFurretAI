@@ -14,9 +14,11 @@ import json
 import math
 
 import pandas as pd
+import pytest
 
 from elitefurretai.rl.analyze.eval_analysis import (
     compute_ensemble_advantage,
+    graduation_summary,
     q1_agent_team_win_rate,
     q2_opp_team_win_rate,
     q3_opp_type_win_rate,
@@ -26,6 +28,7 @@ from elitefurretai.rl.analyze.eval_analysis import (
     q8_save_games,
     q9a_persistent_disagreement,
     q9b_agree_then_diverge,
+    q_format_opp_type_win_rate,
     wilson_ci,
 )
 
@@ -850,3 +853,133 @@ def test_q8_sidecar_contains_turn_data(tmp_path):
         assert data["turns"][0]["turn_number"] == 1
         assert "value_predicted" in data["turns"][0]
         assert "heuristic_adv" in data["turns"][0]
+
+
+# ─── Per-format graduation matrix (Task 7) ──────────────────────────
+
+
+def _battles_df(rows: list[dict]) -> pd.DataFrame:
+    """Build a minimal battles DataFrame with just the columns the
+    aggregation reads. outcome=1 -> win, 0 -> loss, NaN -> tie.
+    """
+    return pd.DataFrame(rows)
+
+
+def test_q_format_opp_type_win_rate_groups_by_format_and_opp():
+    battles = _battles_df(
+        [
+            {
+                "battle_format": "gen9vgc2024regg",
+                "opp_player_name": "max_damage",
+                "outcome": 1.0,
+            },
+            {
+                "battle_format": "gen9vgc2024regg",
+                "opp_player_name": "max_damage",
+                "outcome": 1.0,
+            },
+            {
+                "battle_format": "gen9vgc2024regg",
+                "opp_player_name": "max_damage",
+                "outcome": 0.0,
+            },
+            {
+                "battle_format": "gen9vgc2024regg",
+                "opp_player_name": "vgc_bench",
+                "outcome": 1.0,
+            },
+            {
+                "battle_format": "gen9vgc2024regh",
+                "opp_player_name": "max_damage",
+                "outcome": 0.0,
+            },
+            {
+                "battle_format": "gen9vgc2024regh",
+                "opp_player_name": "max_damage",
+                "outcome": 1.0,
+            },
+        ]
+    )
+    result = q_format_opp_type_win_rate(battles)
+    keyed = {
+        (r["battle_format"], r["opp_player_name"]): r["win_rate"]
+        for _, r in result.iterrows()
+    }
+    assert keyed[("gen9vgc2024regg", "max_damage")] == pytest.approx(2 / 3)
+    assert keyed[("gen9vgc2024regg", "vgc_bench")] == pytest.approx(1.0)
+    assert keyed[("gen9vgc2024regh", "max_damage")] == pytest.approx(0.5)
+
+
+def test_graduation_summary_passes_when_all_cells_meet_threshold():
+    battles = _battles_df(
+        [
+            {"battle_format": fmt, "opp_player_name": opp, "outcome": outcome}
+            for fmt in ("gen9vgc2024regg", "gen9vgc2024regh")
+            for opp in ("max_damage", "vgc_bench", "bc_player", "simple_heuristic")
+            for outcome in [1.0] * 7 + [0.0] * 3
+        ]
+    )
+    summary = graduation_summary(
+        battles,
+        threshold=0.60,
+        required_opp_types=("max_damage", "vgc_bench", "bc_player", "simple_heuristic"),
+    )
+    assert summary["passed"] is True
+    assert len(summary["cells"]) == 2 * 4
+    for cell in summary["cells"]:
+        assert cell["passed"] is True
+        assert cell["win_rate"] == pytest.approx(0.70)
+
+
+def test_graduation_summary_fails_when_any_cell_below_threshold():
+    battles = _battles_df(
+        [
+            {"battle_format": "gen9vgc2024regg", "opp_player_name": opp, "outcome": o}
+            for opp in ("max_damage", "vgc_bench", "bc_player", "simple_heuristic")
+            for o in [1.0] * 7 + [0.0] * 3
+        ]
+        + [
+            {"battle_format": "gen9vgc2024regh", "opp_player_name": opp, "outcome": o}
+            for opp in ("max_damage", "bc_player", "simple_heuristic")
+            for o in [1.0] * 7 + [0.0] * 3
+        ]
+        + [
+            {
+                "battle_format": "gen9vgc2024regh",
+                "opp_player_name": "vgc_bench",
+                "outcome": o,
+            }
+            for o in [1.0] * 5 + [0.0] * 5
+        ]
+    )
+    summary = graduation_summary(
+        battles,
+        threshold=0.60,
+        required_opp_types=("max_damage", "vgc_bench", "bc_player", "simple_heuristic"),
+    )
+    assert summary["passed"] is False
+    failing = [c for c in summary["cells"] if not c["passed"]]
+    assert len(failing) == 1
+    assert failing[0]["battle_format"] == "gen9vgc2024regh"
+    assert failing[0]["opp_player_name"] == "vgc_bench"
+
+
+def test_graduation_summary_flags_missing_required_opp_type():
+    battles = _battles_df(
+        [
+            {
+                "battle_format": "gen9vgc2024regg",
+                "opp_player_name": "max_damage",
+                "outcome": 1.0,
+            },
+        ]
+    )
+    summary = graduation_summary(
+        battles,
+        threshold=0.60,
+        required_opp_types=("max_damage", "vgc_bench"),
+    )
+    assert summary["passed"] is False
+    assert any(
+        c["opp_player_name"] == "vgc_bench" and c.get("missing") for c in summary["cells"]
+    )

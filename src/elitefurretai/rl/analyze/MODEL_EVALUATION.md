@@ -237,6 +237,34 @@ max_damage (19.8%) > simple_heuristic (21.9%). All Wilson 95% CIs
 exclude 0.5 by a huge margin, so the model loses decisively to every
 baseline.
 
+### Multi-format graduation matrix
+
+For a multi-format RL run, the Stage II 60%×4 criterion expands to
+`(format × opp_type)` cells. Run:
+
+```
+python src/elitefurretai/scripts/multi_format_graduation_eval.py \
+    --checkpoint data/models/<run>/checkpoint_<step>.pt \
+    --config src/elitefurretai/rl/configs/<your_config>.yaml \
+    --run-dir data/eval/<run>_<step>_graduation \
+    --battles-per-cell 200
+```
+
+This shells out to `evaluate.py` once per (format, baseline) cell and
+prints a matrix with one row per cell. Overall pass requires every cell
+≥ threshold (default 60%). VGCBench v1 is reused across formats — its
+cross-format generalization is acceptable per the multi-format
+implementation plan.
+
+Programmatic access: `graduation_summary(battles_df, threshold,
+required_opp_types)` in `eval_analysis.py` returns the same data
+structure (`{threshold, required_opp_types, formats, cells, passed}`),
+where each cell carries `battle_format`, `opp_player_name`, `n_battles`,
+`win_rate`, `passed`, and `missing`. The per-cell aggregation function
+is `q_format_opp_type_win_rate`, which groups by
+`(battle_format, opp_player_name)` using the same Wilson-CI machinery
+as Q3.
+
 ### Sub-check: did the resume teams skew the numbers?
 
 The 18 (max_damage) / 23 (vgc_bench) agent teams that were missing
