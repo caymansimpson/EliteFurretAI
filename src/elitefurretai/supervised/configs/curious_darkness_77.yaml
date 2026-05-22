@@ -57,10 +57,6 @@ embedder_feature_set: full
 battle_format: gen9vgc2023regc
 max_seq_len: 40
 keep_force_switch: false
-teampreview_idx: 5030
-
-# Force switch action indices (used for masking)
-force_switch_indices: [409, 827, 1245, 1663, 2081, 2499]
 
 # DataLoader
 num_workers: 3

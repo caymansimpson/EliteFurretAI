@@ -38,7 +38,7 @@ portfolio:
 exploration:
   temperature_start: 1.0
   temperature_end: 0.5
-  temperature_anneal_steps: 10000
+  exploration_anneal_steps: 10000
   top_p: 0.95
 
 optimizer:
@@ -117,15 +117,15 @@ curriculum:
   agent_team_path: constrained
   bc_model_path: data/models/supervised/cool-bee-85-finetune_best.pt
   curriculum_weights:
-    self_play: 0.4
-    bc_player: 0.05
+    self_play: 0.56
+    bc_player: 0.03
     exploiters: 0
     ghosts: 0.3
-    max_damage: 0.05
+    max_damage: 0.03
     random_baseline: 0
     max_base_power_baseline: 0
-    simple_heuristic_baseline: 0.1
-    vgc_bench_baseline: 0.1
+    simple_heuristic_baseline: 0.03
+    vgc_bench_baseline: 0.05
     train_exploiter: 0
   adaptive_curriculum: false
   max_exploiter_models: 5

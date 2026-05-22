@@ -1,61 +1,47 @@
-# may22: BC config with the may16 RL trunk architecture, intended to produce
-# a checkpoint that can be loaded via `initialize_path` in may16.yaml without
+# may22: BC config with the may22 RL trunk architecture, intended to produce
+# a checkpoint that can be loaded via `initialize_path` in may22.yaml without
 # the trunk being silently rebuilt from defaults.
 #
 # Architecture knobs are kept in 1:1 sync with src/elitefurretai/rl/configs/
-# may16.yaml's `architecture:` block. All RL-side knobs that affect tensor
+# may22.yaml's `architecture:` block. All RL-side knobs that affect tensor
 # shapes (value_head_layers, number_bank_*, *_embed_dim) are surfaced here.
 # `value_to_trunk_grad_scale` is a backward-only multiplier and has no effect
 # on the BC forward pass (and supervised training has no value gradient
 # anyway), but it's included so the saved BC config round-trips intact.
-#
-# Embedder regime:
-#   - `embedder_feature_set: raw` matches may16 — RL's init flow at
-#     rl/train.py:199-212 forces the runtime embedder to use the BC
-#     checkpoint's feature_set, so this MUST match what may16 expects.
-#   - `battle_format: gen9vgc2023regc` is intentionally different from
-#     may16's `gen9vgc2024regg`. BC trains on the regc dataset; RL runs in
-#     regg. If num_species / num_moves / num_items / num_abilities differ
-#     between the two formats, the GroupedFeatureEncoder embedding tables
-#     for those IDs will fresh-init on the RL side (strict=False partial
-#     load). The trunk, transformer, heads, and number_bank_* tables all
-#     load cleanly because their shapes don't depend on format.
 
-# ===== Architecture - Backbone (from may16) =====
+# ===== Architecture - Backbone =====
 max_seq_len: 40
 grouped_encoder_hidden_dim: 256
 grouped_encoder_aggregated_dim: 2048
 pokemon_attention_heads: 8
 early_layers: [1024, 512, 512]
 
-# ===== Architecture - Transformer (from may16) =====
+# ===== Architecture - Transformer =====
 transformer_layers: 4
 transformer_heads: 8
-transformer_ff_dim: 1024
+transformer_ff_dim: 2048
 transformer_dropout: 0.1
 use_decision_tokens: true
 use_causal_mask: true
 late_layers: [512, 512]
 
-# ===== Architecture - Teampreview Head (from may16) =====
+# ===== Architecture - Teampreview Head =====
 teampreview_head_layers: [256, 128]
-teampreview_head_dropout: 0.15
+teampreview_head_dropout: 0.3
 teampreview_attention_heads: 2
 
-# ===== Architecture - Turn Action Head (from may16) =====
+# ===== Architecture - Turn Action Head =====
 turn_head_layers: [512, 256, 256]
 
 # ===== Distributional Value Head (C51) =====
-# Deep value head: matches may16. The BC win_head will train as a 3-block
-# residual stack on top of `late_ff_stack` rather than the legacy 2-layer
-# head, so the RL strict=False partial-load picks it up cleanly instead of
-# fresh-initializing it on the RL side.
+# Deeper value head with smoothing, biasing towards uncertainty
 num_value_bins: 51
 value_min: -1.0
 value_max: 1.0
 value_head_layers: [512, 512, 256]
+value_label_smoothing: 0.05
 
-# ===== Architecture - Number Banks & Embeddings (defaults, match may16) =====
+# ===== Architecture - Number Banks & Embeddings =====
 number_bank_hp_bins: 100
 number_bank_stat_bins: 600
 number_bank_power_bins: 250
@@ -71,9 +57,9 @@ item_embed_dim: 16
 species_embed_dim: 32
 move_embed_dim: 16
 
-# ===== Training (from curious_darkness_77) =====
-num_epochs: 30
-eval_every: 1
+# ===== Training =====
+num_epochs: 50
+eval_every: 2
 batch_size: 512
 learning_rate: 5.44e-05
 optimizer: AdamW
@@ -84,11 +70,11 @@ dropout: 0.2
 accumulation_steps: 1
 seed: 21
 
-# ===== Loss Weights (from curious_darkness_77) =====
+# ===== Loss Weights =====
 turn_loss_weight: 1.0
 move_loss_weight: 1.0
-switch_loss_weight: 1.0
-teampreview_loss_weight: 1.0
+switch_loss_weight: 0.1
+teampreview_loss_weight: 0.1
 value_to_trunk_grad_scale: 1.0
 win_loss_weight: 0.35
 turn_loss_type: topk
@@ -101,16 +87,14 @@ focal_gamma: 2.0
 embedder_feature_set: raw
 battle_format: gen9vgc2023regc
 keep_force_switch: false
-teampreview_idx: 5030
-force_switch_indices: [409, 827, 1245, 1663, 2081, 2499]
 
-# ===== DataLoader (from curious_darkness_77) =====
+# ===== DataLoader =====
 num_workers: 4
 files_per_worker: 3
 prefetch_factor: 2
 worker_batch_size: 512
 persistent_workers: true
 
-# ===== Hardware (from curious_darkness_77) =====
+# ===== Hardware =====
 device: cuda
 save_path: data/models/supervised/
