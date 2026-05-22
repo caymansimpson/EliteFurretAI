@@ -34,6 +34,12 @@ def _trajectory_collate_fn(
         # Stack tensors for this key
         tensors = [item[key] for item in batch]
         stacked = torch.stack(tensors, dim=0)
+        # Downcast states to bf16 in the worker — the model runs forward in bf16
+        # autocast anyway, so this only moves the existing cast earlier and
+        # halves the H2D payload (pin_memory=False on WSL2 makes the staging
+        # copy CPU-bound and proportional to byte count).
+        if key == "states":
+            stacked = stacked.to(torch.bfloat16)
         # Make contiguous to ensure clean memory layout for sharing
         result[key] = stacked.contiguous()
 

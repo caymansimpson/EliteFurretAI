@@ -375,7 +375,7 @@ def evaluate(
     for batch in _eval_iterator:
         if device != "cuda":
             batch = {k: v.to(device) for k, v in batch.items()}
-        states = batch["states"].to(torch.float32)
+        states = batch["states"]
         actions = batch["actions"]
         action_masks = batch["action_masks"] if "action_masks" in batch else None
         masks = batch["masks"] if "masks" in batch else None
@@ -862,7 +862,7 @@ def analyze(
     for batch in _analyze_iterator:
         if device != "cuda":
             batch = {k: v.to(device) for k, v in batch.items()}
-        states = batch["states"].to(torch.float32)
+        states = batch["states"]
         if state_input_dim is not None and state_input_dim < states.shape[-1]:
             states = states[..., :state_input_dim]
         actions = batch["actions"]

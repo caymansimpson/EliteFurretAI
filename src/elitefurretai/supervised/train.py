@@ -69,7 +69,7 @@ def train_epoch(
         if config["device"] != "cuda":
             batch = {k: v.to(config["device"]) for k, v in batch.items()}
 
-        states = batch["states"].to(torch.float32)
+        states = batch["states"]
         # Slice to model's expected input size when featureset is smaller than FULL
         state_input_dim = config.get("state_input_dim", states.shape[-1])
         if state_input_dim < states.shape[-1]:
@@ -517,7 +517,7 @@ def main(train_path, test_path, val_path, config={}, save_best=False):
         batch_size=config["worker_batch_size"],
         num_workers=4,
         prefetch_factor=2,
-        files_per_worker=1,
+        files_per_worker=2,
     )
     val_loader = OptimizedBattleDataLoader(
         val_path,
@@ -525,7 +525,7 @@ def main(train_path, test_path, val_path, config={}, save_best=False):
         batch_size=config["worker_batch_size"],
         num_workers=4,
         prefetch_factor=2,
-        files_per_worker=1,
+        files_per_worker=2,
     )
 
     # Initialize model with flexible architecture. Kwargs are kept in sync with
