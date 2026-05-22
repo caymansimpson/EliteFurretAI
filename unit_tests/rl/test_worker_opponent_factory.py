@@ -341,3 +341,70 @@ def test_create_agents_assigns_pair_formats_via_apportionment(monkeypatch):
         "gen9vgc2024regh",
     ]
     assert sorted(constructed_formats) == ["gen9vgc2024regg"] * 4 + ["gen9vgc2024regh"] * 4
+
+
+def test_randomize_all_teams_uses_pair_format_per_slot(monkeypatch):
+    """randomize_all_teams resamples each slot using self.pair_formats[i].
+
+    Set up: factory with 4 pairs split 50/50 across two formats, with a
+    curriculum that activates at least one baseline pool (max_damage)
+    so the per-baseline-pool indexing is exercised too. Stub RLTrajectoryPlayer
+    and MaxDamagePlayer so create_agents doesn't open websocket connections,
+    then record every format passed to team_repo.sample_team during randomize.
+    """
+    sampled_formats: list[str] = []
+
+    class _StubPlayer:
+        def __init__(self, *, battle_format, **kwargs):
+            self.battle_format = battle_format
+            self._team = None
+
+    monkeypatch.setattr("elitefurretai.rl.opponents.RLTrajectoryPlayer", _StubPlayer)
+    monkeypatch.setattr("elitefurretai.rl.opponents.MaxDamagePlayer", _StubPlayer)
+
+    class _RecordingTeamRepo:
+        def sample_team(self, battle_format, subdirectory=None):
+            sampled_formats.append(battle_format)
+            return "Pikachu @ Light Ball"
+
+        def _shuffle_team_order(self, team):
+            return team
+
+    factory = _make_factory(
+        curriculum={OpponentPool.SELF_PLAY: 0.5, OpponentPool.MAX_DAMAGE: 0.5},
+        battle_formats={"gen9vgc2024regg": 0.5, "gen9vgc2024regh": 0.5},
+        worker_inference_clients=_clients_with("main"),
+    )
+    factory.team_repo = cast(TeamRepo, _RecordingTeamRepo())
+
+    factory.create_agents(num_pairs=4, local_traj_queue=queue.Queue())
+
+    # Sanity: 4 pairs apportioned 50/50 should give 2 of each format.
+    assert sorted(factory.pair_formats) == [
+        "gen9vgc2024regg",
+        "gen9vgc2024regg",
+        "gen9vgc2024regh",
+        "gen9vgc2024regh",
+    ]
+    # Sanity: max_damage pool was built with one entry per pair (curriculum > 0).
+    assert len(factory.max_damage_opponents) == 4
+
+    # Now randomize. Expected calls per pool (each pool length = 4):
+    #   - players (4)  -> get_agent_team -> sample_team(fmt) since no agent_team_paths
+    #   - opponents (4) -> sample_team(fmt)
+    #   - max_damage (4) -> sample_team(fmt)
+    # = 12 calls total, with format matching factory.pair_formats[i] per slot.
+    sampled_formats.clear()
+    factory.randomize_all_teams()
+
+    expected_per_pool = list(factory.pair_formats)
+    expected = (
+        expected_per_pool  # players
+        + expected_per_pool  # opponents
+        + expected_per_pool  # max_damage
+    )
+    assert sampled_formats == expected, (
+        f"randomize_all_teams sampled wrong formats per slot.\n"
+        f"  expected: {expected}\n"
+        f"  actual:   {sampled_formats}"
+    )
