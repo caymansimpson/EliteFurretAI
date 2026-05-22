@@ -436,6 +436,7 @@ def main(train_path, test_path, val_path, config={}, save_best=False):
         "value_min",
         "value_max",
         "transformer_dropout",
+        "value_to_trunk_grad_scale",
     }
     _int_keys = {
         "batch_size",
@@ -515,7 +516,10 @@ def main(train_path, test_path, val_path, config={}, save_best=False):
         files_per_worker=1,
     )
 
-    # Initialize model with flexible architecture
+    # Initialize model with flexible architecture. Kwargs are kept in sync with
+    # rl/learners.py:build_model_from_config so a BC checkpoint trained here
+    # can be partial-loaded into the RL trunk without shape surprises on the
+    # embedding banks, value head, or grad-scale knob.
     raw_model = TransformerThreeHeadedModel(
         embedder=embedder,
         early_layers=config["early_layers"],
@@ -530,16 +534,32 @@ def main(train_path, test_path, val_path, config={}, save_best=False):
         teampreview_head_dropout=config["teampreview_head_dropout"],
         teampreview_attention_heads=config["teampreview_attention_heads"],
         turn_head_layers=config["turn_head_layers"],
+        value_head_layers=config.get("value_head_layers", []),
         max_seq_len=config["max_seq_len"],
         num_value_bins=config["num_value_bins"],
         value_min=config["value_min"],
         value_max=config["value_max"],
+        number_bank_hp_bins=config.get("number_bank_hp_bins", 100),
+        number_bank_stat_bins=config.get("number_bank_stat_bins", 600),
+        number_bank_power_bins=config.get("number_bank_power_bins", 250),
+        number_bank_embedding_dim=config.get("number_bank_embedding_dim", 16),
+        number_bank_damage_bins=config.get("number_bank_damage_bins", 600),
+        number_bank_damage_embed_dim=config.get("number_bank_damage_embed_dim", 4),
+        number_bank_turn_bins=config.get("number_bank_turn_bins", 40),
+        number_bank_turn_embed_dim=config.get("number_bank_turn_embed_dim", 16),
+        number_bank_rating_bins=config.get("number_bank_rating_bins", 100),
+        number_bank_rating_embed_dim=config.get("number_bank_rating_embed_dim", 16),
+        ability_embed_dim=config.get("ability_embed_dim", 16),
+        item_embed_dim=config.get("item_embed_dim", 16),
+        species_embed_dim=config.get("species_embed_dim", 32),
+        move_embed_dim=config.get("move_embed_dim", 16),
         transformer_layers=config.get("transformer_layers", 6),
         transformer_heads=config.get("transformer_heads", 16),
         transformer_ff_dim=config.get("transformer_ff_dim", 2048),
         transformer_dropout=config.get("transformer_dropout", 0.1),
         use_decision_tokens=config.get("use_decision_tokens", True),
         use_causal_mask=config.get("use_causal_mask", True),
+        value_to_trunk_grad_scale=config.get("value_to_trunk_grad_scale", 1.0),
     ).to(config["device"])
     model = cast(torch.nn.Module, raw_model)
 
