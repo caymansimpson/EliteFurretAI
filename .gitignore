@@ -1,6 +1,7 @@
 # Mac
 .DS_Store
 .vscode/
+.worktrees/
 data/battles/*
 data/database/frisk.db
 data/models/*
