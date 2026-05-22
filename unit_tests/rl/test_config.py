@@ -16,7 +16,7 @@ import tempfile
 import pytest
 import yaml
 
-from elitefurretai.rl.config import RNaDConfig, get_default_config
+from elitefurretai.rl.config import CurriculumConfig, RNaDConfig, get_default_config
 from elitefurretai.rl.opponents import OpponentPool
 
 # =============================================================================
@@ -557,32 +557,30 @@ def test_battle_formats_default_is_single_format_distribution():
 
 
 def test_battle_formats_validation_rejects_non_unit_sum():
-    from elitefurretai.rl.config import CurriculumConfig
-
     with pytest.raises(ValueError, match="must sum to 1.0"):
         CurriculumConfig(battle_formats={"gen9vgc2024regg": 0.5, "gen9vgc2024regh": 0.4})
 
 
 def test_battle_formats_validation_rejects_negative_weight():
-    from elitefurretai.rl.config import CurriculumConfig
-
     with pytest.raises(ValueError, match="positive"):
         CurriculumConfig(battle_formats={"gen9vgc2024regg": 1.2, "gen9vgc2024regh": -0.2})
 
 
 def test_primary_format_returns_highest_weight():
-    from elitefurretai.rl.config import CurriculumConfig
-
     cur = CurriculumConfig(battle_formats={"gen9vgc2024regg": 0.7, "gen9vgc2024regh": 0.3})
     assert cur.primary_format == "gen9vgc2024regg"
 
 
 def test_battle_formats_validation_rejects_mixed_gens():
     """battle_formats with entries from different gens (format[3] differs) is rejected."""
-    from elitefurretai.rl.config import CurriculumConfig
-
     with pytest.raises(ValueError, match="same gen"):
         CurriculumConfig(battle_formats={"gen8vgc2022": 0.5, "gen9vgc2024regg": 0.5})
+
+
+def test_battle_formats_validation_rejects_short_format_string():
+    """Format strings shorter than 4 chars cannot identify a gen."""
+    with pytest.raises(ValueError, match="too short"):
+        CurriculumConfig(battle_formats={"foo": 1.0})
 
 
 if __name__ == "__main__":

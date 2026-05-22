@@ -525,6 +525,12 @@ class CurriculumConfig:
                 f"battle_formats weights must sum to 1.0, got {total} "
                 f"({self.battle_formats})"
             )
+        for fmt in self.battle_formats:
+            if len(fmt) < 4:
+                raise ValueError(
+                    f"battle_formats key {fmt!r} is too short to identify a gen "
+                    f"(need at least 4 chars, e.g. 'gen9...')"
+                )
         gens = {fmt[3] for fmt in self.battle_formats}
         if len(gens) > 1:
             raise ValueError(
