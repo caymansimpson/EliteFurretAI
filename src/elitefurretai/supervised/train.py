@@ -40,15 +40,17 @@ def train_epoch(
     config: Dict[str, Any],
 ) -> Dict[str, Any]:
     model.train()
-    running_loss = 0.0
-    running_turn_loss = 0.0
-    running_teampreview_loss = 0.0
-    running_win_loss = 0.0
-    running_entropy = 0.0
-    # Brier score tracker (vs trajectory-final binary outcome).
-    brier_sum = 0.0
-    brier_count = 0
-    steps = 0
+    # GPU-resident accumulators to avoid per-batch CUDA syncs from .item().
+    # All running_* are float tensors; running_step_count is a long tensor.
+    device = next(model.parameters()).device
+    running_loss = torch.zeros((), device=device)
+    running_turn_loss = torch.zeros((), device=device)
+    running_teampreview_loss = torch.zeros((), device=device)
+    running_win_loss = torch.zeros((), device=device)
+    running_entropy = torch.zeros((), device=device)
+    brier_sum = torch.zeros((), device=device)
+    brier_count = torch.zeros((), device=device, dtype=torch.long)
+    running_step_count = torch.zeros((), device=device, dtype=torch.long)
     num_batches = 0
     start = time.time()
     window_start = time.time()
@@ -217,26 +219,24 @@ def train_epoch(
                 + config.get("entropy_weight", 0.0) * entropy_loss
             )
 
-            # Track number of samples
-            num_turn_samples = turn_valid_mask.sum().item()
-            num_tp_samples = teampreview_valid_mask.sum().item()
+            # Track number of samples (as GPU tensors — .item() deferred to logging).
+            num_turn_samples = turn_valid_mask.sum()
+            num_tp_samples = teampreview_valid_mask.sum()
 
-            # Brier score against the trajectory-final binary outcome
-            # (matches win_model_diagnostics.prediction_vs_actual_overall.brier_score).
+            # Brier score against the trajectory-final binary outcome.
+            # Accumulate as GPU tensors; .item() deferred to logging.
             with torch.no_grad():
                 valid_lengths = masks.sum(dim=1).long()
                 has_valid = valid_lengths > 0
-                if has_valid.any():
-                    last_idx = (valid_lengths - 1).clamp(min=0)
-                    batch_idx = torch.arange(wins.size(0), device=wins.device)
-                    final_win = wins[batch_idx, last_idx]
-                    binary_outcome = (final_win > 0).float().unsqueeze(1).expand_as(wins)
-                    pred_prob = (win_logits + 1.0) / 2.0
-                    brier_valid = valid_mask & has_valid.unsqueeze(1)
-                    if brier_valid.any():
-                        brier_sq = (pred_prob - binary_outcome) ** 2
-                        brier_sum += brier_sq[brier_valid].sum().item()
-                        brier_count += int(brier_valid.sum().item())
+                last_idx = (valid_lengths - 1).clamp(min=0)
+                batch_idx = torch.arange(wins.size(0), device=wins.device)
+                final_win = wins[batch_idx, last_idx]
+                binary_outcome = (final_win > 0).float().unsqueeze(1).expand_as(wins)
+                pred_prob = (win_logits + 1.0) / 2.0
+                brier_valid_mask = valid_mask & has_valid.unsqueeze(1)
+                brier_sq = (pred_prob - binary_outcome) ** 2
+                brier_sum += (brier_sq * brier_valid_mask.float()).sum()
+                brier_count += brier_valid_mask.sum().long()
 
             # Scale loss by accumulation steps to maintain gradient magnitude
             loss = loss / accumulation_steps
@@ -260,18 +260,26 @@ def train_epoch(
             optimizer.zero_grad()
             accumulation_counter = 0
 
-        # Metrics (multiply back to get actual loss)
-        running_loss += loss.item() * accumulation_steps
-        running_turn_loss += turn_loss.item()
-        running_teampreview_loss += teampreview_loss.item()
-        running_win_loss += turn_win_loss.item() + teampreview_win_loss.item()
-        running_entropy += turn_entropy.item() if turn_valid_mask.any() else 0.0
-        steps += num_turn_samples + num_tp_samples
+        # Metrics (multiply back to get actual loss). Accumulate as GPU tensors;
+        # .item() syncs are deferred to the wandb-log block below.
+        running_loss += loss.detach() * accumulation_steps
+        running_turn_loss += turn_loss.detach()
+        running_teampreview_loss += teampreview_loss.detach()
+        running_win_loss += (turn_win_loss + teampreview_win_loss).detach()
+        # turn_entropy is set to tensor(0.0) on the no-valid-samples branch (~line 167),
+        # so unconditional accumulation is safe.
+        running_entropy += turn_entropy.detach()
+        running_step_count += num_turn_samples + num_tp_samples
         num_batches += 1
 
         # Logging progress (only on actual optimizer steps)
         if num_batches % (100 * accumulation_steps) == 0:
-            wandb.log({"Total Steps": prev_steps + steps, "grad_norm": grad_norm.item()})  # type: ignore
+            wandb.log(
+                {
+                    "Total Steps": prev_steps + int(running_step_count.item()),
+                    "grad_norm": grad_norm.item(),  # type: ignore
+                }
+            )
 
             # Periodic Python garbage collection every 100 batches
             gc.collect()
@@ -281,15 +289,18 @@ def train_epoch(
             elapsed = now - window_start
             batches_per_sec = (10 * accumulation_steps) / elapsed if elapsed > 0 else 0.0
             window_start = now
+            # Single batched sync — all .item() calls happen in this block.
             wandb.log(
                 {
-                    "Total Steps": prev_steps + steps,
-                    "train_loss": running_loss / num_batches,
-                    "train_turn_loss": running_turn_loss / num_batches,
-                    "train_teampreview_loss": running_teampreview_loss / num_batches,
-                    "train_win_loss": running_win_loss / num_batches,
-                    "train_brier": (brier_sum / brier_count) if brier_count > 0 else 0.0,
-                    "train_entropy": running_entropy / num_batches,
+                    "Total Steps": prev_steps + int(running_step_count.item()),
+                    "train_loss": (running_loss / num_batches).item(),
+                    "train_turn_loss": (running_turn_loss / num_batches).item(),
+                    "train_teampreview_loss": (
+                        running_teampreview_loss / num_batches
+                    ).item(),
+                    "train_win_loss": (running_win_loss / num_batches).item(),
+                    "train_brier": (brier_sum / brier_count.clamp(min=1)).item(),
+                    "train_entropy": (running_entropy / num_batches).item(),
                     "learning_rate": optimizer.param_groups[0]["lr"],
                     "batches_per_sec": batches_per_sec,
                 }
@@ -309,13 +320,13 @@ def train_epoch(
     print("\033[2K\rDone training in " + time_taken)
 
     return {
-        "loss": running_loss / num_batches,
-        "steps": steps,
-        "turn_loss": running_turn_loss / num_batches,
-        "teampreview_loss": running_teampreview_loss / num_batches,
-        "win_loss": running_win_loss / num_batches,
-        "entropy": running_entropy / num_batches,
-        "brier": (brier_sum / brier_count) if brier_count > 0 else 0.0,
+        "loss": (running_loss / num_batches).item(),
+        "steps": int(running_step_count.item()),
+        "turn_loss": (running_turn_loss / num_batches).item(),
+        "teampreview_loss": (running_teampreview_loss / num_batches).item(),
+        "win_loss": (running_win_loss / num_batches).item(),
+        "entropy": (running_entropy / num_batches).item(),
+        "brier": (brier_sum / brier_count.clamp(min=1)).item(),
     }
 
 
