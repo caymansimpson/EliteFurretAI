@@ -48,6 +48,65 @@ await player.battle_against(opponent, n_battles=1)
 
 ---
 
+## Throughput Baseline (2026-05)
+
+A series of optimizations on the `supervised-h2d-throughput` branch took
+single-epoch wall time from **607s → 293s (~2.07× speedup)** on the
+`data/battles/regc_final_v4/` train set with `may22.yaml` / `may22_finetune.yaml`
+config. GPU SM utilization went from ~14% avg (severely starved) to ~70%
+avg (mostly compute-bound).
+
+See `planning/stage2/2026-05-21-23-30-supervised-h2d-throughput-plan.md`
+for the full investigation, py-spy/nvidia-smi diagnostics, and rationale
+behind each change.
+
+### Non-obvious choices to preserve
+
+These are intentional and load-bearing — reverting any of them will
+regress throughput or reintroduce known bugs.
+
+- **`pin_memory=False`** ([etl/battle_dataloader.py](../etl/battle_dataloader.py)). Required on WSL2 per project-wide constraint (see `CLAUDE.md`). Because `non_blocking=True` is silently a no-op without pinned memory, we use a CUDA stream prefetcher instead (see below) to hide H2D behind compute.
+- **`CudaStreamPrefetcher`** ([etl/cuda_prefetcher.py](../etl/cuda_prefetcher.py)). Wraps the dataloader, issues each batch's H2D copy on a side CUDA stream while compute continues on the default stream. Integrated in `train_epoch`, `evaluate`, and `analyze`.
+- **bf16 mixed precision via `torch.amp.autocast` with no `GradScaler`** (`train.py:train_epoch`). bf16's full fp32 exponent range removes the underflow risk that fp16 + scaler addressed. Switching back to fp16 without re-adding the scaler will silently corrupt gradients.
+- **bf16 cast in the collate function** ([etl/battle_dataloader.py](../etl/battle_dataloader.py)). `_trajectory_collate_fn` downcasts `states` to bf16 before stacking, halving the H2D payload. The model already runs forward in bf16 autocast, so the cast moves an existing transformation earlier rather than introducing new precision loss.
+- **TF32 + matmul precision** (`train.py:initialize`). Required to get full Ampere matmul throughput. Without these, the 3090 falls back to slower fp32 paths. Set via `torch.backends.cuda.matmul.allow_tf32 = True` and `torch.set_float32_matmul_precision("high")`.
+- **Fused AdamW** (`train.py:main()`). `fused=(device == "cuda")` enables the CUDA-fused optimizer kernel — ~10–20% speedup for the optimizer step.
+- **GPU-resident running-loss accumulators** (`train.py:train_epoch`). All per-batch metrics (loss, brier, sample counts) are accumulated as GPU tensors; `.item()` is only called inside the wandb-log block (every 10 batches) and the return dict. Adding per-batch `.item()` calls anywhere in the training loop will reintroduce hidden `cuda.synchronize()` stalls and regress throughput by 20%+.
+- **`wandb.watch(model, log=None)`** (`train.py:main()`). The earlier `log="all"` buffered every gradient and parameter histogram in the wandb client process — primary cause of slow RAM creep on long runs. Do not change back to `log="all"`.
+- **Large `batch_size` / `worker_batch_size` (512)** (`configs/may22.yaml`, `configs/may22_finetune.yaml`). Bigger batches amortize per-batch H2D and Python overhead. With 22 GB of VRAM headroom on the 3090, 512 fits comfortably. Smaller batches were significantly slower in measurement.
+
+### `eval_every` config knob
+
+Set `eval_every: N` in any config to evaluate on the test set every N
+epochs instead of every epoch. The final epoch always evaluates. Useful
+for fine-tunes where evaluation cost dominates the per-epoch budget;
+`may22_finetune.yaml` uses `eval_every: 5`. The other configs default to
+`eval_every: 1` (evaluate every epoch).
+
+When `eval_every > 1`, `ReduceLROnPlateau` only steps on eval epochs (it
+requires `test_loss`); the cosine scheduler still steps every epoch.
+`save_best` is only triggered on eval epochs since a fresh `test_loss`
+is required.
+
+### Diagnostic commands
+
+A few one-liners worth keeping handy:
+
+```bash
+# GPU SM utilization (30s, 1Hz)
+nvidia-smi dmon -s u -d 1 -c 30 | awk 'NR>2 {sum+=$2; n++; if($2>max)max=$2} END {print "sm util avg=" sum/n " max=" max}'
+
+# py-spy flamegraph against a live training PID
+sudo /home/cayman/Repositories/venv/bin/py-spy record \
+    -o ~/diag/train.svg --pid <PID> --idle --subprocesses --native --rate 10 -d 180
+
+# Look for sync-stall frames in the flamegraph (should be near zero after the .item() deferral)
+grep -oE '<title>[^<]+\([0-9]+ samples[^<]*</title>' ~/diag/train.svg | \
+    grep -iE "_local_scalar_dense|cudaStreamSynchronize|aten::item" | head -5
+```
+
+---
+
 ## File Documentation
 
 ### `model_archs.py`
