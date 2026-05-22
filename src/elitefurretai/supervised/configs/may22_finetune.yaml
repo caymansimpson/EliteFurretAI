@@ -11,6 +11,7 @@
 # finetune ratio for stable continued training.
 
 num_epochs: 20
+eval_every: 5
 learning_rate: 1.5e-5
 
 # Keep the throughput-relevant knobs explicit so this config self-

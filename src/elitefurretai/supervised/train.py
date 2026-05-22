@@ -445,6 +445,7 @@ def main(train_path, test_path, val_path, config={}, save_best=False):
         "prefetch_factor",
         "files_per_worker",
         "num_epochs",
+        "eval_every",
         "seed",
         "num_value_bins",
         "max_seq_len",
@@ -608,55 +609,70 @@ def main(train_path, test_path, val_path, config={}, save_best=False):
     # Training loop
     start, steps = time.time(), 0
     best_test_loss = float("inf")
+    test_loss = float("inf")
     for epoch in range(config["num_epochs"]):
         train_metrics = train_epoch(model, train_loader, steps, optimizer, config)
-
-        # Evaluate with native three-headed support
-        metrics = evaluate(
-            model,
-            test_loader,
-            config["device"],
-            has_teampreview_head=True,
-            teampreview_idx=config["teampreview_idx"],
-            config=config,
-        )
         steps += train_metrics["steps"]
-        test_loss = (
-            metrics["win_mse"] * config["win_loss_weight"]
-            + metrics.get("teampreview_top3_loss", 0) * config["teampreview_loss_weight"]
-            + metrics.get("turn_top3_loss", 0) * config["turn_loss_weight"]
-        )
 
-        log = {
-            "Total Steps": steps,
-            "Train Loss": train_metrics["loss"],
-            "Train Win Loss": train_metrics["win_loss"],
-            "Train Turn Loss": train_metrics["turn_loss"],
-            "Train Teampreview Loss": train_metrics["teampreview_loss"],
-            "Train Brier": train_metrics.get("brier", 0.0),
-            "Test Loss": test_loss,
-            "Test Win Corr": metrics["win_corr"],
-            "Test Win MSE": metrics["win_mse"],
-            "Test Brier": metrics.get("brier_score", 0.0),
-            "Test Teampreview Top3 Loss": metrics.get("teampreview_top3_loss", 0),
-            "Test Teampreview Top1": metrics.get("teampreview_top1_acc", 0),
-            "Test Teampreview Top3": metrics.get("teampreview_top3_acc", 0),
-            "Test Teampreview Top5": metrics.get("teampreview_top5_acc", 0),
-            "Test Turn Top3 Loss": metrics.get("turn_top3_loss", 0),
-            "Test Turn Top1": metrics.get("turn_top1_acc", 0),
-            "Test Turn Top3": metrics.get("turn_top3_acc", 0),
-            "Test Turn Top5": metrics.get("turn_top5_acc", 0),
-            # Action-type specific metrics
-            "Test MOVE Top1": metrics.get("move_top1_acc", 0),
-            "Test MOVE Top3": metrics.get("move_top3_acc", 0),
-            "Test MOVE Top5": metrics.get("move_top5_acc", 0),
-            "Test SWITCH Top1": metrics.get("switch_top1_acc", 0),
-            "Test SWITCH Top3": metrics.get("switch_top3_acc", 0),
-            "Test SWITCH Top5": metrics.get("switch_top5_acc", 0),
-            "Test BOTH Top1": metrics.get("both_top1_acc", 0),
-            "Test BOTH Top3": metrics.get("both_top3_acc", 0),
-            "Test BOTH Top5": metrics.get("both_top5_acc", 0),
-        }
+        is_eval_epoch = (epoch + 1) % config.get("eval_every", 1) == 0 or epoch == config[
+            "num_epochs"
+        ] - 1
+
+        if is_eval_epoch:
+            # Evaluate with native three-headed support
+            metrics = evaluate(
+                model,
+                test_loader,
+                config["device"],
+                has_teampreview_head=True,
+                teampreview_idx=config["teampreview_idx"],
+                config=config,
+            )
+            test_loss = (
+                metrics["win_mse"] * config["win_loss_weight"]
+                + metrics.get("teampreview_top3_loss", 0)
+                * config["teampreview_loss_weight"]
+                + metrics.get("turn_top3_loss", 0) * config["turn_loss_weight"]
+            )
+            log = {
+                "Total Steps": steps,
+                "Train Loss": train_metrics["loss"],
+                "Train Win Loss": train_metrics["win_loss"],
+                "Train Turn Loss": train_metrics["turn_loss"],
+                "Train Teampreview Loss": train_metrics["teampreview_loss"],
+                "Train Brier": train_metrics.get("brier", 0.0),
+                "Test Loss": test_loss,
+                "Test Win Corr": metrics["win_corr"],
+                "Test Win MSE": metrics["win_mse"],
+                "Test Brier": metrics.get("brier_score", 0.0),
+                "Test Teampreview Top3 Loss": metrics.get("teampreview_top3_loss", 0),
+                "Test Teampreview Top1": metrics.get("teampreview_top1_acc", 0),
+                "Test Teampreview Top3": metrics.get("teampreview_top3_acc", 0),
+                "Test Teampreview Top5": metrics.get("teampreview_top5_acc", 0),
+                "Test Turn Top3 Loss": metrics.get("turn_top3_loss", 0),
+                "Test Turn Top1": metrics.get("turn_top1_acc", 0),
+                "Test Turn Top3": metrics.get("turn_top3_acc", 0),
+                "Test Turn Top5": metrics.get("turn_top5_acc", 0),
+                # Action-type specific metrics
+                "Test MOVE Top1": metrics.get("move_top1_acc", 0),
+                "Test MOVE Top3": metrics.get("move_top3_acc", 0),
+                "Test MOVE Top5": metrics.get("move_top5_acc", 0),
+                "Test SWITCH Top1": metrics.get("switch_top1_acc", 0),
+                "Test SWITCH Top3": metrics.get("switch_top3_acc", 0),
+                "Test SWITCH Top5": metrics.get("switch_top5_acc", 0),
+                "Test BOTH Top1": metrics.get("both_top1_acc", 0),
+                "Test BOTH Top3": metrics.get("both_top3_acc", 0),
+                "Test BOTH Top5": metrics.get("both_top5_acc", 0),
+            }
+        else:
+            log = {
+                "Total Steps": steps,
+                "Train Loss": train_metrics["loss"],
+                "Train Win Loss": train_metrics["win_loss"],
+                "Train Turn Loss": train_metrics["turn_loss"],
+                "Train Teampreview Loss": train_metrics["teampreview_loss"],
+                "Train Brier": train_metrics.get("brier", 0.0),
+            }
 
         print(f"Epoch #{epoch + 1}:")
         for metric, value in log.items():
@@ -672,18 +688,23 @@ def main(train_path, test_path, val_path, config={}, save_best=False):
         print(f"=> Time thus far: {time_taken} // ETA: {time_left}")
         print()
 
-        if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
-            scheduler.step(test_loss)
-        else:
-            scheduler.step()
+        if is_eval_epoch:
+            if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                scheduler.step(test_loss)
+            else:
+                scheduler.step()
 
-        # Save best checkpoint if requested
-        if save_best and test_loss < best_test_loss:
-            best_test_loss = test_loss
-            best_save_dict = {"model_state_dict": model.state_dict(), "config": config}
-            best_path = os.path.join(config["save_path"], f"{wandb.run.name}_best.pt")  # type: ignore
-            torch.save(best_save_dict, best_path)
-            print(f"New best model saved to {best_path} (test_loss={test_loss:.4f})")
+            # Save best checkpoint if requested
+            if save_best and test_loss < best_test_loss:
+                best_test_loss = test_loss
+                best_save_dict = {"model_state_dict": model.state_dict(), "config": config}
+                best_path = os.path.join(config["save_path"], f"{wandb.run.name}_best.pt")  # type: ignore
+                torch.save(best_save_dict, best_path)
+                print(f"New best model saved to {best_path} (test_loss={test_loss:.4f})")
+        else:
+            # ReduceLROnPlateau requires a test_loss; skip the step on non-eval epochs.
+            if not isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                scheduler.step()
 
     # Save final model with config embedded
     save_dict = {"model_state_dict": model.state_dict(), "config": config}

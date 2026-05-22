@@ -2,6 +2,7 @@
 learning_rate: 3.0e-5
 optimizer: AdamW
 num_epochs: 10
+eval_every: 1
 embedder_feature_set: full
 battle_format: gen9vgc2023regc
 

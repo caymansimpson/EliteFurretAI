@@ -24,6 +24,7 @@ teampreview_attention_heads: 2
 
 # Training
 num_epochs: 30
+eval_every: 1
 batch_size: 128
 learning_rate: 5.44e-05
 optimizer: AdamW
