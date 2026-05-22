@@ -288,10 +288,6 @@ def sweep_train() -> None:
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             optimizer, mode="min", factor=0.5, patience=2
         )
-    scaler = (
-        torch.amp.GradScaler("cuda") if config["device"] == "cuda" else None  # type: ignore
-    )
-
     # ---- Training loop ----
     total_steps = 0
     start = time.time()
@@ -299,9 +295,7 @@ def sweep_train() -> None:
     for epoch in range(config["num_epochs"]):
         epoch_start = time.time()
 
-        train_metrics = train_epoch(
-            model, train_loader, total_steps, optimizer, config, scaler
-        )
+        train_metrics = train_epoch(model, train_loader, total_steps, optimizer, config)
         total_steps += train_metrics["steps"]
 
         # Evaluate on test set
