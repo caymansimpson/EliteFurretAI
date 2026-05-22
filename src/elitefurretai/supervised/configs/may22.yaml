@@ -105,9 +105,9 @@ teampreview_idx: 5030
 force_switch_indices: [409, 827, 1245, 1663, 2081, 2499]
 
 # ===== DataLoader (from curious_darkness_77) =====
-num_workers: 6
-files_per_worker: 4
-prefetch_factor: 6
+num_workers: 4
+files_per_worker: 3
+prefetch_factor: 2
 worker_batch_size: 512
 persistent_workers: true
 
