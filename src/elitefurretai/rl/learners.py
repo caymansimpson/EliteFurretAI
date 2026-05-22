@@ -647,7 +647,6 @@ class PortfolioRNaDLearner:
                 grad_norm_before = torch.nn.utils.clip_grad_norm_(
                     self.model.parameters(), self.gradient_clip
                 ).item()
-                grad_norm_after = min(grad_norm_before, self.gradient_clip)
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
             else:
@@ -655,7 +654,6 @@ class PortfolioRNaDLearner:
                 grad_norm_before = torch.nn.utils.clip_grad_norm_(
                     self.model.parameters(), self.gradient_clip
                 ).item()
-                grad_norm_after = min(grad_norm_before, self.gradient_clip)
                 self.optimizer.step()
 
             epochs_run += 1
@@ -668,7 +666,6 @@ class PortfolioRNaDLearner:
                 "entropy": entropy_loss.item(),
                 "rnad_loss": rnad_loss.item(),
                 "grad_norm_before_clip": grad_norm_before,
-                "grad_norm_after_clip": grad_norm_after,
                 "approx_kl": approx_kl,
                 "ppo_epochs_actual": epochs_run,
             }

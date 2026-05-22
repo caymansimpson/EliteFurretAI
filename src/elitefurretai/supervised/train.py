@@ -595,6 +595,16 @@ def main(train_path, test_path, val_path, config={}, save_best=False):
     # First batch is slow (compilation), but all subsequent batches are faster.
     # With 30min epochs, this saves ~5-9 min/epoch.
     if config["device"] == "cuda":
+        # 2026-05-22: disable inductor's pad_mm pre-flight benchmark. With
+        # transformer_ff_dim=2048 plus autocast(bf16), inductor's
+        # `_should_pad_bench` constructs addmm(bias_fp32, mat1_bf16,
+        # mat2_bf16) and the raw op rejects mixed dtypes — crash surfaces
+        # in `evaluate()` on the no_grad recompile. Our matmul shapes are
+        # already tensor-core-aligned multiples of 128, so skipping the
+        # padding heuristic is a no-op for throughput.
+        import torch._inductor.config as inductor_config
+
+        inductor_config.shape_padding = False
         compiled_model = torch.compile(model)
         model = cast(torch.nn.Module, compiled_model)
 
@@ -646,9 +656,17 @@ def main(train_path, test_path, val_path, config={}, save_best=False):
         ] - 1
 
         if is_eval_epoch:
+            # 2026-05-22: route eval through the uncompiled module. Under
+            # autocast(bf16), inductor emits an extern_kernels.addmm in the
+            # no_grad eval path with an fp32 bias and bf16 mat1/mat2; eager
+            # addmm promotes the bias, but the compiled extern call doesn't,
+            # and crashes with "mat1 and mat2 must have the same dtype".
+            # `_orig_mod` is the original module that torch.compile wraps;
+            # training still uses the compiled `model` for its speedup.
+            eval_model = getattr(model, "_orig_mod", model)
             # Evaluate with native three-headed support
             metrics = evaluate(
-                model,
+                eval_model,
                 test_loader,
                 config["device"],
                 has_teampreview_head=True,

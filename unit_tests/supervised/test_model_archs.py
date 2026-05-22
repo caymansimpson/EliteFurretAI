@@ -517,6 +517,39 @@ def test_dual_expand_matches_legacy_mixed_replacements(seed):
         )
 
 
+def test_dual_expand_bf16_input_matches_legacy():
+    """Both implementations must accept bf16 states (the dataloader collate
+    downcasts to bf16 for H2D bandwidth). Embedding outputs are fp32; the
+    function must cast them to the input dtype so eager index_put / cat
+    don't reject the mismatch. Previously, only the compiled path tolerated
+    this via silent promotion in inductor.
+    """
+    torch.manual_seed(0)
+    group_sizes = [4, 4, 4]
+    feature_names = (
+        ["current_hp_fraction", "f", "ability_id", "f"]
+        + ["item_id", "STAT:atk", "f", "f"]
+        + ["f", "f", "species_id", "move_id"]
+    )
+    encoder = _make_encoder_for_dual_expand(feature_names, group_sizes)
+    encoder.eval()
+    for gi, gsize in enumerate(group_sizes):
+        x_fp32 = torch.randn(2, 3, gsize)
+        x_bf16 = x_fp32.to(torch.bfloat16)
+
+        new_out_bf16 = encoder._dual_expand(x_bf16, gi)
+        legacy_out_bf16 = encoder._dual_expand_legacy(x_bf16, gi)
+        assert new_out_bf16.dtype == torch.bfloat16, (
+            f"_dual_expand must preserve x.dtype; got {new_out_bf16.dtype} at gi={gi}"
+        )
+        assert legacy_out_bf16.dtype == torch.bfloat16, (
+            f"_dual_expand_legacy must preserve x.dtype; got {legacy_out_bf16.dtype} at gi={gi}"
+        )
+        assert torch.equal(new_out_bf16, legacy_out_bf16), (
+            f"bf16 path: new vs legacy mismatch at group {gi}"
+        )
+
+
 def test_dual_expand_layout_output_sizes_match_effective_sizes():
     """The precomputed layout output sizes must equal the encoder's effective sizes."""
     group_sizes = [4, 4, 4, 4, 4, 4, 5]

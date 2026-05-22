@@ -422,12 +422,20 @@ class GroupedFeatureEncoder(torch.nn.Module):
         for src_s, src_e, dst_s, dst_e in layout["passthrough"]:
             out[:, :, dst_s:dst_e] = x[:, :, src_s:src_e]
 
+        # Embedding lookups always return fp32 (embedding weights are fp32).
+        # When the caller hands us bf16 states (battle_dataloader downcasts
+        # for H2D bandwidth), `out` is bf16 and the raw `emb` is fp32 — eager
+        # index_put rejects the mismatch. Cast to `out.dtype` so the function
+        # is dtype-flexible in both eager and compiled paths. Compiled mode
+        # previously hid this by silently promoting; we no longer rely on that.
         for etype, info in layout["eid_layout"].items():
             src_pos = getattr(self, info["src_buf"])  # (k,) long
             dst_idx = getattr(self, info["dst_buf"])  # (k * embed_dim,) long
             raw_ids = x[:, :, src_pos].long().clamp(min=0)  # (B, T, k)
             emb = self.entity_id_encoder._get_embedding(etype)(raw_ids)
-            out[:, :, dst_idx] = emb.reshape(B, T, info["k"] * info["embed_dim"])
+            out[:, :, dst_idx] = emb.reshape(B, T, info["k"] * info["embed_dim"]).to(
+                out.dtype
+            )
 
         for bank_name, info in layout["nb_layout"].items():
             src_pos = getattr(self, info["src_buf"])
@@ -439,7 +447,9 @@ class GroupedFeatureEncoder(torch.nn.Module):
             clamped = raw.clamp(min=mn, max=mx)
             bucket = ((clamped - mn) / (mx - mn) * nb_bins).long().clamp(0, nb_bins)
             emb = self.number_bank._get_bank(bank_name)(bucket)
-            out[:, :, dst_idx] = emb.reshape(B, T, info["k"] * info["embed_dim"])
+            out[:, :, dst_idx] = emb.reshape(B, T, info["k"] * info["embed_dim"]).to(
+                out.dtype
+            )
 
         return out
 
@@ -464,10 +474,14 @@ class GroupedFeatureEncoder(torch.nn.Module):
             if pos > prev_end:
                 parts.append(x[:, :, prev_end:pos])
 
+            # Cast embedding outputs to x.dtype so torch.cat below doesn't
+            # mix bf16 passthrough slices with fp32 embedding outputs.
+            # Matches the parallel cast in _dual_expand so the two
+            # implementations stay bit-identical under bf16 inputs.
             if pos in eid_map:
                 raw_id = x[:, :, pos].long().clamp(min=0)
                 emb_layer = self.entity_id_encoder._get_embedding(eid_map[pos])
-                parts.append(emb_layer(raw_id))
+                parts.append(emb_layer(raw_id).to(x.dtype))
             elif pos in nb_map:
                 local_idx, bank_name, min_val, max_val, n_bins = nb_map[pos]
                 raw = x[:, :, local_idx]
@@ -475,7 +489,7 @@ class GroupedFeatureEncoder(torch.nn.Module):
                 bucket = ((clamped - min_val) / (max_val - min_val) * n_bins).long()
                 bucket = bucket.clamp(0, n_bins)
                 bank = self.number_bank._get_bank(bank_name)
-                parts.append(bank(bucket))
+                parts.append(bank(bucket).to(x.dtype))
 
             prev_end = pos + 1
 

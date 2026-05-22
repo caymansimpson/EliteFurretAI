@@ -326,12 +326,12 @@ class OpponentPool:
         used_window = window or self.tracking_window
 
         for opp_type, win_rate in self.get_win_rate_stats(used_window).items():
-            metrics[f"win_rate_{opp_type}"] = win_rate
+            metrics[f"win_rate/{opp_type}"] = win_rate
 
         length_stats = self.get_battle_length_stats(used_window)
         for opp_type, avg_len in length_stats.items():
             if len(self.battle_length_tracking.get(opp_type, [])) > 0:
-                metrics[f"avg_battle_length_{opp_type}"] = avg_len
+                metrics[f"battle_length/{opp_type}"] = avg_len
 
         all_lengths = [
             length
@@ -339,15 +339,10 @@ class OpponentPool:
             for length in lengths
         ]
         if all_lengths:
-            metrics["avg_battle_length_overall"] = float(np.mean(all_lengths))
-
-        if self.total_battles_tracked > 0:
-            metrics["forfeit_rate"] = (
-                self.total_forfeits_tracked / self.total_battles_tracked
-            )
+            metrics["battle_length/overall"] = float(np.mean(all_lengths))
 
         for opp_type, weight in self.curriculum.items():
-            metrics[f"curriculum_weight_{opp_type}"] = float(weight)
+            metrics[f"curriculum/{opp_type}"] = float(weight)
 
         return metrics
 

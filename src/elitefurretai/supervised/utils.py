@@ -375,7 +375,15 @@ def evaluate(
     for batch in _eval_iterator:
         if device != "cuda":
             batch = {k: v.to(device) for k, v in batch.items()}
+        # The training collate downcasts states to bf16 for H2D bandwidth
+        # (see battle_dataloader.py). Training tolerates this because the
+        # forward runs under autocast(bf16) / torch.compile. Eval runs in
+        # eager fp32 (model params are fp32), so promote states back to
+        # fp32 to avoid mixed-dtype index_put in _dual_expand and mixed
+        # dtype matmul in the rest of the encoder.
         states = batch["states"]
+        if states.dtype != torch.float32:
+            states = states.float()
         actions = batch["actions"]
         action_masks = batch["action_masks"] if "action_masks" in batch else None
         masks = batch["masks"] if "masks" in batch else None
