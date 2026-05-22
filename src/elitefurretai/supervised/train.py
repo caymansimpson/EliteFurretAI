@@ -517,7 +517,7 @@ def main(train_path, test_path, val_path, config={}, save_best=False):
         batch_size=config["worker_batch_size"],
         num_workers=4,
         prefetch_factor=2,
-        files_per_worker=2,
+        files_per_worker=1,
     )
     val_loader = OptimizedBattleDataLoader(
         val_path,
@@ -525,7 +525,7 @@ def main(train_path, test_path, val_path, config={}, save_best=False):
         batch_size=config["worker_batch_size"],
         num_workers=4,
         prefetch_factor=2,
-        files_per_worker=2,
+        files_per_worker=1,
     )
 
     # Initialize model with flexible architecture. Kwargs are kept in sync with
