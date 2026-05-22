@@ -1,0 +1,21 @@
+# Fine-tune override for the may22 training family (currently:
+# classic-firebrand-90_best.pt). All architecture knobs come from the
+# saved checkpoint's embedded config — only training-time hyperparameters
+# are overridden here.
+#
+# Purpose: 20-epoch finetune used to measure post-Task-6 supervised
+# throughput on a fresh run (compile warmup amortized, multiple steady-
+# state epochs available for diagnostics).
+#
+# LR reduced ~4x vs the original may22 training LR (5.44e-5) — standard
+# finetune ratio for stable continued training.
+
+num_epochs: 20
+learning_rate: 1.5e-5
+
+# Keep the throughput-relevant knobs explicit so this config self-
+# documents the post-Task-6 baseline (these match the checkpoint's
+# saved values, included here for clarity).
+batch_size: 512
+worker_batch_size: 512
+accumulation_steps: 1
