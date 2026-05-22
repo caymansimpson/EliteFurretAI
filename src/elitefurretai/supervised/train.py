@@ -37,7 +37,6 @@ def train_epoch(
     prev_steps: int,
     optimizer: torch.optim.Optimizer,
     config: Dict[str, Any],
-    scaler=None,
 ) -> Dict[str, Any]:
     model.train()
     running_loss = 0.0
@@ -74,8 +73,11 @@ def train_epoch(
         wins = batch["wins"].to(torch.float32)
         masks = batch["masks"]
 
-        autocast = torch.amp.autocast if config["device"] == "cuda" else torch.autocast  # type: ignore
-        with autocast(config["device"]):
+        with torch.amp.autocast(  # type: ignore[attr-defined]
+            device_type=config["device"],
+            dtype=torch.bfloat16 if config["device"] == "cuda" else torch.float32,
+            enabled=(config["device"] == "cuda"),
+        ):
             # Forward pass - returns four outputs (distributional value head)
             turn_action_logits, teampreview_logits, win_logits, _ = model(states, masks)
 
@@ -235,12 +237,9 @@ def train_epoch(
             # Scale loss by accumulation steps to maintain gradient magnitude
             loss = loss / accumulation_steps
 
-        # Backpropagation with mixed precision (skip if loss has no grad)
+        # Backpropagation (bf16 autocast — no scaler needed)
         if loss.requires_grad:
-            if scaler is not None:
-                scaler.scale(loss).backward()
-            else:
-                loss.backward()
+            loss.backward()
         else:
             # No valid samples in batch — nothing to backprop
             continue
@@ -249,18 +248,10 @@ def train_epoch(
 
         # Only update weights every accumulation_steps
         if accumulation_counter >= accumulation_steps:
-            if scaler is not None:
-                scaler.unscale_(optimizer)
-                grad_norm = torch.nn.utils.clip_grad_norm_(
-                    model.parameters(), config["max_grad_norm"]
-                )
-                scaler.step(optimizer)
-                scaler.update()
-            else:
-                grad_norm = torch.nn.utils.clip_grad_norm_(
-                    model.parameters(), config["max_grad_norm"]
-                )
-                optimizer.step()
+            grad_norm = torch.nn.utils.clip_grad_norm_(
+                model.parameters(), config["max_grad_norm"]
+            )
+            optimizer.step()
 
             optimizer.zero_grad()
             accumulation_counter = 0
@@ -612,16 +603,13 @@ def main(train_path, test_path, val_path, config={}, save_best=False):
             optimizer, mode="min", factor=0.5, patience=2
         )
 
-    # Mixed precision scaler (CUDA only)
-    scaler = torch.amp.GradScaler("cuda") if config["device"] == "cuda" else None  # type: ignore
-
     print("Initialized model! Starting training...")
 
     # Training loop
     start, steps = time.time(), 0
     best_test_loss = float("inf")
     for epoch in range(config["num_epochs"]):
-        train_metrics = train_epoch(model, train_loader, steps, optimizer, config, scaler)
+        train_metrics = train_epoch(model, train_loader, steps, optimizer, config)
 
         # Evaluate with native three-headed support
         metrics = evaluate(
