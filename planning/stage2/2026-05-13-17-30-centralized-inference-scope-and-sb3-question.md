@@ -151,7 +151,7 @@ Reconsider the architecture from scratch in that case.
 
 | File | Change |
 |---|---|
-| `src/elitefurretai/rl/players.py` | Refactor `BatchInferencePlayer`: remove per-instance `_inference_loop`, `_inference_future`, `queue`; replace with reference to a shared `WorkerInferenceService`. Player still owns `_handle_battle_request`, embed, masking, etc. |
+| `src/elitefurretai/rl/players.py` | Refactor `RLTrajectoryPlayer`: remove per-instance `_inference_loop`, `_inference_future`, `queue`; replace with reference to a shared `WorkerInferenceService`. Player still owns `_handle_battle_request`, embed, masking, etc. |
 | `src/elitefurretai/rl/players.py` (new class) | Add `WorkerInferenceService`: owns the model, the shared queue, the inference loop. Serves N players. Same `_run_batch` / `_gpu_inference_sync` internals as today. |
 | `src/elitefurretai/rl/opponents.py` | `WorkerOpponentFactory.create_player_pairs` constructs the service once per worker, passes it to all players in the worker. |
 | `src/elitefurretai/rl/worker.py` | No structural change; just confirm the factory wiring. |
@@ -162,7 +162,7 @@ Reconsider the architecture from scratch in that case.
 ```python
 class WorkerInferenceService:
     """One per worker. Owns the model and a shared inference loop.
-    Serves N BatchInferencePlayers."""
+    Serves N RLTrajectoryPlayers."""
     def __init__(self, model, device, batch_size, batch_timeout, ...): ...
     async def submit(self, state, mask, hidden, battle_tag, player_id) -> Future: ...
     async def _inference_loop(self): ...  # gathers from shared queue
@@ -170,7 +170,7 @@ class WorkerInferenceService:
     def _gpu_inference_sync(self, ...): ...
     def get_diagnostics_snapshot(self) -> Dict[str, float]: ...
 
-class BatchInferencePlayer(Player):
+class RLTrajectoryPlayer(Player):
     def __init__(self, *, inference_service: WorkerInferenceService, ...):
         # No model attribute, no own queue, no own inference loop.
         self.inference_service = inference_service
@@ -199,7 +199,7 @@ class BatchInferencePlayer(Player):
 ### Shared queue semantics
 
 - One `asyncio.Queue` per `WorkerInferenceService`, created on the POKE_LOOP
-  (consistent with today's pattern in `BatchInferencePlayer`).
+  (consistent with today's pattern in `RLTrajectoryPlayer`).
 - Items: `(state_array, mask, hidden, battle_tag, player_id, future)`.
 - `player_id` flows through so the loop can route per-player diagnostics
   and (if needed) per-player temperature.
@@ -225,7 +225,7 @@ forwards a slice of the service's counters proportional to its request
 share. Cleanest: service exposes `get_diagnostics_snapshot()`, factory
 aggregates separately and includes in the combined report.
 
-The new batch-fill log line moves from `BatchInferencePlayer._inference_loop`
+The new batch-fill log line moves from `RLTrajectoryPlayer._inference_loop`
 to `WorkerInferenceService._inference_loop` — same format, but now
 shows the genuinely-shared batch sizes.
 

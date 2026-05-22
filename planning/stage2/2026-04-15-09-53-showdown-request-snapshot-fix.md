@@ -18,7 +18,7 @@ The Showdown action path had already become request-aware in two separate places
 1. `src/elitefurretai/rl/fast_action_mask.py` built legality from `battle.last_request`
 2. `src/elitefurretai/etl/encoder.py` decoded MDBO turn actions against request slots when a live request was present
 
-However, `BatchInferencePlayer._choose_move_async()` still used those request-aware components at different times against the mutable live battle object:
+However, `RLTrajectoryPlayer._choose_move_async()` still used those request-aware components at different times against the mutable live battle object:
 
 - the mask was generated early from the current `battle.last_request`
 - after batched inference completed, `MDBO.to_double_battle_order()` re-read `battle.last_request`
@@ -37,7 +37,7 @@ In the websocket path, that is enough to create illegal commands even when each 
 
 Implemented a request-snapshot fix across the Showdown action path.
 
-### 1. Snapshot the request inside `BatchInferencePlayer`
+### 1. Snapshot the request inside `RLTrajectoryPlayer`
 
 In `src/elitefurretai/rl/players.py`:
 

@@ -23,7 +23,7 @@ Before this pass, the repo already had:
 However, the current runtime had drifted enough that the practical bottleneck picture needed to be rechecked against the live code:
 
 - [src/elitefurretai/rl/train.py](src/elitefurretai/rl/train.py) currently passes the YAML `device` through worker model construction and into `WorkerOpponentFactory`
-- [src/elitefurretai/rl/opponents.py](src/elitefurretai/rl/opponents.py) passes that same device into every `BatchInferencePlayer`
+- [src/elitefurretai/rl/opponents.py](src/elitefurretai/rl/opponents.py) passes that same device into every `RLTrajectoryPlayer`
 - [src/elitefurretai/rl/players.py](src/elitefurretai/rl/players.py) still runs the battle loop through websocket request handling, embedding, action masking, and batched model inference
 
 So the key question became: is the Showdown bottleneck still mostly model compute, or is the system now dominated by websocket / legality churn and actor orchestration.
@@ -119,11 +119,11 @@ This is important because the current worker bootstrap in [src/elitefurretai/rl/
 CPU benchmark profile (`/tmp/showdown_profile_cpu.txt`), `12` battles, `max_concurrent_battles=4`, `batch_size=8`:
 
 - `selectors.select`: `23.053s`
-- `BatchInferencePlayer._gpu_inference_sync`: `21.925s`
+- `RLTrajectoryPlayer._gpu_inference_sync`: `21.925s`
 - model forward path: `21.8s+`
 - `torch._C._nn.linear`: `7.654s`
 - `poke_env.player.Player._handle_battle_message`: `5.731s`
-- `BatchInferencePlayer._embed_battle_state`: `4.736s`
+- `RLTrajectoryPlayer._embed_battle_state`: `4.736s`
 - `Embedder.embed_to_array`: `4.567s`
 - `generate_feature_engineered_features`: `3.025s`
 - `calculate_damage`: `3.312s`
@@ -131,9 +131,9 @@ CPU benchmark profile (`/tmp/showdown_profile_cpu.txt`), `12` battles, `max_conc
 CUDA benchmark profile (`/tmp/showdown_profile_cuda.txt`), same shape:
 
 - `selectors.select`: `23.026s`
-- `BatchInferencePlayer._gpu_inference_sync`: `20.258s`
+- `RLTrajectoryPlayer._gpu_inference_sync`: `20.258s`
 - `poke_env.player.Player._handle_battle_message`: `5.685s`
-- `BatchInferencePlayer._embed_battle_state`: `4.905s`
+- `RLTrajectoryPlayer._embed_battle_state`: `4.905s`
 - `Embedder.embed_to_array`: `4.717s`
 - `generate_feature_engineered_features`: `3.122s`
 - `calculate_damage`: `3.148s`

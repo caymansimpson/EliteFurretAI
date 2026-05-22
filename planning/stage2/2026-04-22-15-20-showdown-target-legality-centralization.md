@@ -96,7 +96,7 @@ Added or expanded focused fast-mask regressions for:
 One adjacent async-player regression probe hit a pre-existing test-harness issue instead of a legality regression:
 
 - `unit_tests/rl/test_multiprocess_actor.py -k 'Uproar or request_mutation or same_turn'`
-- failure surfaced: partially constructed `BatchInferencePlayer` test double missing `_diagnostics`
+- failure surfaced: partially constructed `RLTrajectoryPlayer` test double missing `_diagnostics`
 
 That issue was not part of the requested legality slice and was left unchanged.
 
@@ -104,4 +104,4 @@ That issue was not part of the requested legality slice and was left unchanged.
 
 1. Re-run a short Showdown training or invalid-choice diagnostic pass to measure whether the dominant websocket rejection families materially shrink after this legality centralization.
 2. Decide whether the remaining target fallback in the non-request heuristic path should also be eliminated entirely or kept as a non-Showdown fallback.
-3. Fix the separate `BatchInferencePlayer` test-harness setup issue in `unit_tests/rl/test_multiprocess_actor.py` before relying on that slice for future websocket regression probes.
+3. Fix the separate `RLTrajectoryPlayer` test-harness setup issue in `unit_tests/rl/test_multiprocess_actor.py` before relying on that slice for future websocket regression probes.

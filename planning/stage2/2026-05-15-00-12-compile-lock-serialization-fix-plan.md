@@ -327,7 +327,7 @@ without conviction. Before starting:
 
 3. **Microbenchmark of multi-process inference.** Before committing
    to Plan C's full integration cost, write a 100-line script that:
-   - Builds two `RNaDAgent` instances on the same GPU
+   - Builds two `RNaDModel` instances on the same GPU
    - Runs N concurrent inference forwards via:
      (a) two threads in one process (`threading.Thread`)
      (b) two subprocesses via `torch.multiprocessing`

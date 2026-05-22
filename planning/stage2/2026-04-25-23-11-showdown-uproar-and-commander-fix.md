@@ -31,7 +31,7 @@ This patch successfully addresses two of the core problems surfaced in previous 
 
 ## Updates
 
-- `test_multiprocess_actor.py` was failing missing `defaultdict` because it was referencing `_diagnostics` which got added to `BatchInferencePlayer`. We explicitly `from collections import defaultdict` and inject it to fix test suites.
+- `test_multiprocess_actor.py` was failing missing `defaultdict` because it was referencing `_diagnostics` which got added to `RLTrajectoryPlayer`. We explicitly `from collections import defaultdict` and inject it to fix test suites.
 - Our initial sed scripts failed because of newlines in the `_SINGLE_TARGET_TARGET_TYPES` set, requiring targeted string replacements via `replace_string_in_file`.
 - A 100-battle model-policy showdown benchmark yielded 0 `[ERROR]` or `[Invalid choice]` logs upon inspection.
 

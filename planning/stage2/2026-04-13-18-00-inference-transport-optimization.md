@@ -164,7 +164,7 @@ The GPU is 15-40x faster at the raw forward pass. The transport overhead must be
 | `src/elitefurretai/rl/train.py` | Training loop, worker process creation, Pipe wiring (~1600 lines) |
 | `src/elitefurretai/rl/config.py` | `RNaDConfig` dataclass with inference settings |
 | `src/elitefurretai/supervised/model_archs.py` | `FlexibleThreeHeadedModel` with `forward_with_hidden()` |
-| `src/elitefurretai/rl/players.py` | `RNaDAgent` wrapper with `get_initial_state()` |
+| `src/elitefurretai/rl/players.py` | `RNaDModel` wrapper with `get_initial_state()` |
 
 ### Request Flow
 

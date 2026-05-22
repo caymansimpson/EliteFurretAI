@@ -41,7 +41,7 @@ Before this note:
 
 There was also an important code-level gap in the current implementation:
 
-- `BatchInferencePlayer` already batches the LSTM path
+- `RLTrajectoryPlayer` already batches the LSTM path
 - but the transformer path does **not** run a true batched forward pass across multiple battles
 - instead, it loops over battles one by one inside `_run_batch()` with the in-code comment: `TODO: pad contexts for true batched Transformer inference`
 
@@ -359,7 +359,7 @@ So transformer actor batching is worth prioritizing not because batching is fash
 ## Planned Next Steps/Implementation Plan
 
 1. Add a padding-mask-aware transformer online forward path in `TransformerThreeHeadedModel.forward_with_hidden()`.
-2. Replace the transformer per-battle loop in `BatchInferencePlayer._run_batch()` with padded batched execution.
+2. Replace the transformer per-battle loop in `RLTrajectoryPlayer._run_batch()` with padded batched execution.
 3. Preserve existing stale-request and action-mask correctness guardrails unchanged.
 4. Add transformer-specific batch diagnostics so padding efficiency can be measured directly.
 5. Re-run the current no-VGCBench two-update Showdown profile on the same config.

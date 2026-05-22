@@ -10,7 +10,7 @@ This design specifies a closed-loop fuzz harness that exercises [src/elitefurret
 
 Existing related code:
 
-- [src/elitefurretai/engine/analyze/showdown_invalid_choice_diagnostics.py](../../src/elitefurretai/engine/analyze/showdown_invalid_choice_diagnostics.py) — already does Showdown server launch, random team sampling, websocket clients, error capture via `_handle_battle_error`, and rich human-readable rendering of battle/request state. Uses `BatchInferencePlayer` (model-driven).
+- [src/elitefurretai/engine/analyze/showdown_invalid_choice_diagnostics.py](../../src/elitefurretai/engine/analyze/showdown_invalid_choice_diagnostics.py) — already does Showdown server launch, random team sampling, websocket clients, error capture via `_handle_battle_error`, and rich human-readable rendering of battle/request state. Uses `RLTrajectoryPlayer` (model-driven).
 - [src/elitefurretai/inference/analyze/fuzz_inference.py](../../src/elitefurretai/inference/analyze/fuzz_inference.py) — sequential and concurrent fuzz patterns with `RandomPlayer` subclasses, but used for inference-correctness fuzzing, not masking.
 - [src/elitefurretai/rl/masking.py](../../src/elitefurretai/rl/masking.py) — the system under test.
 - [src/elitefurretai/etl/encoder.py](../../src/elitefurretai/etl/encoder.py) — `MDBO.from_int(idx, type)` decodes a 0..2024 action index back to a `/choose ...` command.
@@ -30,7 +30,7 @@ We need a tool that:
 
 ### Component 1 — `MaskedRandomPlayer` (added to `showdown_invalid_choice_diagnostics.py`)
 
-A new `Player` subclass alongside the existing `DiagnosticBatchInferencePlayer`. Activated by a new `--player random-masked` CLI flag.
+A new `Player` subclass alongside the existing `DiagnosticRLTrajectoryPlayer`. Activated by a new `--player random-masked` CLI flag.
 
 **Behavior:**
 
@@ -39,7 +39,7 @@ A new `Player` subclass alongside the existing `DiagnosticBatchInferencePlayer`.
 - **Tera:** emerges naturally — Tera variants occupy specific offsets in the 2025-action space and are sampled whenever the mask permits.
 - **No inference / no embedding:** purely exercises the mask-and-decode pipeline.
 - **Empty-mask case:** treated as itself a bug. Capture and exit via the same path as an invalid-choice rejection.
-- **Error capture:** override `_handle_battle_error` (same hook `DiagnosticBatchInferencePlayer` uses) to record `(battle_state, last_request, attempted_command, mask, sampled_index, error_msg, recent_events)`.
+- **Error capture:** override `_handle_battle_error` (same hook `DiagnosticRLTrajectoryPlayer` uses) to record `(battle_state, last_request, attempted_command, mask, sampled_index, error_msg, recent_events)`.
 
 ### Component 2 — Outer fuzz loop (added to `_run` in `showdown_invalid_choice_diagnostics.py`, gated on `--player random-masked`)
 
@@ -149,7 +149,7 @@ Executed by Claude in a follow-up session, given the failure report:
 
 **Why halt on first error rather than collect many?** Each masking bug typically has a class of related triggers — fixing one often resolves several. Halting forces serial debug-fix-verify cycles, which keeps the diagnosis tight and prevents trying to fix multiple bugs simultaneously.
 
-**Why uniform sampling over the legal action space (rather than structured "pick a move, then pick a target")?** Uniform-over-legal-indices is exactly the distribution `BatchInferencePlayer` uses post-mask, so we exercise the same code path as production self-play. A structured sampler would test a different distribution and miss bugs.
+**Why uniform sampling over the legal action space (rather than structured "pick a move, then pick a target")?** Uniform-over-legal-indices is exactly the distribution `RLTrajectoryPlayer` uses post-mask, so we exercise the same code path as production self-play. A structured sampler would test a different distribution and miss bugs.
 
 **Why 100 battles per pair?** Small enough that one resampling cycle is fast (~100 sec at 1s/battle), large enough to give each pair a fair chance to surface team-specific edge cases. User-specified.
 

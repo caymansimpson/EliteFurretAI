@@ -127,7 +127,7 @@ but 1 is structurally too low at this concurrency.
 ### F9. Latent correctness bug in legacy hidden-state slicing
 **Discovered 2026-05-13 during M3 of centralized-inference work.**
 
-`BatchInferencePlayer._run_batch` (transformer path) slices
+`RLTrajectoryPlayer._run_batch` (transformer path) slices
 `next_ctx_batch[i:i+1, :L_i+1, :]` as the new hidden state for
 request i with prior length L_i. The model's `forward_with_hidden`
 puts the new encoded state at position `max_T` regardless of L_i, so
@@ -243,7 +243,7 @@ batches per player consistently show:
   `cap=32`)
 - 100% of batches flush via timeout (none ever fill to cap)
 
-**Why**: each `BatchInferencePlayer` has its own per-player batcher
+**Why**: each `RLTrajectoryPlayer` has its own per-player batcher
 serving its own ~32 concurrent battles. Battles for one player
 multiplex over ONE websocket per player, so requests arrive serially.
 Even with 32 concurrent battles, only 1–4 are typically in
@@ -275,7 +275,7 @@ significant.
 | | VGCBench | EliteFurretAI |
 |---|---|---|
 | Model width | `d_model=256` (~2–5M params) | 27M params (cool-bee-85 derived) |
-| Inference pipeline | SB3 `SubprocVecEnv` — one shared model, batched across all envs | Per-worker `BatchInferencePlayer` with async batcher |
+| Inference pipeline | SB3 `SubprocVecEnv` — one shared model, batched across all envs | Per-worker `RLTrajectoryPlayer` with async batcher |
 | Model copies | 1 | `num_workers` (=4) |
 | Update batch | `batch_size=512` | `train_batch_size=256` |
 | Showdown servers | 1 | 4 |
@@ -553,7 +553,7 @@ is the largest useful category in py-spy at ~36% OwnTime.
 - `worker.py:259` — conditional `torch.compile(agent, mode=..., dynamic=True)`
   after building the main inference agent.
 - Config-cast wrapper for pyright (compiled module's `OptimizedModule`
-  type doesn't structurally match `RNaDAgent` even though attribute
+  type doesn't structurally match `RNaDModel` even though attribute
   delegation works at runtime).
 - Equivalence test in `test_model_archs.py` passes — compiled and eager
   outputs match within 1e-4 across multiple batch sizes and turn-0/turn-1
@@ -610,7 +610,7 @@ dark-sea-5, so apples-to-apples on the post-vectorization baseline.
 1. `hardware.batch_size: 4 → 32` (sep_arch.yaml)
 2. `hardware.num_servers: 4 → 1` then **REVERTED to 4** after the first
    attempt died via zero-completion watchdog
-3. Batch-fill logging in `BatchInferencePlayer._inference_loop`
+3. Batch-fill logging in `RLTrajectoryPlayer._inference_loop`
    (counters: `inference_batches_filled_to_max`,
    `inference_batches_flushed_timeout`; periodic WARNING log every 500
    batches with avg/max/filled%/timeout%/cap)

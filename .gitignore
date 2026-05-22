@@ -5,6 +5,8 @@ data/battles/*
 data/database/frisk.db
 data/models/*
 data/benchmarks/*
+data/eval/*
+data/eval_results/*
 data/logs/*
 __pycache__/*
 *.pyc
@@ -19,3 +21,7 @@ EliteFurretAI.code-workspace
 .gitattributesdata/logs/
 CLAUDE.md
 .claude
+train.log
+train.pid
+*.log
+*.pid

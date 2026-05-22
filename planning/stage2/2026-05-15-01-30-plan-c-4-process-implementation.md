@@ -54,12 +54,12 @@ subprocess.
 
 ### New module: `src/elitefurretai/rl/inference_subprocess.py`
 
-Subprocess-side entrypoint. Receives a `SubprocessSpec` (dataclass with
+Subprocess-side entrypoint. Receives a `SubprocessSpecification` (dataclass with
 list of services, queue handles, device, compile_mode) via spawn args.
 Inside the subprocess:
 
 1. `torch.cuda.set_device(...)` — explicit context creation.
-2. For each service in spec: build a fresh `RNaDAgent`, optionally
+2. For each service in spec: build a fresh `RNaDModel`, optionally
    compile, register its `InferenceService` with the queues from the
    spec.
 3. Listen on a `control_queue` for:
@@ -69,7 +69,7 @@ Inside the subprocess:
      module).
    - `ShutdownMsg()` — stop all services, exit.
 
-`SubprocessSpec` is a `dataclass(frozen=True)` declared in
+`SubprocessSpecification` is a `dataclass(frozen=True)` declared in
 `model_registry.py` and serialized via spawn's pickling.
 
 ### `src/elitefurretai/rl/model_registry.py` — extend, don't rewrite
@@ -85,7 +85,7 @@ Add **two new responsibilities**:
 2. **Spawn subprocesses on `start_all()`**. New method. After all
    registrations are done, trainer calls `registry.start_all()`. It:
    - For each `process_group != None`: collect all services tagged
-     for it, build a `SubprocessSpec` with their queue handles,
+     for it, build a `SubprocessSpecification` with their queue handles,
      `mp.Process(target=inference_subprocess.main, args=(spec,))`.
    - For each `process_group is None`: build + start the
      `InferenceService` in-trainer-process exactly as today.
@@ -112,8 +112,8 @@ addition to stopping in-process service threads.
 Lines around 1258-1355 (the register block) gain `process_group=...`:
 
 ```python
-registry.register("main", RNaDAgent(main_inference_base))                 # process_group=None
-registry.register("bc", RNaDAgent(bc_inference_base), compile=True)      # process_group=None
+registry.register("main", RNaDModel(main_inference_base))                 # process_group=None
+registry.register("bc", RNaDModel(bc_inference_base), compile=True)      # process_group=None
 registry.register("exploiter", exploiter_agent, compile=True, process_group="live")
 registry.register("victim", victim_agent, compile=True, process_group="live")
 for slot in range(max_ghosts):
@@ -166,7 +166,7 @@ Extend `unit_tests/rl/test_model_registry.py` with:
 
 | Step | Output | Validation |
 |---|---|---|
-| 1 | `SubprocessSpec` dataclass + `InferenceSubprocess` standalone class (no registry integration yet) | Unit tests 1-4 pass |
+| 1 | `SubprocessSpecification` dataclass + `InferenceSubprocess` standalone class (no registry integration yet) | Unit tests 1-4 pass |
 | 2 | `ModelRegistry.register(process_group=...)` parameter; `start_all()` method | Unit tests 5-6 pass; trainer with all `process_group=None` (current behavior) still works |
 | 3 | `ModelRegistry.sync_weights` cross-process path | Existing weight sync tests pass; new cross-process test passes |
 | 4 | `train.py` calls `start_all()`; flips `process_group` for ghosts only | End-to-end smoke run; throughput measurement |
@@ -235,7 +235,7 @@ Shipped:
 - [`src/elitefurretai/rl/inference_subprocess.py`](../../src/elitefurretai/rl/inference_subprocess.py)
   — new module. Defines:
   - `SyncWeightsMsg`, `ShutdownMsg` (frozen dataclasses, the control queue payload).
-  - `ServiceSpec`, `SubprocessSpec` (the cross-pickle-boundary specs).
+  - `ServiceSpecification`, `SubprocessSpecification` (the cross-pickle-boundary specs).
   - `run_subprocess(spec)` — module-level entrypoint for `mp.Process`. Builds
     `InferenceService` per spec.services, listens on control queue, applies
     `SyncWeightsMsg` via `model.load_state_dict`, exits on `ShutdownMsg`.
@@ -318,7 +318,7 @@ Shipped:
 All 36 inference-suite tests pass (32 from step 1 + 4 new). Ruff +
 pyright clean. The 4 pre-existing failures in `test_compile_race_reproducer`
 + `test_worker_opponent_factory` are unrelated to this work
-(`test_two_real_rnad_agents_with_cudagraph_mark_step` is flaky:
+(`test_two_real_rnad_models_with_cudagraph_mark_step` is flaky:
 passes 1/3 runs, uses `random.Random()` without seed — known
 preexisting flake).
 

@@ -43,7 +43,7 @@ the bursty failure mode but does not fix the underlying race.
 ### Code paths
 
 - [src/elitefurretai/rl/players.py](../../src/elitefurretai/rl/players.py) —
-  `BatchInferencePlayer._run_batch` is the per-turn driver that emits `/choose`
+  `RLTrajectoryPlayer._run_batch` is the per-turn driver that emits `/choose`
   via the underlying poke-env `Player.send_message`. It currently does not gate
   on whether the battle is still alive at the moment of send.
 - [poke-env Player base class] — handles `|popup|` messages via
@@ -76,7 +76,7 @@ locally throughout.
 
 The race specifically: at the end of a battle, `Showdown → poke-env` sends a
 terminal message (`|win|<player>` or `|tie`), but at the same time the
-`BatchInferencePlayer` may have already prepared and submitted a `/choose` for
+`RLTrajectoryPlayer` may have already prepared and submitted a `/choose` for
 the next turn (or for an in-flight forced-switch / teampreview). Showdown
 processes the terminal first, removes the player from the room, then rejects
 the now-orphaned `/choose` with the popup. From the worker's perspective, the
@@ -94,7 +94,7 @@ together; 3 only if 1+2 don't fully eliminate the popup volume.**
 
 ### Layer 1 — Pre-send finished check (defensive, cheapest)
 
-In `BatchInferencePlayer._run_batch` (or whatever code path emits the
+In `RLTrajectoryPlayer._run_batch` (or whatever code path emits the
 `/choose` message), check `battle.finished` immediately before
 `send_message(battle_tag, ...)`. If finished, skip the send and ensure the
 batch driver records a "done" state for that battle.
@@ -204,7 +204,7 @@ headroom for the known clustering pattern from this run (worst observed:
 
 - WSL2: `pin_memory=False` always; no change here.
 - Both backends preserved — Layer 1 and 2 are in
-  `BatchInferencePlayer` which is Showdown-specific. The Rust backend has its
+  `RLTrajectoryPlayer` which is Showdown-specific. The Rust backend has its
   own state-tracking and is not affected by this race, but it should not
   regress; verify by running a short Rust smoke after layer 2 lands.
 - No try/except hiding errors — layer 2 explicitly converts the popup into a
@@ -219,7 +219,7 @@ cold):
 1. **Read first**:
    - This doc (you're here).
    - [src/elitefurretai/rl/players.py](../../src/elitefurretai/rl/players.py) —
-     `BatchInferencePlayer`, especially `_run_batch` and the `_handle_*` paths
+     `RLTrajectoryPlayer`, especially `_run_batch` and the `_handle_*` paths
      it inherits from `poke_env.Player`.
    - The most recent run log for an example of the popup:
      `data/benchmarks/2026-05-05-easy-test/run.log` (search "not in that room").
@@ -227,7 +227,7 @@ cold):
      `_handle_battle_message`).
 
 2. **Layer 1**:
-   - Add the pre-send `battle.finished` check to `BatchInferencePlayer`.
+   - Add the pre-send `battle.finished` check to `RLTrajectoryPlayer`.
    - Unit test in `unit_tests/rl/test_players.py` (create or extend) using a
      `MagicMock(spec=DoubleBattle)` with `finished=True`; assert no send.
    - Quality gates.
@@ -284,7 +284,7 @@ race. Pre-send check is a real save in some cases but not the dominant fix.
    would block forever in `await self._battle_count_queue.get()`, leaving an
    orphaned coroutine holding the per-battle lock.
 
-2. **Popup detection hook on `BatchInferencePlayer.ps_client._handle_message`** —
+2. **Popup detection hook on `RLTrajectoryPlayer.ps_client._handle_message`** —
    added in [src/elitefurretai/rl/players.py:333-339](../../src/elitefurretai/rl/players.py#L333-L339).
    The hook wraps the original `ps_client._handle_message` (preserves all
    existing behavior) and additionally calls a recovery routine when the
@@ -328,7 +328,7 @@ Track this revert as a separate todo on the next session sit-down.
 **Hard-constraint compliance:**
 
 - WSL2: no `pin_memory` change.
-- Both backends: Layer 2 changes touch `BatchInferencePlayer` and poke-env,
+- Both backends: Layer 2 changes touch `RLTrajectoryPlayer` and poke-env,
   both of which are Showdown-side only. The Rust backend uses a separate
   player and is unaffected.
 - No try/except hiding: the only `try/except` added is `asyncio.QueueEmpty` on

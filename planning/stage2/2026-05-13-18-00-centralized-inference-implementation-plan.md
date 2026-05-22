@@ -50,7 +50,7 @@ response carries the chosen action_idx + log_prob, not raw logits.
 
 **What doesn't change**: the existing two-distribution distinction
 (temperature-scaled probs for sampling, T=1 log_probs for PPO importance
-ratio) lives in the InferenceService now instead of `BatchInferencePlayer`.
+ratio) lives in the InferenceService now instead of `RLTrajectoryPlayer`.
 Math is identical.
 
 ### D3. Hidden state ownership: worker
@@ -236,9 +236,9 @@ class InferenceResponse:
 
 | File | Change |
 |---|---|
-| `src/elitefurretai/rl/players.py` | Refactor `BatchInferencePlayer`: remove `self.model`, `self.queue`, `_inference_loop`, `_inference_future`, `_run_batch`, `_gpu_inference_sync`, `_add_to_batch`. Add `self.inference_client: InferenceClient`. Replace `await self.queue.put(...)` in `_handle_battle_request` with `await self.inference_client.submit(...)`. Per-player state stays: `temperature`, `top_p`, `hidden_states`, `_request_generation`, `current_trajectories`, embed-side diagnostics. |
+| `src/elitefurretai/rl/players.py` | Refactor `RLTrajectoryPlayer`: remove `self.model`, `self.queue`, `_inference_loop`, `_inference_future`, `_run_batch`, `_gpu_inference_sync`, `_add_to_batch`. Add `self.inference_client: InferenceClient`. Replace `await self.queue.put(...)` in `_handle_battle_request` with `await self.inference_client.submit(...)`. Per-player state stays: `temperature`, `top_p`, `hidden_states`, `_request_generation`, `current_trajectories`, embed-side diagnostics. |
 | `src/elitefurretai/rl/worker.py` | Receive `inference_clients: Dict[str, InferenceClient]` from spawn args (passed by trainer). Stop building `model` / `bc_model` / `exploiter_model` / `victim_model` here — trainer owns those now. Pass clients through `WorkerOpponentFactory` to player constructors. Keep `embedder` building (workers still featurize). |
-| `src/elitefurretai/rl/opponents.py` | `WorkerOpponentFactory.__init__` and `create_player_pairs` accept `inference_clients` instead of model objects; route the right client to each `BatchInferencePlayer`. |
+| `src/elitefurretai/rl/opponents.py` | `WorkerOpponentFactory.__init__` and `create_player_pairs` accept `inference_clients` instead of model objects; route the right client to each `RLTrajectoryPlayer`. |
 | `src/elitefurretai/rl/train.py` | Build `InferenceService` instances after the learner model is loaded. Set up shared mp.Queues. Spawn workers with the queues. Add periodic `state_sync` from learner model to inference service models. Hook shutdown to stop services cleanly. |
 | `src/elitefurretai/rl/config.py` | Add `inference_service_batch_size: int = 32` and `inference_service_batch_timeout: float = 0.005` to `HardwareConfig`. (Per-player `batch_size`/`batch_timeout` deprecated — moved to service.) |
 
@@ -246,7 +246,7 @@ class InferenceResponse:
 
 | Test | Change |
 |---|---|
-| `unit_tests/rl/test_players.py` | `BatchInferencePlayer` constructor signature changed; tests instantiating it must pass an `inference_client` (mock for unit tests). |
+| `unit_tests/rl/test_players.py` | `RLTrajectoryPlayer` constructor signature changed; tests instantiating it must pass an `inference_client` (mock for unit tests). |
 | `unit_tests/rl/test_worker_opponent_factory.py` | Factory signature changed; tests update accordingly. |
 
 ---
@@ -457,7 +457,7 @@ real battle end-to-end.
     next_hidden
   - **argmax-matches-legacy**: numerically identical action_idx +
     log_prob (atol 1e-5) + value (atol 1e-5) vs running the model
-    directly through `RNaDAgent.forward` and applying the legacy
+    directly through `RNaDModel.forward` and applying the legacy
     sampling math. Strongest M2 correctness signal.
   - end-to-end through IPC layer: real handler + service + client +
     asyncio future resolution all together in-process.
@@ -490,7 +490,7 @@ multi-process exercise).
 
 **Bug discovered & fixed in `_slice_next_hidden`**:
 
-The legacy `BatchInferencePlayer._run_batch` transformer path stores
+The legacy `RLTrajectoryPlayer._run_batch` transformer path stores
 `next_ctx_batch[i:i+1, :L_i+1, :]` as the new hidden state for
 request i with prior context length L_i. **This is wrong when the
 batch contains mixed-length requests.** The model's
@@ -526,7 +526,7 @@ training run via the centralized path).
 ### 2026-05-13 22:07 — M4 complete (system works end-to-end; throughput SURPRISE)
 
 **Code shipped (M4a–d)**:
-- M4a: `BatchInferencePlayer` dual-mode. Accepts either `model` (legacy
+- M4a: `RLTrajectoryPlayer` dual-mode. Accepts either `model` (legacy
   per-player) OR `inference_client` + `is_transformer` (centralized).
   Constructor validates exactly one is set. `start_inference_loop` is
   no-op in centralized mode. `_choose_move_async` branches on
@@ -728,7 +728,7 @@ GPU/CPU time and reducing the contention with the learner.
 - `train.py`: when `config.hardware.compile_inference_model` is set,
   wrap `inference_agent` with `torch.compile(mode=..., dynamic=True)`
   and run a 2-shape warmup (turn 0 + turn 1) on the inference device
-  before workers are spawned. Cast back to `RNaDAgent` for type
+  before workers are spawned. Cast back to `RNaDModel` for type
   checking; runtime delegation handles the actual `__call__` and
   attribute access.
 - `sep_arch.yaml`: `compile_inference_model: default`.
@@ -780,7 +780,7 @@ This branch is ready. To merge cleanly:
 2. **Single commit suggestion**: ~9 files modified, a handful of new
    files (`inference_*.py`, related tests). A clean squash-merge
    keeps history readable.
-3. **No follow-up needed**: the dual-mode `BatchInferencePlayer` keeps
+3. **No follow-up needed**: the dual-mode `RLTrajectoryPlayer` keeps
    the legacy path intact, so reverting to per-player is one config
    knob away (`enable_centralized_inference: false`).
 

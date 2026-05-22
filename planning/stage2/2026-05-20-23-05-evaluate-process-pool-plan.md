@@ -59,12 +59,12 @@ Convert evaluate.py's worker dispatcher from `ThreadPoolExecutor` to
 real OS process with its own GIL and its own CUDA context.
 
 This requires three discrete changes; the bulk of the work is making
-`PlayerSpec` picklable.
+`PlayerSpecification` picklable.
 
-### Change 1 — `PlayerSpec` becomes pure data
+### Change 1 — `PlayerSpecification` becomes pure data
 
-Today `PlayerSpec.factory` is a closure built inside `_model_spec` /
-`_baseline_spec`
+Today `PlayerSpecification.factory` is a closure built inside `_model_specification` /
+`_baseline_specification`
 ([player_factory.py:193-247](../../src/elitefurretai/rl/analyze/player_factory.py#L193-L247))
 that captures `path`, `device`, `battle_format`, `canonical`, etc. as
 free vars. Standard `pickle` cannot serialize closures, so submitting a
@@ -74,7 +74,7 @@ Refactor:
 
 ```python
 @dataclass(frozen=True)
-class PlayerSpec:
+class PlayerSpecification:
     raw: str
     kind: PlayerKind          # "model" | "baseline" | "external"
     name: str
@@ -88,14 +88,14 @@ class PlayerSpec:
 - `kind="baseline"` → `{"canonical", "battle_format"}`
 - `kind="external"` → `{"checkpoint_path", "team_file", "python_executable", "battle_format"}`
 
-`_model_spec` / `_baseline_spec` / `_external_spec` populate `params`
+`_model_specification` / `_baseline_specification` / `_external_specification` populate `params`
 instead of building closures.
 
 Add a module-level **builder**:
 
 ```python
 def build_player(
-    spec: PlayerSpec,
+    spec: PlayerSpecification,
     *,
     team: str,
     account_configuration: AccountConfiguration,
@@ -221,7 +221,7 @@ RTX 3090 limit.
 | Risk | Mitigation |
 |---|---|
 | CUDA spawn quirks (e.g. `RuntimeError: Cannot re-initialize CUDA in forked subprocess`) | Force `mp.get_context("spawn")`; never touch `torch.cuda` in the parent before pool creation. Add an `assert torch.cuda.is_initialized() is False` guard before pool.submit. |
-| Pickle errors on non-trivial args (e.g. `cells` containing weird objects) | Cells are `Tuple[str, str]` — strings, already picklable. PlayerSpec becomes pure data per Change 1. |
+| Pickle errors on non-trivial args (e.g. `cells` containing weird objects) | Cells are `Tuple[str, str]` — strings, already picklable. PlayerSpecification becomes pure data per Change 1. |
 | In-flight wrappers (v4 + vgcbench-parallel) break if evaluate.py is edited | Land the refactor on a feature branch; merge to main only after the current run completes (or after a smoke test on a non-shared `--collect-trajectories` dir). |
 | TrajectoryCollector concurrency assumptions | Each worker still owns one collector; per-worker shard files (`battles_worker_<i>_<call_id>_*.parquet`) are already isolated by `worker_id` — no shared writes. |
 | First-cell startup race on Showdown (subprocess all hit the same port at once) | Today's `_run_worker` already handles per-worker `account_configuration` and per-server URL; the only new thing is process boundary, which doesn't change Showdown's view. |
@@ -230,7 +230,7 @@ RTX 3090 limit.
 ## Validation Plan
 
 1. **Unit smoke** — run `pytest unit_tests/rl/analyze/test_eval_collector.py
-   -q` after Change 1 to confirm PlayerSpec is still constructible and
+   -q` after Change 1 to confirm PlayerSpecification is still constructible and
    `build_player` returns the right type per `kind`.
 
 2. **Local cell smoke** — 1 cell, 10 battles, `--workers 2 --num-servers 2
@@ -254,7 +254,7 @@ RTX 3090 limit.
 ## Planned Next Steps
 
 1. Branch off `main`. Filename: `evaluate-process-pool`.
-2. Implement Change 1 (`PlayerSpec` refactor + `build_player`). Run
+2. Implement Change 1 (`PlayerSpecification` refactor + `build_player`). Run
    `ruff check`, `pyright`, `pytest unit_tests`.
 3. Implement Change 2 (call-site rename in `_run_worker`).
 4. Implement Change 3 (`ProcessPoolExecutor` + spawn). Add the
@@ -272,9 +272,9 @@ RTX 3090 limit.
 
 Commits on the branch:
 
-* `7730a10` — Change 1: PlayerSpec to pure data, module-level
+* `7730a10` — Change 1: PlayerSpecification to pure data, module-level
   `build_player()` + `launch_external_player()`. Closure introspection
-  in `_detect_device_from_spec` / `_battle_format_from_spec` replaced
+  in `_detect_device_from_specification` / `_battle_format_from_specification` replaced
   with direct `spec.params[...]` reads. All 93 `unit_tests/rl/analyze`
   tests pass.
 * `f9b4b58` — Change 3: `--executor {process,thread}` flag with

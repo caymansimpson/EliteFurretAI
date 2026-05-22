@@ -45,7 +45,7 @@ on success, and reverted on failure. The goal is months of training time saved.
 - `train.py:collate_trajectories`: Python loop over trajectories + Python GAE loop;
   many small `torch.tensor(...)` calls, then `.to(device)` on each.
 - `learners.py:update`: single forward+backward per batch; no PPO inner-loop.
-- `BatchInferencePlayer._run_batch` (transformer path): pads variable-length contexts
+- `RLTrajectoryPlayer._run_batch` (transformer path): pads variable-length contexts
   and runs the **whole sequence** through the encoder every turn — O(T²) work per step.
 
 ## Problem
@@ -437,7 +437,7 @@ gain on the table, escalate to Option A in a separate phase.
 - Keep the existing `forward_with_hidden` path intact (used by training where the
   full sequence is needed for the gradient).
 
-**`src/elitefurretai/rl/players.py:BatchInferencePlayer`**
+**`src/elitefurretai/rl/players.py:RLTrajectoryPlayer`**
 
 - For transformer path, replace the `hidden_states[tag]` semantics: store
   `kv_cache_per_battle[tag] = list-of-(K, V)-per-layer` instead of the growing
@@ -495,7 +495,7 @@ Compare against the latest committed baseline (post-Phase 3).
 H1: KV-cache transformer context in actor inference
 
 - Added TransformerThreeHeadedModel.forward_with_kv_cache for online actors.
-- BatchInferencePlayer keeps per-battle past_kv instead of growing context.
+- RLTrajectoryPlayer keeps per-battle past_kv instead of growing context.
 - Training path (forward_with_hidden) unchanged; gradients still flow through
   the full sequence.
 - Added test_kv_cache_parity to assert outputs match the recompute path.

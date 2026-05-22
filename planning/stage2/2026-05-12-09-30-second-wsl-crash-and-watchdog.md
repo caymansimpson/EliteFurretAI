@@ -172,7 +172,7 @@ chase. Concrete next steps:
    `init`/`title`/`j`/`player`/`request`/`gametype`/`t:` handlers. Look
    specifically for `wait_for`, `sleep`, `asyncio.Event.wait`, or any
    `await` with a 5-second deadline.
-2. Cross-check against `BatchInferencePlayer._battle_started_callback` /
+2. Cross-check against `RLTrajectoryPlayer._battle_started_callback` /
    `_create_battle` and any team-validation or teampreview-prefetch path
    in [src/elitefurretai/rl/players.py](../../src/elitefurretai/rl/players.py).
 3. Once identified, either (a) remove the synchronous wait, or (b) move
@@ -317,7 +317,7 @@ faster than the player can drain them under `max_concurrent_battles=1`.
 pass `max_concurrent_battles=num_battles_per_pair` (or some sensible
 upper bound like `num_players * num_battles_per_pair / num_players` =
 `num_battles_per_pair`) when constructing the
-`BatchInferencePlayer`/`RNaDAgent` players in the training path. This
+`RLTrajectoryPlayer`/`RNaDModel` players in the training path. This
 should collapse the slow-handler warnings to ~zero, eliminate the
 waiter accumulation that's the residual leak source, and remove the
 worker-desync caused by per-worker queue-debt skew.

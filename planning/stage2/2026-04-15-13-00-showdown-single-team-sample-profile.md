@@ -134,7 +134,7 @@ The strongest current bottleneck picture for Showdown single-team training is:
 
 The fresh sample run supports the same broad conclusion as the earlier April 13 notes: the path to a real `2x-5x` gain is cumulative, and the biggest wins are likely to come from actor-side throughput improvements rather than learner-side math alone.
 
-The most important code-level guess is that the current Showdown transformer path is under-batched in practice. `BatchInferencePlayer._run_batch()` still processes transformer requests one battle at a time because variable-length contexts are not padded into a true batch. That means the configured `batch_size` helps much less than it appears on paper.
+The most important code-level guess is that the current Showdown transformer path is under-batched in practice. `RLTrajectoryPlayer._run_batch()` still processes transformer requests one battle at a time because variable-length contexts are not padded into a true batch. That means the configured `batch_size` helps much less than it appears on paper.
 
 ## Planned Next Steps/Implementation Plan
 
@@ -144,7 +144,7 @@ The most important code-level guess is that the current Showdown transformer pat
 2. Measure actual stale-drop and invalid-choice volume after the recent request fixes.
    - If stale drops or invalid retries are still high, reducing that churn should be prioritized ahead of pure model tuning.
 
-3. Investigate true batching for transformer actors in `BatchInferencePlayer`.
+3. Investigate true batching for transformer actors in `RLTrajectoryPlayer`.
    - Padding per-battle contexts into a real batch is a plausible high-leverage improvement because it directly attacks the largest measured hotspot.
 
 4. Profile `Embedder` and damage-calculation cost separately.

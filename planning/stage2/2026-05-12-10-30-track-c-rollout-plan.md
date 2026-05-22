@@ -77,7 +77,7 @@ Mechanical wiring — should not affect anything in production yet:
 - New `hardware.max_concurrent_battles_per_player: Optional[int] = None`
   in [config.py](../../src/elitefurretai/rl/config.py).
 - `WorkerOpponentFactory.__init__` reads it; `create_player_pairs`
-  passes it through to both `BatchInferencePlayer` constructions
+  passes it through to both `RLTrajectoryPlayer` constructions
   ([opponents.py:1188, 1207](../../src/elitefurretai/rl/opponents.py#L1188-L1207))
   via a kwargs-only path so the None case leaves poke-env's default
   untouched.
@@ -157,7 +157,7 @@ Only run if Stage 2 passes.
   Analysis scripts (`analyze/play_model.py`, `analyze/evaluate.py`,
   `engine/analyze/showdown_benchmark.py`,
   `engine/analyze/showdown_invalid_choice_diagnostics.py`) construct
-  `BatchInferencePlayer` directly without `OpponentPool` /
+  `RLTrajectoryPlayer` directly without `OpponentPool` /
   `WorkerOpponentFactory`. A non-None code default would silently change
   their behaviour. Per-config opt-in via YAML keeps the surface area
   scoped to training.
@@ -177,7 +177,7 @@ Only run if Stage 2 passes.
 ## Hard-constraint compliance
 
 - WSL2 `pin_memory=False`: untouched at every stage.
-- Both backends preserved: change is in the `BatchInferencePlayer`
+- Both backends preserved: change is in the `RLTrajectoryPlayer`
   (Showdown-only) construction path; Rust backend's path doesn't go
   through `_battle_count_queue`.
 - No try/except hiding errors: the change is a kwarg pass-through, no

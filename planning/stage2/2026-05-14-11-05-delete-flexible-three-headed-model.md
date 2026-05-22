@@ -16,8 +16,8 @@ plumbing that branched on architecture.
 - LSTM-vs-Transformer branching in:
   - `rl/learners.py` — `MODEL_ARCH_CONFIG_KEYS`, `build_model_from_config`,
     `update()` PPO inner loop, `load_model_from_checkpoint` return type
-  - `rl/players.py` — `BatchInferencePlayer._gpu_inference_sync`,
-    `BatchInferencePlayer._run_batch`, `RNaDAgent` wrapper, `StateHandle`
+  - `rl/players.py` — `RLTrajectoryPlayer._gpu_inference_sync`,
+    `RLTrajectoryPlayer._run_batch`, `RNaDModel` wrapper, `StateHandle`
   - `rl/inference_handlers.py` — `_is_transformer` flag,
     `_pad_lstm_state`, branch in `_slice_next_hidden`
   - `rl/opponents.py` — `main_is_transformer` param, `WorkerOpponentFactory`

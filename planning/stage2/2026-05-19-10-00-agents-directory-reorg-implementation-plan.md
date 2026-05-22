@@ -240,7 +240,7 @@ from typing import Any, ClassVar, Dict, List, Optional, TextIO, Tuple
 # os, sys. Match what `pyright` reports as undefined and add accordingly.)
 ```
 
-After copying, the only `players.py` symbols the extracted block references are: `RNaDConfig`. The block does not reference `BatchInferencePlayer`, `RNaDAgent`, etc.
+After copying, the only `players.py` symbols the extracted block references are: `RNaDConfig`. The block does not reference `RLTrajectoryPlayer`, `RNaDModel`, etc.
 
 - [ ] **Step 3.4: Update `SUBPROCESS_SCRIPT` path inside the moved class**
 
@@ -274,18 +274,18 @@ Six files import `VGCBenchManager` and/or `_create_vgc_bench_player` from `rl/pl
 
 | File | Symbol(s) | Action |
 |---|---|---|
-| `src/elitefurretai/rl/worker.py:78` | `VGCBenchManager` (currently with RNaDAgent) | Split: keep RNaDAgent import from rl.players, add VGCBenchManager import from agents.vgcbench_manager |
-| `src/elitefurretai/rl/train.py:97` | `VGCBenchManager` (with RNaDAgent, cleanup_worker_executors) | Same split |
-| `src/elitefurretai/engine/vgc_environment.py:51` | `VGCBenchManager` (with MaxDamagePlayer, RNaDAgent) | Same split |
+| `src/elitefurretai/rl/worker.py:78` | `VGCBenchManager` (currently with RNaDModel) | Split: keep RNaDModel import from rl.players, add VGCBenchManager import from agents.vgcbench_manager |
+| `src/elitefurretai/rl/train.py:97` | `VGCBenchManager` (with RNaDModel, cleanup_worker_executors) | Same split |
+| `src/elitefurretai/engine/vgc_environment.py:51` | `VGCBenchManager` (with MaxDamagePlayer, RNaDModel) | Same split |
 | `src/elitefurretai/rl/analyze/player_factory.py:25` | `_create_vgc_bench_player` (with MaxDamagePlayer, SimpleModelPlayer) | Same split |
 | (Tests referencing VGCBenchManager — grep to find any) | — | Same split |
 
 Diff pattern for `rl/worker.py:78`:
 
 ```diff
--from elitefurretai.rl.players import RNaDAgent, VGCBenchManager
+-from elitefurretai.rl.players import RNaDModel, VGCBenchManager
 +from elitefurretai.agents.vgcbench_manager import VGCBenchManager
-+from elitefurretai.rl.players import RNaDAgent
++from elitefurretai.rl.players import RNaDModel
 ```
 
 Pattern for the others is analogous. Imports MUST come from
@@ -337,7 +337,7 @@ Copy `rl/players.py:998-1106` (the `SimpleModelPlayer` class). New file header:
 Loads a checkpoint, runs inference inline in ``choose_move`` (no IPC, no
 batching). Trades training-time throughput for setup simplicity — callers
 don't need to spawn an InferenceService process or wire up
-request/response queues. Use ``rl/batch_inference_player.py`` when you
+request/response queues. Use ``rl/rl_trajectory_player.py`` when you
 need the trainer-side centralized inference pattern.
 
 See agents/AGENTS.md for usage.
@@ -357,7 +357,7 @@ The class references (verify by grep within the class body):
 - `torch`, `numpy as np`
 - `Embedder` from `elitefurretai.etl`
 - `MDBO` from `elitefurretai.etl.encoder`
-- `RNaDAgent` — **import from `elitefurretai.rl.players`** for now (phase 5 may rename to `elitefurretai.rl.rnad_model`)
+- `RNaDModel` — **import from `elitefurretai.rl.players`** for now (phase 5 may rename to `elitefurretai.rl.rnad_model`)
 - `fast_get_action_mask`, `get_valid_targets`, `slot_is_commanding` from `elitefurretai.rl.masking`
 - `build_model_from_config` from `elitefurretai.rl.learners` (used in `_load_model`)
 
@@ -416,7 +416,7 @@ Remove lines 998–1681 inclusive. Update the `__all__` at the bottom to drop:
 - `"VerboseModelPlayer"`
 - `"MaxDamagePlayer"`
 
-After deletion, `rl/players.py` should contain only: imports, `_request_fingerprint`, `_WORKER_EXECUTORS`/`_EXECUTOR_LOCK`/`_FALLBACK_EXECUTOR`, `get_worker_executor`, `cleanup_worker_executors`, `BatchInferencePlayer`, `RNaDAgent`, and an `__all__` listing just `RNaDAgent`, `BatchInferencePlayer`, `cleanup_worker_executors`.
+After deletion, `rl/players.py` should contain only: imports, `_request_fingerprint`, `_WORKER_EXECUTORS`/`_EXECUTOR_LOCK`/`_FALLBACK_EXECUTOR`, `get_worker_executor`, `cleanup_worker_executors`, `RLTrajectoryPlayer`, `RNaDModel`, and an `__all__` listing just `RNaDModel`, `RLTrajectoryPlayer`, `cleanup_worker_executors`.
 
 Run:
 ```bash
@@ -427,8 +427,8 @@ Expected:
 115:def _request_fingerprint
 217:def get_worker_executor
 231:def cleanup_worker_executors
-239:class BatchInferencePlayer
-~966:class RNaDAgent
+239:class RLTrajectoryPlayer
+~966:class RNaDModel
 ```
 (Line numbers will have shifted; the symbols are what matter.)
 
@@ -438,13 +438,13 @@ Files importing the three moved classes:
 
 | File:line | Old import | New import |
 |---|---|---|
-| `src/elitefurretai/rl/opponents.py:78` | `from elitefurretai.rl.players import BatchInferencePlayer, MaxDamagePlayer, RNaDAgent` | Three lines: BatchInferencePlayer + RNaDAgent from rl.players; MaxDamagePlayer from agents.max_damage_player |
+| `src/elitefurretai/rl/opponents.py:78` | `from elitefurretai.rl.players import RLTrajectoryPlayer, MaxDamagePlayer, RNaDModel` | Three lines: RLTrajectoryPlayer + RNaDModel from rl.players; MaxDamagePlayer from agents.max_damage_player |
 | `src/elitefurretai/rl/analyze/play_human_vs_model.py:30` | `from elitefurretai.rl.players import VerboseModelPlayer` | `from elitefurretai.agents.verbose_model_player import VerboseModelPlayer` |
 | `src/elitefurretai/rl/analyze/player_factory.py:25` | `from elitefurretai.rl.players import (MaxDamagePlayer, SimpleModelPlayer, _create_vgc_bench_player)` | `_create_vgc_bench_player` already moved to vgcbench_manager in phase 3; split into: MaxDamagePlayer from agents.max_damage_player, SimpleModelPlayer from agents.simple_model_player |
-| `src/elitefurretai/engine/vgc_environment.py:51` | `from elitefurretai.rl.players import MaxDamagePlayer, RNaDAgent, VGCBenchManager` | Already-split-once in phase 3; further split MaxDamagePlayer to agents.max_damage_player |
+| `src/elitefurretai/engine/vgc_environment.py:51` | `from elitefurretai.rl.players import MaxDamagePlayer, RNaDModel, VGCBenchManager` | Already-split-once in phase 3; further split MaxDamagePlayer to agents.max_damage_player |
 | `src/elitefurretai/engine/analyze/showdown_benchmark.py:20` | `from elitefurretai.rl.players import SimpleModelPlayer` | `from elitefurretai.agents.simple_model_player import SimpleModelPlayer` |
 | `src/elitefurretai/engine/analyze/showdown_invalid_choice_diagnostics.py:59` | `from elitefurretai.rl.players import SimpleModelPlayer` | Same |
-| `unit_tests/rl/test_players.py:9` | `from elitefurretai.rl.players import BatchInferencePlayer, MaxDamagePlayer` | Split: BatchInferencePlayer from rl.players; MaxDamagePlayer from agents.max_damage_player |
+| `unit_tests/rl/test_players.py:9` | `from elitefurretai.rl.players import RLTrajectoryPlayer, MaxDamagePlayer` | Split: RLTrajectoryPlayer from rl.players; MaxDamagePlayer from agents.max_damage_player |
 | `unit_tests/rl/test_players.py:61` | `patch("elitefurretai.rl.players.calculate_damage", ...)` | `patch("elitefurretai.agents.max_damage_player.calculate_damage", ...)` |
 | `unit_tests/rl/test_play_human_vs_model.py:76` | `from elitefurretai.rl.players import SimpleModelPlayer, VerboseModelPlayer` | Two imports from the new homes |
 
@@ -472,17 +472,17 @@ git commit -m "agents: move SimpleModelPlayer, VerboseModelPlayer, MaxDamagePlay
 
 ---
 
-## Phase 5 — Split `rl/players.py` into `batch_inference_player.py` + `rnad_model.py`
+## Phase 5 — Split `rl/players.py` into `rl_trajectory_player.py` + `rnad_model.py`
 
-After phase 4, `rl/players.py` contains two unrelated concerns: the training-time batcher and the model wrapper. Split them. (The `RNaDAgent` rename is the judgment-call piece per the spec — if you want to skip it, see step 5.99 at the end of this phase.)
+After phase 4, `rl/players.py` contains two unrelated concerns: the training-time batcher and the model wrapper. Split them. (The `RNaDModel` rename is the judgment-call piece per the spec — if you want to skip it, see step 5.99 at the end of this phase.)
 
 **Files:**
-- Create: `src/elitefurretai/rl/batch_inference_player.py` (from remaining `rl/players.py` — `_request_fingerprint`, executor helpers, `BatchInferencePlayer`)
-- Create: `src/elitefurretai/rl/rnad_model.py` (from remaining `rl/players.py` — `RNaDAgent`)
+- Create: `src/elitefurretai/rl/rl_trajectory_player.py` (from remaining `rl/players.py` — `_request_fingerprint`, executor helpers, `RLTrajectoryPlayer`)
+- Create: `src/elitefurretai/rl/rnad_model.py` (from remaining `rl/players.py` — `RNaDModel`)
 - Delete: `src/elitefurretai/rl/players.py`
-- Modify: ~15 RNaDAgent import sites + 4 BatchInferencePlayer import sites + 1 cleanup_worker_executors import site
+- Modify: ~15 RNaDModel import sites + 4 RLTrajectoryPlayer import sites + 1 cleanup_worker_executors import site
 
-- [ ] **Step 5.1: Create `batch_inference_player.py`**
+- [ ] **Step 5.1: Create `rl_trajectory_player.py`**
 
 Copy these symbols from `rl/players.py`:
 - imports it actually uses (verify by pyright after copying)
@@ -490,12 +490,12 @@ Copy these symbols from `rl/players.py`:
 - `_WORKER_EXECUTORS`, `_EXECUTOR_LOCK`, `_FALLBACK_EXECUTOR` module-level state
 - `get_worker_executor`
 - `cleanup_worker_executors`
-- `BatchInferencePlayer` class
+- `RLTrajectoryPlayer` class
 
 Header:
 
 ```python
-"""BatchInferencePlayer — high-throughput async player used during RL training.
+"""RLTrajectoryPlayer — high-throughput async player used during RL training.
 
 Gathers per-turn decisions from many concurrent battles, batches them into
 one model forward pass via the inference IPC layer, and pushes finished
@@ -513,10 +513,10 @@ The `if TYPE_CHECKING: from elitefurretai.rl.inference_worker import InferenceCl
 
 - [ ] **Step 5.2: Create `rnad_model.py`**
 
-Copy `RNaDAgent` (~lines 966-997 of the post-phase-4 players.py). Header:
+Copy `RNaDModel` (~lines 966-997 of the post-phase-4 players.py). Header:
 
 ```python
-"""RNaDAgent — torch.nn.Module wrapper around TransformerThreeHeadedModel.
+"""RNaDModel — torch.nn.Module wrapper around TransformerThreeHeadedModel.
 
 Despite the historical name, this is a *model* wrapper, not a poke-env
 Player. Used by the inference subprocess, the learner, the trainer, and
@@ -534,7 +534,7 @@ import torch
 from elitefurretai.supervised.model_archs import TransformerThreeHeadedModel
 
 
-class RNaDAgent(torch.nn.Module):
+class RNaDModel(torch.nn.Module):
     # ... copy class body unchanged from rl/players.py ...
 ```
 
@@ -544,35 +544,35 @@ class RNaDAgent(torch.nn.Module):
 git rm src/elitefurretai/rl/players.py
 ```
 
-- [ ] **Step 5.4: Update `RNaDAgent` import sites**
+- [ ] **Step 5.4: Update `RNaDModel` import sites**
 
-Fifteen files import `RNaDAgent` from `elitefurretai.rl.players`. Sweep with sed:
-
-```bash
-grep -rl "from elitefurretai.rl.players import.*RNaDAgent" src unit_tests | xargs sed -i 's|from elitefurretai\.rl\.players import RNaDAgent|from elitefurretai.rl.rnad_model import RNaDAgent|g'
-```
-
-Some sites import `RNaDAgent` together with other symbols (e.g. `from elitefurretai.rl.players import BatchInferencePlayer, RNaDAgent`). After phase 4 those have already been narrowed. The remaining combined-import sites after phase 4 are:
-- `src/elitefurretai/rl/opponents.py:78` — `BatchInferencePlayer, RNaDAgent`
-- `src/elitefurretai/rl/train.py:97` — `RNaDAgent, cleanup_worker_executors`
-- `unit_tests/rl/test_worker_opponent_factory.py:9` — `BatchInferencePlayer, RNaDAgent`
-- `unit_tests/rl/test_worker.py:25` — `BatchInferencePlayer, RNaDAgent`
-
-For these four, do not use the sed above; edit manually to split into separate imports from `rl.batch_inference_player` and `rl.rnad_model`.
-
-- [ ] **Step 5.5: Update `BatchInferencePlayer` import sites**
+Fifteen files import `RNaDModel` from `elitefurretai.rl.players`. Sweep with sed:
 
 ```bash
-grep -rl "from elitefurretai\.rl\.players import.*BatchInferencePlayer" src unit_tests
+grep -rl "from elitefurretai.rl.players import.*RNaDModel" src unit_tests | xargs sed -i 's|from elitefurretai\.rl\.players import RNaDModel|from elitefurretai.rl.rnad_model import RNaDModel|g'
 ```
 
-Expected after phase 4: four files (the ones listed above). Edit each manually to use `from elitefurretai.rl.batch_inference_player import BatchInferencePlayer`.
+Some sites import `RNaDModel` together with other symbols (e.g. `from elitefurretai.rl.players import RLTrajectoryPlayer, RNaDModel`). After phase 4 those have already been narrowed. The remaining combined-import sites after phase 4 are:
+- `src/elitefurretai/rl/opponents.py:78` — `RLTrajectoryPlayer, RNaDModel`
+- `src/elitefurretai/rl/train.py:97` — `RNaDModel, cleanup_worker_executors`
+- `unit_tests/rl/test_worker_opponent_factory.py:9` — `RLTrajectoryPlayer, RNaDModel`
+- `unit_tests/rl/test_worker.py:25` — `RLTrajectoryPlayer, RNaDModel`
 
-Also: `unit_tests/rl/test_worker_opponent_factory.py:179` patches the mock at `"elitefurretai.rl.opponents.BatchInferencePlayer"` — that string does NOT change (it patches the name as bound inside `opponents.py`, not the original definition site).
+For these four, do not use the sed above; edit manually to split into separate imports from `rl.rl_trajectory_player` and `rl.rnad_model`.
+
+- [ ] **Step 5.5: Update `RLTrajectoryPlayer` import sites**
+
+```bash
+grep -rl "from elitefurretai\.rl\.players import.*RLTrajectoryPlayer" src unit_tests
+```
+
+Expected after phase 4: four files (the ones listed above). Edit each manually to use `from elitefurretai.rl.rl_trajectory_player import RLTrajectoryPlayer`.
+
+Also: `unit_tests/rl/test_worker_opponent_factory.py:179` patches the mock at `"elitefurretai.rl.opponents.RLTrajectoryPlayer"` — that string does NOT change (it patches the name as bound inside `opponents.py`, not the original definition site).
 
 - [ ] **Step 5.6: Update `cleanup_worker_executors` import site**
 
-One site: `src/elitefurretai/rl/train.py:97`. Change `cleanup_worker_executors` import from `rl.players` to `rl.batch_inference_player`.
+One site: `src/elitefurretai/rl/train.py:97`. Change `cleanup_worker_executors` import from `rl.players` to `rl.rl_trajectory_player`.
 
 - [ ] **Step 5.7: Verify all old paths are gone**
 
@@ -592,14 +592,14 @@ Expected: green.
 
 ```bash
 git add -A
-git commit -m "rl: split players.py into batch_inference_player.py and rnad_model.py"
+git commit -m "rl: split players.py into rl_trajectory_player.py and rnad_model.py"
 ```
 
-**Step 5.99 — escape hatch:** If the `RNaDAgent` rename feels like scope creep at this point, do this instead:
-- Keep `rl/players.py` (don't delete in step 5.3) — file contains only `RNaDAgent` after step 5.1.
-- Skip step 5.4's sed (keep `from elitefurretai.rl.players import RNaDAgent` everywhere).
+**Step 5.99 — escape hatch:** If the `RNaDModel` rename feels like scope creep at this point, do this instead:
+- Keep `rl/players.py` (don't delete in step 5.3) — file contains only `RNaDModel` after step 5.1.
+- Skip step 5.4's sed (keep `from elitefurretai.rl.players import RNaDModel` everywhere).
 - Drop step 5.2 (don't create `rnad_model.py`).
-- All other steps in this phase stand. Commit message: `"rl: extract BatchInferencePlayer to its own file"`.
+- All other steps in this phase stand. Commit message: `"rl: extract RLTrajectoryPlayer to its own file"`.
 
 ---
 
@@ -650,9 +650,9 @@ Current re-exports from `rl.players`:
 
 ```python
 from elitefurretai.rl.players import (
-    BatchInferencePlayer,
+    RLTrajectoryPlayer,
     MaxDamagePlayer,
-    RNaDAgent,
+    RNaDModel,
     cleanup_worker_executors,
 )
 ```
@@ -661,14 +661,14 @@ Replace with:
 
 ```python
 from elitefurretai.agents.max_damage_player import MaxDamagePlayer
-from elitefurretai.rl.batch_inference_player import (
-    BatchInferencePlayer,
+from elitefurretai.rl.rl_trajectory_player import (
+    RLTrajectoryPlayer,
     cleanup_worker_executors,
 )
-from elitefurretai.rl.rnad_model import RNaDAgent
+from elitefurretai.rl.rnad_model import RNaDModel
 ```
 
-(If you took the phase 5.99 escape hatch, `RNaDAgent` keeps importing from `rl.players`.)
+(If you took the phase 5.99 escape hatch, `RNaDModel` keeps importing from `rl.players`.)
 
 The `__all__` list stays the same.
 
@@ -681,7 +681,7 @@ Replace the phase-1 stub at `src/elitefurretai/agents/AGENTS.md` with:
 
 This directory holds **user-facing, instantiable agents** — the things you grab to run a battle in EFA. Eval/analysis players, heuristic baselines, the behavior-cloned player, and the subprocess managers that wrap external bots (vgc-bench, foul-play).
 
-It is **not** for classes that subclass `poke_env.player.Player` for training-plumbing reasons. `BatchInferencePlayer` is a `Player` subclass, but it lives in `rl/batch_inference_player.py` because its job is dynamic batching for RL training throughput — coupled to the trajectory queue and the inference IPC layer. You'd never grab it to run an ad-hoc battle.
+It is **not** for classes that subclass `poke_env.player.Player` for training-plumbing reasons. `RLTrajectoryPlayer` is a `Player` subclass, but it lives in `rl/rl_trajectory_player.py` because its job is dynamic batching for RL training throughput — coupled to the trajectory queue and the inference IPC layer. You'd never grab it to run an ad-hoc battle.
 
 ## What's in here
 
@@ -789,8 +789,8 @@ Gotchas:
 
 ## What does *not* belong here
 
-- Training-time plumbing that happens to subclass `Player` (`BatchInferencePlayer`). Lives in `rl/`.
-- Model wrappers (`RNaDAgent`). They're `torch.nn.Module`s, not Players. Live in `rl/rnad_model.py`.
+- Training-time plumbing that happens to subclass `Player` (`RLTrajectoryPlayer`). Lives in `rl/`.
+- Model wrappers (`RNaDModel`). They're `torch.nn.Module`s, not Players. Live in `rl/rnad_model.py`.
 - Opponent-sampling / curriculum orchestration (`OpponentPool`, `WorkerOpponentFactory`). They consume agents but aren't ones. Live in `rl/opponents.py`.
 - CLI scaffolding for the eval entry point (`player_factory.py`, `team_provider.py`). Live in `rl/analyze/`.
 ````
@@ -841,11 +841,11 @@ For each match, apply the same path updates as in step 7.1.
 - [ ] **Step 7.3: Update `RL.md`**
 
 ```bash
-grep -n "rl/players\.py\|rl\.players\|BatchInferencePlayer\|MaxDamagePlayer\|SimpleModelPlayer\|VerboseModelPlayer\|VGCBenchManager\|_vgcbench_subprocess\|RNaDAgent" src/elitefurretai/rl/RL.md
+grep -n "rl/players\.py\|rl\.players\|RLTrajectoryPlayer\|MaxDamagePlayer\|SimpleModelPlayer\|VerboseModelPlayer\|VGCBenchManager\|_vgcbench_subprocess\|RNaDModel" src/elitefurretai/rl/RL.md
 ```
 
 For each match, decide whether the doc text should:
-- Refer to the new file path (`agents/...` or `rl/batch_inference_player.py`, `rl/rnad_model.py`).
+- Refer to the new file path (`agents/...` or `rl/rl_trajectory_player.py`, `rl/rnad_model.py`).
 - Remain unchanged because it's describing a concept that doesn't depend on file location.
 
 Apply minimal updates — don't rewrite RL.md.
@@ -883,7 +883,7 @@ Type-checking does not catch wrong `SUBPROCESS_SCRIPT` paths or wrong `importlib
 ```bash
 grep -rn "from elitefurretai\.rl\.players\|from elitefurretai\.supervised\.behavior_clone_player" src unit_tests 2>/dev/null | grep -v __pycache__
 ```
-Expected: empty (unless you took the 5.99 escape hatch, in which case `RNaDAgent` imports from `rl.players` are expected and fine).
+Expected: empty (unless you took the 5.99 escape hatch, in which case `RNaDModel` imports from `rl.players` are expected and fine).
 
 - [ ] **Step 8.2: Launch a 5-minute training run**
 
@@ -928,7 +928,7 @@ All quality gates green; 5-min smoke training run on single_team.yaml
 confirmed vgc-bench subprocess launches and accepts challenges. FoulPlay
 integration plans updated to target the new layout.
 
-[Whatever else turned out to be relevant — escape hatch taken? RNaDAgent
+[Whatever else turned out to be relevant — escape hatch taken? RNaDModel
 rename skipped? Any unexpected issues? Document them here.]
 ```
 
@@ -946,12 +946,12 @@ git commit -m "planning: mark agents/ reorg spec complete"
 - [x] Spec coverage: every Components, Migration mechanics, Out-of-scope, Risks bullet in the spec maps to a phase or an explicit non-action.
 - [x] Placeholder scan: no TBDs, no "implement later", no "add appropriate error handling", every code block is concrete.
 - [x] Type consistency: `SUBPROCESS_SCRIPT` path is "agents/_vgcbench_subprocess.py" in both step 3.4 and AGENTS.md; symbol names match across phases.
-- [x] Escape hatch for the `RNaDAgent` rename is in phase 5.99 and is referenced in phase 6.2.
+- [x] Escape hatch for the `RNaDModel` rename is in phase 5.99 and is referenced in phase 6.2.
 
 ## Out of scope (per spec)
 
 - Touching `OpponentPool` / `WorkerOpponentFactory` or `player_factory.py` / `team_provider.py`.
-- Reducing `BatchInferencePlayer`'s line count.
+- Reducing `RLTrajectoryPlayer`'s line count.
 - Adding an `elitefurretai.agents` abstract base / registry / factory.
 - Backwards-compat shims from `rl.players` or `supervised.behavior_clone_player`.
-- `BatchInferencePlayer` in `AGENTS.md`.
+- `RLTrajectoryPlayer` in `AGENTS.md`.

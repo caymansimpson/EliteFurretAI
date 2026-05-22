@@ -16,10 +16,10 @@ place so the answer to "how do we run X agent in EFA?" is a single `ls`.
 `src/elitefurretai/rl/players.py` has grown to ~1948 lines covering five
 distinct concerns:
 
-1. `BatchInferencePlayer` — high-throughput async player used during RL
+1. `RLTrajectoryPlayer` — high-throughput async player used during RL
    training, dynamic-batches model decisions across many concurrent
    battles.
-2. `RNaDAgent` — `torch.nn.Module` wrapper around the trained model;
+2. `RNaDModel` — `torch.nn.Module` wrapper around the trained model;
    uniform `forward()` API over the underlying transformer.
 3. `SimpleModelPlayer` / `VerboseModelPlayer` — eval-time players that
    run inference inline in `choose_move`.
@@ -52,7 +52,7 @@ src/elitefurretai/rl/
   opponents.py                 # OpponentPool, WorkerOpponentFactory
   _vgcbench_subprocess.py      # subprocess entry, runs under venv-vgcbench
   analyze/
-    player_factory.py          # parse_player_spec, _model_spec, _baseline_spec
+    player_factory.py          # parse_player_specification, _model_specification, _baseline_specification
     team_provider.py
     ...
 src/elitefurretai/supervised/
@@ -74,7 +74,7 @@ Two problems, both about taxonomy and discoverability:
    `FoulPlayManager` location. The shared concept — "instantiable
    participant in a battle" — has no module that owns it.
 2. **`players.py` mixes unrelated concerns.** The training-time batcher
-   (`BatchInferencePlayer`), the model wrapper (`RNaDAgent`), and the
+   (`RLTrajectoryPlayer`), the model wrapper (`RNaDModel`), and the
    user-facing players (`SimpleModelPlayer` et al.) all live together.
    Splitting them by concern matches the rest of `rl/` (one purpose per
    file: `learners.py`, `opponents.py`, `model_registry.py`, the
@@ -133,22 +133,22 @@ next to the files it documents (matching the project's existing
 
 ### What stays in `rl/`
 
-`BatchInferencePlayer` and `RNaDAgent` are training-time internals.
+`RLTrajectoryPlayer` and `RNaDModel` are training-time internals.
 Splitting `rl/players.py` finishes the cleanup:
 
 ```
 src/elitefurretai/rl/
-  batch_inference_player.py    # NEW: BatchInferencePlayer + the three executor
+  rl_trajectory_player.py    # NEW: RLTrajectoryPlayer + the three executor
                                # helpers (_request_fingerprint,
                                # get_worker_executor, cleanup_worker_executors).
                                # Only consumer is the RL worker loop, so
                                # co-located.
-  rnad_model.py                # NEW: RNaDAgent (renamed for clarity — it's a
+  rnad_model.py                # NEW: RNaDModel (renamed for clarity — it's a
                                # torch.nn.Module wrapper, not a Player)
   # players.py deleted
 ```
 
-Rationale for the `RNaDAgent` → `rnad_model.py` rename: the class is a
+Rationale for the `RNaDModel` → `rnad_model.py` rename: the class is a
 `torch.nn.Module` wrapper around `TransformerThreeHeadedModel`, not a
 poke-env `Player`. The current name (`*Agent` in `players.py`) is
 actively misleading. The rename is a judgment call; if scope-creep is a
@@ -161,7 +161,7 @@ agents-extraction value is independent.
 |---|---|---|
 | `OpponentPool`, `WorkerOpponentFactory` | `rl/opponents.py` | Curriculum sampling / per-worker factory. Orchestrates Players, isn't one. |
 | `player_factory.py`, `team_provider.py` | `rl/analyze/` | CLI-eval factories. Consume agents, aren't agents. |
-| `rl/__init__.py` re-exports | Updated in place | `rl/__init__.py` publicly names `MaxDamagePlayer`, `BatchInferencePlayer`, `cleanup_worker_executors`. Re-imports from new homes preserve the surface for any downstream callers. |
+| `rl/__init__.py` re-exports | Updated in place | `rl/__init__.py` publicly names `MaxDamagePlayer`, `RLTrajectoryPlayer`, `cleanup_worker_executors`. Re-imports from new homes preserve the surface for any downstream callers. |
 | `supervised/__init__.py` `BCPlayer` re-export | Removed | `BCPlayer` moves; `supervised/` shouldn't pretend to own it anymore. Per CLAUDE.md, no backwards-compat shim required. |
 
 ### Migration mechanics
@@ -182,7 +182,7 @@ Five landable commits:
      and `git blame -C -C` recovers the line-level history.
    - One commit per wave: (a) eval players + heuristic + BC,
      (b) vgcbench manager + helpers + subprocess script,
-     (c) batch_inference_player.py + rnad_model.py extraction from
+     (c) rl_trajectory_player.py + rnad_model.py extraction from
      the remaining `rl/players.py`.
 3. **Import sweep.** ~30 files across `src/` and `unit_tests/`. The
    grep enumeration:
@@ -240,13 +240,13 @@ break the "rl/ contains only RL training" assumption. Top-level
 ("agents being a place where you can find definitions for how we run
 various agents in EFA").
 
-**Why exclude `BatchInferencePlayer` despite it being a `Player`
-subclass?** `BatchInferencePlayer`'s real job is dynamic batching of
+**Why exclude `RLTrajectoryPlayer` despite it being a `Player`
+subclass?** `RLTrajectoryPlayer`'s real job is dynamic batching of
 model decisions for RL training throughput. It's tightly coupled to the
 trajectory queue, the inference IPC system, and worker process
 orchestration. You'd never instantiate it to run an ad-hoc battle. The
 agents/ taxonomy is "would someone outside the RL training loop ever
-instantiate this to play a battle?" — answer for `BatchInferencePlayer`
+instantiate this to play a battle?" — answer for `RLTrajectoryPlayer`
 is no, so it stays in `rl/`.
 
 **Why one file per class?** Maximum discoverability. `ls agents/`
@@ -267,8 +267,8 @@ read every file's docstring to figure out which one fits the current
 need. `AGENTS.md` is one page that does that lookup. It also matches the
 project's existing pattern (`RL.md`, `ENGINE.md`, `SUPERVISED.md`).
 
-**Why rename `RNaDAgent`'s file?** With everything else moved out,
-`rl/players.py` would contain only `RNaDAgent` — a torch.nn.Module
+**Why rename `RNaDModel`'s file?** With everything else moved out,
+`rl/players.py` would contain only `RNaDModel` — a torch.nn.Module
 wrapper. The filename `players.py` for a one-class-nn.Module file is
 actively misleading. Renaming to `rl/rnad_model.py` makes the file's
 contents match its name. Flagged as a judgment call because it adds
@@ -300,13 +300,13 @@ where they belong with their consumers.
    silent subprocess-fail-at-startup. Mitigation: the 5-min smoke
    training run will surface this (vgc-bench username never logs in).
 3. **`opponents.py` becomes a three-source-import.** Currently
-   `from elitefurretai.rl.players import BatchInferencePlayer,
-   MaxDamagePlayer, RNaDAgent`. After: `BatchInferencePlayer` from
-   `rl.batch_inference_player`, `MaxDamagePlayer` from
-   `agents.max_damage_player`, `RNaDAgent` from `rl.rnad_model`.
+   `from elitefurretai.rl.players import RLTrajectoryPlayer,
+   MaxDamagePlayer, RNaDModel`. After: `RLTrajectoryPlayer` from
+   `rl.rl_trajectory_player`, `MaxDamagePlayer` from
+   `agents.max_damage_player`, `RNaDModel` from `rl.rnad_model`.
    Trivial; flagging because it's the one file with imports from three
    new homes.
-4. **The `RNaDAgent` rename.** ~15 sites update. If this feels like
+4. **The `RNaDModel` rename.** ~15 sites update. If this feels like
    scope creep at implementation time, drop it — keep `rl/players.py`
    as a one-class file. Independent of the rest.
 
@@ -316,7 +316,7 @@ where they belong with their consumers.
   agents but aren't agents. Stay in `rl/opponents.py`.
 - Refactoring `player_factory.py` / `team_provider.py` in `rl/analyze/`.
   CLI scaffolding, not agents.
-- Reducing `BatchInferencePlayer`'s line count. It's big because
+- Reducing `RLTrajectoryPlayer`'s line count. It's big because
   dynamic batching is intrinsically stateful; orthogonal to this
   reorg.
 - Adding a public `elitefurretai.agents` API surface beyond simple
@@ -324,7 +324,7 @@ where they belong with their consumers.
   Just files and an `__init__.py`.
 - Backwards-compat shims from old import paths (`rl.players`,
   `supervised.behavior_clone_player`). Per CLAUDE.md, no.
-- Adding `BatchInferencePlayer` to `AGENTS.md`. It's not in `agents/`.
+- Adding `RLTrajectoryPlayer` to `AGENTS.md`. It's not in `agents/`.
 
 ## Planned next steps
 
@@ -337,7 +337,7 @@ where they belong with their consumers.
    above.
 5. Update `RL.md` and `SUPERVISED.md`:
    - `RL.md` — `VGCBenchManager` references point at the new file;
-     mentions that `BatchInferencePlayer` and `RNaDAgent` were
+     mentions that `RLTrajectoryPlayer` and `RNaDModel` were
      extracted from `players.py` into their own files.
    - `SUPERVISED.md` — `BCPlayer` import-path update.
 6. Mark this doc complete in Updates.
@@ -359,7 +359,7 @@ baseline).
 2. `739b54f` — agents: move BCPlayer from supervised/ to agents/bc_player.py
 3. `79cf2d0` — agents: move VGCBenchManager + vgc-bench helpers + subprocess to agents/
 4. `90ec07e` — agents: move SimpleModelPlayer, VerboseModelPlayer, MaxDamagePlayer to agents/
-5. `0f7cdf2` — rl: split players.py into batch_inference_player.py and rnad_model.py
+5. `0f7cdf2` — rl: split players.py into rl_trajectory_player.py and rnad_model.py
 6. `d9f2bb0` — agents: full __init__.py re-exports and AGENTS.md content
 7. `584aaa0` — docs: update FoulPlay plans + RL.md + SUPERVISED.md for agents/ layout
 8. (this commit) — planning: mark agents/ reorg spec complete
@@ -378,8 +378,8 @@ baseline).
   prior usage of a "new" package's import path before assuming the
   directory doesn't exist.
 
-- **`RNaDAgent` rename followed through.** The plan's 5.99 escape
-  hatch was not taken; `rl/players.py` is now deleted and `RNaDAgent`
+- **`RNaDModel` rename followed through.** The plan's 5.99 escape
+  hatch was not taken; `rl/players.py` is now deleted and `RNaDModel`
   lives at `rl/rnad_model.py`.
 
 - **Phase 3 picked up a stray Phase 2 oversight.** The Phase 2 import

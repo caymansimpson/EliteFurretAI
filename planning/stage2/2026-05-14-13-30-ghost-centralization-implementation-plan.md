@@ -4,7 +4,7 @@
 
 **Goal:** Close out the registry plan's "Future work": centralize ghost inference through `ModelRegistry`, investigate the torch.compile multi-thread race (4-hour time-box), delete the legacy per-worker inference path, and measure throughput at each gate.
 
-**Architecture:** Pre-register `max_ghosts` `ghost_<slot>` services in `ModelRegistry` at startup. Trainer maintains `active_ghost_slots: Set[int]` and broadcasts it to workers in the existing weight-broadcast payload. Workers route `GHOSTS` opponent samples by picking a random active slot and assigning `opponent.inference_client = clients.get(f"ghost_{slot}")`. After ghost lands and (conditionally) compile-race is solved, rip out the dual-mode `BatchInferencePlayer`, the legacy worker model-build path, and the unused `OpponentPool.sample_opponent` / `_create_*_opponent` methods.
+**Architecture:** Pre-register `max_ghosts` `ghost_<slot>` services in `ModelRegistry` at startup. Trainer maintains `active_ghost_slots: Set[int]` and broadcasts it to workers in the existing weight-broadcast payload. Workers route `GHOSTS` opponent samples by picking a random active slot and assigning `opponent.inference_client = clients.get(f"ghost_{slot}")`. After ghost lands and (conditionally) compile-race is solved, rip out the dual-mode `RLTrajectoryPlayer`, the legacy worker model-build path, and the unused `OpponentPool.sample_opponent` / `_create_*_opponent` methods.
 
 **Tech Stack:** Python 3.11, PyTorch, torch.multiprocessing, pytest, ruff, pyright. Existing classes: `ModelRegistry` ([model_registry.py](../../src/elitefurretai/rl/model_registry.py)), `WorkerInferenceClients` ([worker_inference_clients.py](../../src/elitefurretai/rl/worker_inference_clients.py)), `OpponentPool` + `WorkerOpponentFactory` ([opponents.py](../../src/elitefurretai/rl/opponents.py)).
 
@@ -19,7 +19,7 @@
 | `src/elitefurretai/rl/train.py` | 1 | Add ghost slot pre-registration + LRU rotation + broadcast extension. Phase 3: drop legacy build branch + `enable_centralized_inference` references. |
 | `src/elitefurretai/rl/opponents.py` | 1 | Add `set_active_ghost_slots` + `GHOSTS` branch in `configure_opponent_for_batch` that routes via `ghost_<slot>`. Phase 3: delete legacy ghost caching + `OpponentPool.sample_opponent` family. |
 | `src/elitefurretai/rl/worker.py` | 1 | Receive initial `active_ghost_slots` in spawn args; handle `active_ghost_slots` in broadcast handler. Phase 3: drop legacy `if not centralized` branch + `update_weights`. |
-| `src/elitefurretai/rl/players.py` | 3 | Drop dual-mode `BatchInferencePlayer` (only `inference_client` mode survives). |
+| `src/elitefurretai/rl/players.py` | 3 | Drop dual-mode `RLTrajectoryPlayer` (only `inference_client` mode survives). |
 | `src/elitefurretai/rl/config.py` | 3 | Remove `enable_centralized_inference`. |
 | `src/elitefurretai/rl/configs/sep_arch.yaml` | 3 | Remove `enable_centralized_inference: true`; replace multi-line ghost comment. |
 | `src/elitefurretai/rl/RL.md` | 3-4 | Update section 8b architecture description; remove "legacy ghost path retained" language. |
@@ -460,8 +460,8 @@ After the existing victim registration (look for `registry.register("victim", ..
 
 Above the function where the registry setup lives in `train.py`, add (or place near other helpers in the file):
 ```python
-def clone_agent_for_ghost_slot(template_agent: RNaDAgent) -> RNaDAgent:
-    """Build a fresh RNaDAgent with the same architecture as `template_agent`
+def clone_agent_for_ghost_slot(template_agent: RNaDModel) -> RNaDModel:
+    """Build a fresh RNaDModel with the same architecture as `template_agent`
     for use as a ghost slot placeholder. Weights are copied at construction
     time; subsequent registry.sync_weights() replaces them when a real ghost
     checkpoint lands."""
@@ -476,7 +476,7 @@ def clone_agent_for_ghost_slot(template_agent: RNaDAgent) -> RNaDAgent:
     return new_agent
 ```
 
-> **Implementation note**: `RNaDAgent` may not have `init_kwargs` exposed. If not, the cleanest approach is to refactor `build_main_agent` (or whatever currently builds the main agent in `train.py`) into a `_build_agent_from_config(config) -> RNaDAgent` helper and call it once per ghost slot. The helper already exists conceptually — find it before adding `clone_agent_for_ghost_slot`. If it doesn't exist, lift it from the inline construction site in train.py first.
+> **Implementation note**: `RNaDModel` may not have `init_kwargs` exposed. If not, the cleanest approach is to refactor `build_main_agent` (or whatever currently builds the main agent in `train.py`) into a `_build_agent_from_config(config) -> RNaDModel` helper and call it once per ghost slot. The helper already exists conceptually — find it before adding `clone_agent_for_ghost_slot`. If it doesn't exist, lift it from the inline construction site in train.py first.
 
 - [ ] **Step 4: Lint + type check**
 
@@ -1251,19 +1251,19 @@ git add src/elitefurretai/rl/config.py src/elitefurretai/rl/train.py src/elitefu
 git commit -m "refactor: remove enable_centralized_inference flag (centralized is the only mode)"
 ```
 
-### Task 3.6: Strip dual-mode from `BatchInferencePlayer`
+### Task 3.6: Strip dual-mode from `RLTrajectoryPlayer`
 
 **Files:**
 - Modify: `src/elitefurretai/rl/players.py`
 
-- [ ] **Step 1: Read current `BatchInferencePlayer` structure**
+- [ ] **Step 1: Read current `RLTrajectoryPlayer` structure**
 
 Read the full class. Note where the dual-mode validation happens (constructor) and where the if/else branches on `inference_client` vs `self.model` occur (`_choose_move_async`, etc.).
 
 - [ ] **Step 2: Delete legacy attributes**
 
 Remove from `__init__`:
-- The `model: Optional[RNaDAgent] = None` parameter
+- The `model: Optional[RNaDModel] = None` parameter
 - Validation that "exactly one of model/inference_client is set"
 - Setting `self.model`
 - Setting `self.queue`, `self._inference_loop`, `self._inference_future`, anything else only used by the legacy path
@@ -1311,7 +1311,7 @@ Expected: clean.
 
 ```bash
 git add src/elitefurretai/rl/players.py
-git commit -m "refactor(players): drop dual-mode legacy inference path from BatchInferencePlayer"
+git commit -m "refactor(players): drop dual-mode legacy inference path from RLTrajectoryPlayer"
 ```
 
 ### Task 3.7: Strip legacy branch from `worker.py`
@@ -1361,8 +1361,8 @@ git commit -m "refactor(worker): drop legacy per-worker model build path"
 - [ ] **Step 1: Delete fields**
 
 Remove from `WorkerOpponentFactory.__init__`:
-- `self.loaded_ghosts: Dict[str, RNaDAgent] = {}`
-- `self.loaded_exploiters: Dict[str, RNaDAgent] = {}` (if present and only used by legacy)
+- `self.loaded_ghosts: Dict[str, RNaDModel] = {}`
+- `self.loaded_exploiters: Dict[str, RNaDModel] = {}` (if present and only used by legacy)
 
 - [ ] **Step 2: Delete methods**
 

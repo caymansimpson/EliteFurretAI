@@ -58,10 +58,10 @@ profiled the Showdown backend on this machine. Top hotspots:
 | Hotspot | Time | Share |
 |---|---|---|
 | `selectors.select` (asyncio + websocket polling) | 23 s | ~33% |
-| `BatchInferencePlayer._gpu_inference_sync` (actor forward) | 22 s | ~31% |
+| `RLTrajectoryPlayer._gpu_inference_sync` (actor forward) | 22 s | ~31% |
 | `torch._C._nn.linear` (matmul inside the forward) | 7.6 s | ~11% |
 | `poke_env.player.Player._handle_battle_message` | 5.7 s | ~8% |
-| `BatchInferencePlayer._embed_battle_state` | 4.7 s | ~7% |
+| `RLTrajectoryPlayer._embed_battle_state` | 4.7 s | ~7% |
 | `Embedder.embed_to_array` | 4.6 s | ~7% |
 | `calculate_damage` | 3.3 s | ~5% |
 

@@ -119,7 +119,7 @@ Recent 2025/2026 research indicates that the primary barrier to superhuman VGC A
 1.  **Coupled Team Building & Usage:** An optimal policy is dependent on the team. Therefore, the team _is_ the policy. A Battle Agent and Team Builder should eventually be trained in an adversarial loop.
 2.  **Safe Subgame Solving:** Implementing **Nested Subgame Solving** (Libratus) in VGC requires a way to handle "off-tree" actions (unexpected gimmicks) without becoming exploitable.
 3.  **Search Pathology:** The extent of VGC’s pathology remains unquantified. Researchers must determine the "optimal depth" (likely 2-3 turns) where search provides value before RNG noise dominates.
-4.  **Engine Speed:** High-level RL requires millions of simulations. A fast, RNG-manipulatable engine (likely Rust-based) is the current primary hardware bottleneck.
+4.  **Engine Speed:** High-level RL requires millions of simulations. A fast, RNG-manipulatable engine is the current primary hardware bottleneck.
 
 * * *
 

@@ -24,7 +24,7 @@ the resume branch executed in this order:
 
 ```python
 base_model = build_model_from_config(cfg, embedder, device, None)  # random init
-agent = RNaDAgent(base_model)
+agent = RNaDModel(base_model)
 learner = initialize_learner(config, agent, base_model)            # deepcopies base_model as ref
 start_step, old_config = load_checkpoint(                          # mutates agent.model AFTER deepcopy
     config.training.resume_from, agent, learner.optimizer, device,
@@ -136,7 +136,7 @@ The resume branch in train.py now reads:
 checkpoint = load_checkpoint(resume_from, device)
 base_model = build_model_from_config(cfg, embedder, device, None)
 base_model.load_state_dict(checkpoint["model_state_dict"])
-agent = RNaDAgent(base_model)
+agent = RNaDModel(base_model)
 learner = initialize_learner(config, agent, base_model)  # ref now captures TRAINED weights
 learner.load_resume_state(checkpoint)
 start_step = int(checkpoint["step"])

@@ -4,7 +4,7 @@
 
 **Goal:** Run the search-based `foul-play-doubles` bot as a ground-truth eval opponent at configurable checkpoint intervals during RL training, with results logged to wandb and a uniform CLI entry via `analyze/evaluate.py --player2 foul_play`.
 
-**Architecture:** A `FoulPlayManager` class in `players.py` owns the FoulPlay subprocess lifecycle (mirrors the in-flight `VGCBenchManager` pattern). A new `_foulplay_subprocess.py` entry point runs under a dedicated `../venv-foulplay/` venv. The eval driver in `analyze/foulplay_eval.py` orchestrates per-eval `manager.launch()` → battles → `manager.shutdown()`, and is called both from `train.py` inline at checkpoint cadence and from `analyze/evaluate.py` as a baseline. A new `external_username` field on `PlayerSpec` plus a `send_challenges`-based branch in `_run_worker` adds the routing pattern that subprocess-managed opponents need.
+**Architecture:** A `FoulPlayManager` class in `players.py` owns the FoulPlay subprocess lifecycle (mirrors the in-flight `VGCBenchManager` pattern). A new `_foulplay_subprocess.py` entry point runs under a dedicated `../venv-foulplay/` venv. The eval driver in `analyze/foulplay_eval.py` orchestrates per-eval `manager.launch()` → battles → `manager.shutdown()`, and is called both from `train.py` inline at checkpoint cadence and from `analyze/evaluate.py` as a baseline. A new `external_username` field on `PlayerSpecification` plus a `send_challenges`-based branch in `_run_worker` adds the routing pattern that subprocess-managed opponents need.
 
 **Tech Stack:** Python 3.10+, poke-env 0.15 (training venv) + a separate venv with poke-env 0.11 + `poke-engine-doubles==0.0.7` (Rust extension w/ Tera feature flag), Pokemon Showdown websocket protocol, wandb, pytest.
 
@@ -24,7 +24,7 @@
 **Modify:**
 - `src/elitefurretai/agents/foulplay_manager.py` — add `FoulPlayManager` class.
 - `src/elitefurretai/rl/config.py` — add `FoulplayEvalConfig` dataclass + validator hook.
-- `src/elitefurretai/rl/analyze/player_factory.py` — add `external_username` field to `PlayerSpec`; add `foul_play` baseline; tighten factory contract.
+- `src/elitefurretai/rl/analyze/player_factory.py` — add `external_username` field to `PlayerSpecification`; add `foul_play` baseline; tighten factory contract.
 - `src/elitefurretai/rl/analyze/evaluate.py` — branch `_run_worker` on external_username (use `send_challenges` instead of `battle_against`).
 - `src/elitefurretai/rl/train.py` — inline eval hook at checkpoint boundary; wandb logging under `eval/foulplay/*`.
 - `src/elitefurretai/rl/configs/single_team.yaml` — add `foulplay_eval:` block (disabled by default).
@@ -35,7 +35,7 @@
 **Pre-existing files referenced (do not modify):**
 - `src/elitefurretai/engine/showdown_server_manager.py` — `launch_showdown_servers` for the CLI test harness.
 - `src/elitefurretai/agents/foulplay_manager.py` — `SimpleModelPlayer` for the model side.
-- `src/elitefurretai/rl/analyze/team_provider.py` — `parse_team_spec` for team rotation.
+- `src/elitefurretai/rl/analyze/team_provider.py` — `parse_team_specification` for team rotation.
 
 **One-time setup (manual, documented in RL.md, not committed as a script):**
 - `../venv-foulplay/` venv creation.
@@ -534,10 +534,10 @@ Then update `__all__` at the bottom of the file:
 
 ```python
 __all__ = [
-    "RNaDAgent",
+    "RNaDModel",
     "SimpleModelPlayer",
     "MaxDamagePlayer",
-    "BatchInferencePlayer",
+    "RLTrajectoryPlayer",
     "FoulPlayManager",
     "cleanup_worker_executors",
 ]
@@ -921,7 +921,7 @@ EOF
 
 ---
 
-## Task 4: Extend `PlayerSpec` with `external_username` and add `foul_play` baseline
+## Task 4: Extend `PlayerSpecification` with `external_username` and add `foul_play` baseline
 
 **Files:**
 - Modify: [src/elitefurretai/rl/analyze/player_factory.py](src/elitefurretai/rl/analyze/player_factory.py)
@@ -946,16 +946,16 @@ touch unit_tests/rl/analyze/__init__.py
 Create `unit_tests/rl/analyze/test_player_factory.py`:
 
 ```python
-"""Unit tests for PlayerSpec, including the external-username branch."""
+"""Unit tests for PlayerSpecification, including the external-username branch."""
 
 from __future__ import annotations
 
 import pytest
 
 from elitefurretai.rl.analyze.player_factory import (
-    PlayerSpec,
+    PlayerSpecification,
     canonicalize_baseline,
-    parse_player_spec,
+    parse_player_specification,
 )
 
 
@@ -975,12 +975,12 @@ def test_parse_player_spec_foul_play_returns_external_spec():
     Test that --player foul_play produces a spec with external_username set.
 
     foul_play is a subprocess opponent (not an in-process Player), so its
-    PlayerSpec must signal that to the eval driver via `external_username`.
+    PlayerSpecification must signal that to the eval driver via `external_username`.
 
     Expected: spec.kind == "baseline", spec.name == "foul_play",
     spec.external_username == "FOULPLAY", spec.factory is None.
     """
-    spec = parse_player_spec(
+    spec = parse_player_specification(
         "foul_play",
         device="cpu",
         battle_format="gen9vgc2024regg",
@@ -996,15 +996,15 @@ def test_parse_player_spec_foul_play_returns_external_spec():
 
 Run: `source ../venv/bin/activate && pytest unit_tests/rl/analyze/test_player_factory.py -v`
 
-Expected: FAIL (foul_play not in baseline list; `external_username` not a field of `PlayerSpec`).
+Expected: FAIL (foul_play not in baseline list; `external_username` not a field of `PlayerSpecification`).
 
-- [ ] **Step 4.4: Extend `PlayerSpec` and add the `foul_play` baseline**
+- [ ] **Step 4.4: Extend `PlayerSpecification` and add the `foul_play` baseline**
 
 In `src/elitefurretai/rl/analyze/player_factory.py`:
 
-(a) Update the `PlayerSpec` dataclass and the `PlayerFactory` type alias. Locate `_CANONICAL_BASELINES` (around line 33) and `PlayerSpec` (around line 69).
+(a) Update the `PlayerSpecification` dataclass and the `PlayerFactory` type alias. Locate `_CANONICAL_BASELINES` (around line 33) and `PlayerSpecification` (around line 69).
 
-Replace the `PlayerFactory` alias and the `PlayerSpec` definition with:
+Replace the `PlayerFactory` alias and the `PlayerSpecification` definition with:
 
 ```python
 PlayerFactory = Callable[
@@ -1014,7 +1014,7 @@ PlayerFactory = Callable[
 
 
 @dataclass(frozen=True)
-class PlayerSpec:
+class PlayerSpecification:
     """Parsed player specification.
 
     Fields:
@@ -1076,17 +1076,17 @@ _BASELINE_USER_TAG = {
 }
 ```
 
-(c) In `_baseline_spec`, before the `def factory(...)` definition, short-circuit `foul_play`:
+(c) In `_baseline_specification`, before the `def factory(...)` definition, short-circuit `foul_play`:
 
 ```python
-def _baseline_spec(
+def _baseline_specification(
     raw: str,
     canonical: str,
     *,
     device: str,
     battle_format: str,
     vgc_bench_checkpoint_path: str,
-) -> PlayerSpec:
+) -> PlayerSpecification:
     user_tag = _BASELINE_USER_TAG[canonical]
 
     # foul_play is an external-subprocess opponent — not an in-process
@@ -1096,7 +1096,7 @@ def _baseline_spec(
     # server runs derive a port-suffixed username at launch() time and
     # rewrite spec.external_username before _run_worker uses it.
     if canonical == "foul_play":
-        return PlayerSpec(
+        return PlayerSpecification(
             raw=raw,
             kind="baseline",
             name=canonical,
@@ -1136,7 +1136,7 @@ def test_existing_baselines_still_have_factory_and_no_external_username():
     factory != None and external_username is None.
     """
     for name in ("max_damage", "max_base_power", "simple_heuristic", "vgc_bench", "random"):
-        spec = parse_player_spec(
+        spec = parse_player_specification(
             name, device="cpu", battle_format="gen9vgc2024regg"
         )
         assert spec.factory is not None, f"{name} lost its factory"
@@ -1153,7 +1153,7 @@ def test_model_spec_has_factory_and_no_external_username(tmp_path):
     """
     fake_ckpt = tmp_path / "model.pt"
     fake_ckpt.write_bytes(b"placeholder")
-    spec = parse_player_spec(
+    spec = parse_player_specification(
         str(fake_ckpt), device="cpu", battle_format="gen9vgc2024regg"
     )
     assert spec.kind == "model"
@@ -1180,7 +1180,7 @@ git add src/elitefurretai/rl/analyze/player_factory.py unit_tests/rl/analyze/
 git commit -m "$(cat <<'EOF'
 feat(rl/analyze): add external_username field and foul_play baseline
 
-Extends PlayerSpec with an optional external_username for opponents
+Extends PlayerSpecification with an optional external_username for opponents
 that live in a separate process and have logged into Showdown — they
 have no in-process Player, so .factory is None and the eval driver
 routes via send_challenges().
@@ -1201,7 +1201,7 @@ EOF
 
 **Files:**
 - Modify: [src/elitefurretai/rl/analyze/evaluate.py](src/elitefurretai/rl/analyze/evaluate.py)
-- Modify: [unit_tests/rl/analyze/test_player_factory.py](unit_tests/rl/analyze/test_player_factory.py) (cross-check that PlayerSpec carries the expected shape)
+- Modify: [unit_tests/rl/analyze/test_player_factory.py](unit_tests/rl/analyze/test_player_factory.py) (cross-check that PlayerSpecification carries the expected shape)
 
 - [ ] **Step 5.1: Write the failing test for `_run_worker` routing**
 
@@ -1217,13 +1217,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from elitefurretai.rl.analyze.evaluate import _run_worker
-from elitefurretai.rl.analyze.player_factory import PlayerSpec
+from elitefurretai.rl.analyze.player_factory import PlayerSpecification
 
 
-def _model_spec_with_mock_factory(mock_player) -> PlayerSpec:
+def _model_spec_with_mock_factory(mock_player) -> PlayerSpecification:
     def factory(team_provider, account_config, server_config, accept_ots):
         return mock_player
-    return PlayerSpec(
+    return PlayerSpecification(
         raw="model.pt",
         kind="model",
         name="model",
@@ -1233,8 +1233,8 @@ def _model_spec_with_mock_factory(mock_player) -> PlayerSpec:
     )
 
 
-def _external_spec(username: str) -> PlayerSpec:
-    return PlayerSpec(
+def _external_specification(username: str) -> PlayerSpecification:
+    return PlayerSpecification(
         raw=username.lower(),
         kind="baseline",
         name="foul_play",
@@ -1262,7 +1262,7 @@ def test_run_worker_uses_send_challenges_when_player2_is_external():
     mock_model.n_lost_battles = 2
 
     p1 = _model_spec_with_mock_factory(mock_model)
-    p2 = _external_spec("FOULPLAY")
+    p2 = _external_specification("FOULPLAY")
 
     result = _run_worker(
         worker_id=0,
@@ -1332,8 +1332,8 @@ In `src/elitefurretai/rl/analyze/evaluate.py`, replace the body of `_run_worker`
 ```python
 def _run_worker(
     worker_id: int,
-    p1: PlayerSpec,
-    p2: PlayerSpec,
+    p1: PlayerSpecification,
+    p2: PlayerSpecification,
     t1: TeamProvider,
     t2: TeamProvider,
     battles: int,
@@ -1426,7 +1426,7 @@ def test_run_worker_rejects_external_player1():
 
     Expected: ValueError mentioning external-username player1.
     """
-    p1 = _external_spec("FOULPLAY")
+    p1 = _external_specification("FOULPLAY")
     p2 = _model_spec_with_mock_factory(MagicMock())
 
     with pytest.raises(ValueError, match="External-username player1"):
@@ -1467,7 +1467,7 @@ git add src/elitefurretai/rl/analyze/evaluate.py unit_tests/rl/analyze/test_eval
 git commit -m "$(cat <<'EOF'
 feat(rl/analyze): route external-username opponents via send_challenges
 
-_run_worker now branches on PlayerSpec.external_username: if set, the
+_run_worker now branches on PlayerSpecification.external_username: if set, the
 in-process player1 (the model) issues send_challenges(username, n)
 instead of battle_against(player2_obj, n). The external subprocess
 lifecycle is the caller's responsibility — this commit only adds the
@@ -1630,8 +1630,8 @@ from elitefurretai.engine.showdown_server_manager import (
     shutdown_showdown_servers,
 )
 from elitefurretai.rl.analyze.evaluate import EvalResult, run_eval_parallel
-from elitefurretai.rl.analyze.player_factory import PlayerSpec, parse_player_spec
-from elitefurretai.rl.analyze.team_provider import parse_team_spec
+from elitefurretai.rl.analyze.player_factory import PlayerSpecification, parse_player_specification
+from elitefurretai.rl.analyze.team_provider import parse_team_specification
 from elitefurretai.rl.config import FoulplayEvalConfig
 from elitefurretai.agents.foulplay_manager import FoulPlayManager
 
@@ -1680,17 +1680,17 @@ def run(
     # battle_format lives on CurriculumConfig elsewhere.
     manager.battle_format = battle_format  # type: ignore[attr-defined]
 
-    model_spec = parse_player_spec(
+    model_spec = parse_player_specification(
         checkpoint_path,
         device=device,
         battle_format=battle_format,
     )
-    foulplay_spec = parse_player_spec(
+    foulplay_spec = parse_player_specification(
         "foul_play",
         device=device,
         battle_format=battle_format,
     )
-    model_team_provider = parse_team_spec(agent_team_pool, battle_format=battle_format)
+    model_team_provider = parse_team_specification(agent_team_pool, battle_format=battle_format)
     # FoulPlay's team comes from its subprocess (--team-list-dir),
     # not from a TeamProvider on the EFA side. Pass a noop provider.
     noop_team_provider = lambda: ""
@@ -1707,7 +1707,7 @@ def run(
         # manager actually logged in as (which may include a port suffix
         # under multi-server configs).
         actual_username = manager.usernames[0]
-        spec_with_actual = PlayerSpec(
+        spec_with_actual = PlayerSpecification(
             raw=foulplay_spec.raw,
             kind=foulplay_spec.kind,
             name=foulplay_spec.name,
@@ -1844,7 +1844,7 @@ around a single eval pass. main() exposes the same flow via argparse
 for manual checkpoint eval.
 
 Both routes build SimpleModelPlayer for the model side and treat
-FoulPlay as an external-username PlayerSpec, routed through the new
+FoulPlay as an external-username PlayerSpecification, routed through the new
 send_challenges branch in _run_worker.
 
 Two tests cover lifecycle hygiene (shutdown always called) and the
@@ -2257,7 +2257,7 @@ Run these checks before declaring the plan complete.
 - `FoulPlayManager.derive_username` — used at Tasks 2, 6, 7. Same `(base, port) → str` signature throughout.
 - `FoulplayEvalConfig` — created in Task 1, consumed by Tasks 2, 6, 7. Same field names.
 - `FoulplayEvalResult` (Task 6) vs. `EvalResult` (existing) — deliberately distinct; the eval driver returns its own dataclass with FoulPlay-specific naming (`model_wins`, `foulplay_wins`).
-- `PlayerSpec.external_username` — added in Task 4, consumed in Tasks 5, 6.
+- `PlayerSpecification.external_username` — added in Task 4, consumed in Tasks 5, 6.
 
 **4. Dependency check:**
 - Task 7 (train.py) depends on Tasks 1, 2, 6 — all complete by that point.

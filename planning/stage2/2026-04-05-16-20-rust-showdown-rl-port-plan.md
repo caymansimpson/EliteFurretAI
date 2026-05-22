@@ -9,9 +9,9 @@ This plan is Stage II work because it affects the RL self-play training substrat
 The current RL system uses an IMPALA-style architecture:
 
 1. `train.py` launches one or more local TypeScript Showdown servers.
-2. Each worker process creates `BatchInferencePlayer` instances, which inherit from poke-env's `Player` class.
+2. Each worker process creates `RLTrajectoryPlayer` instances, which inherit from poke-env's `Player` class.
 3. poke-env manages websocket login, challenge negotiation, battle room lifecycle, request handling, and message sending.
-4. `BatchInferencePlayer` embeds a `DoubleBattle`, batches model inference asynchronously, and returns `BattleOrder` objects back through poke-env.
+4. `RLTrajectoryPlayer` embeds a `DoubleBattle`, batches model inference asynchronously, and returns `BattleOrder` objects back through poke-env.
 5. Completed trajectories are pushed back to the learner process via multiprocessing queues.
 
 This architecture works, but it has several costs:
@@ -95,7 +95,7 @@ This means the Rust path will no longer rely on:
 
 - websocket transport,
 - poke-env `POKE_LOOP`,
-- `BatchInferencePlayer`,
+- `RLTrajectoryPlayer`,
 - `battle_against()` challenge negotiation,
 - `stop_listening()` teardown,
 - or async request callback ordering.
@@ -287,7 +287,7 @@ Modify worker startup and training orchestration so that `train.py` can choose b
 For the Rust path:
 
 - do not launch Showdown servers,
-- do not construct `BatchInferencePlayer` instances,
+- do not construct `RLTrajectoryPlayer` instances,
 - do not allocate websocket server ports,
 - and do not use `server_manager` for actor execution.
 
@@ -364,7 +364,7 @@ This approach is better for building the best VGC bot for four reasons.
    - Verified the new code with focused pytest runs.
 - 2026-04-05 17:05: Deliberate non-implementation at this stage.
    - The live Rust backend is not wired into worker execution yet because the forked `pokemon-showdown-rs` bindings do not exist inside this workspace.
-   - `BatchInferencePlayer`, websocket battle execution, and server launching remain the active training path until Gate 1 and Gate 2 are completed in the Rust fork.
+   - `RLTrajectoryPlayer`, websocket battle execution, and server launching remain the active training path until Gate 1 and Gate 2 are completed in the Rust fork.
 - 2026-04-06 00:10: Gate 1 through Gate 4 were advanced into a live benchmarkable path across both repos.
    - Added a real PyO3 binding in the forked `pokemon-showdown-rs` repo with a `RustBattle` class that exposes battle construction, per-side request JSON, log draining, winner state, and combined doubles choice submission.
    - Confirmed the Rust fork is an in-process simulator, not a websocket server, so the Python integration path remains binding-driven rather than transport-driven.
@@ -390,12 +390,12 @@ This approach is better for building the best VGC bot for four reasons.
    - We want focused tests around truncation, stall handling, and combined-choice parsing because the current benchmark relies on pragmatic safeguards rather than clean semantic parity. If those safeguards regress silently, we could end up measuring the fallback behavior rather than the real simulator path, or worse, training on silently malformed trajectories.
 - 2026-04-06 01:05: Gate 5 now has an initial Rust-backed training branch in the real entrypoint.
    - `src/elitefurretai/rl/train.py` now branches on `battle_backend == "rust_engine"` inside `mp_worker_process` and routes that worker through `SyncRustBattleDriver` instead of `WorkerOpponentFactory` and websocket battles.
-   - The Rust worker path currently runs bounded self-play only: the same main `RNaDAgent` is used on both sides, the learner-facing side collects trajectories, and the opponent side exists only to supply legal self-play actions.
+   - The Rust worker path currently runs bounded self-play only: the same main `RNaDModel` is used on both sides, the learner-facing side collects trajectories, and the opponent side exists only to supply legal self-play actions.
    - Weight broadcasts from the learner now update the live Rust actor model in place and also refresh sampling controls (`temperature` and `top_p`) on the synchronous policy players, so the Rust path matches the existing learner-to-worker control surface.
    - `train.py` also now skips Showdown server launch, websocket port allocation, and external vgc-bench runner launch when the Rust backend is selected. This keeps the old websocket backend intact while removing unnecessary process infrastructure from the Rust path.
 - 2026-04-06 01:05: Gate 4 trajectory handling was tightened enough for learner integration.
    - `src/elitefurretai/engine/sync_battle_driver.py` now includes a model-backed `SyncPolicyPlayer` that emits learner-compatible trajectory steps with `state`, `action`, `log_prob`, `value`, reward finalization, and optional masks.
-   - This is intentionally aligned with the semantics already used by `BatchInferencePlayer`, so the learner continues to consume the same rollout contract instead of needing a separate Rust-specific batch format.
+   - This is intentionally aligned with the semantics already used by `RLTrajectoryPlayer`, so the learner continues to consume the same rollout contract instead of needing a separate Rust-specific batch format.
    - Added a focused unit test covering the new synchronous policy path and verified it together with the existing config and Rust adapter tests.
 - 2026-04-06 01:20: Backend-support direction clarified.
    - The project should continue to support both RL training backends: the traditional `showdown_websocket` simulator path and the `rust_engine` path.

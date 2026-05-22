@@ -33,9 +33,9 @@ Three items were left as "Future work":
 - Current throughput baseline (from registry plan): 4.98 traj/s, ~87
   learner steps/s on `sep_arch.yaml` full curriculum. (To be re-verified
   as Measurement 1.)
-- Ghost path: each worker holds a `loaded_ghosts: Dict[str, RNaDAgent]`
+- Ghost path: each worker holds a `loaded_ghosts: Dict[str, RNaDModel]`
   cache and loads checkpoints on demand from `data/models/ghosts/`.
-- Dual-mode `BatchInferencePlayer`: accepts either `model` (legacy) OR
+- Dual-mode `RLTrajectoryPlayer`: accepts either `model` (legacy) OR
   `inference_client` (centralized). Centralized is selected in production
   via `enable_centralized_inference: true` in sep_arch.yaml.
 - `OpponentPool.sample_opponent` and the family of `_create_*_opponent`
@@ -51,7 +51,7 @@ Three items were left as "Future work":
    maintenance and reasoning burden.
 2. Without the compile-race fix, ~30–40% of inference traffic
    (bc + future-compiled secondaries) runs eager.
-3. The dual-mode `BatchInferencePlayer` and the `enable_centralized_inference`
+3. The dual-mode `RLTrajectoryPlayer` and the `enable_centralized_inference`
    config flag are now pure tech debt: centralized has been the only
    production mode for two weeks. Deleting them removes a class of
    future bugs ("what if someone flips the flag and the legacy path is
@@ -151,7 +151,7 @@ the legacy inference path.
 **`config.py`** — remove `enable_centralized_inference: bool`. Centralized
 is the only mode.
 
-**`players.py` — `BatchInferencePlayer`**:
+**`players.py` — `RLTrajectoryPlayer`**:
 - Constructor: drop `model` parameter and dual-mode validation.
 - Remove: `self.queue`, `self.model`, `_inference_loop`, `_inference_future`,
   `_run_batch`, `_gpu_inference_sync`, `_add_to_batch`, `start_inference_loop`.
@@ -163,7 +163,7 @@ is the only mode.
 - Remove spawn args conditional on legacy mode.
 
 **`opponents.py` — `WorkerOpponentFactory`**:
-- Remove `loaded_ghosts: Dict[str, RNaDAgent]`, `loaded_exploiters`,
+- Remove `loaded_ghosts: Dict[str, RNaDModel]`, `loaded_exploiters`,
   `_get_cached_model`, `_get_ghost_agent`, `_get_exploiter_agent`,
   disk-scanning `_load_ghosts`.
 - `set_ghost_paths` → replaced by `set_active_ghost_slots(slots: List[int])`
@@ -180,7 +180,7 @@ is the only mode.
 
 **Tests**:
 - `test_players.py`: drop test cases that exercise legacy-mode
-  `BatchInferencePlayer`.
+  `RLTrajectoryPlayer`.
 - `test_worker_opponent_factory.py`: drop test cases that pass model
   objects to the factory.
 
@@ -364,12 +364,12 @@ dynamo race. Investigation arc:
 
 1. **Synthetic reproducer (TinyAgent)**: race did NOT trigger
    (commit `19d20b9`). Implied production-specific factors.
-2. **Production-like reproducer (real `RNaDAgent` + variable hidden state)**:
+2. **Production-like reproducer (real `RNaDModel` + variable hidden state)**:
    race DID trigger (commit `a850991`). Trigger is variable context
    length + variable batch size forcing dynamo recompilation, which is
    when the cross-thread race hits.
 3. **Per-model `threading.Lock` (Task 2.2)**: FAILED. Diagnosis: dynamo's
-   trace state is GLOBAL across all `RNaDAgent` instances of the same
+   trace state is GLOBAL across all `RNaDModel` instances of the same
    class, so a per-model lock cannot protect against cross-instance
    contention. Commit `c1b6005`.
 4. **`torch.compiler.cudagraph_mark_step_begin()` (Task 2.3)**: FAILED.
@@ -423,7 +423,7 @@ centralized inference is the only mode:
 |---|---|
 | `88f66d5` | Drop 3 legacy dual-mode/sample_opponent tests |
 | `8c7f788` | Remove `enable_centralized_inference` config flag |
-| `2b164d7` | Strip dual-mode from `BatchInferencePlayer` (−398 lines) |
+| `2b164d7` | Strip dual-mode from `RLTrajectoryPlayer` (−398 lines) |
 | `2ca6b15` | Drop legacy per-worker model build path from `worker.py` (−182 lines) |
 | `04e538a` | Drop legacy ghost-loading path (`vgc_environment.py` + factory) |
 | `8831cee` | Remove unused `OpponentPool.sample_opponent` family (−270 lines) |
@@ -469,7 +469,7 @@ during a slightly slower micro-window but is not a real regression.
 2. `torch.compile` multi-thread race fixed via process-wide
    `_COMPILE_LOCK`; `compile=True` enabled on all registered models
 3. Legacy per-worker inference path entirely removed (config flag,
-   dual-mode `BatchInferencePlayer`, worker.py model build, factory
+   dual-mode `RLTrajectoryPlayer`, worker.py model build, factory
    ghost caching, `OpponentPool.sample_opponent` family)
 4. Documentation updated (`RL.md`, `sep_arch.yaml` comments)
 

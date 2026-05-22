@@ -121,7 +121,7 @@ remain).
 ## Hard-constraint compliance
 
 - WSL2 `pin_memory=False`: untouched.
-- Both backends preserved: changes are in `BatchInferencePlayer` (Showdown
+- Both backends preserved: changes are in `RLTrajectoryPlayer` (Showdown
   side) and poke-env (Showdown-only dependency). Rust backend unaffected.
 - No try/except hiding errors: the only `try/except` added catches
   `asyncio.TimeoutError`, which is a documented control-flow signal from

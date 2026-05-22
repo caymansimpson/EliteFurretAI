@@ -138,7 +138,7 @@ The biggest bottleneck is currently batch size 1 inference on the CPU. The easie
         - It does provide the interfaces the Python RL path wanted from that binding layer today: `get_request_dict()` and `get_side_snapshot()` without repeated JSON parsing by every consumer.
         - `SyncRustBattleDriver` now wraps the builtin binding in `CachedRustBattleBinding` and threads the resulting side snapshot into `BattleSnapshot.binding_snapshot`.
     - Item 2: raised the benchmark training config concurrency in [src/elitefurretai/rl/configs/rust_multiupdate_benchmark.yaml](src/elitefurretai/rl/configs/rust_multiupdate_benchmark.yaml) from `num_players: 2` to `num_players: 8`, which yields `max_concurrent_battles=4` in the current Rust worker loop.
-    - Item 3: added a new model-backed benchmark entrypoint in [src/elitefurretai/rl/rust_model_benchmark.py](src/elitefurretai/rl/rust_model_benchmark.py) that builds or loads a real `RNaDAgent`, attaches `SyncPolicyPlayer` policies, and measures Rust self-play throughput under actual CPU inference rather than random legal-action sampling.
+    - Item 3: added a new model-backed benchmark entrypoint in [src/elitefurretai/rl/rust_model_benchmark.py](src/elitefurretai/rl/rust_model_benchmark.py) that builds or loads a real `RNaDModel`, attaches `SyncPolicyPlayer` policies, and measures Rust self-play throughput under actual CPU inference rather than random legal-action sampling.
 
 - 2026-04-09 08:00: Validation and benchmark results for items 1-3.
     - Focused validation:
