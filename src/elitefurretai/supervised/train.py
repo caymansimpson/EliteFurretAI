@@ -352,6 +352,9 @@ def initialize(config):
     torch.manual_seed(config["seed"])
     if torch.cuda.is_available():
         torch.cuda.manual_seed(int(config["seed"]))
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        torch.set_float32_matmul_precision("high")
     random.seed(int(config["seed"]))
 
 
@@ -595,6 +598,7 @@ def main(train_path, test_path, val_path, config={}, save_best=False):
         lr=config["learning_rate"],
         weight_decay=config["weight_decay"],
         betas=(0.9, 0.999),
+        fused=(config["device"] == "cuda"),
     )
 
     scheduler: Any
