@@ -577,5 +577,13 @@ def test_primary_format_returns_highest_weight():
     assert cur.primary_format == "gen9vgc2024regg"
 
 
+def test_battle_formats_validation_rejects_mixed_gens():
+    """battle_formats with entries from different gens (format[3] differs) is rejected."""
+    from elitefurretai.rl.config import CurriculumConfig
+
+    with pytest.raises(ValueError, match="same gen"):
+        CurriculumConfig(battle_formats={"gen8vgc2022": 0.5, "gen9vgc2024regg": 0.5})
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
