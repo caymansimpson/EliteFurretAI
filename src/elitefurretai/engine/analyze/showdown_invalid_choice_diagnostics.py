@@ -665,11 +665,17 @@ async def _run(args: argparse.Namespace) -> None:
 
     team_subdirectory = args.team_subdirectory
     if team_subdirectory is None and args.random_teams:
-        team_subdirectory = config.curriculum.opponent_team_pool_path
+        team_subdirectory = config.curriculum.resolved_opponent_team_pool_paths().get(
+            config.curriculum.primary_format
+        )
 
     opponent_team_subdirectory = args.opponent_team_subdirectory
     if opponent_team_subdirectory is None and args.random_opponent_teams:
-        opponent_team_subdirectory = config.curriculum.opponent_team_pool_path
+        opponent_team_subdirectory = (
+            config.curriculum.resolved_opponent_team_pool_paths().get(
+                config.curriculum.primary_format
+            )
+        )
 
     p1_team = _build_team_source(
         repo=repo,
@@ -691,7 +697,9 @@ async def _run(args: argparse.Namespace) -> None:
     elif args.no_mirror:
         p2_team = repo.sample_team(
             args.format,
-            subdirectory=config.curriculum.opponent_team_pool_path,
+            subdirectory=config.curriculum.resolved_opponent_team_pool_paths().get(
+                config.curriculum.primary_format
+            ),
         )
     else:
         p2_team = p1_team
@@ -721,7 +729,7 @@ async def _run(args: argparse.Namespace) -> None:
         )
 
         embedder = Embedder(
-            format=config.curriculum.battle_format,
+            format=config.curriculum.primary_format,
             feature_set=feature_set,
             omniscient=False,
         )
@@ -730,7 +738,7 @@ async def _run(args: argparse.Namespace) -> None:
         player1 = DiagnosticSimpleModelPlayer(
             model_path=args.checkpoint,
             device=args.device,
-            battle_format=config.curriculum.battle_format,
+            battle_format=config.curriculum.primary_format,
             probabilistic=not args.greedy,
             embedder=embedder,
             team=p1_team,
@@ -743,7 +751,7 @@ async def _run(args: argparse.Namespace) -> None:
         player2 = SimpleModelPlayer(
             model_path=opponent_checkpoint,
             device=args.device,
-            battle_format=config.curriculum.battle_format,
+            battle_format=config.curriculum.primary_format,
             probabilistic=not args.greedy,
             embedder=embedder,
             team=p2_team,

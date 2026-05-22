@@ -113,7 +113,7 @@ async def _run_benchmark(args: argparse.Namespace) -> None:
             config = RNaDConfig.load(args.config)
             feature_set = args.feature_set or config.training.embedder_feature_set
             embedder = Embedder(
-                format=config.curriculum.battle_format,
+                format=config.curriculum.primary_format,
                 feature_set=feature_set,
                 omniscient=False,
             )
@@ -121,7 +121,7 @@ async def _run_benchmark(args: argparse.Namespace) -> None:
             player1 = SimpleModelPlayer(
                 model_path=args.checkpoint,
                 device=args.device,
-                battle_format=config.curriculum.battle_format,
+                battle_format=config.curriculum.primary_format,
                 probabilistic=not args.greedy,
                 embedder=embedder,
                 team=p1_team,
@@ -133,7 +133,7 @@ async def _run_benchmark(args: argparse.Namespace) -> None:
             player2 = SimpleModelPlayer(
                 model_path=opponent_checkpoint,
                 device=args.device,
-                battle_format=config.curriculum.battle_format,
+                battle_format=config.curriculum.primary_format,
                 probabilistic=not args.greedy,
                 embedder=embedder,
                 team=p2_team,

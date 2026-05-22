@@ -21,6 +21,7 @@ from __future__ import annotations
 import importlib
 import importlib.metadata
 import importlib.util
+import logging
 import os
 import subprocess
 from contextlib import contextmanager
@@ -41,6 +42,8 @@ from poke_env.player import Player
 from poke_env.ps_client import AccountConfiguration, ServerConfiguration
 
 from elitefurretai.rl.config import RNaDConfig
+
+logger = logging.getLogger(__name__)
 
 # vgc-bench was trained against poke_env 0.11.x; calling
 # `_create_vgc_bench_player` from a venv with a different major.minor
@@ -270,6 +273,15 @@ class VGCBenchManager:
             "external_vgcbench_python_executable must be set when launching VGCBenchManager"
         )
 
+        if len(cur.battle_formats) > 1:
+            logger.warning(
+                "VGCBench v1 is single-format (bound to primary_format=%s). "
+                "Off-format pairs (%s) cannot challenge VGCBench and will hit "
+                "Showdown |formaterror|. Multi-format VGCBench v2 will replace this.",
+                cur.primary_format,
+                sorted(set(cur.battle_formats) - {cur.primary_format}),
+            )
+
         if self.LOG_TO_FILES:
             os.makedirs(self.LOG_DIR, exist_ok=True)
 
@@ -303,7 +315,9 @@ class VGCBenchManager:
                 "--server",
                 f"localhost:{runner_port}",
                 "--battle-format",
-                # VGCBench v1 is single-format; bind it to primary_format. Off-format pairs cannot challenge this subprocess (see plan risk register).
+                # VGCBench v1 is single-format; bind to primary_format. Off-format
+                # challenges hit Showdown |formaterror| and time out. Multi-format
+                # VGCBench v2 will replace this binding.
                 cur.primary_format,
                 "--checkpoint-path",
                 cur.vgc_bench_checkpoint_path,

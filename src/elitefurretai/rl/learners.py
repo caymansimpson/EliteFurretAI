@@ -722,8 +722,10 @@ __all__ = ["PortfolioRNaDLearner"]
 
 # Config keys that define model architecture — used to check checkpoint compatibility.
 # Changing any of these makes old checkpoints incompatible with the current model.
+# "_gen" is a synthetic key (see _config_to_flat_arch); cross-gen checkpoints are
+# incompatible because the embedder vocab is gen-keyed.
 MODEL_ARCH_CONFIG_KEYS = (
-    "battle_format",
+    "_gen",  # synthetic key derived from battle_formats; see _config_to_flat_arch
     "embedder_feature_set",
     "early_layers",
     "late_layers",
@@ -764,6 +766,17 @@ def _config_to_flat_arch(d: Dict[str, Any]) -> Dict[str, Any]:
     "architecture", "value_head", "curriculum", etc. Flat configs have all fields
     at the top level. Always-flatten is safe because no MODEL_ARCH_CONFIG_KEYS
     value is itself a dict — top-level dict values are always sections.
+
+    Adds a synthetic "_gen" key derived from the format/formats config. Vocab is
+    gen-keyed (Embedder.build_*_to_id uses format_str[3]), so cross-gen
+    checkpoints are architecturally incompatible regardless of which exact
+    format string was used. The _gen key carries that signal:
+
+    - New configs have curriculum.battle_formats: Dict[str, float]; _gen comes
+      from the first format's gen digit (the __post_init__ validator already
+      requires every entry to share a gen).
+    - Legacy checkpoints had curriculum.battle_format: str; _gen is derived from
+      that string's 4th character.
     """
     flat: Dict[str, Any] = {}
     for k, v in d.items():
@@ -771,6 +784,19 @@ def _config_to_flat_arch(d: Dict[str, Any]) -> Dict[str, Any]:
             flat.update(v)
         else:
             flat[k] = v
+
+    # Derive _gen from whichever schema is present. Skip silently if neither
+    # is — the caller will hit a None mismatch on _gen and the result is fine.
+    battle_formats = flat.get("battle_formats")
+    if isinstance(battle_formats, dict) and battle_formats:
+        any_format = next(iter(battle_formats))
+        if len(any_format) >= 4:
+            flat["_gen"] = any_format[3]
+    elif isinstance(flat.get("battle_format"), str):
+        legacy_format = flat["battle_format"]
+        if len(legacy_format) >= 4:
+            flat["_gen"] = legacy_format[3]
+
     return flat
 
 
