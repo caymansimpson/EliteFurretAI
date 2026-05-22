@@ -53,8 +53,8 @@ class MaxDamagePlayer(Player):
     def __init__(
         self,
         battle_format: str = "gen9vgc2023regc",
-        switch_threshold: float = 1.5,
-        temperature: float = 0.5,
+        switch_threshold: float = 2.0,
+        temperature: float = 0.15,
         *args,
         **kwargs,
     ):

@@ -2,7 +2,7 @@
 
 This directory holds **user-facing, instantiable agents** — the things you grab to run a battle in EFA. Eval/analysis players, heuristic baselines, the behavior-cloned player, the human-in-the-loop player, and the subprocess managers that wrap external bots (vgc-bench, foul-play).
 
-It is **not** for classes that subclass `poke_env.player.Player` for training-plumbing reasons. `BatchInferencePlayer` is a `Player` subclass, but it lives in [rl/batch_inference_player.py](../rl/batch_inference_player.py) because its job is dynamic batching for RL training throughput — coupled to the trajectory queue and the inference IPC layer. You'd never grab it to run an ad-hoc battle.
+It is **not** for classes that subclass `poke_env.player.Player` for training-plumbing reasons. `RLTrajectoryPlayer` is a `Player` subclass, but it lives in [rl/rl_trajectory_player.py](../rl/rl_trajectory_player.py) because its job is dynamic batching for RL training throughput — coupled to the trajectory queue and the inference IPC layer. You'd never grab it to run an ad-hoc battle.
 
 ## What's in here
 
@@ -126,7 +126,7 @@ Gotchas:
 
 ## What does *not* belong here
 
-- **Training-time plumbing** that happens to subclass `Player` (`BatchInferencePlayer`). Lives in [rl/batch_inference_player.py](../rl/batch_inference_player.py).
-- **Model wrappers** (`RNaDAgent`). They're `torch.nn.Module`s, not Players. Lives in [rl/rnad_model.py](../rl/rnad_model.py).
+- **Training-time plumbing** that happens to subclass `Player` (`RLTrajectoryPlayer`). Lives in [rl/rl_trajectory_player.py](../rl/rl_trajectory_player.py).
+- **Model wrappers** (`RNaDModel`). They're `torch.nn.Module`s, not Players. Lives in [rl/rnad_model.py](../rl/rnad_model.py).
 - **Opponent-sampling / curriculum orchestration** (`OpponentPool`, `WorkerOpponentFactory`). They consume agents but aren't ones. Lives in [rl/opponents.py](../rl/opponents.py).
 - **CLI scaffolding** for the eval entry point (`player_factory.py`, `team_provider.py`). Lives in [rl/analyze/](../rl/analyze/).

@@ -211,7 +211,7 @@ class VGCBenchManager:
     LOG_TO_FILES: ClassVar[bool] = True
 
     # accept_open_team_sheet must match the main agent's
-    # BatchInferencePlayer (currently False); a mismatched handshake
+    # RLTrajectoryPlayer (currently False); a mismatched handshake
     # drops battles.
     ACCEPT_OPEN_TEAM_SHEET: ClassVar[bool] = False
 

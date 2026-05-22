@@ -1164,18 +1164,17 @@ class TransformerThreeHeadedModel(torch.nn.Module):
         Decision tokens (first 3) can attend to all turns.
         Each turn can attend to decision tokens and all *prior* turns (causal).
 
-        Returns float mask where ``-inf`` means "cannot attend".
+        Returns bool mask where ``True`` means "cannot attend". Bool matches
+        the dtype of `src_key_padding_mask` in the transformer call site;
+        PyTorch deprecated mixing bool + float for these two masks.
         """
         n_dt = self.NUM_DECISION_TOKENS if self.use_decision_tokens else 0
-        mask = torch.zeros(total_len, total_len, device=device)
+        mask = torch.zeros(total_len, total_len, device=device, dtype=torch.bool)
 
         if self.use_causal_mask and total_len > n_dt:
-            # Turns portion: causal among themselves
             turn_len = total_len - n_dt
-            # Use triu on a -inf-filled matrix so the lower triangle is set to 0
-            # by triu (NOT via multiplication, since 0 * -inf = NaN).
             mask[n_dt:, n_dt:] = torch.triu(
-                torch.full((turn_len, turn_len), float("-inf"), device=device),
+                torch.ones(turn_len, turn_len, device=device, dtype=torch.bool),
                 diagonal=1,
             )
 

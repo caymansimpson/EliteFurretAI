@@ -117,6 +117,12 @@ def train_epoch(
             else:
                 turn_valid_mask = valid_mask & turn_mask
 
+            # Scalar label-smoothing on the binary win target — used by both
+            # the turn and teampreview MSE losses. The RL side applies the
+            # distributional analog into the C51 twohot target. See
+            # MODEL_EVALUATION.md Priority 2 for motivation.
+            value_label_smoothing = config.get("value_label_smoothing", 0.0)
+
             if turn_valid_mask.any():
                 flat_turn_logits = masked_turn_logits[turn_valid_mask]
                 flat_turn_actions = actions[turn_valid_mask]
@@ -161,8 +167,13 @@ def train_epoch(
                         k=config.get("train_topk_k", 3),
                     )
 
+                turn_win_targets = flat_turn_wins.float()
+                if value_label_smoothing > 0.0:
+                    turn_win_targets = (
+                        1.0 - value_label_smoothing
+                    ) * turn_win_targets + value_label_smoothing * 0.5
                 turn_win_loss = torch.nn.functional.mse_loss(
-                    flat_turn_win_logits, flat_turn_wins.float()
+                    flat_turn_win_logits, turn_win_targets
                 )
 
                 # Compute entropy for regularization (encourages exploration)
@@ -194,8 +205,13 @@ def train_epoch(
                     teampreview_loss = torch.nn.functional.cross_entropy(
                         flat_tp_logits, flat_tp_actions
                     )
+                    tp_win_targets = flat_tp_wins.float()
+                    if value_label_smoothing > 0.0:
+                        tp_win_targets = (
+                            1.0 - value_label_smoothing
+                        ) * tp_win_targets + value_label_smoothing * 0.5
                     teampreview_win_loss = torch.nn.functional.mse_loss(
-                        flat_tp_win_logits, flat_tp_wins.float()
+                        flat_tp_win_logits, tp_win_targets
                     )
                 else:
                     teampreview_loss = torch.tensor(0.0, device=states.device)

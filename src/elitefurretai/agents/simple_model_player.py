@@ -3,8 +3,9 @@
 Loads a checkpoint, runs inference inline in ``choose_move`` (no IPC, no
 batching). Trades training-time throughput for setup simplicity — callers
 don't need to spawn an InferenceService process or wire up
-request/response queues. Use ``rl/players.py``'s BatchInferencePlayer
-when you need the trainer-side centralized inference pattern.
+request/response queues. Use ``rl/rl_trajectory_player.py``'s
+RLTrajectoryPlayer when you need the trainer-side centralized inference
+pattern.
 
 See agents/AGENTS.md for usage.
 
@@ -34,7 +35,7 @@ class SimpleModelPlayer(Player):
     Loads a checkpoint into a torch.nn.Module and runs inference inline in
     ``choose_move`` (no IPC, no batching). Trades training-time throughput
     for setup simplicity — callers don't need to spawn an InferenceService
-    process or wire up request/response queues. Use BatchInferencePlayer
+    process or wire up request/response queues. Use RLTrajectoryPlayer
     when you need the trainer-side centralized inference pattern.
 
     Subclass and override ``_on_action_selected`` to hook in extra behavior
@@ -53,9 +54,10 @@ class SimpleModelPlayer(Player):
         super().__init__(battle_format=battle_format, **player_kwargs)
         # Late import: learners.py imports RNaDModel from this module,
         # so a top-level import here would be circular.
-        from elitefurretai.rl.learners import load_agent_from_checkpoint
+        from elitefurretai.rl.learners import load_model_from_checkpoint
 
-        self.agent: RNaDModel = load_agent_from_checkpoint(model_path, device)
+        model, _, _ = load_model_from_checkpoint(model_path, device)
+        self.agent: RNaDModel = RNaDModel(model)
         self.device = device
         self.probabilistic = probabilistic
         self.embedder = embedder or Embedder(
