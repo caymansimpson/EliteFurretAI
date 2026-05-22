@@ -1,13 +1,13 @@
 import queue
 from types import SimpleNamespace
 from typing import cast
+from unittest.mock import MagicMock
 
 from poke_env import ServerConfiguration
 
 from elitefurretai.etl import Embedder, TeamRepo
-from elitefurretai.rl.batch_inference_player import BatchInferencePlayer
-from elitefurretai.rl.opponents import WorkerOpponentFactory
-from elitefurretai.rl.rnad_model import RNaDAgent
+from elitefurretai.rl.opponents import OpponentPool, WorkerOpponentFactory
+from elitefurretai.rl.rl_trajectory_player import RLTrajectoryPlayer
 
 
 class _DummyTeamRepo:
@@ -16,156 +16,136 @@ class _DummyTeamRepo:
 
 
 class _DummyPlayer:
-    def __init__(self, model=None):
+    """Stand-in for a RLTrajectoryPlayer slot. Tests mutate
+    `inference_client` via `apply_opp_type_to_pair` and assert the
+    expected client routed to this slot."""
+
+    def __init__(self):
         self.opponent_type = "self_play"
-        self.model = model
         self.inference_client: object = None
 
 
-class _DummyOpponent:
-    def __init__(self, model):
-        self.model = model
-        self.inference_client: object = None
+def _clients_with(*names: str) -> MagicMock:
+    """Build a fake `worker_inference_clients` bundle exposing exactly
+    these model names. Mirrors WorkerInferenceClients' dict-style API
+    (`clients[name]` strict, `clients.get(name)` returns None on miss,
+    `name in clients` for membership).
+    """
+    per_name = {name: MagicMock(name=f"{name}_client") for name in names}
+    clients = MagicMock()
+    clients.__getitem__ = MagicMock(side_effect=lambda n: per_name[n])
+    clients.get = MagicMock(side_effect=lambda n: per_name.get(n))
+    clients.__contains__ = MagicMock(side_effect=lambda n: n in per_name)
+    return clients
 
 
-def _make_factory(
-    curriculum, exploiter_agent=None, victim_agent=None, worker_inference_clients=None
-):
+def _make_factory(curriculum, worker_inference_clients=None):
+    """Construct a factory with sensible defaults. Tests that only
+    exercise pure-state methods (e.g. `set_active_*_slots`) can rely on
+    the default stub bundle; tests that actually route inference should
+    pass a pre-built bundle from `_clients_with(...)`.
+    """
     return WorkerOpponentFactory(
         team_repo=cast(TeamRepo, _DummyTeamRepo()),
         battle_format="gen9vgc2023regc",
         team_subdirectory=None,
         server_config=cast(ServerConfiguration, SimpleNamespace()),
-        main_agent=cast(RNaDAgent, SimpleNamespace(name="main")),
-        bc_agent=cast(RNaDAgent, SimpleNamespace(name="bc")),
         curriculum=curriculum,
         embedder=cast(Embedder, SimpleNamespace()),
         worker_id=0,
         run_id="0000",
-        device="cpu",
-        exploiter_agent=cast(RNaDAgent, exploiter_agent) if exploiter_agent else None,
-        victim_agent=cast(RNaDAgent, victim_agent) if victim_agent else None,
-        worker_inference_clients=worker_inference_clients,
+        worker_inference_clients=worker_inference_clients or _clients_with(),
     )
 
 
-def test_configure_opponent_for_batch_supports_train_exploiter():
+def _sample_and_apply(factory, player, opponent):
+    """Test helper: run the two-step dispatch (sample type, then apply
+    swaps to the BIP pair) and return the final opp_type."""
+    p = cast(RLTrajectoryPlayer, player)
+    o = cast(RLTrajectoryPlayer, opponent)
+    opp_type = factory.sample_opp_type_for(p)
+    return factory.apply_opp_type_to_pair(p, o, opp_type)
+
+
+def test_train_exploiter_swaps_both_clients_when_provisioned():
     """When TRAIN_EXPLOITER is sampled and both co-training InferenceClients
     are provisioned, player swaps to the exploiter client and opponent to
     the victim client. The trajectory tag (`opponent_type`) is what
     main-process routing uses to direct the trajectory to the exploiter
     learner."""
-    from unittest.mock import MagicMock
-
-    exploiter_client = MagicMock(name="exploiter_client")
-    victim_client = MagicMock(name="victim_client")
-    main_client = MagicMock(name="main_client")
-
-    clients = MagicMock()
-    clients.has = MagicMock(side_effect=lambda n: n in {"main", "exploiter", "victim"})
-    clients.get = MagicMock(
-        side_effect=lambda n: {
-            "main": main_client,
-            "exploiter": exploiter_client,
-            "victim": victim_client,
-        }[n]
-    )
-
-    factory = _make_factory(
-        {"train_exploiter": 1.0},
-        exploiter_agent=SimpleNamespace(name="exploiter"),
-        victim_agent=SimpleNamespace(name="victim"),
-        worker_inference_clients=clients,
-    )
+    clients = _clients_with("main", "exploiter", "victim")
+    factory = _make_factory({"train_exploiter": 1.0}, worker_inference_clients=clients)
 
     player = _DummyPlayer()
-    opponent = _DummyOpponent(model=factory.main_agent)
+    opponent = _DummyPlayer()
 
-    selected = factory.configure_opponent_for_batch(
-        cast(BatchInferencePlayer, player),
-        cast(BatchInferencePlayer, opponent),
-    )
+    selected = _sample_and_apply(factory, player, opponent)
 
-    assert selected == factory.TRAIN_EXPLOITER
-    assert player.opponent_type == factory.TRAIN_EXPLOITER
-    assert player.inference_client is exploiter_client
-    assert opponent.inference_client is victim_client
+    assert selected == OpponentPool.TRAIN_EXPLOITER
+    assert player.opponent_type == OpponentPool.TRAIN_EXPLOITER
+    assert player.inference_client is clients.get("exploiter")
+    assert opponent.inference_client is clients.get("victim")
 
 
-def test_update_exploiter_weights_loads_into_agent_model():
-    """update_exploiter_weights should call load_state_dict on the exploiter
-    agent's model. The state_dict isn't validated here — that's the model's
-    job — we just verify the call is dispatched correctly."""
-    captured = {}
+def test_player_resets_to_main_after_train_exploiter_batch():
+    """Regression: after a successful TRAIN_EXPLOITER batch leaves
+    player.inference_client pointed at the exploiter client, the *next*
+    batch (whatever its opp type) must reset the player to "main" so
+    that subsequent trajectories aren't generated by the exploiter
+    policy while tagged as something else (e.g. self_play). Reset has
+    to happen even for heuristic / VGCBench batches that skip
+    apply_opp_type_to_pair entirely — which is why it lives in
+    sample_opp_type_for.
+    """
+    clients = _clients_with("main", "exploiter", "victim")
+    factory = _make_factory({"train_exploiter": 1.0}, worker_inference_clients=clients)
 
-    class _StubModel:
-        def load_state_dict(self, sd):
-            captured["sd"] = sd
+    player = _DummyPlayer()
+    opponent = _DummyPlayer()
 
-    exploiter = SimpleNamespace(model=_StubModel())
-    factory = _make_factory({"train_exploiter": 1.0}, exploiter_agent=exploiter)
+    # Batch 1: train_exploiter → player ends up on "exploiter".
+    _sample_and_apply(factory, player, opponent)
+    assert player.inference_client is clients.get("exploiter")
 
-    factory.update_exploiter_weights({"layer.weight": "tensor"})
+    # Batch 2: curriculum flips to self_play. sample_opp_type_for alone
+    # (no apply call for many opp types) must re-align player to main.
+    factory.curriculum = {OpponentPool.SELF_PLAY: 1.0}
+    opp_type = factory.sample_opp_type_for(cast(RLTrajectoryPlayer, player))
+    assert opp_type == OpponentPool.SELF_PLAY
+    assert player.inference_client is clients.get("main")
 
-    assert captured["sd"] == {"layer.weight": "tensor"}
-
-
-def test_update_exploiter_weights_no_op_when_disabled():
-    """When co-training is off (no exploiter_agent), update is a silent no-op."""
-    factory = _make_factory({"self_play": 1.0})  # no exploiter_agent
-    factory.update_exploiter_weights({"layer.weight": "tensor"})  # must not raise
-
-
-def test_update_victim_weights_loads_into_agent_model():
-    captured = {}
-
-    class _StubModel:
-        def load_state_dict(self, sd):
-            captured["sd"] = sd
-
-    victim = SimpleNamespace(model=_StubModel())
-    factory = _make_factory({"train_exploiter": 1.0}, victim_agent=victim)
-
-    factory.update_victim_weights({"layer.weight": "tensor"})
-
-    assert captured["sd"] == {"layer.weight": "tensor"}
-
-
-def test_update_victim_weights_no_op_when_disabled():
-    factory = _make_factory({"self_play": 1.0})
-    factory.update_victim_weights({"layer.weight": "tensor"})  # must not raise
+    # Batch 3: heuristic-style opp type — same expectation, even though
+    # apply_opp_type_to_pair would not be called in prepare_batch_tasks.
+    factory.curriculum = {OpponentPool.SELF_PLAY: 1.0}  # heuristic types
+    # Simulate a stale exploiter assignment between batches.
+    player.inference_client = clients.get("exploiter")
+    factory.curriculum = {OpponentPool.MAX_DAMAGE: 1.0}
+    opp_type = factory.sample_opp_type_for(cast(RLTrajectoryPlayer, player))
+    assert opp_type == OpponentPool.MAX_DAMAGE
+    assert player.inference_client is clients.get("main")
 
 
-def test_configure_opponent_for_batch_train_exploiter_falls_back_when_unprovisioned():
+def test_train_exploiter_falls_back_when_unprovisioned():
     """If the curriculum activates train_exploiter before the main process
     has provisioned exploiter/victim InferenceClients, fall back to
     self-play and point opponent at the main client. The trajectory
     routes as main; main process is responsible for ensuring this race
     doesn't matter (warmup gate keeps weight at 0 until ready)."""
-    from unittest.mock import MagicMock
-
-    main_client = MagicMock(name="main_client")
-    clients = MagicMock()
-    clients.has = MagicMock(side_effect=lambda n: n == "main")
-    clients.get = MagicMock(return_value=main_client)
-
+    clients = _clients_with("main")
     factory = _make_factory({"train_exploiter": 1.0}, worker_inference_clients=clients)
 
     player = _DummyPlayer()
-    opponent = _DummyOpponent(model=factory.main_agent)
+    opponent = _DummyPlayer()
 
-    selected = factory.configure_opponent_for_batch(
-        cast(BatchInferencePlayer, player),
-        cast(BatchInferencePlayer, opponent),
-    )
+    selected = _sample_and_apply(factory, player, opponent)
 
-    assert selected == factory.SELF_PLAY
-    assert player.opponent_type == factory.SELF_PLAY
-    assert opponent.inference_client is main_client
+    assert selected == OpponentPool.SELF_PLAY
+    assert player.opponent_type == OpponentPool.SELF_PLAY
+    assert opponent.inference_client is clients.get("main")
 
 
-def _patch_batch_inference_player(monkeypatch):
-    """Replace BatchInferencePlayer in opponents.py with a recording stub.
+def _patch_rl_trajectory_player(monkeypatch):
+    """Replace RLTrajectoryPlayer in opponents.py with a recording stub.
 
     Returns the list that captures kwargs of each construction so a test
     can assert what got passed.
@@ -176,23 +156,22 @@ def _patch_batch_inference_player(monkeypatch):
         def __init__(self, **kwargs):
             captured_kwargs.append(kwargs)
 
-    monkeypatch.setattr(
-        "elitefurretai.rl.opponents.BatchInferencePlayer", _RecordingPlayer
-    )
+    monkeypatch.setattr("elitefurretai.rl.opponents.RLTrajectoryPlayer", _RecordingPlayer)
     return captured_kwargs
 
 
 def test_create_player_pairs_omits_max_concurrent_when_none(monkeypatch):
     """Default config leaves max_concurrent_battles_per_player=None — the
-    kwarg must not be passed to BatchInferencePlayer so poke-env's library
+    kwarg must not be passed to RLTrajectoryPlayer so poke-env's library
     default (1) stays in force. Forwarding a None would surface as an
     unexpected override.
     """
-    factory = _make_factory({"self_play": 1.0})
+    clients = _clients_with("main")
+    factory = _make_factory({"self_play": 1.0}, worker_inference_clients=clients)
     assert factory.max_concurrent_battles_per_player is None
 
-    captured_kwargs = _patch_batch_inference_player(monkeypatch)
-    factory.create_player_pairs(num_pairs=2, local_traj_queue=cast(queue.Queue, None))
+    captured_kwargs = _patch_rl_trajectory_player(monkeypatch)
+    factory.create_agents(num_pairs=2, local_traj_queue=cast(queue.Queue, None))
 
     assert len(captured_kwargs) == 4  # 2 pairs × (player + opponent)
     for kw in captured_kwargs:
@@ -203,11 +182,12 @@ def test_create_player_pairs_passes_max_concurrent_when_set(monkeypatch):
     """When the config sets a concurrent-battle cap, every player and
     opponent constructed by create_player_pairs must receive it.
     """
-    factory = _make_factory({"self_play": 1.0})
+    clients = _clients_with("main")
+    factory = _make_factory({"self_play": 1.0}, worker_inference_clients=clients)
     factory.max_concurrent_battles_per_player = 16
 
-    captured_kwargs = _patch_batch_inference_player(monkeypatch)
-    factory.create_player_pairs(num_pairs=3, local_traj_queue=cast(queue.Queue, None))
+    captured_kwargs = _patch_rl_trajectory_player(monkeypatch)
+    factory.create_agents(num_pairs=3, local_traj_queue=cast(queue.Queue, None))
 
     assert len(captured_kwargs) == 6  # 3 pairs × (player + opponent)
     for kw in captured_kwargs:
@@ -223,62 +203,37 @@ def test_set_active_ghost_slots_updates_state():
     assert factory._active_ghost_slots == set()
 
 
-def test_configure_opponent_for_batch_ghosts_routes_via_active_slot():
+def test_ghosts_routes_via_active_slot():
     """When GHOSTS is sampled and slots are active, opponent gets a
     ghost_<slot> InferenceClient from the bundle."""
-    from unittest.mock import MagicMock
-
-    ghost_clients = {f"ghost_{i}": MagicMock(name=f"ghost_client_{i}") for i in range(3)}
-    main_client = MagicMock(name="main_client")
-
-    clients = MagicMock()
-    clients.has = MagicMock(
-        side_effect=lambda n: n in {"main", "ghost_0", "ghost_1", "ghost_2"}
-    )
-    clients.get = MagicMock(side_effect=lambda n: ghost_clients.get(n, main_client))
-
-    factory = _make_factory({"ghosts": 1.0})
-    factory.worker_inference_clients = clients
+    clients = _clients_with("main", "ghost_0", "ghost_1", "ghost_2")
+    factory = _make_factory({"ghosts": 1.0}, worker_inference_clients=clients)
     factory.set_active_ghost_slots([0, 1, 2])
 
     player = _DummyPlayer()
-    opponent = _DummyOpponent(model=factory.main_agent)
+    opponent = _DummyPlayer()
 
-    selected = factory.configure_opponent_for_batch(
-        cast(BatchInferencePlayer, player),
-        cast(BatchInferencePlayer, opponent),
-    )
+    selected = _sample_and_apply(factory, player, opponent)
 
-    assert selected == factory.GHOSTS
-    assert player.opponent_type == factory.GHOSTS
-    # opponent.inference_client should now point to one of the ghost clients
-    assigned = opponent.inference_client
-    assert assigned in ghost_clients.values()
+    assert selected == OpponentPool.GHOSTS
+    assert player.opponent_type == OpponentPool.GHOSTS
+    ghost_clients = {clients.get(f"ghost_{i}") for i in range(3)}
+    assert opponent.inference_client in ghost_clients
 
 
-def test_configure_opponent_for_batch_ghosts_falls_back_when_no_active_slots():
-    """When GHOSTS is sampled but no slots are active, fall back to self-play.
-    (Curriculum normally guards this via _opponent_available; this test pins
-    the defensive fallback inside _swap_to.)"""
-    from unittest.mock import MagicMock
-
-    clients = MagicMock()
-    clients.has = MagicMock(side_effect=lambda n: n == "main")
-    main_client = MagicMock(name="main_client")
-    clients.get = MagicMock(return_value=main_client)
-
+def test_ghosts_falls_back_when_no_active_slots():
+    """When GHOSTS is sampled but no slots are active, fall back to self-play
+    in sample_opp_type_for (the defensive guard before any swap happens)."""
+    clients = _clients_with("main")
     factory = _make_factory({"ghosts": 1.0}, worker_inference_clients=clients)
     # Note: deliberately NOT calling set_active_ghost_slots — empty by default.
 
     player = _DummyPlayer()
-    opponent = _DummyOpponent(model=factory.main_agent)
+    opponent = _DummyPlayer()
 
-    selected = factory.configure_opponent_for_batch(
-        cast(BatchInferencePlayer, player),
-        cast(BatchInferencePlayer, opponent),
-    )
+    selected = _sample_and_apply(factory, player, opponent)
 
-    assert selected == factory.SELF_PLAY
+    assert selected == OpponentPool.SELF_PLAY
 
 
 def test_set_active_exploiter_slots_updates_state():
@@ -290,62 +245,37 @@ def test_set_active_exploiter_slots_updates_state():
     assert factory._active_exploiter_slots == set()
 
 
-def test_configure_opponent_for_batch_exploiters_routes_via_active_slot():
+def test_exploiters_routes_via_active_slot():
     """When EXPLOITERS is sampled and slots are active, opponent gets an
     exploiter_snap_<slot> InferenceClient from the bundle."""
-    from unittest.mock import MagicMock
-
-    snap_clients = {
-        f"exploiter_snap_{i}": MagicMock(name=f"snap_client_{i}") for i in range(3)
-    }
-    main_client = MagicMock(name="main_client")
-
-    clients = MagicMock()
-    clients.has = MagicMock(
-        side_effect=lambda n: n
-        in {"main", "exploiter_snap_0", "exploiter_snap_1", "exploiter_snap_2"}
+    clients = _clients_with(
+        "main", "exploiter_snap_0", "exploiter_snap_1", "exploiter_snap_2"
     )
-    clients.get = MagicMock(side_effect=lambda n: snap_clients.get(n, main_client))
-
-    factory = _make_factory({"exploiters": 1.0})
-    factory.worker_inference_clients = clients
+    factory = _make_factory({"exploiters": 1.0}, worker_inference_clients=clients)
     factory.set_active_exploiter_slots([0, 1, 2])
 
     player = _DummyPlayer()
-    opponent = _DummyOpponent(model=factory.main_agent)
+    opponent = _DummyPlayer()
 
-    selected = factory.configure_opponent_for_batch(
-        cast(BatchInferencePlayer, player),
-        cast(BatchInferencePlayer, opponent),
-    )
+    selected = _sample_and_apply(factory, player, opponent)
 
-    assert selected == factory.EXPLOITERS
-    assert player.opponent_type == factory.EXPLOITERS
-    # opponent.inference_client should now point to one of the snap clients
-    assigned = opponent.inference_client
-    assert assigned in snap_clients.values()
+    assert selected == OpponentPool.EXPLOITERS
+    assert player.opponent_type == OpponentPool.EXPLOITERS
+    snap_clients = {clients.get(f"exploiter_snap_{i}") for i in range(3)}
+    assert opponent.inference_client in snap_clients
 
 
-def test_configure_opponent_for_batch_exploiters_falls_back_when_no_active_slots():
-    """When EXPLOITERS is sampled but no slots are active, fall back to self-play.
-    (Curriculum normally guards this via _opponent_available; this test pins
-    the defensive fallback inside configure_opponent_for_batch.)"""
-    from unittest.mock import MagicMock
-
-    clients = MagicMock()
-    clients.has = MagicMock(side_effect=lambda n: n == "main")
-    main_client = MagicMock(name="main_client")
-    clients.get = MagicMock(return_value=main_client)
-
+def test_exploiters_falls_back_when_no_active_slots():
+    """When EXPLOITERS is sampled but no slots are active, fall back to
+    self-play in sample_opp_type_for (the defensive guard before any
+    swap happens)."""
+    clients = _clients_with("main")
     factory = _make_factory({"exploiters": 1.0}, worker_inference_clients=clients)
     # Note: deliberately NOT calling set_active_exploiter_slots — empty by default.
 
     player = _DummyPlayer()
-    opponent = _DummyOpponent(model=factory.main_agent)
+    opponent = _DummyPlayer()
 
-    selected = factory.configure_opponent_for_batch(
-        cast(BatchInferencePlayer, player),
-        cast(BatchInferencePlayer, opponent),
-    )
+    selected = _sample_and_apply(factory, player, opponent)
 
-    assert selected == factory.SELF_PLAY
+    assert selected == OpponentPool.SELF_PLAY

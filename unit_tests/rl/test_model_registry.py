@@ -5,12 +5,11 @@ These run entirely in-process (single Python interpreter) and exercise
 the registry / worker-bundle plumbing without spawning subprocesses or
 loading real models. Real-model + cross-process behavior is already
 covered by:
-  - test_inference_handler_real_model.py (M2 — real RNaDAgent in handler)
+  - test_inference_handler_real_model.py (M2 — real RNaDModel in handler)
   - test_inference_multistep_and_mp.py (M3 — multistep + cross-process)
 
 The registry tests focus on:
-  - register / sync_weights / queues_for_workers / get_diagnostics /
-    stop_all behavior
+  - register / sync_weights / queues_for_workers / stop_all behavior
   - duplicate-register and missing-name errors
   - WorkerInferenceClients construction from queues bundle, get/has/names,
     clean shutdown
@@ -29,7 +28,7 @@ import torch
 from elitefurretai.etl.embedder import Embedder
 from elitefurretai.rl.inference_worker import WorkerInferenceClients
 from elitefurretai.rl.model_registry import ModelRegistry
-from elitefurretai.rl.rnad_model import RNaDAgent
+from elitefurretai.rl.rnad_model import RNaDModel
 from elitefurretai.supervised.model_archs import TransformerThreeHeadedModel
 
 
@@ -42,7 +41,7 @@ def small_agent_factory():
     """
     embedder = Embedder(feature_set="simple")
 
-    def make() -> RNaDAgent:
+    def make() -> RNaDModel:
         model = TransformerThreeHeadedModel(
             embedder=embedder,
             early_layers=[64, 32],
@@ -54,7 +53,7 @@ def small_agent_factory():
             max_seq_len=40,
         )
         model.eval()
-        return RNaDAgent(model)
+        return RNaDModel(model)
 
     return make, embedder
 
@@ -64,9 +63,9 @@ def small_agent_factory():
 # ─────────────────────────────────────────────────────────────────────
 
 
-def test_registry_register_then_start_serves_diagnostics(small_agent_factory):
-    """After register() + start_all(), the service is running and exposes
-    diagnostics. (Plan C split register/start_all to fix Run C's
+def test_registry_register_then_start(small_agent_factory):
+    """After register() + start_all(), the service is running and exposed
+    via names(). (Plan C split register/start_all to fix Run C's
     registration race.)"""
     make, _ = small_agent_factory
     registry = ModelRegistry(num_workers=2, batch_size=4, batch_timeout=0.005)
@@ -74,9 +73,6 @@ def test_registry_register_then_start_serves_diagnostics(small_agent_factory):
         registry.register("main", make())
         registry.start_all()
         assert "main" in registry.names()
-        diag = registry.get_diagnostics()
-        assert "main" in diag
-        assert diag["main"]["inference_batches"] == 0.0
     finally:
         registry.stop_all()
 
@@ -181,11 +177,11 @@ def test_worker_clients_constructs_one_per_model(small_agent_factory):
             clients = WorkerInferenceClients(0, worker_slice, loop=loop)
             try:
                 assert sorted(clients.names()) == ["bc", "main"]
-                assert clients.has("main")
-                assert clients.has("bc")
-                assert not clients.has("ghost_0")
-                assert clients.get("main").worker_id == 0
-                assert clients.get("bc").worker_id == 0
+                assert "main" in clients
+                assert "bc" in clients
+                assert "ghost_0" not in clients
+                assert clients["main"].worker_id == 0
+                assert clients["bc"].worker_id == 0
             finally:
                 clients.stop_all()
         finally:
@@ -204,8 +200,9 @@ def test_worker_clients_get_unknown_raises(small_agent_factory):
             slice_ = _per_worker_slice(registry.queues_for_workers(), 0)
             clients = WorkerInferenceClients(0, slice_, loop=loop)
             try:
+                assert clients.get("does_not_exist") is None
                 with pytest.raises(KeyError, match="No inference client"):
-                    clients.get("does_not_exist")
+                    _ = clients["does_not_exist"]
             finally:
                 clients.stop_all()
         finally:
@@ -228,9 +225,6 @@ def test_register_multiple_ghost_slots(small_agent_factory):
             registry.register(f"ghost_{slot}", make(), compile=False)
         registry.start_all()
         assert set(registry.names()) == {"ghost_0", "ghost_1", "ghost_2"}
-        # Each slot has independent diagnostics
-        diag = registry.get_diagnostics()
-        assert set(diag.keys()) == {"ghost_0", "ghost_1", "ghost_2"}
     finally:
         registry.stop_all()
 
@@ -253,7 +247,7 @@ def test_registry_to_worker_round_trip(small_agent_factory):
             try:
 
                 async def submit_to(name: str) -> int:
-                    resp = await clients.get(name).submit(
+                    resp = await clients[name].submit(
                         state=np.random.randn(embedder.embedding_size).astype(np.float32),
                         mask=np.ones(2025, dtype=np.float32),
                         is_teampreview=False,
@@ -311,15 +305,8 @@ def test_registry_mixed_process_groups(small_agent_factory):
 
         # Before start_all(): names visible but services not running.
         assert set(registry.names()) == {"main", "bc", "ghost_0"}
-        # get_diagnostics returns in-process services only, and only
-        # after start; pre-start it's empty.
-        assert registry.get_diagnostics() == {}
 
         registry.start_all()
-
-        # In-process services: diagnostics expose them.
-        diag = registry.get_diagnostics()
-        assert set(diag.keys()) == {"main", "bc"}
 
         # Send a request to each via its queue; receive a response.
         bundles = registry.queues_for_workers()

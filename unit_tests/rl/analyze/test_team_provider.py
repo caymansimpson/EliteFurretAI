@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Tests for ``team_provider.parse_team_spec``."""
+"""Tests for ``team_provider.parse_team_specification``."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from elitefurretai.rl.analyze.team_provider import parse_team_spec
+from elitefurretai.rl.analyze.team_provider import parse_team_specification
 
 _SAMPLE_MON = """\
 Calyrex-Shadow @ Life Orb
@@ -31,7 +31,7 @@ _SAMPLE_TEAM = "\n\n".join([_SAMPLE_MON] * 6)
 def test_file_provider_returns_fixed_team(tmp_path):
     f = tmp_path / "team.txt"
     f.write_text(_SAMPLE_TEAM)
-    provider = parse_team_spec(str(f), battle_format="gen9vgc2024regg")
+    provider = parse_team_specification(str(f), battle_format="gen9vgc2024regg")
     assert provider() == _SAMPLE_TEAM
     # Calling twice returns the same team — fixed source.
     assert provider() == _SAMPLE_TEAM
@@ -43,7 +43,7 @@ def test_directory_provider_samples_team(tmp_path):
     fmt_dir.mkdir()
     (fmt_dir / "t1.txt").write_text(_SAMPLE_TEAM)
 
-    provider = parse_team_spec(str(tmp_path), battle_format="gen9vgc2024regg")
+    provider = parse_team_specification(str(tmp_path), battle_format="gen9vgc2024regg")
     out = provider()
     # TeamRepo shuffles Pokemon order by default, so we just check that
     # the sampled team contains the expected number of mons.
@@ -70,7 +70,7 @@ def test_none_falls_back_to_default(monkeypatch, tmp_path):
 
     monkeypatch.setattr(TeamRepo, "__init__", fake_init)
 
-    provider = parse_team_spec(None, battle_format="gen9vgc2024regg")
+    provider = parse_team_specification(None, battle_format="gen9vgc2024regg")
     out = provider()
     # TeamRepo shuffles Pokemon order by default, so we just check that
     # the sampled team contains the expected number of mons.
@@ -80,7 +80,7 @@ def test_none_falls_back_to_default(monkeypatch, tmp_path):
 def test_invalid_path_raises(tmp_path):
     bogus = tmp_path / "definitely_does_not_exist"
     with pytest.raises(ValueError, match="not a file and not a directory"):
-        parse_team_spec(str(bogus), battle_format="gen9vgc2024regg")
+        parse_team_specification(str(bogus), battle_format="gen9vgc2024regg")
 
 
 def test_empty_string_falls_back_to_default(monkeypatch, tmp_path):
@@ -98,7 +98,7 @@ def test_empty_string_falls_back_to_default(monkeypatch, tmp_path):
 
     monkeypatch.setattr(TeamRepo, "__init__", fake_init)
 
-    provider = parse_team_spec("", battle_format="gen9vgc2024regg")
+    provider = parse_team_specification("", battle_format="gen9vgc2024regg")
     # TeamRepo shuffles by default; verify the team came through by mon count.
     assert provider().strip().count("Ability:") == 6
 
@@ -108,7 +108,7 @@ def test_real_vgcbench_team_file_loads():
     team_path = Path("data/teams/gen9vgc2024regg/vgcbench.txt")
     if not team_path.is_file():
         pytest.skip("vgcbench.txt not present in working dir")
-    provider = parse_team_spec(str(team_path), battle_format="gen9vgc2024regg")
+    provider = parse_team_specification(str(team_path), battle_format="gen9vgc2024regg")
     out = provider()
     assert len(out) > 0
     assert provider() == out  # stable

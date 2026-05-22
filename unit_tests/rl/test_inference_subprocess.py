@@ -30,10 +30,10 @@ from elitefurretai.etl.embedder import Embedder
 from elitefurretai.rl.inference_ipc import InferenceRequest, InferenceResponse
 from elitefurretai.rl.inference_subprocess import (
     InferenceSubprocessHandle,
-    ServiceSpec,
-    SubprocessSpec,
+    ServiceSpecification,
+    SubprocessSpecification,
 )
-from elitefurretai.rl.rnad_model import RNaDAgent
+from elitefurretai.rl.rnad_model import RNaDModel
 from elitefurretai.supervised.model_archs import TransformerThreeHeadedModel
 
 # ─────────────────────────────────────────────────────────────────────
@@ -41,7 +41,7 @@ from elitefurretai.supervised.model_archs import TransformerThreeHeadedModel
 # ─────────────────────────────────────────────────────────────────────
 
 
-def _make_small_agent() -> Tuple[RNaDAgent, Embedder]:
+def _make_small_agent() -> Tuple[RNaDModel, Embedder]:
     embedder = Embedder(feature_set="simple")
     model = TransformerThreeHeadedModel(
         embedder=embedder,
@@ -54,7 +54,7 @@ def _make_small_agent() -> Tuple[RNaDAgent, Embedder]:
         max_seq_len=40,
     )
     model.eval()
-    return RNaDAgent(model), embedder
+    return RNaDModel(model), embedder
 
 
 def _make_request(
@@ -82,22 +82,22 @@ def _make_request(
     )
 
 
-def _build_spec(
-    agent: RNaDAgent,
+def _build_specification(
+    agent: RNaDModel,
     ctx,
     group_name: str = "test_group",
     service_name: str = "test_svc",
     num_workers: int = 1,
 ) -> Tuple[
-    SubprocessSpec,
+    SubprocessSpecification,
     "torch_mp.Queue",
     "torch_mp.Queue",
 ]:
-    """Build a SubprocessSpec hosting one service; return (spec, req_q, resp_q_0)."""
+    """Build a SubprocessSpecification hosting one service; return (specification, req_q, resp_q_0)."""
     req_q: "torch_mp.Queue" = ctx.Queue()
     resp_qs = {i: ctx.Queue() for i in range(num_workers)}
     control_q: "torch_mp.Queue" = ctx.Queue()
-    service = ServiceSpec(
+    service = ServiceSpecification(
         name=service_name,
         agent=agent,
         request_queue=req_q,
@@ -105,7 +105,7 @@ def _build_spec(
         compile=False,
         probabilistic=False,
     )
-    spec = SubprocessSpec(
+    specification = SubprocessSpecification(
         group_name=group_name,
         services=[service],
         control_queue=control_q,
@@ -115,7 +115,7 @@ def _build_spec(
         compile_mode=None,
         embedding_size=None,
     )
-    return spec, req_q, resp_qs[0]
+    return specification, req_q, resp_qs[0]
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -127,9 +127,9 @@ def _build_spec(
 def test_subprocess_spawn_and_serve_one_request():
     ctx = torch_mp.get_context("spawn")
     agent, embedder = _make_small_agent()
-    spec, req_q, resp_q = _build_spec(agent, ctx)
+    specification, req_q, resp_q = _build_specification(agent, ctx)
 
-    handle = InferenceSubprocessHandle(spec, ctx=ctx)
+    handle = InferenceSubprocessHandle(specification, ctx=ctx)
     handle.start()
     try:
         # Send one request, await response within a generous timeout.
@@ -160,8 +160,8 @@ def test_subprocess_sync_weights_changes_outputs():
     ctx = torch_mp.get_context("spawn")
     agent_a, embedder = _make_small_agent()
 
-    spec, req_q, resp_q = _build_spec(agent_a, ctx)
-    handle = InferenceSubprocessHandle(spec, ctx=ctx)
+    specification, req_q, resp_q = _build_specification(agent_a, ctx)
+    handle = InferenceSubprocessHandle(specification, ctx=ctx)
     handle.start()
     try:
         req = _make_request(embedder, request_id=7)
@@ -174,7 +174,7 @@ def test_subprocess_sync_weights_changes_outputs():
         agent_b, _ = _make_small_agent()
         new_state_dict = copy.deepcopy(agent_b.model.state_dict())
 
-        handle.sync_weights(spec.services[0].name, new_state_dict)
+        handle.sync_weights(specification.services[0].name, new_state_dict)
 
         # Send another request — same battle_tag so the (now-applied)
         # different weights drive the forward. Use a slightly different
@@ -206,8 +206,8 @@ def test_subprocess_sync_weights_changes_outputs():
 def test_subprocess_shutdown_exits_cleanly():
     ctx = torch_mp.get_context("spawn")
     agent, _ = _make_small_agent()
-    spec, _, _ = _build_spec(agent, ctx)
-    handle = InferenceSubprocessHandle(spec, ctx=ctx)
+    specification, _, _ = _build_specification(agent, ctx)
+    handle = InferenceSubprocessHandle(specification, ctx=ctx)
     handle.start()
     assert handle.is_alive()
     handle.shutdown(timeout_s=15.0)
@@ -226,8 +226,8 @@ def test_subprocess_external_kill_detected():
     gracefully (no exception)."""
     ctx = torch_mp.get_context("spawn")
     agent, _ = _make_small_agent()
-    spec, _, _ = _build_spec(agent, ctx)
-    handle = InferenceSubprocessHandle(spec, ctx=ctx)
+    specification, _, _ = _build_specification(agent, ctx)
+    handle = InferenceSubprocessHandle(specification, ctx=ctx)
     handle.start()
     try:
         # Wait briefly for the subprocess to be fully up (services
@@ -268,10 +268,10 @@ def test_subprocess_hosts_multiple_services():
     resp_qy0: "torch_mp.Queue" = ctx.Queue()
     control_q: "torch_mp.Queue" = ctx.Queue()
 
-    spec = SubprocessSpec(
+    specification = SubprocessSpecification(
         group_name="multi",
         services=[
-            ServiceSpec(
+            ServiceSpecification(
                 name="svc_x",
                 agent=agent_x,
                 request_queue=req_qx,
@@ -279,7 +279,7 @@ def test_subprocess_hosts_multiple_services():
                 compile=False,
                 probabilistic=False,
             ),
-            ServiceSpec(
+            ServiceSpecification(
                 name="svc_y",
                 agent=agent_y,
                 request_queue=req_qy,
@@ -296,7 +296,7 @@ def test_subprocess_hosts_multiple_services():
         embedding_size=None,
     )
 
-    handle = InferenceSubprocessHandle(spec, ctx=ctx)
+    handle = InferenceSubprocessHandle(specification, ctx=ctx)
     handle.start()
     try:
         req_qx.put(_make_request(embedder, request_id=1))

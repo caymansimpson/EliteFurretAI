@@ -346,6 +346,9 @@ def test_set_cell_updates_hashes_for_subsequent_records(tmp_path):
     # Pre-existing row keeps old hash; new row has new hash.
     assert collector._battle_rows[0].agent_team_hash == initial_agent_hash
     assert collector._battle_rows[1].agent_team_hash == collector.agent_team_hash
-    assert collector._battle_rows[0].agent_team_hash != collector._battle_rows[1].agent_team_hash
+    assert (
+        collector._battle_rows[0].agent_team_hash
+        != collector._battle_rows[1].agent_team_hash
+    )
     # opp_player_name on the new record should reflect the cell swap.
     assert collector._battle_rows[1].opp_player_name == "max_damage"

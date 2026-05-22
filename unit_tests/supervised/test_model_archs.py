@@ -726,15 +726,15 @@ def test_transformer_no_causal_mask(simple_embedder):
 
 
 @pytest.mark.slow
-def test_compiled_rnad_agent_matches_eager(simple_embedder):
-    """torch.compile(RNaDAgent) on the inference path must produce the same
+def test_compiled_rnad_model_matches_eager(simple_embedder):
+    """torch.compile(RNaDModel) on the inference path must produce the same
     outputs (within float tolerance) as eager mode for representative
     transformer + variable-batch + growing-context calls.
 
     This is the test we'd want to fail loudly if a future torch upgrade
     or model change breaks compile compatibility on the rollout path.
     """
-    from elitefurretai.rl.rnad_model import RNaDAgent
+    from elitefurretai.rl.rnad_model import RNaDModel
 
     torch.manual_seed(0)
     model = TransformerThreeHeadedModel(
@@ -748,10 +748,10 @@ def test_compiled_rnad_agent_matches_eager(simple_embedder):
         max_seq_len=40,
     )
     model.eval()
-    eager_agent = RNaDAgent(model)
+    eager_agent = RNaDModel(model)
     # Same wrapped model under compile. dynamic=True so the growing context
     # tensor doesn't trigger recompilation per turn.
-    compiled_agent = torch.compile(RNaDAgent(model), mode="default", dynamic=True)
+    compiled_agent = torch.compile(RNaDModel(model), mode="default", dynamic=True)
 
     # Exercise multiple batch sizes (1..4) and turn-0 (no context) +
     # turn-1 (with context), since both code paths matter in production.

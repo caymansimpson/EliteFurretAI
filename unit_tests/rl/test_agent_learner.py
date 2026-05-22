@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Unit tests for RNaDAgent and RNaDLearner.
+Unit tests for RNaDModel and RNaDLearner.
 
 These tests verify:
 1. Agent initialization and forward pass
@@ -82,8 +82,8 @@ class MockTransformerThreeHeadedModel(nn.Module):
         return turn_logits, tp_logits, value, win_dist_logits, next_hidden
 
 
-class MockRNaDAgent(nn.Module):
-    """Mock RNaDAgent wrapping the mock transformer."""
+class MockRNaDModel(nn.Module):
+    """Mock RNaDModel wrapping the mock transformer."""
 
     def __init__(self, model: MockTransformerThreeHeadedModel):
         super().__init__()
@@ -123,7 +123,7 @@ def mock_agent(mock_model):
     """
     Create a mock agent wrapping the mock model.
     """
-    return MockRNaDAgent(mock_model)
+    return MockRNaDModel(mock_model)
 
 
 @pytest.fixture
@@ -243,8 +243,8 @@ class MockRNaDLearner:
 
     def __init__(
         self,
-        model: MockRNaDAgent,
-        ref_model: MockRNaDAgent,
+        model: MockRNaDModel,
+        ref_model: MockRNaDModel,
         lr: float = 1e-4,
         clip_range: float = 0.2,
         ent_coef: float = 0.01,
@@ -276,7 +276,7 @@ def mock_learner(mock_agent):
     Create mock learner with separate model and ref_model.
     """
     model = mock_agent
-    ref_model = MockRNaDAgent(MockTransformerThreeHeadedModel())
+    ref_model = MockRNaDModel(MockTransformerThreeHeadedModel())
     return MockRNaDLearner(model, ref_model, device="cpu")
 
 

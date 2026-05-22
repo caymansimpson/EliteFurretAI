@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Milestone 2: real `RNaDAgent`-backed `BatchHandler` produces sensible
+"""Milestone 2: real `RNaDModel`-backed `BatchHandler` produces sensible
 outputs and matches the legacy per-player path numerically.
 
 D3-alt
@@ -19,7 +19,7 @@ import torch
 from elitefurretai.etl.embedder import Embedder
 from elitefurretai.rl.inference_ipc import InferenceRequest
 from elitefurretai.rl.inference_trainer import RealModelBatchHandler
-from elitefurretai.rl.rnad_model import RNaDAgent
+from elitefurretai.rl.rnad_model import RNaDModel
 from elitefurretai.supervised.model_archs import TransformerThreeHeadedModel
 
 
@@ -37,7 +37,7 @@ def small_transformer_agent():
         max_seq_len=40,
     )
     model.eval()
-    return RNaDAgent(model), embedder
+    return RNaDModel(model), embedder
 
 
 def _make_request(
@@ -127,7 +127,7 @@ def test_handler_batch_of_mixed_shapes(small_transformer_agent):
 
 def test_handler_argmax_matches_legacy_inference_path(small_transformer_agent):
     """Strong M2 check: build the same agent the legacy player would
-    build, run RNaDAgent directly, and compare the chosen action to the
+    build, run RNaDModel directly, and compare the chosen action to the
     centralized handler's choice. probabilistic=False for determinism.
     """
     agent, embedder = small_transformer_agent

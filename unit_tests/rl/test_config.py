@@ -16,7 +16,7 @@ import tempfile
 import pytest
 import yaml
 
-from elitefurretai.rl.config import HardwareConfig, RNaDConfig, get_default_config
+from elitefurretai.rl.config import RNaDConfig, get_default_config
 from elitefurretai.rl.opponents import OpponentPool
 
 # =============================================================================
@@ -36,13 +36,7 @@ def test_get_default_config():
 
     assert isinstance(config, RNaDConfig)
     assert config.curriculum.battle_format == "gen9vgc2023regc"
-    assert config.hardware.battle_backend == "showdown_websocket"
     assert config.hardware.device in ["cuda", "cpu"]
-
-
-def test_invalid_battle_backend_raises_value_error():
-    with pytest.raises(ValueError, match="battle_backend"):
-        HardwareConfig(battle_backend="not_a_backend")
 
 
 def test_default_curriculum_sums_to_one():

@@ -22,7 +22,7 @@ from elitefurretai.etl.embedder import Embedder
 from elitefurretai.etl.encoder import MDBO
 from elitefurretai.rl.config import RNaDConfig
 from elitefurretai.rl.learners import PortfolioRNaDLearner
-from elitefurretai.rl.rnad_model import RNaDAgent
+from elitefurretai.rl.rnad_model import RNaDModel
 from elitefurretai.supervised.model_archs import TransformerThreeHeadedModel
 
 # =============================================================================
@@ -56,13 +56,13 @@ def small_model(simple_embedder):
 
 @pytest.fixture
 def agent(small_model):
-    """Create RNaDAgent from small model."""
-    return RNaDAgent(small_model)
+    """Create RNaDModel from small model."""
+    return RNaDModel(small_model)
 
 
 @pytest.fixture
 def ref_agent(small_model, simple_embedder):
-    """Create reference RNaDAgent from small model."""
+    """Create reference RNaDModel from small model."""
     # Create a separate instance with same architecture
     ref_model = TransformerThreeHeadedModel(
         embedder=simple_embedder,
@@ -77,7 +77,7 @@ def ref_agent(small_model, simple_embedder):
         transformer_ff_dim=32,
         transformer_dropout=0.0,
     )
-    return RNaDAgent(ref_model)
+    return RNaDModel(ref_model)
 
 
 @pytest.fixture
@@ -213,7 +213,7 @@ def test_add_reference_model_snapshots_main(learner):
         for param in learner.model.parameters():
             param.fill_(1.0)
 
-    learner.add_reference_model(RNaDAgent(copy.deepcopy(learner.model.model)))
+    learner.add_reference_model(RNaDModel(copy.deepcopy(learner.model.model)))
 
     for main_param, ref_param in zip(
         learner.model.parameters(), learner.ref_models[-1].parameters()
@@ -225,7 +225,7 @@ def test_add_reference_model_snapshots_main(learner):
 
 def test_add_reference_model_keeps_frozen(learner):
     """Test that ref models stay frozen after add."""
-    learner.add_reference_model(RNaDAgent(copy.deepcopy(learner.model.model)))
+    learner.add_reference_model(RNaDModel(copy.deepcopy(learner.model.model)))
 
     for ref in learner.ref_models:
         for param in ref.parameters():
@@ -445,8 +445,8 @@ def test_gradient_clipping_applied(learner, sample_batch):
 # =============================================================================
 
 
-def test_rnad_agent_forward(agent, simple_embedder):
-    """RNaDAgent.forward delegates to ``model.forward_with_hidden`` which is
+def test_rnad_model_forward(agent, simple_embedder):
+    """RNaDModel.forward delegates to ``model.forward_with_hidden`` which is
     single-step (seq_len == 1) for online RL inference."""
     batch_size = 4
 
@@ -464,13 +464,13 @@ def test_rnad_agent_forward(agent, simple_embedder):
     assert next_hidden.shape[1] == 1
 
 
-def test_rnad_agent_initial_state_is_none(agent):
+def test_rnad_model_initial_state_is_none(agent):
     """Transformer has no initial hidden state — context starts as None."""
     hidden = agent.get_initial_state(8, "cpu")
     assert hidden is None
 
 
-def test_rnad_agent_value_range(agent, simple_embedder):
+def test_rnad_model_value_range(agent, simple_embedder):
     """Value output is in [-1, 1] via the C51 distributional head."""
     x = torch.randn(4, 1, simple_embedder.embedding_size)
     hidden = agent.get_initial_state(4, "cpu")

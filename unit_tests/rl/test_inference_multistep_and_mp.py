@@ -35,7 +35,7 @@ from elitefurretai.rl.inference_trainer import (
     echo_batch_handler,
 )
 from elitefurretai.rl.inference_worker import InferenceClient
-from elitefurretai.rl.rnad_model import RNaDAgent
+from elitefurretai.rl.rnad_model import RNaDModel
 from elitefurretai.supervised.model_archs import TransformerThreeHeadedModel
 
 logger = logging.getLogger(__name__)
@@ -60,7 +60,7 @@ def small_transformer_agent():
         max_seq_len=40,
     )
     model.eval()
-    return RNaDAgent(model), embedder
+    return RNaDModel(model), embedder
 
 
 def test_multistep_equivalence_with_growing_context(small_transformer_agent):
@@ -94,7 +94,7 @@ def test_multistep_equivalence_with_growing_context(small_transformer_agent):
         [resp] = handler([req])
         centralized_results.append((resp.action_idx, resp.log_prob, resp.value))
 
-    # Legacy-equivalent path: drive RNaDAgent directly the way
+    # Legacy-equivalent path: drive RNaDModel directly the way
     # `_gpu_inference_sync` + `_run_batch` would.
     legacy_results: List[Tuple[int, float, float]] = []
     legacy_hidden = None

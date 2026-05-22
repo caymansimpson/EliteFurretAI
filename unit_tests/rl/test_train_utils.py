@@ -825,7 +825,7 @@ def _make_vararious_trajectories(seed, num_trajs, dim):
 
 def test_vectorized_collate_matches_reference_simple():
     """Single-trajectory parity check on a tiny embed dim."""
-    from elitefurretai.rl.train import collate_trajectories
+    from elitefurretai.rl.rl_utils import collate_trajectories
 
     trajs = _make_vararious_trajectories(seed=1, num_trajs=1, dim=8)
     new = collate_trajectories(trajs, "cpu", gamma=0.99, gae_lambda=0.95)
@@ -843,7 +843,7 @@ def test_vectorized_collate_matches_reference_simple():
 def test_vectorized_collate_matches_reference_batch_varied_lengths():
     """Batch of trajectories with varied lengths — exercises padding + GAE
     boundary handling."""
-    from elitefurretai.rl.train import collate_trajectories
+    from elitefurretai.rl.rl_utils import collate_trajectories
 
     trajs = _make_vararious_trajectories(seed=2, num_trajs=8, dim=16)
     new = collate_trajectories(trajs, "cpu", gamma=0.99, gae_lambda=0.95)
@@ -874,7 +874,7 @@ def test_vectorized_collate_matches_reference_batch_varied_lengths():
 
 def test_vectorized_collate_truncates_long_trajectories():
     """max_seq_len kwarg must keep the trailing window (late game matters)."""
-    from elitefurretai.rl.train import collate_trajectories
+    from elitefurretai.rl.rl_utils import collate_trajectories
 
     trajs = _make_vararious_trajectories(seed=3, num_trajs=2, dim=4)
     # Hand-craft one trajectory longer than max_seq_len

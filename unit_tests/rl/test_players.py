@@ -7,7 +7,7 @@ import pytest
 from poke_env.battle import AbstractBattle, DoubleBattle
 
 from elitefurretai.agents.max_damage_player import MaxDamagePlayer
-from elitefurretai.rl.batch_inference_player import BatchInferencePlayer
+from elitefurretai.rl.rl_trajectory_player import RLTrajectoryPlayer
 
 
 class _Recorder:
@@ -75,34 +75,14 @@ def test_score_available_actions_filters_moves_not_in_request():
 # Cover the "not in that room" race documented in
 # planning/stage2/2026-05-06-04-50-zero-completion-room-state-race.md.
 #
-# We bypass __init__ via __new__ because BatchInferencePlayer.__init__ would
+# We bypass __init__ via __new__ because RLTrajectoryPlayer.__init__ would
 # spin up a real ps_client + asyncio loop, which we don't want in unit tests.
 
 
-def test_start_inference_loop_is_noop_in_centralized_mode():
-    """In centralized mode the trainer-side InferenceService runs the
-    loop; the player must not start its own (it has no queue)."""
-    player = BatchInferencePlayer.__new__(BatchInferencePlayer)
-    player.inference_client = MagicMock()  # truthy, simulates centralized mode
-    player._inference_future = None
-    # Should not error and should not set _inference_future.
-    player.start_inference_loop()
-    assert player._inference_future is None
-
-
 def _make_player_for_popup_tests():
-    """Construct a minimal BatchInferencePlayer with just the attributes the
+    """Construct a minimal RLTrajectoryPlayer with just the attributes the
     popup-recovery code path touches."""
-    player = BatchInferencePlayer.__new__(BatchInferencePlayer)
-    player._diagnostics = {
-        "room_lost_recoveries": 0.0,
-        "completed_trajectories": 0.0,
-        "completed_trajectory_steps": 0.0,
-        "message_handler_timeouts": 0.0,
-        "battle_lock_tasks_cancelled": 0.0,
-        "server_leavebattle_sent": 0.0,
-        "server_leavebattle_send_failed": 0.0,
-    }
+    player = RLTrajectoryPlayer.__new__(RLTrajectoryPlayer)
     player._room_lost_battles = set()
     player._battles = {}
     player._battle_count_queue = asyncio.Queue()
@@ -156,14 +136,14 @@ def test_popup_regex_matches_not_in_that_room():
         ' to the room "battle-gen9vgc2024regg-647827"'
         " but it failed because you were not in that room."
     )
-    m = BatchInferencePlayer._ROOM_LOST_POPUP_RE.search(msg)
+    m = RLTrajectoryPlayer._ROOM_LOST_POPUP_RE.search(msg)
     assert m is not None
     assert m.group(1) == "battle-gen9vgc2024regg-647827"
 
 
 def test_popup_regex_ignores_other_popups():
     other = "|popup|The user 'VGCBENCH' was not found."
-    assert BatchInferencePlayer._ROOM_LOST_POPUP_RE.search(other) is None
+    assert RLTrajectoryPlayer._ROOM_LOST_POPUP_RE.search(other) is None
 
 
 @pytest.mark.asyncio
@@ -186,7 +166,6 @@ async def test_recover_room_lost_battle_marks_finished_and_records_forfeit():
     assert battle.finished is True
     assert battle.won is False
     assert tag in player._room_lost_battles
-    assert player._diagnostics["room_lost_recoveries"] == 1.0
     # Queue emptied via get_nowait + task_done.
     assert player._battle_count_queue.qsize() == 0
 
@@ -201,9 +180,8 @@ async def test_recover_room_lost_battle_is_idempotent_for_already_finished():
     # Queue is empty: _handle_battle_message |win| branch already drained it.
     await player._recover_room_lost_battle(tag)
 
-    # No counter bump, no _room_lost_battles add.
+    # Already-finished battle must not be re-added to _room_lost_battles.
     assert tag not in player._room_lost_battles
-    assert player._diagnostics["room_lost_recoveries"] == 0.0
 
 
 @pytest.mark.asyncio
@@ -211,7 +189,7 @@ async def test_recover_room_lost_battle_is_idempotent_for_unknown_tag():
     """Tags we don't track must be silently ignored (no KeyError)."""
     player = _make_player_for_popup_tests()
     await player._recover_room_lost_battle("battle-gen9vgc2024regg-999")
-    assert player._diagnostics["room_lost_recoveries"] == 0.0
+    assert player._room_lost_battles == set()
 
 
 @pytest.mark.asyncio
@@ -228,7 +206,6 @@ async def test_recover_room_lost_battle_survives_empty_queue():
 
     assert battle.finished is True
     assert tag in player._room_lost_battles
-    assert player._diagnostics["room_lost_recoveries"] == 1.0
 
 
 @pytest.mark.asyncio
@@ -273,7 +250,7 @@ async def test_handle_message_with_popup_recovery_no_op_for_unrelated_messages()
         await player._handle_message_with_popup_recovery(msg)
 
     assert recorder.called
-    assert player._diagnostics["room_lost_recoveries"] == 0.0
+    assert player._room_lost_battles == set()
 
 
 @pytest.mark.asyncio
@@ -285,7 +262,7 @@ async def test_handle_message_with_popup_recovery_times_out_hung_handler(
     after ~12 hours)."""
     player = _make_player_for_popup_tests()
     # Shrink the timeout from the production 60s to keep the test fast.
-    monkeypatch.setattr(BatchInferencePlayer, "_MESSAGE_HANDLER_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(RLTrajectoryPlayer, "_MESSAGE_HANDLER_TIMEOUT_S", 0.05)
 
     async def never_returns(_msg: str) -> None:
         await asyncio.Event().wait()  # never set
@@ -294,7 +271,10 @@ async def test_handle_message_with_popup_recovery_times_out_hung_handler(
 
     await player._handle_message_with_popup_recovery(">battle-stuck|turn|1")
 
-    assert player._diagnostics["message_handler_timeouts"] == 1.0
+    # Timeout path logs a warning via self.logger (which forwards to
+    # ps_client.logger) and returns early — that warning call is the only
+    # observable side effect of asyncio.wait_for tripping its timeout.
+    cast(MagicMock, player.ps_client.logger).warning.assert_called()
 
 
 @pytest.mark.asyncio
@@ -333,7 +313,6 @@ async def test_recover_room_lost_battle_frees_lock_and_cancels_waiters():
         assert task_a.cancelled()
         assert task_b.cancelled()
         assert not task_other.done()
-        assert player._diagnostics["battle_lock_tasks_cancelled"] == 2.0
     finally:
         if not task_other.done():
             task_other.cancel()

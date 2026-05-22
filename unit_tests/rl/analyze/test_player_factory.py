@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Tests for ``player_factory.parse_player_spec``.
+"""Tests for ``player_factory.parse_player_specification``.
 
 The factories themselves are not invoked in unit tests because
 constructing a poke-env ``Player`` requires a running Showdown server.
@@ -12,9 +12,9 @@ from __future__ import annotations
 import pytest
 
 from elitefurretai.rl.analyze.player_factory import (
-    PlayerSpec,
+    PlayerSpecification,
     canonicalize_baseline,
-    parse_player_spec,
+    parse_player_specification,
 )
 
 
@@ -42,62 +42,68 @@ def test_canonicalize_baseline_handles_aliases_and_casing(raw, expected):
     assert canonicalize_baseline(raw) == expected
 
 
-def test_parse_baseline_returns_spec_with_params():
-    spec = parse_player_spec(
+def test_parse_baseline_returns_specification_with_params():
+    specification = parse_player_specification(
         "simple_heuristic", device="cpu", battle_format="gen9vgc2024regg"
     )
-    assert isinstance(spec, PlayerSpec)
-    assert spec.kind == "baseline"
-    assert spec.name == "simple_heuristic"
-    assert spec.user_tag == "SHP"
-    assert spec.params["canonical"] == "simple_heuristic"
-    assert spec.params["battle_format"] == "gen9vgc2024regg"
+    assert isinstance(specification, PlayerSpecification)
+    assert specification.kind == "baseline"
+    assert specification.name == "simple_heuristic"
+    assert specification.user_tag == "SHP"
+    assert specification.params["canonical"] == "simple_heuristic"
+    assert specification.params["battle_format"] == "gen9vgc2024regg"
 
 
 def test_parse_alias_returns_canonical_name():
-    spec = parse_player_spec("maxdamage", device="cpu", battle_format="gen9vgc2024regg")
+    specification = parse_player_specification(
+        "maxdamage", device="cpu", battle_format="gen9vgc2024regg"
+    )
     # Raw is preserved as-given (for logging); name canonicalizes.
-    assert spec.raw == "maxdamage"
-    assert spec.name == "max_damage"
-    assert spec.user_tag == "MD"
+    assert specification.raw == "maxdamage"
+    assert specification.name == "max_damage"
+    assert specification.user_tag == "MD"
 
 
 def test_parse_vgc_bench_is_external():
     """vgc_bench routes to ``kind="external"`` carrying subprocess params.
 
     In-process construction is broken (poke-env version drift vs the
-    SB3 checkpoint), so the spec carries the subprocess args needed
+    SB3 checkpoint), so the specification carries the subprocess args needed
     by ``launch_external_player`` (called by the worker once Showdown
     is up). We just verify the params are populated here — actually
     launching requires the vgc-bench venv and a live Showdown server.
     """
-    spec = parse_player_spec("vgc_bench", device="cpu", battle_format="gen9vgc2024regg")
-    assert spec.kind == "external"
-    assert spec.name == "vgc_bench"
-    assert spec.user_tag == "VGB"
-    assert spec.params["battle_format"] == "gen9vgc2024regg"
-    assert "checkpoint_path" in spec.params
-    assert "team_file" in spec.params
-    assert "python_executable" in spec.params
+    specification = parse_player_specification(
+        "vgc_bench", device="cpu", battle_format="gen9vgc2024regg"
+    )
+    assert specification.kind == "external"
+    assert specification.name == "vgc_bench"
+    assert specification.user_tag == "VGB"
+    assert specification.params["battle_format"] == "gen9vgc2024regg"
+    assert "checkpoint_path" in specification.params
+    assert "team_file" in specification.params
+    assert "python_executable" in specification.params
 
 
 def test_parse_model_path(tmp_path):
     # File must exist for the path branch to fire.
     ckpt = tmp_path / "fake_model.pt"
     ckpt.write_bytes(b"")  # contents irrelevant — we don't invoke build_player
-    spec = parse_player_spec(str(ckpt), device="cpu", battle_format="gen9vgc2024regg")
-    assert spec.kind == "model"
-    assert spec.name == "fake_model"
-    assert spec.user_tag == "MDL"
-    assert spec.raw == str(ckpt)
-    assert spec.params["path"] == str(ckpt)
-    assert spec.params["device"] == "cpu"
-    assert spec.params["battle_format"] == "gen9vgc2024regg"
+    specification = parse_player_specification(
+        str(ckpt), device="cpu", battle_format="gen9vgc2024regg"
+    )
+    assert specification.kind == "model"
+    assert specification.name == "fake_model"
+    assert specification.user_tag == "MDL"
+    assert specification.raw == str(ckpt)
+    assert specification.params["path"] == str(ckpt)
+    assert specification.params["device"] == "cpu"
+    assert specification.params["battle_format"] == "gen9vgc2024regg"
 
 
 def test_parse_unknown_raises():
-    with pytest.raises(ValueError, match="Could not resolve player spec"):
-        parse_player_spec(
+    with pytest.raises(ValueError, match="Could not resolve player specification"):
+        parse_player_specification(
             "definitely_not_a_baseline",
             device="cpu",
             battle_format="gen9vgc2024regg",
@@ -113,6 +119,8 @@ def test_path_takes_precedence_over_baseline_name(tmp_path):
     """
     ckpt = tmp_path / "random.pt"
     ckpt.write_bytes(b"")
-    spec = parse_player_spec(str(ckpt), device="cpu", battle_format="gen9vgc2024regg")
-    assert spec.kind == "model"
-    assert spec.name == "random"
+    specification = parse_player_specification(
+        str(ckpt), device="cpu", battle_format="gen9vgc2024regg"
+    )
+    assert specification.kind == "model"
+    assert specification.name == "random"

@@ -130,76 +130,74 @@ def test_round_trip_concurrent_requests(ipc_setup):
     assert len(r1) == 100
 
 
-def test_diagnostics_record_batches(ipc_setup):
-    """Service should accumulate batch counts and at least one batch
-    should have been dispatched."""
-    _service, clients, loop = ipc_setup
+def test_evict_request_round_trip():
+    """EvictRequest goes through the same queue and is dispatched to the
+    handler's evict() method. Uses a tracking handler since echo_batch_handler
+    doesn't implement evict."""
+    import threading
 
-    async def fire():
-        await asyncio.gather(
-            *[
-                clients[0].submit(
-                    state=np.zeros(16, dtype=np.float32),
-                    mask=None,
-                    is_teampreview=False,
-                    player_id="p",
-                    battle_tag="battle-x",
-                    temperature=1.0,
-                    top_p=1.0,
+    from elitefurretai.rl.inference_ipc import InferenceResponse
+
+    evict_calls: list[tuple[int, str, str]] = []
+    evict_event = threading.Event()
+
+    class TrackingHandler:
+        def __call__(self, batch):
+            return [
+                InferenceResponse(
+                    request_id=req.request_id, action_idx=0, log_prob=0.0, value=0.0
                 )
-                for _ in range(20)
+                for req in batch
             ]
-        )
 
-    _run_async(loop, fire())
-    snap = _service.get_diagnostics_snapshot()
-    assert snap["inference_batches"] >= 1
-    assert snap["inference_batch_items"] == 20
-    assert snap["inference_batch_size_max"] >= 1
-    assert (
-        snap["inference_batches_filled_to_max"] + snap["inference_batches_flushed_timeout"]
-        == snap["inference_batches"]
+        def evict(self, worker_id: int, player_id: str, battle_tag: str) -> None:
+            evict_calls.append((worker_id, player_id, battle_tag))
+            evict_event.set()
+
+    request_queue: torch_mp.Queue = torch_mp.Queue()
+    response_queues: Dict[int, torch_mp.Queue] = {0: torch_mp.Queue()}
+    service = InferenceService(
+        name="evict-test",
+        batch_handler=TrackingHandler(),
+        request_queue=request_queue,
+        response_queues=response_queues,
+        batch_size=8,
+        batch_timeout=0.005,
     )
+    service.start()
 
-
-def test_evict_request_round_trip(ipc_setup):
-    """EvictRequest goes through the same queue, doesn't appear in
-    inference batches, increments evictions counter."""
-    service, clients, loop = ipc_setup
-
-    # Drive a few inference requests first to establish a baseline.
-    async def warmup():
-        await clients[0].submit(
-            state=np.zeros(16, dtype=np.float32),
-            mask=None,
-            is_teampreview=False,
-            player_id="p",
-            battle_tag="battle-evict",
-            temperature=1.0,
-            top_p=1.0,
+    loop = asyncio.new_event_loop()
+    client = InferenceClient(
+        worker_id=0,
+        request_queue=request_queue,
+        response_queue=response_queues[0],
+        loop=loop,
+    )
+    client.start()
+    try:
+        # Warmup: a normal inference request should NOT trigger evict.
+        _run_async(
+            loop,
+            client.submit(
+                state=np.zeros(16, dtype=np.float32),
+                mask=None,
+                is_teampreview=False,
+                player_id="p",
+                battle_tag="battle-evict",
+                temperature=1.0,
+                top_p=1.0,
+            ),
         )
+        assert evict_calls == []
 
-    _run_async(loop, warmup())
-    pre = service.get_diagnostics_snapshot()
-    pre_batches = pre["inference_batches"]
-    pre_evictions = pre["inference_evictions"]
-
-    # Send an evict; loop briefly so service drains it.
-    clients[0].evict("p", "battle-evict")
-
-    # Service drains in its background thread; busy-wait briefly.
-    import time as _time
-
-    deadline = _time.monotonic() + 1.0
-    while service.get_diagnostics_snapshot()["inference_evictions"] == pre_evictions:
-        if _time.monotonic() > deadline:
-            raise AssertionError("evict not processed within 1s")
-        _time.sleep(0.005)
-
-    post = service.get_diagnostics_snapshot()
-    assert post["inference_evictions"] == pre_evictions + 1
-    # Eviction must NOT count as an inference batch.
-    assert post["inference_batches"] == pre_batches
+        # Send an evict and wait for the service thread to dispatch it.
+        client.evict("p", "battle-evict")
+        assert evict_event.wait(timeout=1.0), "evict not processed within 1s"
+        assert evict_calls == [(0, "p", "battle-evict")]
+    finally:
+        client.stop()
+        service.stop()
+        loop.close()
 
 
 def test_clean_shutdown_cancels_pending(ipc_setup):

@@ -21,7 +21,7 @@ import torch
 import torch.nn as nn
 
 from elitefurretai.etl.embedder import Embedder
-from elitefurretai.rl.rnad_model import RNaDAgent
+from elitefurretai.rl.rnad_model import RNaDModel
 from elitefurretai.supervised.model_archs import TransformerThreeHeadedModel
 
 
@@ -67,8 +67,8 @@ def test_two_compiled_models_concurrent_calls_no_race():
     assert errors == [], f"compile race triggered: {errors[0]!r}"
 
 
-def _make_small_rnad_agent(device: str) -> tuple[nn.Module, int, int]:
-    """Construct a small but real TransformerThreeHeadedModel-backed RNaDAgent.
+def _make_small_rnad_model(device: str) -> tuple[nn.Module, int, int]:
+    """Construct a small but real TransformerThreeHeadedModel-backed RNaDModel.
 
     Uses transformer_layers=2 (vs production's 4) to keep the test fast,
     but still exercises the same Transformer + growing hidden-state path
@@ -91,17 +91,17 @@ def _make_small_rnad_agent(device: str) -> tuple[nn.Module, int, int]:
         max_seq_len=40,
     )
     model.eval().to(device)
-    agent: nn.Module = RNaDAgent(model)
+    agent: nn.Module = RNaDModel(model)
     return agent, embedder.embedding_size, early_layers[-1]
 
 
 @pytest.mark.slow
-def test_two_real_rnad_agents_concurrent_calls_no_race():
-    """Two distinct compiled RNaDAgent instances called from two threads
+def test_two_real_rnad_models_concurrent_calls_no_race():
+    """Two distinct compiled RNaDModel instances called from two threads
     should not raise.
 
     Mirrors the production scenario: sep_arch compiles BOTH main and bc
-    RNaDAgent instances (TransformerThreeHeadedModel backbone). Each
+    RNaDModel instances (TransformerThreeHeadedModel backbone). Each
     InferenceService daemon thread calls one compiled agent; growing
     hidden-state context (turn 0 → turn 1 → ...) forces dynamo to
     recompile on shape changes, which is exactly when the race fires.
@@ -111,8 +111,8 @@ def test_two_real_rnad_agents_concurrent_calls_no_race():
     """
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    agent1_raw, emb_size, hidden_size = _make_small_rnad_agent(device)
-    agent2_raw, _, _ = _make_small_rnad_agent(device)
+    agent1_raw, emb_size, hidden_size = _make_small_rnad_model(device)
+    agent2_raw, _, _ = _make_small_rnad_model(device)
 
     agent1 = torch.compile(agent1_raw, mode="default", dynamic=True)
     agent2 = torch.compile(agent2_raw, mode="default", dynamic=True)
@@ -175,8 +175,8 @@ def test_two_real_rnad_agents_concurrent_calls_no_race():
     ),
     strict=False,
 )
-def test_two_real_rnad_agents_with_per_model_lock():
-    """Same as test_two_real_rnad_agents_concurrent_calls_no_race but
+def test_two_real_rnad_models_with_per_model_lock():
+    """Same as test_two_real_rnad_models_concurrent_calls_no_race but
     each compiled model has its own threading.Lock serializing entry.
 
     Tests whether serializing dynamo trace-entry per-model bypasses the
@@ -186,8 +186,8 @@ def test_two_real_rnad_agents_with_per_model_lock():
     """
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    agent1_raw, emb_size, hidden_size = _make_small_rnad_agent(device)
-    agent2_raw, _, _ = _make_small_rnad_agent(device)
+    agent1_raw, emb_size, hidden_size = _make_small_rnad_model(device)
+    agent2_raw, _, _ = _make_small_rnad_model(device)
 
     agent1 = torch.compile(agent1_raw, mode="default", dynamic=True)
     agent2 = torch.compile(agent2_raw, mode="default", dynamic=True)
@@ -250,7 +250,7 @@ def test_two_real_rnad_agents_with_per_model_lock():
     ),
     strict=False,
 )
-def test_two_real_rnad_agents_with_cudagraph_mark_step():
+def test_two_real_rnad_models_with_cudagraph_mark_step():
     """Insert torch.compiler.cudagraph_mark_step_begin() before each
     compiled call. Tests whether the race is in CUDA graph capture state —
     the marker signals a step boundary which may flush dynamo's per-step
@@ -264,8 +264,8 @@ def test_two_real_rnad_agents_with_cudagraph_mark_step():
 
     device = "cuda"
 
-    agent1_raw, emb_size, hidden_size = _make_small_rnad_agent(device)
-    agent2_raw, _, _ = _make_small_rnad_agent(device)
+    agent1_raw, emb_size, hidden_size = _make_small_rnad_model(device)
+    agent2_raw, _, _ = _make_small_rnad_model(device)
 
     agent1 = torch.compile(agent1_raw, mode="default", dynamic=True)
     agent2 = torch.compile(agent2_raw, mode="default", dynamic=True)
@@ -317,7 +317,7 @@ def test_two_real_rnad_agents_with_cudagraph_mark_step():
 
 
 @pytest.mark.slow
-def test_two_real_rnad_agents_with_global_lock():
+def test_two_real_rnad_models_with_global_lock():
     """One shared lock across ALL compiled-model calls. Diagnoses
     Task 2.2's finding that dynamo trace state is global, not per-model.
 
@@ -331,8 +331,8 @@ def test_two_real_rnad_agents_with_global_lock():
     """
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    agent1_raw, emb_size, hidden_size = _make_small_rnad_agent(device)
-    agent2_raw, _, _ = _make_small_rnad_agent(device)
+    agent1_raw, emb_size, hidden_size = _make_small_rnad_model(device)
+    agent2_raw, _, _ = _make_small_rnad_model(device)
 
     agent1 = torch.compile(agent1_raw, mode="default", dynamic=True)
     agent2 = torch.compile(agent2_raw, mode="default", dynamic=True)

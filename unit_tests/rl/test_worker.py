@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Unit tests for RL worker (BatchInferencePlayer).
+Unit tests for RL worker (RLTrajectoryPlayer).
 
 These tests verify:
 1. Player initialization and configuration
@@ -22,8 +22,8 @@ from poke_env.ps_client import AccountConfiguration, ServerConfiguration
 
 from elitefurretai.etl.embedder import Embedder
 from elitefurretai.etl.encoder import MDBO
-from elitefurretai.rl.batch_inference_player import BatchInferencePlayer
-from elitefurretai.rl.rnad_model import RNaDAgent
+from elitefurretai.rl.rl_trajectory_player import RLTrajectoryPlayer
+from elitefurretai.rl.rnad_model import RNaDModel
 
 # =============================================================================
 # FIXTURES: Reusable test components
@@ -33,7 +33,7 @@ from elitefurretai.rl.rnad_model import RNaDAgent
 @pytest.fixture
 def mock_model():
     """
-    Create a mock RNaDAgent that returns predictable outputs.
+    Create a mock RNaDModel that returns predictable outputs.
 
     The mock model:
     - Returns uniform logits (all zeros) so action selection is random
@@ -42,7 +42,7 @@ def mock_model():
 
     This allows testing the worker logic without needing a real neural network.
     """
-    model = MagicMock(spec=RNaDAgent)
+    model = MagicMock(spec=RNaDModel)
 
     # Mock get_initial_state to return properly shaped hidden states
     # Shape: (num_layers * num_directions, batch_size, hidden_size)
@@ -144,7 +144,7 @@ def trajectory_queue():
 
 def test_player_initialization(mock_model, player_config, server_config, trajectory_queue):
     """
-    Test that BatchInferencePlayer initializes with correct attributes.
+    Test that RLTrajectoryPlayer initializes with correct attributes.
 
     Verifies:
     - Model is stored correctly
@@ -155,41 +155,18 @@ def test_player_initialization(mock_model, player_config, server_config, traject
 
     Expected: All attributes should match constructor arguments.
     """
-    with patch.object(BatchInferencePlayer, "__init__", lambda self, **kwargs: None):
+    with patch.object(RLTrajectoryPlayer, "__init__", lambda self, **kwargs: None):
         # Manually set attributes that __init__ would set
-        player = BatchInferencePlayer.__new__(BatchInferencePlayer)
+        player = RLTrajectoryPlayer.__new__(RLTrajectoryPlayer)
         player.inference_client = mock_model
-        player.device = "cpu"
-        player.batch_size = 16
-        player.batch_timeout = 0.01
-        player.probabilistic = True
         player.trajectory_queue = trajectory_queue
         player.current_trajectories = {}
         player.completed_trajectories = []
         player.hidden_states = {}
-        player._inference_future = None
 
         assert player.inference_client == mock_model
-        assert player.device == "cpu"
-        assert player.batch_size == 16
-        assert player.probabilistic is True
         assert player.trajectory_queue == trajectory_queue
         assert len(player.current_trajectories) == 0
-
-
-def test_player_batch_size_parameter():
-    """
-    Test that batch_size parameter controls inference batching.
-
-    BatchInferencePlayer collects multiple battle states before running
-    a single GPU inference. This test verifies the batch_size parameter
-    is respected.
-
-    Expected: batch_size should limit how many states are processed together.
-    """
-    # This is a structural test - just verify the parameter exists and is settable
-    assert hasattr(BatchInferencePlayer, "__init__")
-    # The actual batching logic is tested in integration tests
 
 
 # =============================================================================
@@ -554,7 +531,7 @@ def test_default_order_returned_for_non_double_battle():
     """
     Test that DefaultBattleOrder is returned for non-DoubleBattle.
 
-    BatchInferencePlayer is designed for VGC doubles format.
+    RLTrajectoryPlayer is designed for VGC doubles format.
     If given a singles battle, it should return a safe default.
 
     Expected: DefaultBattleOrder when battle is not DoubleBattle.
