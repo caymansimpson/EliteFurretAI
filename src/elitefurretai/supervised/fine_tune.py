@@ -260,7 +260,6 @@ def finetune(
         project="elitefurretai-hydreigon",
         name=wandb_run_name,
         config=wandb_config,
-        settings=wandb.Settings(x_service_wait=30, start_method="thread"),
     )
 
     try:

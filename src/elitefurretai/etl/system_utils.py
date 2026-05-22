@@ -20,6 +20,24 @@ def configure_torch_multiprocessing(
         torch.multiprocessing.set_sharing_strategy("file_system")
     if filter_socket_send_warning:
         warnings.filterwarnings("ignore", message=".*socket.send.*")
+    # Suppress pydantic UnsupportedFieldAttributeWarning — these fire at every
+    # forkserver worker bootstrap and create log noise.
+    warnings.filterwarnings(
+        "ignore",
+        message=r".*'repr' attribute.*has no effect.*",
+        category=UserWarning,
+    )
+    warnings.filterwarnings(
+        "ignore",
+        message=r".*'frozen' attribute.*has no effect.*",
+        category=UserWarning,
+    )
+    # Suppress PyTorch transformer enable_nested_tensor warning.
+    warnings.filterwarnings(
+        "ignore",
+        message=r".*enable_nested_tensor is True.*",
+        category=UserWarning,
+    )
 
 
 def suppress_third_party_warnings(

@@ -324,10 +324,6 @@ def initialize(config):
     wandb.init(
         project="elitefurretai-hydreigon",
         config=config,
-        settings=wandb.Settings(
-            x_service_wait=30,  # Increase service wait time
-            start_method="thread",  # Use thread instead of fork
-        ),
     )
     try:
         # Try normal symlink first (fast)
