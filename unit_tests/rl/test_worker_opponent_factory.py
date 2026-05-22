@@ -3,10 +3,15 @@ from types import SimpleNamespace
 from typing import cast
 from unittest.mock import MagicMock
 
+import pytest
 from poke_env import ServerConfiguration
 
 from elitefurretai.etl import Embedder, TeamRepo
-from elitefurretai.rl.opponents import OpponentPool, WorkerOpponentFactory
+from elitefurretai.rl.opponents import (
+    OpponentPool,
+    WorkerOpponentFactory,
+    largest_remainder_apportionment,
+)
 from elitefurretai.rl.rl_trajectory_player import RLTrajectoryPlayer
 
 
@@ -39,22 +44,30 @@ def _clients_with(*names: str) -> MagicMock:
     return clients
 
 
-def _make_factory(curriculum, worker_inference_clients=None):
+def _make_factory(
+    curriculum,
+    worker_inference_clients=None,
+    battle_formats=None,
+    agent_team_paths=None,
+):
     """Construct a factory with sensible defaults. Tests that only
     exercise pure-state methods (e.g. `set_active_*_slots`) can rely on
     the default stub bundle; tests that actually route inference should
     pass a pre-built bundle from `_clients_with(...)`.
     """
+    if battle_formats is None:
+        battle_formats = {"gen9vgc2023regc": 1.0}
     return WorkerOpponentFactory(
         team_repo=cast(TeamRepo, _DummyTeamRepo()),
-        battle_format="gen9vgc2023regc",
-        team_subdirectory=None,
+        battle_formats=battle_formats,
+        opponent_team_subdirectories={fmt: None for fmt in battle_formats},
         server_config=cast(ServerConfiguration, SimpleNamespace()),
         curriculum=curriculum,
         embedder=cast(Embedder, SimpleNamespace()),
         worker_id=0,
         run_id="0000",
         worker_inference_clients=worker_inference_clients or _clients_with(),
+        agent_team_paths=agent_team_paths,
     )
 
 
@@ -279,3 +292,53 @@ def test_exploiters_falls_back_when_no_active_slots():
     selected = _sample_and_apply(factory, player, opponent)
 
     assert selected == OpponentPool.SELF_PLAY
+
+
+def test_largest_remainder_apportionment_exact_split():
+    """8 pairs across two formats 50/50 -> 4 of each."""
+    result = largest_remainder_apportionment(num_items=8, weights={"a": 0.5, "b": 0.5})
+    assert sorted(result) == ["a"] * 4 + ["b"] * 4
+
+
+def test_largest_remainder_apportionment_handles_remainder():
+    """5 pairs across 70/30 -> 4 of 'a', 1 of 'b'."""
+    result = largest_remainder_apportionment(num_items=5, weights={"a": 0.7, "b": 0.3})
+    counts = {fmt: result.count(fmt) for fmt in set(result)}
+    assert counts == {"a": 4, "b": 1}
+
+
+def test_largest_remainder_apportionment_deterministic():
+    """Same inputs -> same output."""
+    r1 = largest_remainder_apportionment(num_items=7, weights={"x": 0.4, "y": 0.6})
+    r2 = largest_remainder_apportionment(num_items=7, weights={"x": 0.4, "y": 0.6})
+    assert r1 == r2
+
+
+def test_largest_remainder_apportionment_single_format():
+    """Single-format distribution -> every slot gets that format."""
+    result = largest_remainder_apportionment(num_items=4, weights={"only": 1.0})
+    assert result == ["only"] * 4
+
+
+@pytest.mark.xfail(reason="create_agents per-pair format wired in Task 4", strict=True)
+def test_create_agents_assigns_pair_formats_via_apportionment(monkeypatch):
+    """4 pairs at 50/50 should produce a pair_formats list with two of each format."""
+    factory = _make_factory(
+        curriculum={OpponentPool.SELF_PLAY: 1.0},
+        battle_formats={"gen9vgc2024regg": 0.5, "gen9vgc2024regh": 0.5},
+    )
+    constructed_formats: list[str] = []
+
+    class _StubPlayer:
+        def __init__(self, *, battle_format, **kwargs):
+            constructed_formats.append(battle_format)
+
+    monkeypatch.setattr("elitefurretai.rl.opponents.RLTrajectoryPlayer", _StubPlayer)
+    factory.create_agents(num_pairs=4, local_traj_queue=queue.Queue())
+    assert sorted(factory.pair_formats) == [
+        "gen9vgc2024regg",
+        "gen9vgc2024regg",
+        "gen9vgc2024regh",
+        "gen9vgc2024regh",
+    ]
+    assert sorted(constructed_formats) == ["gen9vgc2024regg"] * 4 + ["gen9vgc2024regh"] * 4

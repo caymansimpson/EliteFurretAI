@@ -76,6 +76,38 @@ logger = logging.getLogger(__name__)
 _P = TypeVar("_P", bound=Player)
 
 
+def largest_remainder_apportionment(
+    num_items: int, weights: Dict[str, float]
+) -> List[str]:
+    """Distribute ``num_items`` slots across ``weights.keys()`` proportionally.
+
+    Uses the largest-remainder (Hamilton) method: floor every quota first,
+    then assign leftover slots one-at-a-time to the keys with the largest
+    fractional remainders. Deterministic — ties are broken by sorted key
+    order. Returns a list of length ``num_items``.
+
+    Example:
+
+        >>> largest_remainder_apportionment(5, {"a": 0.7, "b": 0.3})
+        ['a', 'a', 'a', 'a', 'b']
+    """
+    if num_items <= 0 or not weights:
+        return []
+    quotas = {fmt: weights[fmt] * num_items for fmt in weights}
+    floors = {fmt: int(quotas[fmt]) for fmt in weights}
+    remainders = sorted(
+        ((quotas[fmt] - floors[fmt], fmt) for fmt in weights),
+        key=lambda pair: (-pair[0], pair[1]),
+    )
+    leftover = num_items - sum(floors.values())
+    for _, fmt in remainders[:leftover]:
+        floors[fmt] += 1
+    result: List[str] = []
+    for fmt in sorted(weights):
+        result.extend([fmt] * floors[fmt])
+    return result
+
+
 class OpponentPool:
     """Main-process opponent sampler.
 
@@ -491,8 +523,8 @@ class WorkerOpponentFactory:
     def __init__(
         self,
         team_repo: TeamRepo,
-        battle_format: str,
-        team_subdirectory: Optional[str],
+        battle_formats: Dict[str, float],
+        opponent_team_subdirectories: Dict[str, Optional[str]],
         server_config: ServerConfiguration,
         curriculum: Optional[Dict[str, float]],
         embedder: Embedder,
@@ -501,12 +533,12 @@ class WorkerOpponentFactory:
         worker_inference_clients: WorkerInferenceClients,
         max_battle_steps: int = 40,
         external_vgcbench_usernames: Optional[List[str]] = None,
-        agent_team_path: Optional[str] = None,
+        agent_team_paths: Optional[Dict[str, str]] = None,
         max_concurrent_battles_per_player: Optional[int] = None,
     ):
         self.team_repo = team_repo
-        self.battle_format = battle_format
-        self.team_subdirectory = team_subdirectory
+        self.battle_formats = dict(battle_formats)
+        self.opponent_team_subdirectories = dict(opponent_team_subdirectories)
         self.server_config = server_config
         self.worker_inference_clients = worker_inference_clients
         self.max_concurrent_battles_per_player = max_concurrent_battles_per_player
@@ -515,21 +547,33 @@ class WorkerOpponentFactory:
         self.worker_id = worker_id
         self.run_id = run_id
         self.max_battle_steps = max_battle_steps
-        self._agent_teams: List[str] = []
-        if agent_team_path:
-            if os.path.isdir(agent_team_path):
-                for fname in sorted(os.listdir(agent_team_path)):
-                    if fname.endswith(".txt"):
-                        with open(os.path.join(agent_team_path, fname)) as f:
-                            self._agent_teams.append(f.read())
-                logger.info(
-                    "Loaded %d agent teams from directory %s",
-                    len(self._agent_teams),
-                    agent_team_path,
-                )
-            else:
-                with open(agent_team_path) as f:
-                    self._agent_teams.append(f.read())
+
+        # Per-format agent team strings. Keys match self.battle_formats; each
+        # value is the list of team strings loaded from disk for that format
+        # (or [] if no agent_team_paths entry was given for that format,
+        # which means "sample from opponent_team_subdirectories instead").
+        self._agent_teams_by_format: Dict[str, List[str]] = {
+            fmt: [] for fmt in self.battle_formats
+        }
+        if agent_team_paths:
+            for fmt, path in agent_team_paths.items():
+                teams: List[str] = []
+                if os.path.isdir(path):
+                    for fname in sorted(os.listdir(path)):
+                        if fname.endswith(".txt"):
+                            with open(os.path.join(path, fname)) as f:
+                                teams.append(f.read())
+                    logger.info(
+                        "Loaded %d agent teams for %s from directory %s",
+                        len(teams),
+                        fmt,
+                        path,
+                    )
+                else:
+                    with open(path) as f:
+                        teams.append(f.read())
+                self._agent_teams_by_format[fmt] = teams
+
         self.external_vgcbench_usernames = [
             username.strip()
             for username in (external_vgcbench_usernames or [])
@@ -549,6 +593,9 @@ class WorkerOpponentFactory:
         # Why: Showdown usernames must be unique among currently connected clients,
         # and stale sockets can briefly outlive a rebuild.
         self._rebuild_generation = 0
+        # Per-pair format assignment. Populated in create_agents() (Task 4).
+        self.pair_formats: List[str] = []
+
         # Compact entropy tags for username uniqueness across fast restarts.
         # Why: run_id alone can still collide in close launches if stale sockets
         # have not fully disconnected yet.
