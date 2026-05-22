@@ -51,6 +51,8 @@ def train_epoch(
     steps = 0
     num_batches = 0
     start = time.time()
+    window_start = time.time()
+    window_batches = 0
 
     # Gradient accumulation setup to reduce memory pressure
     accumulation_steps = config.get("accumulation_steps", 1)
@@ -281,6 +283,12 @@ def train_epoch(
             gc.collect()
 
         if num_batches % (10 * accumulation_steps) == 0:
+            now = time.time()
+            elapsed = now - window_start
+            window_batches += 10 * accumulation_steps
+            batches_per_sec = window_batches / elapsed if elapsed > 0 else 0.0
+            window_start = now
+            window_batches = 0
             wandb.log(
                 {
                     "Total Steps": prev_steps + steps,
@@ -291,6 +299,7 @@ def train_epoch(
                     "train_brier": (brier_sum / brier_count) if brier_count > 0 else 0.0,
                     "train_entropy": running_entropy / num_batches,
                     "learning_rate": optimizer.param_groups[0]["lr"],
+                    "batches_per_sec": batches_per_sec,
                 }
             )
 
