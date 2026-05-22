@@ -281,7 +281,7 @@ def mp_worker_process(
                     # The learner periodically pushes a control payload onto
                     # each worker's control_queue containing:
                     #   - "curriculum": new opponent-mix probabilities
-                    #   - "telets go with Bmperature" / "top_p": new exploration knobs
+                    #   - "temperature" / "top_p": new exploration knobs
                     #   - "active_ghost_slots" / "active_exploiter_slots":
                     #     which slots in the registry's snapshot pools are
                     #     currently valid routing targets.

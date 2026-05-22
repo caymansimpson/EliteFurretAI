@@ -727,6 +727,16 @@ class WorkerOpponentFactory:
         self.pair_formats = largest_remainder_apportionment(
             num_items=num_pairs, weights=self.battle_formats
         )
+        missing_formats = set(self.battle_formats) - set(self.pair_formats)
+        if missing_formats:
+            logger.warning(
+                "Worker %s has only %d pairs but %d configured formats; %s got zero pairs. "
+                "Recommend num_pairs >= len(battle_formats) for stable distributions.",
+                self.worker_id,
+                num_pairs,
+                len(self.battle_formats),
+                sorted(missing_formats),
+            )
 
         self.players = []
         self.opponents = []
