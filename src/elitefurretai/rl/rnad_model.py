@@ -1,12 +1,12 @@
-"""RNaDAgent — torch.nn.Module wrapper around TransformerThreeHeadedModel.
+"""RNaDModel — torch.nn.Module wrapper around TransformerThreeHeadedModel.
 
-Despite the historical name, this is a *model* wrapper, not a poke-env
-Player. Used by the inference subprocess, the learner, the trainer, and
-the model registry to present a uniform ``forward(x, hidden_state)`` API
+Used by the inference subprocess, the learner, the trainer, and the
+model registry to present a uniform ``forward(x, hidden_state)`` API
 over the underlying transformer architecture.
 
-Moved here from ``rl/players.py`` on 2026-05-19 as part of the agents/
-directory reorganization (see planning/stage2/2026-05-19-09-30-agents-directory-reorg.md).
+Renamed from ``RNaDAgent`` on 2026-05-19; was moved here from
+``rl/players.py`` on the same day as part of the agents/ directory
+reorganization (see planning/stage2/2026-05-19-09-30-agents-directory-reorg.md).
 """
 
 from __future__ import annotations
@@ -16,20 +16,20 @@ import torch
 from elitefurretai.supervised.model_archs import TransformerThreeHeadedModel
 
 
-class RNaDAgent(torch.nn.Module):
-    """RL Agent wrapper around TransformerThreeHeadedModel.
+class RNaDModel(torch.nn.Module):
+    """torch.nn.Module wrapper around TransformerThreeHeadedModel.
 
     Why this exists
     ---------------
     The supervised (BC) model maintains a growing context tensor across turns.
-    RNaDAgent presents a uniform `forward(x, hidden_state)` API that callers
+    RNaDModel presents a uniform `forward(x, hidden_state)` API that callers
     use without caring about the underlying architecture details.
 
     `get_initial_state(batch_size, device)` returns None (empty context) to
     start a fresh battle.
 
-    This is a wrapper, not a model — it has no parameters of its own beyond
-    those of the wrapped model.
+    This is a thin wrapper — it has no parameters of its own beyond those
+    of the wrapped model.
     """
 
     def __init__(self, model: TransformerThreeHeadedModel):

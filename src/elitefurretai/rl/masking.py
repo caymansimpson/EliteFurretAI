@@ -27,7 +27,7 @@ Where this fits in the bigger picture
 Every turn:
     1. The actor gets a request payload from Showdown describing the current
        state of the battle (active mons, available moves, force-switch flags).
-    2. `BatchInferencePlayer` snapshots that request, calls
+    2. `RLTrajectoryPlayer` snapshots that request, calls
        `fast_get_action_mask()` here to get a (2025,) mask.
     3. The mask is sent into the inference batch alongside the embedded state.
     4. The learner's logits are multiplied by the mask; softmax is taken;
@@ -409,14 +409,14 @@ def fast_get_action_mask(
 ) -> np.ndarray:
     """Generate the full 2025-dimensional action mask for the current turn.
 
-    This is the main entry point used by BatchInferencePlayer and SyncPolicyPlayer.
+    This is the main entry point used by RLTrajectoryPlayer and SyncPolicyPlayer.
     It enumerates valid actions directly from the request (~0.05ms) rather than
     validating each of the 2025 candidates (~3-4s) — a ~50,000× speedup.
 
     Args:
         battle:           Current DoubleBattle state.
         request_override: If provided, use this instead of battle.last_request.
-                          BatchInferencePlayer passes a frozen snapshot here to
+                          RLTrajectoryPlayer passes a frozen snapshot here to
                           prevent mask/decode drift when the request changes mid-flight
                           while we're waiting on async inference.
 

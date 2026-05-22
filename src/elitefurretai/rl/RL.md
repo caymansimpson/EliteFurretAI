@@ -1,1083 +1,343 @@
 # RL Training System
 
-This document is the **comprehensive, one-stop guide** to EliteFurretAI's reinforcement learning training system. It covers architecture, algorithms, optimization history, benchmarks, and practical guidance for running and extending the system.
+Current-state reference for EliteFurretAI's reinforcement learning training system. Historical narrative (optimization journey, pre-merge architectures, ablation runs) lives in `planning/stage2/`.
 
 ## Table of Contents
 
-0.  [**Infrastructure Primer (Read First)**](#0-infrastructure-primer-read-first)
-    -   The Fundamental Problems
-    -   The Picture
-    -   How A Single Battle Flows
-    -   Why The Infrastructure Looks Like This — Six Decisions
-1.  [**Hardware & Environment**](#1-hardware--environment)
-2.  [**Architecture Overview**](#2-architecture-overview)
-    -   IMPALA-Style Multiprocessing
-    -   Architectural Principles
-3.  [**Battle Backends**](#3-battle-backends)
-    -   Supported Backends
-    -   Rust Backend Status
-    -   Core Rust Runtime Files
-4.  [**RNaD Algorithm Overview**](#4-rnad-algorithm-overview)
-    -   Why Regularized Nash Dynamics?
-    -   The RNaD Loss Function
-    -   Inspiration from Ataraxos
-5.  [**Core Components and Files**](#5-core-components)
-    -   `batch_inference_player.py` + `rnad_model.py`: Actor-side player + agent wrapper (split from former `players.py` on 2026-05-19; eval Players in `agents/`)
-    -   `learners.py`: RNaD learner + model construction
-    -   `worker.py`: Actor process body
-    -   `train.py`: Trainer entrypoint and coordinator
-    -   `config.py`: Configuration system
-    -   `masking.py`: Optimized action masking
-    -   Team management lives in `etl/`, not here
-6.  [**Training Workflow & Features**](#6-training-workflow--features)
-    -   The Multi-Stage Training Process
-    -   Configuration-Driven Training
-    -   Resume Training from Checkpoints
-    -   Automatic Exploiter Training
-    -   Comprehensive Monitoring with WandB
-7.  [**Exploiter Training Details**](#7-exploiter-training-details)
-    -   What is an Exploiter?
-    -   Design Decision: Single-Team Exploiters
-    -   The Exploiter Training Workflow
-    -   The Opponent Pool & Adaptive Curriculum
-8.  [**Performance & Optimization**](#8-performance--optimization)
-    -   Understanding the Bottlenecks
-    -   Fast Action Masking (52,000x speedup)
-    -   Embedder Move Caching (2.75x speedup)
-    -   Mixed Precision Training (2x speedup)
-    -   Why Multiprocessing? GIL Limitations
-    -   Multi-Server Showdown Architecture
-8b. [**Centralized Inference (May 2026)**](#8b-centralized-inference-may-2026)
-    -   ModelRegistry + WorkerInferenceClients architecture
-    -   Hot-swap opponent.inference_client between named models
-    -   +34% throughput on full curriculum
-    -   torch.compile multi-thread caveat
-9.  [**Scaling Experiments & Benchmarks**](#9-scaling-experiments--benchmarks)
-    -   Baseline Measurements
-    -   Multi-Server Scaling Results
-    -   Hardware Stress Testing
-    -   Memory Requirements
-    -   Optimal Configurations
-10. [**Advanced Features**](#10-advanced-features)
-    -   Portfolio Regularization
-    -   The Training Profiler
-11. [**Quick Start Guide**](#11-quick-start-guide)
-    -   Basic Usage & Commands
-    -   Example Configurations
-12. [**Implementation Notes & Bug Fixes**](#12-implementation-notes--bug-fixes)
-    -   Critical Bug Fixes
-    -   OTS Deadlock Fix
-    -   Known Issues & Workarounds
-13. [**Design Philosophy & Key Takeaways**](#13-design-philosophy--key-takeaways)
-    -   Core Principles
-    -   Lessons Learned
-    -   Future Directions
+1.  [Overview](#1-overview)
+2.  [Infrastructure & Hardware](#2-infrastructure--hardware)
+3.  [Architecture & Throughput](#3-architecture--throughput)
+4.  [RNaD Algorithm](#4-rnad-algorithm)
+5.  [Exploiters & Curriculum](#5-exploiters--curriculum)
+6.  [Model Architecture & Config](#6-model-architecture--config)
+7.  [Known Issues & Workarounds](#7-known-issues--workarounds)
+8.  [Training Workflow](#8-training-workflow)
+9.  [Quick Start](#9-quick-start)
+10. [Module Reference](#10-module-reference)
+11. [Future Directions](#11-future-directions)
 
 ---
 
-## 0. Infrastructure Primer (Read First)
+## 1. Overview
 
-This section explains **what the infrastructure has to solve and why it looks the way it does**, before any algorithm, component, or benchmark detail. If you skim only one section in this doc, skim this one.
+EliteFurretAI's RL trainer builds off of a behavior-cloned `TransformerThreeHeadedModel` against itself and a curated opponent pool using **Regularized Nash Dynamics (RNaD)**. The system is built around two constraints:
 
-### The Fundamental Problems
+- **Pokémon Showdown is single-threaded Node.js** where one server pegs one CPU core. Thus, maximizing throughput requires several Showdown servers on different ports.
+- **Python's GIL forces a tradeoff between battle-stepping and inference inside a single process,** forcing us to do multiprocessing instead of multithreading.
 
-The entire architecture exists to dodge two awkward constraints.
+The architecture is therefore IMPALA-style: one **trainer process** owns the learner and centralized inference; **N worker processes** drive battles through dedicated Showdown servers and never touch model weights where communication is `mp.Queue` only.
 
-**1. Pokémon Showdown is slow and single-threaded.** Showdown is a Node.js simulator — one server process maxes one CPU core no matter how many battles you point at it. To get throughput, we have to run multiple Showdown servers in parallel on different ports.
+**Current state (as of May 2026)**:
 
-**2. Python's GIL forces a tradeoff between battle-stepping speed and inference speed inside a single process.** The Global Interpreter Lock (GIL) is a mutex inside CPython that allows only **one thread to execute Python bytecode at a time**. Even on an 8-core machine, Python threads doing Python work take turns on a single core — they don't run in parallel.
+- Backend: `showdown_websocket` (poke-env `Player` over local Showdown servers).
+- Inference: centralized via `ModelRegistry`. Services can run in-process (daemon thread inside trainer) or in dedicated subprocesses.
+- Algorithm: PPO + KL-to-reference + C51 distributional value, with portfolio regularization (multiple frozen reference models, regularize to the closest).
+- Current best supervised checkpoint feeding RL: `data/models/supervised/cool-bee-85-finetune_best.pt` (~26.7M params, raw featureset).
+- Current throughput on full curriculum (balmy-cloud-70, 48h continuous): **~8.5 traj/s overall**, per-update range ~6–10 traj/s.
+- Current optimal topology (sep_arch.yaml, used by balmy-cloud-70): `num_workers=4`, `num_players=16`, `num_servers=4`, `num_battles_per_pair=48`, `max_concurrent_battles_per_player=48`.
+- Stage II graduation criterion: simultaneously ≥60% win rate vs `vgc_bench_baseline`, `max_damage`, `bc_player`, and `simple_heuristic_baseline`. We're also exploring a 50% win rate against FoulPlay.
 
-The work in this pipeline splits roughly into two phases, both Python-heavy:
+## 2. Infrastructure & Hardware
 
-- **Battle work**: parsing Showdown protocol messages, embedding battle states into feature vectors, computing action masks, managing the asyncio loop that drives WebSocket I/O.
-- **Inference work**: packing input tensors, launching the forward pass (CUDA releases the GIL, but the Python wrapper around it does not), unpacking outputs, sampling actions.
+### The Two Fundamental Problems
 
-In a single process these phases fight for the same lock. Every microsecond inference spends executing Python bytecode is a microsecond every battle is stalled, and vice versa. Workarounds that *feel* parallel don't help:
+Most of the architecture exists to work around two constraints that the rest of the codebase inherits.
 
-- **async/await** is still one thread cooperatively yielding — no parallelism.
-- **threading** doesn't help either: even with 16 "concurrent" battles in 16 threads, they share one interpreter and serialize on the GIL.
+**1. Pokémon Showdown is slow and single-threaded.** Showdown is a Node.js simulator, and one server process can only use one CPU core regardless of how many concurrent battles it is handling. The only way to get more simulation throughput out of a multi-core machine is to run several Showdown server processes in parallel on different ports.
 
-The escape hatch is **multiprocessing**: each process gets its own Python interpreter and its own GIL. With N worker processes, you get N independent Python execution streams running truly in parallel on N cores. Everything below is structured around separate processes communicating over `mp.Queue`.
+**2. Python's GIL forces a tradeoff between battle-stepping speed and inference speed inside a single process.** The Global Interpreter Lock (GIL) is a mutex inside CPython that only lets one thread execute Python bytecode at a time, so even on an 8-core machine Python threads doing Python work end up taking turns on a single core rather than running in parallel.
 
-### The Picture
+The work in this pipeline splits into two phases that are both heavily Python-bound:
+
+- **Battle work**: parsing Showdown protocol messages, embedding battle states into feature vectors, computing action masks, and managing the asyncio loop that drives WebSocket I/O.
+- **Inference work**: packing input tensors, launching the forward pass (CUDA releases the GIL but the Python wrapper around it does not), unpacking outputs, and sampling actions.
+
+Inside one process these two phases compete for the same lock, which means time the interpreter spends doing inference is time it is not stepping battles, and vice versa. The usual workarounds that look like they should help don't, because:
+
+- **async/await** is still just one thread cooperatively yielding to itself, with no actual parallelism.
+- **threading** does not help either, since 16 "concurrent" battles in 16 threads still share one Python interpreter and serialize on the GIL.
+
+The way out is **multiprocessing**: each process has its own Python interpreter and its own GIL, so spawning N worker processes gives us N independent Python execution streams running truly in parallel on N cores.
+
+### Reference Hardware
+
+- **GPU**: NVIDIA GeForce RTX 3090 (24 GB VRAM)
+- **CPU**: 8 cores
+- **RAM**: 32 GB (24 GB available in WSL2)
+- **Storage**: 2 TB NVMe SSD
+- **OS**: Linux via WSL2
+
+### WSL2 Notes
+
+```python
+# REQUIRED at the start of any training script
+torch.multiprocessing.set_sharing_strategy('file_system')
+
+# DataLoader settings
+pin_memory=False  # MUST be False on WSL2 — pinned-memory paths OOM the kernel
+```
+
+### Six Design Decisions
+
+These six choices follow directly from the two constraints above, and they end up shaping the rest of the code.
+
+**1. Workers are separate processes rather than threads.** Because of the GIL, threads in Python share one interpreter and cannot run the CPU-heavy parts of a battle in parallel. Using `mp.Process` gives each worker its own Python interpreter and its own GIL instead, which is the IMPALA pattern of separate actor and learner processes that communicate only through queues.
+
+**2. One Showdown server per worker, on different ports.** Because Showdown is single-threaded Node.js, one server pegged at 100% CPU is what actually limits us once enough battles are in flight. `launch_servers.py` brings up 4–8 servers on different ports so each worker has its own and they distribute simulation load across CPU cores.
+
+**3. Inference is centralized on the trainer.** All workers submit batched inference requests to trainer-side `InferenceService`s, which means there is only one model copy per registered name and the forward pass batches across every worker's concurrent battles. Workers never hold model weights themselves. We do pay some GPU contention with the learner for this, but the learner on its own does not saturate the 3090, so the spare capacity covers inference.
+
+**4. Inference services can live in subprocesses (Plan C).** When many services run concurrently (main + bc + exploiter + victim + ghosts), they end up contending on the trainer's GIL, so `ModelRegistry` supports grouping services into dedicated subprocesses via a `process_group` argument (e.g. `process_group="ghosts"`). Each subprocess gets its own Python interpreter and CUDA context. This costs roughly 1 GB RSS and 150 MB of GPU memory per subprocess, and is worth paying when the service-side Python work would otherwise serialize behind the trainer.
+
+**5. Trajectories are the IPC currency between worker and learner.** Rather than send raw battle state across processes, workers ship completed trajectory dicts (`steps`, `opponent_type`, `won`, `battle_length`, `forfeited`). This lets the learner stay agnostic about how a given trajectory was produced — it just sees `(state, action, reward)` tuples regardless of the opponent type.
+
+**6. The opponent pool and curriculum run inside each worker.** Self-play against a single opponent tends to collapse into a degenerate optimum, so `opponents.py` maintains a mix of types (`self`, `bc`, `max_damage`, `simple_heuristic_baseline`, `vgc_bench_baseline`, `ghosts`, `exploiters`, `train_exploiter`). Each worker has a `WorkerOpponentFactory` that picks an opponent per battle pair from curriculum weights the trainer pushes down. Because inference is centralized, switching opponents is essentially free — `opponent.inference_client = clients.get("bc")` re-points to a different model without reloading anything.
+
+---
+
+## 3. Architecture & Throughput
+
+### Picture
 
 ```
-┌─────────────────── TRAINER PROCESS (owns the GPU) ───────────────────┐
-│                                                                      │
-│   ┌─ Learner ─────────┐    ┌─ ModelRegistry ───────────────────────┐ │
-│   │ main_model (FP32) │    │  InferenceService["main"] ──┐         │ │
-│   │ ref_model(s)      │◄───┤  InferenceService["bc"]   ──┤ daemon  │ │
-│   │ optimizer state   │    │  InferenceService["expl"] ──┤ threads │ │
-│   └───────▲───────────┘    │  InferenceService["vict"] ──┘         │ │
-│           │ trajectories   └────────▲──────────────────┬───────────┘ │
-│           │                         │ requests         │ responses   │
-└───────────┼─────────────────────────┼──────────────────┼─────────────┘
-            │                         │                  ▼
-   ┌────────┴─────┐  ┌────────────────┴────────┐ ┌───────────────┐
-   │ traj_queue   │  │ inference req queue     │ │ per-worker    │
-   │ (mp.Queue)   │  │ (mp.Queue, one/service) │ │ resp queues   │
-   └────────▲─────┘  └────────────────▲────────┘ └────────┬──────┘
-            │                         │                   │
-   ┌────────┴─────────┐ ┌─────────────┴─────┐ ┌───────────┴─────────┐
-   │   WORKER 0       │ │   WORKER 1        │ │   WORKER N          │
-   │  (own process)   │ │  (own process)    │ │  (own process)      │
-   │                  │ │                   │ │                     │
-   │ BatchInfPlayer × │ │ BatchInfPlayer ×  │ │ BatchInfPlayer ×    │
-   │ many battles     │ │ many battles      │ │ many battles        │
-   │       │          │ │       │           │ │       │             │
-   │       ▼          │ │       ▼           │ │       ▼             │
-   │ Showdown :8000   │ │ Showdown :8001    │ │ Showdown :800N      │
-   └──────────────────┘ └───────────────────┘ └─────────────────────┘
+┌──────────────────────── TRAINER PROCESS (owns the GPU) ─────────────────────────┐
+│                                                                                 │
+│   ┌─ Learner ─────────┐       ┌─ ModelRegistry ──────────────────────────────┐  │
+│   │ main_model (FP32) │       │   InferenceService["main"] ──┐               │  │
+│   │ ref_model(s)      │◄──────┤   InferenceService["bc"]   ──┤ in-proc       │  │
+│   │ optimizer state   │       │   InferenceService["expl"] ──┤ daemon thread │  │
+│   └─────────▲─────────┘       │   InferenceService["vict"] ──┘               │  │
+│             │ trajectories    │                  AND/OR                      │  │
+│             │                 │   InferenceSubprocessHandle["ghosts"]        │  │
+│             │                 │       (own python + CUDA process)            │  │
+│             │                 └────────────────▲──────────────────┬──────────┘  │
+│             │                                  │ requests         │ responses   │
+└─────────────┼──────────────────────────────────┼──────────────────┼─────────────┘
+              │                                  │                  ▼
+              │                                  │                  │
+   ┌──────────┴───────┐          ┌───────────────┴─────────┐    ┌───┴──────────────┐
+   │ traj_queue       │          │ inference req queue     │    │ per-worker       │
+   │ (mp.Queue)       │          │ (mp.Queue, one/service) │    │ response queues  │
+   └──────────▲───────┘          └───────────▲─────────────┘    └─────────┬────────┘
+              │                              │                            │
+              │ pushed by workers            │ pushed by workers          │ routed per worker
+              │                              │                            ▼
+   ┌──────────┴───────────┐  ┌───────────────┴──────┐  ┌──────────────────┴───┐
+   │ WORKER 0             │  │ WORKER 1             │  │ WORKER N             │
+   │ (own process)        │  │ (own process)        │  │ (own process)        │
+   │                      │  │                      │  │                      │
+   │ RLTrajectoryPlayer   │  │ RLTrajectoryPlayer   │  │ RLTrajectoryPlayer   │
+   │ × many battles       │  │ × many battles       │  │ × many battles       │
+   │           │          │  │           │          │  │           │          │
+   │           ▼          │  │           ▼          │  │           ▼          │
+   │ Showdown :8000       │  │ Showdown :8001       │  │ Showdown :800N       │
+   └──────────────────────┘  └──────────────────────┘  └──────────────────────┘
 ```
 
 ### How A Single Battle Flows
 
-Trace one decision to feel how the parts hook up.
-
-1. **Worker N** has, say, 16 concurrent battles running against its dedicated Showdown server (`localhost:800N`).
-2. Showdown sends "it's your turn" over WebSocket to a `BatchInferencePlayer` (`batch_inference_player.py`).
-3. The player computes the **action mask** (`masking.py`) — figures out which of the 2,025 possible turn actions are legal *for this exact battle state*. This is the 52,000× speedup; it reads `battle.last_request` directly instead of probing every action.
+1. **Worker N** has up to `max_concurrent_battles_per_player` battles running against its dedicated Showdown server (`localhost:800N`).
+2. Showdown sends "it's your turn" over WebSocket to a `RLTrajectoryPlayer`.
+3. The player computes the **action mask** (`masking.py`) — directly enumerates legal (move, target) and switch pairs from `battle.last_request` instead of probing all 2,025 actions.
 4. The player **embeds** the battle state into a feature vector via the Embedder (in `etl/`).
-5. The player calls `client.submit(features, mask, ...)` — this packages an `InferenceRequest` (`inference_ipc.py`) and puts it on an `mp.Queue` heading back to the trainer process.
-6. The player **awaits an asyncio future** for the response. Other concurrent battles in this worker do their own thing meanwhile.
-7. Trainer-side, the `InferenceService` daemon thread (`inference_trainer.py`) drains the queue, **batches** up to `batch_size` requests (or waits at most `batch_timeout`), and runs ONE forward pass on the GPU.
+5. The player calls `client.submit(features, mask, ...)` — packages an `InferenceRequest` and puts it on an `mp.Queue` heading back to the trainer process (or to a Plan C subprocess hosting the right service).
+6. The player **awaits an asyncio future** for the response. Other concurrent battles in this worker continue meanwhile.
+7. Trainer-side, the `InferenceService` daemon thread drains the queue, **batches** up to `batch_size` requests (or waits at most `batch_timeout`), and runs ONE forward pass on the GPU.
 8. Results go back through per-worker response queues. The future resolves. The player picks an action (with temperature + top-p sampling) and sends the order to Showdown.
-9. After each step, the player saves `(state, action, log_prob, value, mask, ...)` to a per-battle buffer.
-10. When the battle ends, the worker pushes the **full trajectory** onto `mp_traj_queue`.
+9. After each step, the player saves `(state, action, log_prob, value, mask, …)` to a per-battle buffer.
+10. When the battle ends, the worker pushes the **full trajectory** onto `mp_traj_queue` and sends an `EvictRequest` so the trainer can free the hidden-state slot for that `(worker_id, player_id, battle_tag)`.
 
-The **learner** drains `mp_traj_queue`, accumulates trajectories into training batches, computes the RNaD loss, backprops, and every N steps calls `registry.sync_weights("main", state_dict)` — which updates the `InferenceService`'s model copy in place. Workers never touch model weights directly.
+The **learner** drains `mp_traj_queue`, accumulates trajectories into training batches, computes the RNaD loss, backprops, and at the broadcast cadence calls `registry.sync_weights(name, state_dict)` — which updates each `InferenceService`'s model copy in place (for in-process services) or ships a state_dict over the control queue (for subprocess services).
 
-### Why The Infrastructure Looks Like This — Six Decisions
+### Centralized Inference Details
 
-These are the choices that shape everything else.
+- **Hidden state lives trainer-side**, in `RealModelBatchHandler.hidden_states` keyed by `(worker_id, player_id, battle_tag)`. The wire payload only carries the lightweight battle_tag rather than the full `(1, T, hidden_size)` tensor, which keeps inference requests small. Workers send an `EvictRequest` when a battle finishes so the corresponding slot can be freed.
+- **One model copy per name.** `ModelRegistry` registers `main` (always), as well as `bc`, `exploiter`, and `victim` when the curriculum calls for them, plus ghost and exploiter-snapshot slot pools.
+- **Weight sync.** When the trainer calls `registry.sync_weights(name, state_dict)`, the registry routes the update either to the in-process model (in-place `load_state_dict`) or to the right subprocess via that group's control queue, depending on where the service is hosted.
+- **Subprocess backend (Plan C).** Passing `process_group` to `register()` places a service in a subprocess group instead of the trainer process, giving it its own Python interpreter (which gets it out from under the trainer's GIL) and its own CUDA context.
+- **torch.compile.** Compiled forward calls are serialized by a process-wide `_COMPILE_LOCK` in `inference_trainer.py`, because dynamo's trace state is global across instances of the same class and per-model locks turned out not to be enough to prevent cross-instance races.
 
-#### 1. Workers are separate processes, not threads
+### Hot-Swap (Multi-Model Curriculum)
 
-Because of the GIL (see *The Fundamental Problems* above), threads in Python share one interpreter — you cannot get true parallelism for the CPU-heavy parts of a battle. With `mp.Process`, each worker has its own Python interpreter, so they actually run in parallel on different cores.
+Dispatch is split across two methods on `WorkerOpponentFactory`:
 
-This is **IMPALA-style**: separate actor and learner processes communicating only by queues.
+- `sample_opp_type_for(player)` picks the opp type from the curriculum, validates it (falls back to `self_play` if e.g. `ghosts` was sampled but no slots are populated), and tags `player.opponent_type`. Does not touch inference clients.
+- `apply_opp_type_to_pair(player, opponent, opp_type)` runs only when the opp type uses the BIP (built-in player) pool — `self_play` / `bc` / `ghosts` / `exploiters` / `train_exploiter`. It re-points `opponent.inference_client` (and, for `train_exploiter`, `player.inference_client`) via `_swap_to(slot, name)`. Heuristic and VGCBench types skip this — they have their own Player pools or external usernames.
 
-#### 2. One Showdown server per worker, on different ports
+### Throughput (Current)
 
-Showdown is single-threaded Node.js. One server pegged at 100% CPU is the real ceiling. We launch 4–8 servers (`launch_servers.py`) on different ports and give each worker its own — distributing battle simulation load across all CPU cores. Empirically, this matters more than raw worker count; see [Section 9](#9-scaling-experiments--benchmarks).
+Measured on `balmy-cloud-70` (sep_arch.yaml lineage, full curriculum: self_play / bc / ghosts / max_damage / simple_heuristic / vgc_bench / exploiters), 48h continuous run:
 
-#### 3. Inference is centralized on the trainer's GPU (shipped May 2026)
+| Metric | Value |
+|---|---|
+| Total trajectories | 1.49M over 48h 30m |
+| Overall traj/s (cumulative) | ~8.5 |
+| Per-update range | ~6–10 traj/s |
+| Learner steps/s (overall) | ~146 |
 
-This is the most counter-intuitive piece — why send inference *back* to the trainer process?
+Optimal topology (from current configs):
 
-The pre-May-2026 architecture had each worker hold its own CPU copy of the model and run its own per-player batched-inference thread. That meant:
+```yaml
+num_workers: 4
+num_players: 16
+num_servers: 4
+num_battles_per_pair: 48
+max_concurrent_battles_per_player: 48  # = num_battles_per_pair removes the 5–30s slow-handler tail
+```
 
-- 4 workers × ~530 MB of model weights = 2 GB redundant RAM
-- 4 separate inference loops, each batching only over one worker's concurrent battles → small batches → poor GPU utilization (if you tried GPU there) or slow CPU forward passes
-- Weight updates required broadcasting the full state_dict to every worker
+The current throughput is the result of several optimization passes (fast action masking, embedder move caching, centralized inference, Plan C), each documented in `planning/stage2/` if you want the full history. The throughput investigation doc is the best entry point.
 
-Centralizing flipped this:
+### Memory Footprint
 
-- **One model copy per name** lives in the trainer process. The `ModelRegistry` holds an `InferenceService` per registered name: `main`, `bc`, `exploiter`, `victim`, etc.
-- Each service runs as a **daemon thread** that batches requests **across all workers** → much larger batches → far better GPU utilization.
-- **Weight sync** becomes one in-process `load_state_dict` call instead of a multi-process broadcast.
-- **Hidden state** (the transformer's growing context per battle) lives trainer-side, keyed by `(worker_id, player_id, battle_tag)`. Workers only carry a tiny battle_tag string on the wire, not the `(1, T, hidden_size)` tensor.
+| Component | Approx |
+|---|---|
+| Trainer process (learner + ModelRegistry, in-process services only) | ~3 GB RSS + ~3 GB VRAM |
+| Worker process | ~700 MB RSS each |
+| Plan C subprocess (per group) | ~1 GB RSS + ~150 MB VRAM |
+| VGCBench external runner | ~5.5 GB RSS each |
+| Showdown server | ~100–200 MB RSS each |
 
-Result: **+34% throughput, +45% learner steps/sec** on the full curriculum. Full detail in [Section 8b](#8b-centralized-inference-may-2026).
-
-The trade-off is GPU contention with the learner — but on the 3090, the learner doesn't saturate the GPU, so the spare capacity was free.
-
-#### 4. Trajectories are the IPC currency
-
-Workers don't send raw battle state. They send completed trajectory dicts: `steps`, `opponent_type`, `won`, `battle_length`, `forfeited`. The learner doesn't care how the trajectory was produced — Rust engine or Showdown, self-play or vs. exploiter — it just trains on the `(state, action, reward)` tuples. This is the clean seam that lets us swap backends.
-
-#### 5. The opponent pool and curriculum run inside each worker
-
-Self-play with one opponent collapses. So `opponents.py` maintains a curriculum: `self`, `bc` (frozen BC model), `max_damage`, `simple_heuristic`, `vgc_bench`, ghosts (past checkpoints), exploiters. Each worker has a `WorkerOpponentFactory` that picks an opponent per battle pair from curriculum weights pushed down from the trainer. Centralized inference made this cheap: switching opponents is just `opponent.inference_client = clients.get("bc")`, no model reload.
-
-#### 6. VGCBench runs in its own venv, reached only over the Showdown protocol
-
-`vgc-bench` is an external evaluation benchmark — it provides baseline VGC AI opponents (notably a Stable-Baselines3-trained model). The problem: `vgc-bench` depends on a different fork of `poke-env` than EliteFurretAI uses. You can't import both into one Python process without API conflicts.
-
-The solution: run `vgc-bench` in its own venv (`../venv-vgcbench/`) as a completely separate process. From the RL trainer side, we don't import `vgc-bench` code at all — we just challenge the VGCBench player's hardcoded Showdown username (`VGCBenchManager.USERNAMES` in `agents/vgcbench_manager.py`) over the Showdown server like any other opponent. From the VGCBench side, `agents/_vgcbench_subprocess.py` (spawned automatically by `VGCBenchManager.launch()`) sits in a loop accepting challenges from those usernames.
-
-Why this matters for infrastructure:
-
-- It's the **same trick as multiprocessing**: when shared state (GIL, package versions) makes coexistence impossible, isolate by process boundary and communicate over a clean protocol — here, the Showdown WebSocket itself.
-- It's expensive: VGCBench external runners eat ~5.5 GB RAM each, which is why the memory watchdog was bumped from 20 GB → 22 GB in `sep_arch.yaml`.
-- It's a throughput cost on the curriculum: full-curriculum runs (VGCBench enabled) hit ~3.5 traj/s vs. ~5.4 with ghosts-off and ~6.1 with ghost-fallback only.
-
-See [Section 12 → External `vgc-bench` Opponents](#external-vgc-bench-opponents-fork-safe) for the runner command and config schema.
+The memory watchdog in `sep_arch.yaml` is set to 22 GB and should be raised if you add more subprocess groups or run additional VGCBench bots beyond the current setup.
 
 ---
 
-## 1. Hardware & Environment
+## 4. RNaD Algorithm
 
-### Reference Hardware
-- **GPU**: NVIDIA GeForce RTX 3090 (24GB VRAM)
-- **CPU**: 8 cores
-- **RAM**: 32GB (24GB available in WSL2)
-- **Storage**: 2TB NVMe SSD
-- **OS**: Linux via WSL2
-
-### Model Specifications
-- **Model**: `TransformerThreeHeadedModel` (Transformer backbone) with FULL embedder
-- **Parameters**: ~26.7M (cool-bee-85-finetune; raw featureset)
-- **Weights Size**: ~100 MB
-- **Embedding Dimensions**: 9,223
-- **Value Head**: C51 distributional (51 bins over [-1, 1]) — richer gradients than scalar MSE
-- **Action Space**: 2,025 turn actions + 90 teampreview actions
-
-### Critical WSL2 Notes
-```python
-# REQUIRED at start of any training script
-torch.multiprocessing.set_sharing_strategy('file_system')  # Required for WSL
-
-# DataLoader settings
-pin_memory=False  # MUST be False on WSL2 - causes OOM otherwise
-```
-
----
-
-## 2. Architecture Overview
-
-The system uses an **IMPALA-style multiprocessing architecture** with separate Python processes for actors and learner. This design bypasses Python's GIL limitation to achieve maximum throughput.
-
-### IMPALA-Style Multiprocessing
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        LEARNER PROCESS (GPU)                        │
-│  ┌─────────────────┐   ┌─────────────────┐   ┌─────────────────┐    │
-│  │  Main Model     │   │ Reference Model │   │   Optimizer     │    │
-│  │  (GPU, FP32)    │   │ (GPU, FP32)     │   │ (Adam states)   │    │
-│  └─────────────────┘   └─────────────────┘   └─────────────────┘    │
-│                                                                     │
-│  ┌───────────────── ModelRegistry (trainer GPU) ──────────────────┐ │
-│  │  InferenceService["main"]   InferenceService["bc"]   ...       │ │
-│  │   • daemon thread            • daemon thread                   │ │
-│  │   • batches mp.Queue reqs    • hidden_states[(wid,pid,tag)]    │ │
-│  │   • one batched forward → response queues                      │ │
-│  └────────────────────────────────────────────────────────────────┘ │
-│              ▲ requests         │ responses   ▲ trajectories        │
-└──────────────┼──────────────────┼─────────────┼─────────────────────┘
-               │                  ▼             │
-       ┌───────┴────────┐ ┌───────┴────────┐ ┌──┴─────────────┐
-       │   WORKER 0     │ │   WORKER 1     │ │   WORKER N     │
-       │  (CPU only)    │ │  (CPU only)    │ │  (CPU only)    │
-       │                │ │                │ │                │
-       │ WorkerInferenceClients (per name: main / bc / ...)   │
-       │  • client.submit(req) → trainer InferenceService     │
-       │  • await response future                             │
-       │                │ │                │ │                │
-       │ ┌────────────┐ │ │ ┌────────────┐ │ │ ┌────────────┐ │
-       │ │  Embedder  │ │ │ │  Embedder  │ │ │ │  Embedder  │ │
-       │ └────────────┘ │ │ └────────────┘ │ │ └────────────┘ │
-       │ ┌────────────┐ │ │ ┌────────────┐ │ │ ┌────────────┐ │
-       │ │  Showdown  │ │ │ │  Showdown  │ │ │ │  Showdown  │ │
-       │ │   :8000    │ │ │ │   :8001    │ │ │ │   :8002    │ │
-       │ └────────────┘ │ │ └────────────┘ │ │ └────────────┘ │
-       └────────────────┘ └────────────────┘ └────────────────┘
-```
-
-**Key Characteristics:**
-- Each actor is a **separate Python process** (bypasses GIL for
-  featurization + battle stepping).
-- **Actors do not hold model weights.** Inference is centralized:
-  trainer owns a `ModelRegistry` with one `InferenceService` per
-  registered model name (`main`, optionally `bc` / `exploiter` /
-  `victim` / `ghost_*`). Each actor constructs a
-  `WorkerInferenceClients` bundle of per-model mp.Queue pairs and
-  submits requests; the batched forward runs on
-  `config.hardware.device` (the trainer's GPU) in the trainer process.
-  See [Section 8b](#8b-centralized-inference-may-2026) for details.
-- **Weight sync is centralized.** The trainer calls
-  `registry.sync_weights(name, state_dict)` to update each
-  `InferenceService`'s model copy in place; actors never load model
-  weights. Per-worker `weight_queue`s remain but now carry only
-  curriculum / temperature / top_p / exploiter paths / ghost slot
-  toggles (any `"weights"` payload still in the broadcast is dropped
-  on the worker side).
-- Actors send completed trajectories via `multiprocessing.Queue`.
-
----
-
-## 3. Battle Backends
-
-The RL system now supports two execution backends:
-
-- `showdown_websocket`: the traditional local Pokemon Showdown server plus poke-env `Player` path
-- `rust_engine`: the in-process Rust simulator plus standalone `DoubleBattle` synchronization path
-
-### Supported Backends
-
-The project should keep both backends working unless there is an explicit decision to retire one. The websocket path is now the primary optimization target for RL training, and the Rust path remains useful for fallback, parity checks, and debugging.
-
-### Rust Backend Status
-
-The current Rust path remains supported, but it is no longer the primary optimization path.
-
-- It is still integrated into the real [train.py](/home/cayman/Repositories/EliteFurretAI/src/elitefurretai/rl/train.py) entrypoint.
-- It still has dedicated runtime and benchmark coverage under [unit_tests/engine](/home/cayman/Repositories/EliteFurretAI/unit_tests/engine).
-- The latest paired learner-facing comparison favored Showdown on wall-clock time to the same update count, while Rust remained useful as a fallback and comparison backend.
-
-The current recommendation is:
-
-- use `showdown_websocket` as the primary optimization and training focus
-- keep `rust_engine` available for fallback, parity checks, and debugging
-
-### Core Rust Runtime Files
-
-The Rust path is centered on these files:
-
-- [rust_battle_engine.py](/home/cayman/Repositories/EliteFurretAI/src/elitefurretai/engine/rust_battle_engine.py): binding adapter, request sanitization, protocol replay, standalone `DoubleBattle` synchronization
-- [sync_battle_driver.py](/home/cayman/Repositories/EliteFurretAI/src/elitefurretai/engine/sync_battle_driver.py): synchronous battle loop, policy batching, trajectory collection, diagnostics, synthetic teampreview compatibility
-- [battle_snapshot.py](/home/cayman/Repositories/EliteFurretAI/src/elitefurretai/engine/battle_snapshot.py): policy-facing observation object for the Rust self-play path
-- [rust_model_benchmark.py](/home/cayman/Repositories/EliteFurretAI/src/elitefurretai/engine/rust_model_benchmark.py): model-backed Rust benchmark entrypoint
-- [ENGINE.md](/home/cayman/Repositories/EliteFurretAI/src/elitefurretai/engine/ENGINE.md): current engine-package guide, backend decision summary, and Stage 2 runtime learnings
-
-### Engine Package Layout
-
-The execution-side modules now live in [src/elitefurretai/engine](/home/cayman/Repositories/EliteFurretAI/src/elitefurretai/engine) rather than directly under the RL package.
-
-That split is intentional:
-
-- `elitefurretai.engine` owns battle-execution concerns
-    - Rust request/state synchronization
-    - synchronous battle driving
-    - Showdown server process management
-    - engine comparison benchmarks
-- `elitefurretai.rl` owns algorithm and training concerns
-    - config
-    - learners
-    - players
-    - opponent sampling
-    - train entrypoint
-
-This keeps runtime/backend code from getting mixed together with RNaD-specific training code.
-
-The Rust binding team-conversion helpers now live directly in `rust_battle_engine.py` so the Rust engine boundary stays consolidated in one module. If the project later introduces a backend-agnostic team representation shared by multiple runtimes, that would be the point to split them back out.
-
-### Why Multiprocessing Over Threading?
-
-Python's Global Interpreter Lock (GIL) prevents true parallel execution across threads:
-
-```
-Thread 1: [===RUN===][--wait--][===RUN===][--wait--]
-Thread 2: [--wait--][===RUN===][--wait--][===RUN===]
-          ↑ Only one thread runs Python bytecode at any moment
-```
-
-With multiprocessing, each actor has its own Python interpreter, enabling true parallelism:
-
-```
-Actor 0: [===RUN===][===RUN===][===RUN===][===RUN===]
-Actor 1: [===RUN===][===RUN===][===RUN===][===RUN===]
-Actor 2: [===RUN===][===RUN===][===RUN===][===RUN===]
-          ↑ All processes run simultaneously
-```
-
-### Architectural Principles
-
-1.  **Trajectories are the Currency**: Actors collect `(state, action, reward, log_prob, value)` tuples and send them to the learner via queue. The Learner computes gradients from these trajectories.
-2.  **Bidirectional Communication**: Actors send actions to Pokémon Showdown and receive state updates via WebSocket.
-3.  **Inference is centralized on the trainer's GPU**: All actors submit batched inference requests to the trainer-side `InferenceService`s. This trades some GPU contention with the learner for much larger inference batches and a single model copy in memory per registered name, instead of one per worker.
-4.  **Periodic Weight Sync**: Every N trajectories, the trainer calls `registry.sync_weights(name, state_dict)` to update each `InferenceService`'s model copy in place. Workers never reload model weights.
-
----
-
-## 4. RNaD Algorithm Overview
-
-### Why Regularized Nash Dynamics?
+### Why RNaD?
 
 Standard RL can be unstable in games like Pokémon. An agent might discover a simple exploitative strategy, over-optimize for it, and forget robust strategies learned from Behavioral Cloning.
 
 **Regularized Nash Dynamics (RNaD)** forces the learning agent to stay "close" to a stable reference policy, preventing catastrophic forgetting and ensuring:
-- **Stability**: Smoother training, less prone to sudden collapses
-- **Retention of Priors**: Human-like strategies from BC are preserved
-- **Robustness**: Agent finds improvements that generalize well
 
-### The RNaD Loss Function
+- **Stability**: smoother training and less prone to sudden collapses.
+- **Retention of priors**: human-like strategies from BC are preserved.
+- **Robustness**: agent finds improvements that generalize well.
+
+### Loss
 
 $$L_{total} = L_{policy} + \beta \cdot L_{value} - \gamma \cdot H + \alpha \cdot L_{RNaD}$$
 
 | Component | Description |
-|-----------|-------------|
-| $L_{policy}$ | PPO policy loss - increases probability of high-advantage actions |
-| $L_{value}$ | Value loss - trains value head to predict win probability |
-| $H$ | Entropy bonus - encourages exploration |
-| $L_{RNaD}$ | **KL divergence** from reference model - the core of RNaD |
+|---|---|
+| $L_{policy}$ | PPO policy loss — increases probability of high-advantage actions |
+| $L_{value}$ | C51 distributional value loss — cross-entropy against two-hot encoded targets |
+| $H$ | Entropy bonus — encourages exploration |
+| $L_{RNaD}$ | KL divergence from reference model — the core of RNaD |
 
-**KL Divergence in Practice:**
 ```python
-ref_probs = softmax(ref_model(state))   # What would the old model do?
-curr_probs = softmax(main_model(state)) # What does current model want?
-
-# KL measures "how different" these distributions are
+ref_probs = softmax(ref_model(state))
+curr_probs = softmax(main_model(state))
 kl_divergence = sum(curr_probs * (log(curr_probs) - log(ref_probs)))
-
-# If similar: kl ≈ 0 (no penalty)
-# If very different: kl is large (big penalty)
 ```
 
-This says: *"You can improve, but don't stray too far from what you already know."*
+In words: the agent is allowed to improve, but each gradient step is penalized in proportion to how much its policy distribution has moved away from the reference distribution. Improvements that look like the reference policy are cheap; improvements that look like a totally new policy are expensive, which keeps the agent from abandoning what it already knows.
+
+### Portfolio Regularization
+
+Instead of one reference, keep 3–5 diverse past models and regularize to the closest:
+
+```python
+kl_losses = [KL(current_policy || ref_i) for ref_i in portfolio]
+kl_loss = min(kl_losses)
+```
+
+Regularizing against a single reference tends to drift over time as the reference itself is refreshed from main, which can quietly erase competence against older strategies that no recent reference happens to encode. Keeping a portfolio of several reference snapshots and regularizing to the closest one means the agent has to stay near at least one of them, which preserves more of the strategic surface area across refreshes.
 
 ### Inspiration from Ataraxos
 
-Our design is inspired by DeepMind's Ataraxos (superhuman Stratego AI):
-- **Separate heads** for setup (teampreview: 90 actions) and gameplay (turns: 2,025 actions)
-- **Belief states** via `BattleInference` module for hidden information
-- **Portfolio regularization** - multiple reference models instead of one
+DeepMind's Ataraxos (superhuman Stratego):
+
+- **Separate heads** for setup (teampreview: 90 actions) and gameplay (turns: 2,025 actions).
+- **Belief states** via `BattleInference` for hidden information.
+- **Portfolio regularization** — multiple reference models instead of one.
 
 ---
 
-## 5. Core Components
+## 5. Exploiters & Curriculum
 
-The full file inventory lives in the "Files in This Module" table near
-the bottom of this doc. This section walks the main concepts in the
-order data flows through them.
+### Why a Curriculum (and Why Exploiters)
 
-### `batch_inference_player.py` + `rnad_model.py`: Actor-side player + agent wrapper
+Self-play with one opponent collapses into a degenerate optimum: the agent learns to beat a copy of itself and forgets how to handle anything else. To prevent this, the curriculum mixes **four kinds of opponents**, each plugging a different hole:
 
-Two classes split across these files (formerly together in `players.py`,
-split 2026-05-19 as part of the `agents/` directory reorg — user-facing
-Players moved out):
+1. **Past selves (`ghosts`)** — keeps the agent honest against its own history; prevents cyclical strategy churn.
+2. **Behavioral cloning (`bc`)** — anchors to human-like play; prevents drift into RL-discovered nonsense that wouldn't survive against a real human.
+3. **Hand-crafted heuristics (`max_damage`, `simple_heuristic_baseline`) and external baselines (`vgc_bench_baseline`)** — catch agents that win against learned policies but lose to dumb deterministic ones (a common failure mode).
+4. **Learned exploitation (`exploiters`)** — adversarial policies whose only goal is to beat the current main. They actively probe for weaknesses the other three buckets can't surface.
 
-`RNaDAgent` (in `rnad_model.py`) wraps the BC-trained `TransformerThreeHeadedModel` for
-step-by-step RL inference. The BC model expects full trajectories, but
-RL requires one decision at a time; `RNaDAgent` carries the growing
-transformer context between turns. `get_initial_state` returns `None`
-so the first turn starts with an empty context.
+The Stage II graduation criterion (≥60% vs `vgc_bench_baseline`, `max_damage`, `bc_player`, *and* `simple_heuristic_baseline` simultaneously) is structured around this same logic. It is fairly easy to clear one or two of those buckets in isolation by overfitting to that style of opponent, so demanding all four simultaneously forces the agent to be genuinely general rather than narrowly tuned.
 
-`BatchInferencePlayer` is the poke-env `Player` subclass each actor
-runs. It is **dual-mode**:
+Exploiters specifically are **single-team and unregularized**:
 
-- **Legacy mode**: owns a CPU `RNaDAgent`, runs its own per-player
-  batched inference loop (`_inference_loop` thread + per-request
-  asyncio futures) over actions taken across concurrent battles.
-- **Centralized mode**: receives an `InferenceClient` instead of a
-  model and `await client.submit(...)`s every action. Hidden state
-  lives on the trainer side and is not held here.
+- **One team, learned deeply.** Each exploiter is trained with a single fixed team rather than the full sampling pool. This lets it specialize quickly on one playstyle, which complements the main agent's role of generalizing across many teams.
+- **No RNaD regularization.** The whole purpose of an exploiter is to find a strategy that beats the main agent, so it should be free to discover any winning policy without being pulled back toward a reference distribution.
+- **Frozen victim.** The exploiter trains against a frozen snapshot of main rather than live main. If the target moved with every learner step, the reward landscape would shift underneath the exploiter and it would oscillate instead of converging. Freezing the victim turns each refresh window into a stable ~1000-update RL problem where exploitation can actually happen.
 
-It also accumulates per-step `(state, action, log_prob, value, mask, …)`
-tuples during each battle and pushes a completed-battle dict onto
-`trajectory_queue` (keys: `steps`, `opponent_type`, `won`,
-`battle_length`, `forfeited`) when a battle ends.
+An exploiter that graduates into the curriculum reveals a hole that none of `ghosts` / `bc` / heuristics happened to catch, so the exploiter bucket is what keeps fresh adversarial pressure flowing into training. Dropping it would leave the agent training against its own history indefinitely, which is the curriculum failure mode this design is most concerned about.
 
-### `learners.py`: RNaD learner + model construction
-
-`PortfolioRNaDLearner` is the heart of training: holds `main_model`
-(learning) and one or more frozen reference models (portfolio
-regularization), pulls trajectories from the queue, and:
-
-- Computes the RNaD loss (PPO policy + distributional value + entropy + KL)
-- Uses **C51 distributional value loss** (cross-entropy against two-hot
-  encoded targets) instead of scalar MSE
-- Updates `main_model` via backprop with a **topology-aware optimizer**
-  (AdamW with separate param groups for backbone vs heads)
-- Applies an **LR scheduler** (linear warmup + cosine/linear decay)
-- Periodically copies weights to the reference model(s)
-
-The same module also owns model-construction helpers used by both the
-trainer and the workers:
-`build_model_from_config`, `load_model_from_checkpoint`,
-`load_agent_from_checkpoint`, `save_checkpoint`, `load_checkpoint`,
-`is_checkpoint_compatible_with_model_config`.
-
-Weight propagation is mode-dependent:
-- **Legacy**: the trainer broadcasts state dicts to each worker via
-  per-worker `weight_queue`s; each worker calls `agent.model.load_state_dict`.
-- **Centralized**: the trainer calls `registry.sync_weights(name, sd)`
-  to update the inference service's model copy in-place. Workers never
-  touch model weights.
-
-### `worker.py`: Actor process body
-
-`mp_worker_process` is the function each actor subprocess runs (spawned
-from `train.py` via `mp.Process`). Lifecycle:
-
-1. **Model loading** (legacy only): build/load `RNaDAgent` from
-   checkpoint on CPU. In centralized mode this is skipped — workers
-   build a `WorkerInferenceClients` bundle from spawn-time mp.Queue
-   handles instead.
-2. **Environment setup**: build a `VGCEnvironment` over the configured
-   backend (Showdown websocket or Rust in-process).
-3. **Battle loop**: repeatedly poll for new weights (legacy) → run a
-   batch of battles → push completed trajectories to the learner via
-   `mp_traj_queue`.
-
-There is no `MultiprocessingTrainer` class — the trainer-side
-orchestration (spawning workers, draining trajectories, weight
-broadcast, checkpointing) lives directly in `train.py`'s `main()`.
-
-### `train.py`: Trainer entrypoint and coordinator
-
-`main()` owns the full trainer side: builds the learner, optionally
-the `ModelRegistry` (centralized inference), spawns
-`config.hardware.num_workers` worker processes, runs the trajectory
-collection loop, calls `learner.update(...)`, periodically broadcasts
-weights / `registry.sync_weights(...)`, and writes checkpoints.
-
-Notable helpers in this module: `initialize_learner`,
-`initialize_training_state`, `collate_trajectories`, `start_memory_watchdog`,
-`_maybe_run_exploiter_update`, `get_dead_workers`.
-
-### `config.py`: Configuration system
-
-`RNaDConfig` dataclass holds all hyperparameters. Tunable knob groups
-(non-exhaustive):
-
-- **Exploration**: `temperature_start/end`, `temperature_anneal_steps`,
-  `top_p`, `ent_coef_end`
-- **Optimizer**: `optimizer` dict with `type` (adam/adamw),
-  `weight_decay`, `lr_backbone`, `lr_heads`, `lr_warmup_steps`,
-  `lr_schedule`
-- **Distributional Value**: `num_value_bins`, `value_min`, `value_max`
-- **Number Banks**: `use_number_banks`, `number_bank_embedding_dim`,
-  `number_bank_hp/stat/power_bins`
-- **Transformer**: `transformer_layers/heads/ff_dim/dropout`,
-  `use_decision_tokens`, `use_causal_mask`
-- **Hardware**: `num_workers`, `batch_size`, `batch_timeout`,
-  `battle_backend`, `device`, `max_concurrent_battles_per_player`,
-  `compile_inference_model`
-
-### `masking.py`: Optimized action masking
-
-`fast_get_action_mask(battle: DoubleBattle) -> np.ndarray` is the fast
-path for valid-action masking (≈52,000× faster than the naive
-2025-action enumeration). It reads `battle.last_request` and directly
-enumerates valid (move, target) and switch pairs.
-
-### Team management lives in `etl/`, not here
-
-Pokémon team sampling and management uses `etl.TeamRepo`
-(`elitefurretai.etl.team_repo`), not anything under `rl/`. The RL
-modules import it from `elitefurretai.etl import TeamRepo`.
-
----
-
-## 6. Training Workflow & Features
-
-### The Multi-Stage Training Process
-
-1. **Behavioral Cloning (BC)**: Pre-train on 1M+ human battles (see `/supervised`)
-2. **RL Finetuning**: Load BC model, finetune with RNaD using multiprocessing actors
-
-### Configuration-Driven Training
-
-```bash
-# 1. Create default config
-python src/elitefurretai/rl/config.py my_config.yaml
-
-# 2. Edit my_config.yaml
-
-# 3. Train
-python src/elitefurretai/rl/train.py --config my_config.yaml
-```
-
-### Resume Training from Checkpoints
-
-```bash
-# Resume from most recent
-python src/elitefurretai/rl/train.py --resume
-
-# Resume from specific checkpoint
-python src/elitefurretai/rl/train.py --checkpoint path/to/checkpoint.pt
-```
-
-### Automatic Exploiter Training
-
-```yaml
-train_exploiters: true
-exploiter_check_interval: 5000    # Every 5k updates
-exploiter_train_steps: 50000      # 50k steps per exploiter
-exploiter_win_threshold: 0.6      # 60% win rate to join pool
-```
-
-### Comprehensive Monitoring with WandB
-
-Logged metrics include:
-- **Loss Components**: `policy_loss`, `value_loss`, `entropy`, `rnad_loss`
-- **Win Rates**: `win_rate/self`, `win_rate/bc`, `win_rate/exploiter`, `win_rate/past`
-- **Curriculum Weights**: Sampling probabilities for each opponent type
-
----
-
-## 7. Exploiter Training Details
-
-### What is an Exploiter?
-
-An **exploiter** is trained with one ruthless goal: **beat a frozen version of the main model**.
-
-- **No RNaD Regularization**: Free to find any winning strategy
-- **Fixed Opponent**: Only plays against one "victim" model
-- **Single, Fixed Team**: Rapidly specializes in one playstyle
-
-### Design Decision: Single-Team Exploiters
-
-**Rationale**:
-1. **Faster Specialization**: Learns one playstyle deeply
-2. **Clearer Patterns**: Discovers specific exploitation strategies
-3. **Reproducibility**: Consistent behavior when loaded later
-4. **Complementary**: Main agent generalizes, exploiters specialize
-
-### The Exploiter Training Workflow
+### Exploiter Pipeline
 
 ```
 MAIN TRAINING LOOP
         │
         ├─ Every exploiter_check_interval updates
         ▼
-  Save Current Model as "Victim"
+  Save current main as victim snapshot
         │
         ▼
-┌────────────────────────────────────────┐
-│     EXPLOITER TRAINING SUBPROCESS      │
-│                                        │
-│  1. Sample ONE team for exploiter      │
-│  2. Train against victim (PPO only)    │
-│  3. Save model + team together         │
-└────────────────────────────────────────┘
+┌─────────────────────────────────────────────┐
+│     EXPLOITER TRAINING SUBPROCESS           │
+│                                             │
+│  1. Sample ONE team for the exploiter       │
+│  2. Train against victim (PPO only, no KL)  │
+│  3. Save model + team together              │
+└─────────────────────────────────────────────┘
         │
         ▼
-  If win_rate > threshold:
-    Register exploiter with team in registry
+  If rolling win_rate > graduation_threshold (default 0.65,
+  computed over the last 1000 train_exploiter battles):
+    Add exploiter (+ team) to the pool, start fresh generation
         │
         ▼
-  OpponentPool now includes this exploiter
-  (always uses its training team)
+  WorkerOpponentFactory now samples this exploiter
+  (always with its training team)
 ```
 
-### The Opponent Pool & Adaptive Curriculum
+Key knobs (in `RNaDConfig.exploiter_pipeline`):
 
-Actors sample opponents according to curriculum:
-- **Self**: Most recent main model
-- **BC**: Original behavior-cloned model
-- **Past**: Checkpoint history
-- **Exploiters**: Adversarial agents with their specific teams
+- `graduation_win_rate_threshold=0.65` — at window=1000, SE ≈ 1.5%, so a graduating exploiter has true win rate ≥ 62% with high confidence.
+- `graduation_window=1000` — recent battles to compute rolling win rate.
+- `max_updates_per_generation` — stall safeguard. If a generation can't graduate, force a reset (main is likely robust against this basin; try another).
+- `victim_refresh_interval` — how often to copy live main's weights into the victim.
 
-Win rates tracked per category; sampling adapts to weaknesses.
+### Opponent Pool
 
----
+`OPP_TYPE` enum (in `opponents.py`):
 
-## 8. Performance & Optimization
+| Type | Description |
+|---|---|
+| `self_play` | A second copy of the current learning policy. |
+| `bc` | Frozen BC model — anchors human-like play. |
+| `ghosts` | Past checkpoints of main, rotated into a slot pool (default `max_ghosts=10`). |
+| `exploiters` | Graduated adversarial policies, each with its specific training team. |
+| `max_damage` | Fixed heuristic: highest-damage move. Sanity baseline. |
+| `simple_heuristic_baseline` | poke-env's `SimpleHeuristicsPlayer`. |
+| `vgc_bench_baseline` | External SB3-trained agent (runs in its own venv — see below). |
+| `train_exploiter` | The active-generation exploiter, training in parallel. |
 
-This section documents the optimization journey from **540 battles/hr to 2,750 battles/hr** (5x improvement).
+Curriculum weights are configured in YAML (`opponents.curriculum`) and pushed down to workers via the trainer's control queue. Win rates are tracked per category and logged to WandB; sampling does NOT currently adapt to weaknesses automatically — graduation criteria are the feedback loop.
 
-### Understanding the Bottlenecks
+### VGCBench: Fork-Safe External Opponent
 
-**Initial Profiling (Before Optimizations):**
+`vgc-bench` depends on a different fork of `poke-env` than EliteFurretAI. You can't import both into one Python process without API conflicts.
 
-| Component | Time | % of Total | Notes |
-|-----------|------|------------|-------|
-| Action Masking | 3-4 sec | **~99%** | Iterating 2,025 actions |
-| Embedding | 11.5ms | - | Pure Python |
-| Inference | 8.1ms | - | GPU forward pass |
-| Network/Async | - | 69% of wall time | WebSocket I/O |
+The fix: run `vgc-bench` in its own venv (`../venv-vgcbench/`) as a separate process. From the trainer side, we don't import `vgc-bench` code at all — we challenge the VGCBench player's hardcoded Showdown username over the Showdown server like any other opponent. From the VGCBench side, `agents/_vgcbench_subprocess.py` (spawned by `VGCBenchManager.launch()` when the curriculum gives `vgc_bench_baseline` positive weight) sits in a loop accepting challenges.
 
-**Key Insight**: Only 31% of wall-clock time is computation. The majority is async/network overhead.
+The pattern here is the same one that motivates multiprocessing in the first place: when shared state (Python GIL, conflicting package versions) makes two pieces of code unable to coexist in one process, you isolate them by process boundary and have them talk over a clean protocol. In this case the protocol is the Showdown WebSocket itself, which both sides already speak.
 
-### Fast Action Masking (52,000x Speedup)
+This costs around 5.5 GB of RAM per external runner and adds a measurable throughput tax on full-curriculum runs, so VGCBench-enabled runs are consistently slower than runs that have VGCBench weighted out.
 
-**Problem**: `_get_action_mask()` iterated over all 2,025 actions, calling `is_valid_order()` for each.
+Manual invocation (debugging):
 
-**Solution**: `masking.py` directly enumerates valid actions from `battle.last_request`:
-
-| Metric | Old Method | Fast Method | Improvement |
-|--------|-----------|-------------|-------------|
-| Avg mask time | 3-4 sec | 0.057 ms | **52,000x** |
-| Mask overhead | ~99% | 2.4% | Negligible |
-
-### Embedder Move Caching (2.75x Speedup)
-
-**Problem**: `generate_move_features()` called 48 times per embed (6 mons × 4 moves × 2 sides), computing static features repeatedly.
-
-**Solution**: Cache static move features by `move.id`:
-
-```python
-def _generate_static_move_features(self, move):
-    if move.id in self._move_cache:
-        return self._move_cache[move.id]
-    # Compute and cache...
-    
-def generate_move_features(self, move, mon, battle):
-    static = self._generate_static_move_features(move)
-    dynamic = [move.current_pp / move.max_pp, ...]
-    return np.concatenate([static, dynamic])
-```
-
-| Metric | Before | After | Improvement |
-|--------|--------|-------|-------------|
-| Time per embed | 11.3 ms | 4.1 ms | **2.75x** |
-| Embedding % of inference | 55% | 31% | Significant |
-
-### Mixed Precision Training (2x Speedup)
-
-Using FP16 instead of FP32 with `torch.cuda.amp`:
-
-```python
-with torch.cuda.amp.autocast():
-    output = model(input)
-    loss = criterion(output, target)
-
-scaler.scale(loss).backward()
-scaler.step(optimizer)
-scaler.update()
-```
-
-**Result**: Nearly **2x speedup**, ~30% VRAM reduction.
-
-### Why Multiprocessing? GIL Limitations
-
-**Python's GIL** prevents true parallel execution across threads. Even with 16 "concurrent" battles in threads, they share one interpreter and compete for execution time.
-
-**Solution**: IMPALA-style multiprocessing:
-- Each actor is a separate Python process with its own interpreter
-- Actors use CPU inference (GPU for learner only)
-- **Bypasses GIL for 2-3x throughput improvement**
-
-### Multi-Server Showdown Architecture
-
-**Problem**: Pokemon Showdown is CPU-bound (single-threaded Node.js).
-
-**Solution**: Run multiple servers on different ports:
-
-```bash
-for port in 8000 8001 8002 8003 8004 8005 8006 8007; do
-    node pokemon-showdown start --no-security --port $port &
-    sleep 1
-done
-```
-
-Each actor connects to a different server, distributing load across CPU cores.
-
----
-
-## 8b. Centralized Inference (May 2026)
-
-Shipped on `main` 2026-05-14 (commit `3ead76c`). The full design + measurement
-history is in `planning/stage2/2026-05-13-18-00-centralized-inference-implementation-plan.md`
-and `planning/stage2/2026-05-14-00-15-model-registry-plan.md`.
-
-### What changed
-
-Pre-merge architecture: each actor process held its own CPU copy of the
-main agent, ran its own per-player `BatchInferencePlayer` queue +
-inference loop, and pulled weight updates from the learner via mp.Queue
-broadcasts. With `num_workers=4` and a 27M-param transformer, that's
-4 model copies in worker memory and 4 separate, CPU-bound inference
-loops.
-
-Current architecture (centralized inference, the only mode):
-
-- Trainer owns a `ModelRegistry` with one `InferenceService` per model
-  name. Currently registered: `main` (torch.compile'd), optionally
-  `bc` / `exploiter` / `victim` (gated on curriculum weight).
-- Each service runs as a daemon thread in the trainer process. The
-  service drains an `mp.Queue` of `InferenceRequest`s, batches up to
-  `batch_size` (or until `batch_timeout` elapses), runs ONE batched
-  forward, and dispatches `InferenceResponse`s to per-worker response
-  queues.
-- Workers no longer hold model copies. Each constructs a
-  `WorkerInferenceClients` bundle from per-worker mp.Queue handles.
-  Players in the worker call `client.submit(...)` and await a future.
-- Hidden state lives on the trainer side, in
-  `RealModelBatchHandler.hidden_states` keyed by
-  `(worker_id, player_id, battle_tag)`. Wire payloads carry only the
-  lightweight battle_tag, not the (1, T, hidden_size) tensor.
-- Eviction: workers send an `EvictRequest` on battle completion so the
-  trainer can free its hidden-state slot. Cleanup also fires on every
-  stale-request / timeout / send-failure path
-  (`BatchInferencePlayer._reset_battle_hidden_state`).
-
-### Hot-swap (multi-model curriculum)
-
-`WorkerOpponentFactory.configure_opponent_for_batch` chooses an
-opponent type per battle pair. In centralized mode, it re-points
-`opponent.inference_client` to the right client by name:
-`clients.get("main")`, `clients.get("bc")`, etc.
-`WorkerOpponentFactory._swap_to(slot, name, legacy_agent)` resolves
-"centralized client by name, falling back to legacy `slot.model = X`."
-
-### What's NOT centralized
-
-- **Ghost models**: each worker still loads ghost checkpoints from
-  disk lazily (`_get_ghost_agent`). Ghost rotation through the registry
-  is a deferred follow-up — see the registry plan's "Future work".
-- **OpponentPool's main-process eval battles**: still use legacy
-  per-call inference. Cheap enough that centralizing them isn't
-  motivated.
-
-### Throughput
-
-Measured on sep_arch.yaml, full original curriculum (self_play 0.3 /
-bc 0.1 / ghosts 0.1 / max_damage 0.1 / simple_heuristic 0.1 /
-vgc_bench 0.3), post-warmup updates:
-
-| Variant | Throughput | Learner steps/s |
-|---|---|---|
-| Per-player baseline (pre-merge) | 3.7 traj/s | ~60 |
-| Centralized (post-merge) | **4.98 traj/s** | **~87** |
-| Δ | **+34%** | **+45%** |
-
-Plus two collateral improvements landed in the same commit:
-- Vectorized `GroupedFeatureEncoder._dual_expand` (was 32% of worker
-  py-spy OwnTime — per-position Python loop calling `nn.Embedding`
-  N times; vectorized version batches per-bank lookups). ~1.9× CUDA
-  microbenchmark speedup.
-- F9 legacy bug fix: `RealModelBatchHandler._slice_next_hidden`
-  correctly handles mixed-length batches. Pre-fix legacy code sliced a
-  padding-derived position instead of the real new-state position,
-  corrupting next-turn hidden state for any battle that started in a
-  heterogeneous batch.
-
-### Caveats / known issues
-
-- **torch.compile + multi-threaded service calls**: `mode='default',
-  dynamic=True` triggers a dynamo cross-instance race when multiple
-  compiled services run concurrently. Symptom: `RuntimeError: Detected
-  that you are using FX to symbolically trace a dynamo-optimized function`.
-  **Fix shipped 2026-05-14**: process-wide `_COMPILE_LOCK` in
-  `inference_trainer.py` serializes all compiled-model forward calls;
-  per-model locks are insufficient because dynamo's trace state is
-  global across instances of the same class. All registered models
-  (main, bc, exploiter, victim, ghost_*) now run with `compile=True`.
-- **Memory watchdog**: bumped from 20 GB → 22 GB in sep_arch.yaml.
-  VGCBench external runners (~5.5 GB) + 4 Showdown servers + workers
-  + trainer combined RSS edges over 20 GB on the 24 GB WSL2.
-
----
-
-## 9. Scaling Experiments & Benchmarks
-
-### Baseline Measurements
-
-| Configuration | Battles/hr | Notes |
-|--------------|-----------|-------|
-| Before action mask fix | ~540 | 3-4 sec mask time |
-| After action mask fix (1 server, 1 actor) | 528-935 | ~1x |
-
-### Multi-Server Scaling Results
-
-| Servers | Actors | Total Pairs | Rate/hr | Status |
-|---------|--------|-------------|---------|--------|
-| 1 | 1 | 1 | 140 | Timeouts |
-| 1 | 2 | 2 | 955 | ✅ Stable |
-| 1 | 4 | 4 | 660 | Timeouts |
-| 2 | 2 | 4 | 920 | Timeouts |
-| **4** | **4** | **4** | **2,586** | ✅ Best |
-
-**Key Finding**: More servers > more actors per server. Single-server contention causes timeouts.
-
-### Hardware Stress Testing (Maximum Throughput)
-
-| Config | Servers | Actors/Srv | Concurrent | Rate/hr | CPU avg | RAM |
-|--------|---------|-----------|------------|---------|---------|-----|
-| 1 | 4 | 1 | 4 | 1,579 | 18% | 3.4 GB |
-| 2 | 4 | 2 | 8 | 2,513 | 15% | 5.9 GB |
-| **8** | **8** | **2** | **16** | **2,756** | 16% | 9.0 GB |
-| 10 | 8 | 4 | 32 | 2,269 | 16% | 7.6 GB |
-
-**Maximum Achieved: ~2,750 battles/hour** (8 servers × 2 actors)
-
-**Scaling Efficiency:**
-
-| Concurrent | Expected (linear) | Actual | Efficiency |
-|------------|-------------------|--------|------------|
-| 4 | 1,579/hr | 1,579/hr | 100% |
-| 8 | 3,158/hr | 2,513/hr | 80% |
-| 16 | 6,315/hr | 2,756/hr | 44% |
-| 32 | 12,630/hr | 2,269/hr | 18% |
-
-**Conclusion**: Scaling is sub-linear due to I/O bottleneck.
-
-### Memory Requirements
-
-**Per Actor Process (~1.1 GB):**
-| Component | Memory |
-|-----------|--------|
-| Python baseline | 495 MB |
-| Embedder (with caches) | 94 MB |
-| Model weights | 532 MB |
-
-**Learner Process (~2.9 GB VRAM + 0.6 GB RAM):**
-| Component | Memory |
-|-----------|--------|
-| Main model (GPU) | 558 MB |
-| Reference model (GPU) | 558 MB |
-| Optimizer states | 1.1 GB |
-| Gradient buffers | 558 MB |
-
-**RAM Budget for 23 GB:**
-| Configuration | RAM Used | Verdict |
-|--------------|----------|---------|
-| 1 actor + learner | 4.0 GB | ✓ |
-| 4 actors + learner | 7.4 GB | ✓ RECOMMENDED |
-| 8 actors + learner | 11.9 GB | ✓ FITS |
-
-### Optimal Configurations
-
-**For Maximum Throughput (~2,750/hr):**
-```yaml
-num_actors: 8
-num_showdown_servers: 8
-```
-
-**For Stability & Efficiency (~2,500/hr):**
-```yaml
-num_actors: 4
-num_showdown_servers: 4
-```
-
-**For Quick Testing:**
-```yaml
-num_actors: 2
-num_showdown_servers: 2
-```
-
----
-
-## 10. Advanced Features
-
-### Portfolio Regularization: Preventing Strategy Collapse
-
-Instead of one reference model, maintain **3-5 diverse past models**:
-
-```python
-# Traditional RNaD (single reference)
-kl_loss = KL(current_policy || reference_policy)
-
-# Portfolio RNaD (multiple references)
-kl_losses = [KL(current_policy || ref_i) for ref_i in portfolio]
-kl_loss = min(kl_losses)  # Regularize to CLOSEST reference
-```
-
-**Why it helps**: Single reference can "forget" older strategies. Portfolio maintains competence across playstyles.
-
-```yaml
-use_portfolio_regularization: true
-max_portfolio_size: 5
-portfolio_update_strategy: "diverse"  # or "best", "recent"
-portfolio_add_interval: 5000
-```
-
-### The Training Profiler
-
-Diagnostic tool to find optimal hyperparameters:
-
-```bash
-python src/elitefurretai/rl/profiler.py --sweep --output results.json
-```
-
-Measures:
-- Data collection throughput
-- Inference speed
-- Training update speed
-- CPU/GPU/RAM utilization
-
----
-
-## 11. Quick Start Guide
-
-### Basic Usage & Commands
-
-```bash
-# 1. Install dependencies
-pip install -r requirements.txt
-
-# 2. Launch Showdown servers (4-8 recommended)
-python src/elitefurretai/rl/launch_servers.py --num-servers 4
-
-# 3. Create config
-python -c "from elitefurretai.rl.config import RNaDConfig; RNaDConfig().save('config.yaml')"
-
-# 4. Edit config.yaml - set checkpoint_path to your BC model
-
-# 5. Train
-python src/elitefurretai/rl/train.py --config config.yaml
-```
-
-### Example Configurations
-
-**Minimal Config (Testing):**
-```yaml
-checkpoint_path: "data/models/bc_action_model.pt"
-num_actors: 2
-num_showdown_servers: 2
-train_batch_size: 16
-max_updates: 10000
-use_wandb: false
-train_exploiters: false
-```
-
-**Production Config:**
-```yaml
-# Model
-checkpoint_path: "data/models/bc_action_model.pt"
-opponent_team_pool_path: "data/teams/gen9vgc2023regc"
-
-# Training
-learning_rate: 0.0001
-rnad_alpha: 0.01
-num_actors: 4
-num_showdown_servers: 4
-train_batch_size: 48
-
-# Advanced
-use_mixed_precision: true
-use_portfolio_regularization: true
-max_portfolio_size: 5
-
-# Exploiters
-train_exploiters: true
-exploiter_check_interval: 5000
-exploiter_train_steps: 50000
-exploiter_win_threshold: 0.6
-
-# Wandb
-use_wandb: true
-wandb_project: "elitefurretai-production"
-```
-
----
-
-## 12. Implementation Notes & Bug Fixes
-
-### Critical Bug Fixes
-
-**Loss Accumulation Type Mixing (`learner.py`):**
-```python
-# WRONG
-total_loss = 0
-total_loss += loss_tensor  # Can't add tensor to float!
-
-# CORRECT
-total_loss = 0.0
-total_loss += loss_tensor.item()
-```
-
-**Invalid Turn Mask Logic:**
-```python
-# Properly check for valid turns
-is_teampreview = batch["is_teampreview"]
-valid_turn_mask = batch.get("valid_turn_mask", ~is_teampreview)
-valid_turn_steps = ~is_teampreview & valid_turn_mask
-```
-
-### OTS Deadlock Fix
-
-**Problem**: `accept_open_team_sheet=True` (default) caused poke-env to wait indefinitely when players disagreed on OTS.
-
-**Fix**: Changed BCPlayer default to `accept_open_team_sheet=False`.
-
-### Known Issues & Workarounds
-
-| Issue | Workaround |
-|-------|------------|
-| OOM on WSL2 | Set `pin_memory=False` in DataLoader |
-| Loss → NaN | Increase `gradient_clip` or disable mixed precision |
-| Showdown timeouts | Reduce actors per server, add more servers |
-
-### External `vgc-bench` Opponents (Fork-Safe)
-
-`vgc-bench` may require a different `poke-env` fork than EliteFurretAI. To avoid import/API conflicts, run `vgc-bench` in a separate environment and challenge it externally.
-
-1. The runner is spawned automatically by `train.py` whenever the curriculum gives `vgc_bench_baseline` positive weight — `VGCBenchManager(config, server_ports).launch()` reads `curriculum.external_vgcbench_python_executable` to pick the interpreter and `curriculum.external_vgcbench_team_file` for the bot's team. For a manual run (debugging, ad-hoc challenges) the equivalent invocation is:
 ```bash
 source ../venv-vgcbench/bin/activate
 python src/elitefurretai/agents/_vgcbench_subprocess.py \
@@ -1089,168 +349,282 @@ python src/elitefurretai/agents/_vgcbench_subprocess.py \
     --n-challenges 100
 ```
 
-2. Usernames are class constants on `VGCBenchManager` (currently `USERNAMES = ["VGCBENCH"]`). When the training-side curriculum gives `vgc_bench_baseline` positive weight, workers' `WorkerOpponentFactory` uses `send_challenges(...)` to those usernames instead of constructing local vgc-bench policy players.
-
-### torch.compile() Results
-
-Tested on forward pass (5.85ms baseline):
-
-| Mode | Time | Change |
-|------|------|--------|
-| Original | 5.85ms | - |
-| torch.compile (default) | 6.96ms | **-19%** (slower!) |
-| torch.compile (reduce-overhead) | 5.48ms | +6% |
-
-**Conclusion**: `torch.compile` is **not recommended** - overhead exceeds benefits for small batches.
+Usernames are class constants on `VGCBenchManager.USERNAMES` (`["VGCBENCH"]`).
 
 ---
 
-## 13. Design Philosophy & Key Takeaways
+## 6. Model Architecture & Config
 
-### Core Principles
+### Model
 
-1. **Specialization Through Diversity**: Main agent trains on 100+ teams for generalization; exploiters specialize with 1 team each
-2. **Stability Through Regularization**: RNaD prevents catastrophic forgetting and strategy collapse
-3. **Adversarial Robustness**: Continuous exploiter training exposes weaknesses
-4. **Hardware Optimization**: Multi-server + multiprocessing maximizes throughput
-5. **Reproducibility**: Configuration-driven design
+- **Backbone**: `TransformerThreeHeadedModel` — `TransformerEncoder` over a growing sequence of encoded battle states, with learned `[ACTOR]` / `[CRITIC]` / `[FIELD]` decision tokens prepended. ACTOR → turn head, CRITIC → value head.
+- **Parameters**: ~26.7M (cool-bee-85-finetune; raw featureset).
+- **Embedding dimensions**: 9,223 input features.
+- **Action space**: 2,025 turn actions + 90 teampreview actions.
+- **Value head**: C51 distributional — predicts a categorical distribution over 51 bins spanning [-1, 1], trained with cross-entropy against two-hot encoded targets. This gives the value head a richer gradient signal than a scalar MSE head would. The actor side does not need the full distribution, so it consumes the scalar expected value computed as `(softmax(logits) * support).sum(-1)`.
+- **Hidden state**: a context tensor of past encoded features that grows by one position each turn as new state is appended. The tensor is held trainer-side in `RealModelBatchHandler.hidden_states`, so workers only need to carry the lightweight battle_tag identifying which context to use.
+- **Causal mask**: enabled (`use_causal_mask=True`).
 
-### Lessons Learned
+### Exploration
 
-**On Performance:**
-- Pokemon Showdown is the bottleneck, not GPU
-- 4-8 parallel servers fully utilizes 8-core CPU
-- Mixed precision nearly doubles training speed
-- Embedder was 55% of time → caching reduced to 31%
-- **Multiprocessing bypasses GIL for 2-3x throughput**
+Sampling-side temperature anneal and loss-side entropy anneal share one horizon:
 
-**On Exploiter Training:**
-- Single-team exploiters learn 2-3x faster
-- Team persistence is critical for reproducibility
-- Win threshold: 40% too low (noise), 70% too high (misses)
-- Optimal interval: 3k-5k updates
+- `temperature_start=1.5`, `temperature_end=0.5`, `exploration_anneal_steps=50000`.
+- `top_p=0.95` (nucleus sampling — filters low-probability actions).
+- `ent_coef_end` anneals on the same schedule.
 
-**On Training Dynamics:**
-- RNaD essential - pure PPO collapses ~20-30k updates
-- Portfolio (3-5 models) better than single reference
-- Scaling is sub-linear due to I/O bottleneck
+Log-probs for PPO ratios are computed at T=1 (unscaled) to avoid biasing importance weights.
 
-### Future Directions
+### Optimizer
 
-1. **Adaptive Exploiter Allocation**: Dynamic adjustment based on win rate stability
-2. **Multi-Format Training**: Single agent across Reg C, D, E, F
-3. **Team Generation**: Generate novel teams instead of sampling
-4. **Native Battle Engine**: Port Showdown to Python/Rust to eliminate WebSocket overhead
-5. **Number Bank Tuning**: Optimize bin counts and embedding dimensions for production training
-7. **Batched Transformer Inference**: Pad variable-length contexts for true batched inference in actors (currently sequential per-battle)
+- **Type**: AdamW.
+- **Separate param groups**: `lr_backbone` and `lr_heads` are tuned independently. Prevents the value head from under-training (a known PPO failure mode) while regularizing the larger backbone.
+- **Scheduler**: linear warmup → cosine or linear decay (`lr_warmup_steps`, `lr_schedule`).
+- **Weight decay**: configurable per-group.
 
-### Files in This Module
+### PPO Mini-Epochs
 
-| File | Purpose |
-|------|---------|
-| `batch_inference_player.py` | `BatchInferencePlayer` — poke-env Player that bridges battles → inference. Dual-mode: legacy per-player batcher OR centralized via `inference_client`. (Split from the former `players.py` 2026-05-19; user-facing Players moved to `agents/`.) |
-| `rnad_model.py` | `RNaDAgent` — `torch.nn.Module` wrapper around `TransformerThreeHeadedModel`, providing a uniform `forward(x, hidden_state)` API. |
-| `learners.py` | `PortfolioRNaDLearner` with PPO + KL regularization + distributional value (C51). Model construction lives here too (`build_model_from_config`, `load_agent_from_checkpoint`). |
-| `worker.py` | `mp_worker_process` — the actor subprocess body. Spawns once per `num_workers`; sets up VGCEnvironment, runs battles, ships trajectories. In centralized mode skips loading the main model and constructs `WorkerInferenceClients` from spawn args. |
-| `train.py` | Main training coordinator. Owns the learner, the `ModelRegistry` (centralized inference), worker spawn, weight broadcast, checkpointing. |
-| `config.py` | `RNaDConfig` dataclass. Knobs: hardware (num_workers, batch_size, compile_inference_model, max_concurrent_battles_per_player, ...), algorithm (PPO/RNaD), curriculum, etc. |
-| `opponents.py` | `OpponentPool` (trainer-side curriculum manager) + `WorkerOpponentFactory` (worker-side player builder, opponent hot-swap via `_swap_to`). |
-| `masking.py` | `fast_get_action_mask` and helpers (the optimized action-mask path). |
-| `model_registry.py` | Trainer-side `ModelRegistry`: one `InferenceService` per registered model name. Used in centralized inference mode (post-2026-05-14). |
-| `inference_trainer.py` | Trainer-side: `InferenceService` (batched inference daemon thread, one per registered model) + `RealModelBatchHandler` (the model-forward path; owns `hidden_states` keyed by `(worker_id, player_id, battle_tag)`) + `echo_batch_handler` for plumbing tests. |
-| `inference_worker.py` | Worker-side: `InferenceClient` (submits `InferenceRequest`, awaits response via per-request asyncio future) + `WorkerInferenceClients` (per-worker bundle of clients keyed by model name; counterpart to `ModelRegistry`). |
-| `inference_ipc.py` | `InferenceRequest` / `InferenceResponse` / `EvictRequest` dataclasses (the wire protocol). |
-| `launch_servers.py` | Multi-server Showdown launcher. |
-| `analyze/` | Evaluation utilities, plotters, VGCBench external runner. |
+`ppo_epochs` (default 3): how many gradient passes to take over the same batch per RL update. Standard PPO uses 3–10. Old log-probs from collection are reused across epochs; reference-model forwards happen once per update (frozen across epochs). Optional `target_kl` early-stops the inner loop when approximate KL exceeds threshold.
+
+### Number Banks (Off by Default)
+
+`use_number_banks=False` (default). When enabled, numerical features (HP%, stats, base power) are discretized and embedded inside `GroupedFeatureEncoder` via `NumberBankEncoder` instead of being passed as raw floats. The Embedder output format is unchanged — feature identification happens by pattern matching on `Embedder.feature_names` (`HP_PATTERNS`, `STAT_PATTERNS`, `POWER_PATTERNS`).
+
+Enabling number banks changes input dimensions and requires a fresh training run.
+
+### Config Knob Groups (`RNaDConfig`)
+
+| Group | Knobs |
+|---|---|
+| Hardware | `num_workers`, `num_servers`, `num_players`, `num_battles_per_pair`, `max_concurrent_battles_per_player`, `batch_size`, `batch_timeout`, `device`, `compile_inference_model` |
+| Algorithm | `learning_rate`, `ppo_epochs`, `target_kl`, `rnad_alpha`, `gradient_clip` |
+| Exploration | `temperature_start/end`, `exploration_anneal_steps`, `top_p`, `ent_coef_end` |
+| Optimizer | `optimizer.type`, `weight_decay`, `lr_backbone`, `lr_heads`, `lr_warmup_steps`, `lr_schedule` |
+| Distributional Value | `num_value_bins`, `value_min`, `value_max` |
+| Number Banks | `use_number_banks`, `number_bank_embedding_dim`, `number_bank_hp/stat/power_bins` |
+| Transformer | `transformer_layers/heads/ff_dim/dropout`, `use_decision_tokens`, `use_causal_mask` |
+| Portfolio | `use_portfolio_regularization`, `max_portfolio_size`, `portfolio_update_strategy`, `portfolio_add_interval` |
+| Exploiter Pipeline | `exploiter_check_interval`, `graduation_win_rate_threshold`, `graduation_window`, `max_updates_per_generation`, `victim_refresh_interval` |
+| Curriculum | weight per opp type, `external_vgcbench_python_executable`, `external_vgcbench_team_file` |
 
 ---
 
-## ps-ppo-Inspired Improvements (February 2026)
+## 7. Known Issues & Workarounds
 
-Five architectural and training improvements inspired by the ps-ppo project have been implemented. All are gated by config flags. See [IMPLEMENTATION_PLAN.md](../../../docs/IMPLEMENTATION_PLAN.md) for the full design rationale.
-
-### 1. Temperature Annealing & Top-p Sampling
-- **What**: Temperature-scaled softmax for exploration control + nucleus sampling to filter low-probability actions
-- **Config**: `temperature_start=1.5`, `temperature_end=0.5`, `temperature_anneal_steps=50000`, `top_p=0.95`
-- **Key detail**: Log-probs for PPO ratios are computed at T=1 (unscaled) to avoid biasing importance weights
-- **Entropy coefficient** also anneals via `ent_coef_end`
-
-### 2. Topology-Aware Optimizer
-- **What**: AdamW with separate learning rates and weight decay for backbone vs heads; LR scheduler with warmup + cosine/linear decay
-- **Config**: `optimizer` dict with `type`, `weight_decay`, `lr_backbone`, `lr_heads`, `lr_warmup_steps`, `lr_schedule`
-- **Purpose**: Prevents value head under-training (common PPO failure mode) and regularizes large backbone layers
-
-### 3. Distributional Value Head (C51)
-- **What**: 51-bin categorical distribution over [-1, 1] replaces scalar Tanh value head
-- **Config**: `num_value_bins=51`, `value_min=-1.0`, `value_max=1.0`
-- **Loss**: Cross-entropy against two-hot encoded targets (via `twohot_encode()`)
-- **Model output change**: `forward()` returns 4 values, `forward_with_hidden()` returns 5 (extra: `win_dist_logits`)
-- **Actor impact**: None — actors use the scalar expected value (3rd return element), computed as `(softmax(logits) * support).sum(-1)`
-
-### 4. Number Bank Embeddings
-- **What**: Learned embedding lookup for numerical features (HP%, stats, base power) instead of raw floats
-- **Config**: `use_number_banks=false` (disabled by default), `number_bank_embedding_dim=16`, `number_bank_hp/stat/power_bins`
-- **Design**: Discretization + embedding happens inside `GroupedFeatureEncoder` via `NumberBankEncoder` — the Embedder output format is unchanged
-- **Feature identification**: Pattern matching on `Embedder.feature_names` (HP_PATTERNS, STAT_PATTERNS, POWER_PATTERNS)
-- **Requires**: Fresh training when enabled (changes model input dimensions)
-
-### 5. Transformer Architecture
-- **What**: `TransformerThreeHeadedModel` — TransformerEncoder + decision tokens (the only supported backbone)
-- **Config**: `transformer_layers=6`, `transformer_heads=16`, `transformer_ff_dim=2048`, `use_decision_tokens=true`, `use_causal_mask=true`
-- **Decision tokens**: Learned [ACTOR], [CRITIC], [FIELD] vectors prepended to the sequence; ACTOR → turn head, CRITIC → value head
-- **Hidden state**: Context tensor (growing sequence of past encoded features). Each turn appends to context.
-- **Inference**: Per-battle sequential inference in actors (contexts differ in length across battles).
+| Issue | Workaround |
+|---|---|
+| WSL2 DataLoader OOM | `pin_memory=False` (always) |
+| Loss → NaN | Increase `gradient_clip` or disable mixed precision |
+| Showdown timeouts | Reduce concurrent battles per server; add more servers |
+| `torch.compile` cross-instance race | `_COMPILE_LOCK` in `inference_trainer.py` serializes all compiled forwards (dynamo trace state is global across instances of the same class — per-model locks were insufficient) |
+| Memory ceiling on full curriculum + VGCBench | Memory watchdog at 22 GB in `sep_arch.yaml`; bump if adding Plan C groups |
+| `Player.battles` dict leak (long-running eval) | One Python process per opponent type; let process exit reset the leak (see `feedback_poke_env_battles_leak`) |
 
 ---
 
-## IMPALA Benchmark Results - 2026-01-18
+## 8. Training Workflow
 
-After fixing the poke-env import issue and enabling proper trajectory collection, 
-the IMPALA multiprocessing architecture achieves the following throughput:
+### Multi-Stage Process
 
-### Configuration Comparison
+1. **Behavioral Cloning (BC)**: Pre-train on 1M+ human battles (see `supervised/SUPERVISED.md`).
+2. **RL Fine-tuning**: Load BC checkpoint, fine-tune with RNaD against the curriculum.
 
-| Config | Actors | Servers | Act/Srv | Rate/hr | Notes |
-|--------|--------|---------|---------|---------|-------|
-| 1×1 | 1 | 1 | 1.0 | 2,569 | Baseline |
-| 2×2 | 2 | 2 | 1.0 | 2,667 | 1.04x baseline |
-| **4×4** | 4 | 4 | 1.0 | **3,106** | **1.21x baseline** |
-| 4×2 | 4 | 2 | 2.0 | 2,736 | 2 actors/server |
-| **6×3** | 6 | 3 | 2.0 | **2,912** | Good efficiency |
-| 6×6 | 6 | 6 | 1.0 | 2,763 | 1.08x baseline |
-| 8×4 | 8 | 4 | 2.0 | 2,190 | CPU saturated |
-| 8×8 | 8 | 8 | 1.0 | 1,793 | Server startup failures |
+### Config-Driven
 
-### Key Findings
+```bash
+# Create default config
+python src/elitefurretai/rl/config.py my_config.yaml
 
-1. **Optimal configuration: 4 actors × 4 servers = ~3,100 battles/hr**
-2. **CPU is the bottleneck** - with 8 cores, more than 6 actors causes contention
-3. **1:1 actor-to-server ratio** works best for lower actor counts
-4. **2:1 actor-to-server ratio** can work with 4-6 actors and 2-3 servers
-5. **Server startup time matters** - 8 servers need longer warmup (4+ seconds)
+# Edit my_config.yaml
 
-### Recommended Configuration
-
-For this hardware (8-core CPU, 138.8M param model):
-
-```yaml
-# Optimal throughput
-num_actors: 4
-num_showdown_servers: 4
-
-# Alternative (similar performance, less servers)
-num_actors: 6
-num_showdown_servers: 3
+# Train
+python src/elitefurretai/rl/train.py --config my_config.yaml
 ```
 
-### Per-Actor Efficiency
+### Resume
 
-| Config | Total Rate | Per-Actor Rate | Efficiency |
-|--------|-----------|----------------|------------|
-| 1×1 | 2,569/hr | 2,569/hr | 100% |
-| 4×4 | 3,106/hr | 777/hr | 30% |
-| 6×3 | 2,912/hr | 485/hr | 19% |
+```bash
+# Most recent checkpoint
+python src/elitefurretai/rl/train.py --resume
 
-Efficiency drops with more actors due to CPU contention for model inference.
-However, total throughput increases up to ~4 actors.
+# Specific checkpoint
+python src/elitefurretai/rl/train.py --checkpoint path/to/checkpoint.pt
+```
 
+### Exploiter Training
+
+Configured in YAML:
+
+```yaml
+exploiter_pipeline:
+  enabled: true
+  exploiter_check_interval: 5000
+  graduation_win_rate_threshold: 0.65
+  graduation_window: 1000
+  max_updates_per_generation: 10000
+  victim_refresh_interval: 1000
+```
+
+See [Section 5](#5-exploiters--curriculum) for the design.
+
+### Monitoring (WandB)
+
+Logged per-update:
+
+- **Loss components**: `policy_loss`, `value_loss`, `entropy`, `rnad_loss`.
+- **Win rates**: per opponent type — `win_rate/self_play`, `win_rate/bc`, `win_rate/exploiters`, `win_rate/ghosts`, `win_rate/max_damage`, `win_rate/simple_heuristic_baseline`, `win_rate/vgc_bench_baseline`.
+- **Curriculum weights**: current sampling probabilities per opp type.
+- **Throughput**: `traj/s`, `learner_steps/s`, `batches_per_sec`.
+
+---
+
+## 9. Quick Start
+
+```bash
+# 1. Install dependencies
+pip install -r requirements.txt
+
+# 2. Launch Showdown servers (6 recommended)
+python src/elitefurretai/rl/launch_servers.py --num-servers 6
+
+# 3. Create config
+python -c "from elitefurretai.rl.config import RNaDConfig; RNaDConfig().save('config.yaml')"
+
+# 4. Edit config.yaml — set checkpoint_path to your BC model
+
+# 5. Train
+python src/elitefurretai/rl/train.py --config config.yaml
+```
+
+### Minimal Config (Testing)
+
+```yaml
+checkpoint_path: "data/models/supervised/cool-bee-85-finetune_best.pt"
+hardware:
+  num_workers: 2
+  num_servers: 2
+  num_players: 6
+  num_battles_per_pair: 8
+training:
+  train_batch_size: 16
+  max_updates: 10000
+logging:
+  use_wandb: false
+exploiter_pipeline:
+  enabled: false
+```
+
+### Production Config (Approximate Current Optimum)
+
+```yaml
+checkpoint_path: "data/models/supervised/cool-bee-85-finetune_best.pt"
+opponent_team_pool_path: "data/teams/gen9vgc2024regg"
+
+hardware:
+  num_workers: 4
+  num_servers: 4
+  num_players: 16
+  num_battles_per_pair: 48
+  max_concurrent_battles_per_player: 48
+
+training:
+  learning_rate: 0.0001
+  rnad_alpha: 0.01
+  train_batch_size: 256
+  ppo_epochs: 3
+
+portfolio:
+  use_portfolio_regularization: true
+  max_portfolio_size: 5
+
+exploiter_pipeline:
+  enabled: true
+  exploiter_check_interval: 5000
+  graduation_win_rate_threshold: 0.65
+
+logging:
+  use_wandb: true
+  wandb_project: "elitefurretai-production"
+```
+
+See `src/elitefurretai/rl/configs/sep_arch.yaml` for the running reference.
+
+---
+
+## 10. Module Reference
+
+### `rl_trajectory_player.py`
+
+`RLTrajectoryPlayer` — poke-env `Player` subclass each worker runs. Routes every decision through a centralized `InferenceClient`: computes mask, embeds state, `await client.submit(...)`, picks action with temperature + top-p sampling. Accumulates per-step `(state, action, log_prob, value, mask, …)` and pushes a completed-battle dict (`steps`, `opponent_type`, `won`, `battle_length`, `forfeited`) onto `trajectory_queue` when the battle ends. Sends `EvictRequest` on completion / timeout / stale-request / send-failure paths to free trainer-side hidden state.
+
+### `rnad_model.py`
+
+`RNaDModel` — `torch.nn.Module` wrapper around `TransformerThreeHeadedModel` providing a uniform `forward(x, hidden_state)` API. Carries the growing transformer context between turns; `get_initial_state` returns `None` so the first turn starts with an empty context.
+
+### `learners.py`
+
+`PortfolioRNaDLearner` — holds `main_model` + frozen reference models, pulls trajectories from the queue, computes the RNaD loss (PPO policy + C51 distributional value + entropy + KL), backprops with the topology-aware optimizer and LR scheduler, and periodically copies weights into the reference portfolio. Model construction helpers (`build_model_from_config`, `load_model_from_checkpoint`, `save_checkpoint`, `load_checkpoint`, `is_checkpoint_compatible_with_model_config`) live in this module — used by both trainer and workers.
+
+### `worker.py`
+
+`mp_worker_process` — function each worker subprocess runs. Lifecycle: build `WorkerInferenceClients` from spawn-time mp.Queue handles → build a `VGCEnvironment` over the Showdown websocket backend → run battles → push completed trajectories to the learner via `mp_traj_queue`. Workers never load model weights.
+
+### `train.py`
+
+Trainer entrypoint. `main()` owns the full trainer side: builds the learner via `initialize_learner`, sets up the `ModelRegistry` via `setup_model_registry`, spawns `num_workers` worker processes, runs the trajectory collection loop, calls `learner.update(...)`, periodically calls `registry.sync_weights(...)`, and writes checkpoints. Other helpers: `initialize_training_state`, `collate_trajectories`, `start_memory_watchdog`, `_maybe_run_exploiter_update`, `get_dead_workers`.
+
+### `config.py`
+
+`RNaDConfig` dataclass — all hyperparameters, grouped by domain (hardware / training / exploration / optimizer / portfolio / exploiter_pipeline / curriculum / logging). YAML load/save round-trip.
+
+### `opponents.py`
+
+`OpponentPool` (trainer-side curriculum manager — tracks weights, win rates, ghost slot pool, exploiter pool) and `WorkerOpponentFactory` (worker-side player builder — `sample_opp_type_for` picks the type, `apply_opp_type_to_pair` hot-swaps `inference_client` via `_swap_to`).
+
+### `exploiters.py`
+
+Exploiter pipeline: `ExploiterPipelineState`, `train_exploiter_weight`, `build_exploiter_config`, `initialize_exploiter_pipeline`, `mask_curriculum_during_warmup`, `maybe_run_exploiter_update`. The active-generation exploiter trains in parallel with main; on graduation (rolling win rate ≥ threshold over the last `graduation_window` train_exploiter battles), its weights + team are saved and a fresh generation starts.
+
+### `masking.py`
+
+`fast_get_action_mask(battle: DoubleBattle) -> np.ndarray` — the fast path for valid-action masking. Reads `battle.last_request` and directly enumerates valid (move, target) and switch pairs instead of probing every action.
+
+### `model_registry.py`
+
+Trainer-side `ModelRegistry`: registers `main` (always), `bc` / `exploiter` / `victim` (conditional), and ghost / exploiter-snapshot slot pools. Supports two backends per registration: in-process `InferenceService` thread, or subprocess group (Plan C — pass `process_group="<name>"`). Lifecycle: `register(...)` per service → `start_all()` once → `queues_for_workers()` to get the bundle for worker spawn → `sync_weights(name, sd)` at broadcast cadence → `stop_all()` on shutdown.
+
+### `inference_trainer.py`
+
+Trainer-side: `InferenceService` (daemon thread, drains request queue, batches up to `batch_size` or `batch_timeout`, calls handler once, dispatches per-request responses) + `RealModelBatchHandler` (model-forward path, owns `hidden_states` keyed by `(worker_id, player_id, battle_tag)`, exposes `evict(...)`) + `echo_batch_handler` for plumbing tests. The process-wide `_COMPILE_LOCK` serializes compiled forwards.
+
+### `inference_subprocess.py`
+
+Plan C subprocess host. `run_subprocess(specification: SubprocessSpecification)` is the `mp.Process` entrypoint — each subprocess hosts one or more `InferenceService`s, drains a `control_queue` for `SyncWeightsMsg` / `ShutdownMsg`, and serves traffic on per-service request/response queues. `InferenceSubprocessHandle` wraps the spawned process for the trainer's `ModelRegistry`.
+
+### `inference_worker.py`
+
+Worker-side: `InferenceClient` (submits `InferenceRequest`, awaits response via per-request asyncio future) + `WorkerInferenceClients` (per-worker bundle keyed by model name; counterpart to `ModelRegistry`).
+
+### `inference_ipc.py`
+
+Wire protocol dataclasses: `InferenceRequest`, `InferenceResponse`, `EvictRequest`.
+
+### `launch_servers.py`
+
+Multi-server Showdown launcher. Starts N Showdown servers on consecutive ports.
+
+### `analyze/`
+
+Evaluation utilities, plotters, VGCBench external runner glue.
+
+---
+
+## 11. Future Directions
+
+1. **Adaptive Exploiter Allocation**: Dynamic adjustment of exploiter check interval based on win-rate stability.
+2. **Multi-Format Training**: Single agent across Reg C, D, E, F.
+3. **Team Generation**: Generate novel teams instead of sampling from a fixed pool.
+4. **Native Battle Engine**: Port Showdown to Python to eliminate WebSocket overhead.
+5. **Number Bank Tuning**: Optimize bin counts and embedding dimensions for production training.
+6. **Batched Transformer Inference**: Pad variable-length contexts for true batched inference per battle (currently sequential within a battle, batched across battles).
+7. **Curriculum-Adaptive Sampling**: Have the curriculum react to per-opponent win-rate trends automatically, rather than fixed weights + graduation criteria as the only feedback loop.

@@ -27,7 +27,7 @@ Where this file fits
             │                                                  │
             └────┬──────────────────────────────────────┬──────┘
                  │ trajectories                  weights│
-                 │ (mp_traj_queue)       (weight_queues)│
+                 │ (mp_traj_queue)      (control_queues)│
         ┌────────┴────────┐                ┌────────────┴───────┐
         │   worker.py     │                │   worker.py        │
         │   (xN workers)  │  ←──────────── │   (back-channel)   │
@@ -63,14 +63,11 @@ import signal
 import subprocess
 import threading
 import time
-from collections import deque
 from datetime import datetime
 from multiprocessing import Queue as MPQueue
 from multiprocessing.synchronize import Event as MPEvent
 from typing import Any, Dict, List, Optional, Tuple
 
-import numpy as np
-import psutil
 import torch
 
 import wandb
@@ -81,13 +78,17 @@ from elitefurretai.engine.showdown_server_manager import (
     shutdown_showdown_servers,
 )
 from elitefurretai.etl import Embedder
-from elitefurretai.etl.encoder import MDBO
 from elitefurretai.etl.system_utils import (
     configure_torch_multiprocessing,
     suppress_third_party_warnings,
 )
-from elitefurretai.rl.batch_inference_player import cleanup_worker_executors
-from elitefurretai.rl.config import RUST_ENGINE_BACKEND, RNaDConfig
+from elitefurretai.rl.config import RNaDConfig
+from elitefurretai.rl.exploiters import (
+    ExploiterPipelineState,
+    initialize_exploiter_pipeline,
+    mask_curriculum_during_warmup,
+    maybe_run_exploiter_update,
+)
 from elitefurretai.rl.learners import (
     PortfolioRNaDLearner,
     build_model_from_config,
@@ -96,7 +97,12 @@ from elitefurretai.rl.learners import (
 )
 from elitefurretai.rl.model_registry import ModelRegistry
 from elitefurretai.rl.opponents import OpponentPool
-from elitefurretai.rl.rnad_model import RNaDAgent
+from elitefurretai.rl.rl_utils import (
+    collate_trajectories,
+    setup_logging,
+    start_memory_watchdog,
+)
+from elitefurretai.rl.rnad_model import RNaDModel
 from elitefurretai.rl.worker import mp_worker_process
 from elitefurretai.supervised import format_time
 
@@ -116,187 +122,40 @@ def generate_shutdown_signal():
     return shutdown_requested
 
 
-def _read_pss_bytes(pid: int) -> Optional[int]:
-    """Read Pss (proportional set size) from /proc/<pid>/smaps_rollup.
-
-    Pss splits each shared page across the processes sharing it, so summing
-    Pss across the process tree equals the *physical* RAM the tree is
-    holding (no double-counting). Returns None if smaps_rollup is
-    unreadable (process exited / permission denied / not Linux).
-    """
-    try:
-        with open(f"/proc/{pid}/smaps_rollup", "r", encoding="ascii") as f:
-            for line in f:
-                if line.startswith("Pss:"):
-                    # "Pss:           12345 kB\n"
-                    return int(line.split()[1]) * 1024
-    except (FileNotFoundError, PermissionError, ProcessLookupError, OSError):
-        return None
-    return None
-
-
-def _sum_process_tree_rss_bytes() -> Tuple[int, Dict[str, int]]:
-    """Sum proportional RSS (Pss) of the current process and all recursive
-    children. Returns (total_bytes, breakdown_by_role_bytes).
-
-    Why Pss, not Rss
-    ----------------
-    Linux RSS counts each shared page in full for every process mapping it,
-    so summing child RSS double-counts shared libraries and shared mmaps.
-    On a typical RL training tree (1 trainer + 4 workers + frozen
-    subprocess + ~20 inductor compile workers + 4 vgcbench runners + 4
-    showdown servers with ~7 helper procs each), sum(RSS) overstates
-    physical RAM by ~8-10 GB because every Python interpreter shares the
-    same libpython, libcuda, libstdc++, etc.
-
-    Pss (proportional set size) from /proc/<pid>/smaps_rollup splits each
-    shared page fairly across its sharers. sum(Pss) across a process tree
-    equals the physical RAM the tree actually occupies.
-
-    Empirical comparison from a may15-profile snapshot (4 showdown, 4
-    vgcbench, 4 workers, frozen subprocess, 20+ inductor workers):
-        sum(RSS) = 24.2 GB   sum(Pss) = 14.2 GB
-    sum(RSS) had been tripping the 22-24 GB watchdog while real WSL2 RAM
-    usage stayed comfortably below the 23 GB physical ceiling.
-
-    Fallback to RSS only happens on a per-process basis if smaps_rollup
-    is unreadable (rare on Linux; possible if /proc isn't mounted or if
-    the process exited mid-read).
-    """
-    me = psutil.Process(os.getpid())
-    pss = _read_pss_bytes(me.pid)
-    total = pss if pss is not None else me.memory_info().rss
-    breakdown: Dict[str, int] = {"trainer": total}
-    for child in me.children(recursive=True):
-        try:
-            cmdline = " ".join(child.cmdline())
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            continue
-        child_pss = _read_pss_bytes(child.pid)
-        if child_pss is None:
-            try:
-                child_pss = child.memory_info().rss
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                continue
-        if "node" in cmdline or "pokemon-showdown" in cmdline:
-            role = "showdown"
-        elif "vgc" in cmdline.lower() or "vgcbench" in cmdline.lower():
-            role = "vgcbench"
-        elif "mp_worker_process" in cmdline or "multiprocessing" in cmdline:
-            role = "workers"
-        else:
-            role = "other"
-        breakdown[role] = breakdown.get(role, 0) + child_pss
-        total += child_pss
-    return total, breakdown
-
-
-def start_memory_watchdog(
-    shutdown_requested: threading.Event,
-    threshold_gb: Optional[float],
-    poll_interval_s: float = 30.0,
-) -> Optional[threading.Thread]:
-    """Watch combined RSS and request shutdown if it exceeds the threshold.
-
-    Returns the daemon thread (or None if disabled) so callers can join in
-    tests. The thread exits on its own once `shutdown_requested` fires —
-    the main loop's existing `finally` block handles checkpoint + cleanup.
-    """
-    if threshold_gb is None or threshold_gb <= 0:
-        logger.info("Memory watchdog disabled (threshold_gb=%r)", threshold_gb)
-        return None
-
-    threshold_bytes = int(threshold_gb * 1024**3)
-    logger.info(
-        "Memory watchdog armed at %.1f GB combined Pss (poll every %.0fs)",
-        threshold_gb,
-        poll_interval_s,
-    )
-
-    def _loop() -> None:
-        while not shutdown_requested.is_set():
-            try:
-                total, breakdown = _sum_process_tree_rss_bytes()
-            except psutil.NoSuchProcess:
-                return
-            if total >= threshold_bytes:
-                parts = ", ".join(
-                    f"{role}={rss / 1024**3:.2f}GB" for role, rss in breakdown.items()
-                )
-                logger.critical(
-                    "Memory watchdog: combined Pss %.2f GB >= %.1f GB threshold "
-                    "(%s). Requesting graceful shutdown.",
-                    total / 1024**3,
-                    threshold_gb,
-                    parts,
-                )
-                shutdown_requested.set()
-                return
-            # Use Event.wait so a shutdown from another path wakes us
-            # immediately and the thread exits without a stale 30s delay.
-            if shutdown_requested.wait(timeout=poll_interval_s):
-                return
-
-    thread = threading.Thread(target=_loop, name="memory-watchdog", daemon=True)
-    thread.start()
-    return thread
-
-
 def initialize_learner(
-    config: RNaDConfig,
-    agent: RNaDAgent,
-    base_model: Any,
+    config: RNaDConfig, agent: RNaDModel, base_model: Any
 ) -> PortfolioRNaDLearner:
     """Create the portfolio learner with one initial reference snapshot."""
     ref_model = copy.deepcopy(base_model)
-    ref_agent = RNaDAgent(ref_model)
-    return PortfolioRNaDLearner(
-        agent,
-        [ref_agent],
-        config=config,
-    )
-
-
-def resolve_worker_model_source(config: RNaDConfig, agent: RNaDAgent) -> str:
-    """Persist a bootstrap checkpoint for worker startup and return its path."""
-    assert config.training.run_dir, "run_dir must be set before bootstrap"
-    bootstrap_path = os.path.join(config.training.run_dir, "worker_bootstrap_initial.pt")
-    torch.save(
-        {
-            "model_state_dict": agent.model.state_dict(),
-            "config": config.to_dict(),
-            "step": 0,
-            "timestamp": datetime.now().isoformat(),
-        },
-        bootstrap_path,
-    )
-    logger.info("Saved worker bootstrap checkpoint to %s", bootstrap_path)
-    return bootstrap_path
+    ref_agent = RNaDModel(ref_model)
+    return PortfolioRNaDLearner(agent, [ref_agent], config=config)
 
 
 def initialize_training_state(
     config: RNaDConfig,
 ) -> Tuple[
-    RNaDAgent,
+    RNaDModel,
     PortfolioRNaDLearner,
-    str,
     Dict[str, Any],
-    int,
     Optional[Dict[str, float]],
 ]:
     """Initialize model/learner and worker bootstrap state in one place.
+    Handles resuming from another run, initializing off of a BC model
+    or doing a fresh init.
+
+    The outer-loop `updates` counter always starts at 0 each run; learner
+    internals (LR scheduler, rnad_alpha schedule) restore from the
+    checkpoint via `learner.load_resume_state`, so schedules stay
+    continuous even though the displayed step resets.
 
     Returns:
         agent: Main training agent
         learner: Initialized learner
-        worker_model_path: Checkpoint path workers should bootstrap from
         worker_model_config: Model config dict for worker model construction
-        start_step: Starting update step (restored for resume)
         resume_curriculum: Curriculum restored from checkpoint (if any)
     """
     cfg = config.to_dict()
     resume_curriculum: Optional[Dict[str, float]] = None
-    start_step = 0
 
     if config.training.resume_from:
         logger.info("Resuming model+optimizer from %s...", config.training.resume_from)
@@ -311,20 +170,17 @@ def initialize_training_state(
         # trained ones at that point. If we built the learner first and
         # loaded weights after, the ref would freeze at random init and
         # rnad_alpha * KL(curr || ref) would pull the policy toward a
-        # random anchor on every resume (see
-        # planning/stage2/2026-05-14-17-00-resume-state-bugs.md).
+        # random anchor on every resume
         checkpoint = load_checkpoint(config.training.resume_from, config.hardware.device)
         base_model = build_model_from_config(cfg, embedder, config.hardware.device, None)
         base_model.load_state_dict(checkpoint["model_state_dict"])
-        agent = RNaDAgent(base_model)
+        agent = RNaDModel(base_model)
         learner = initialize_learner(config, agent, base_model)
         learner.load_resume_state(checkpoint)
-        start_step = int(checkpoint["step"])
         old_config = RNaDConfig.from_dict(checkpoint["config"])
         if old_config.curriculum.curriculum_weights:
             resume_curriculum = old_config.curriculum.curriculum_weights
 
-        worker_model_path = config.training.resume_from
         worker_model_config = old_config.to_dict()
     elif config.training.initialize_path:
         logger.info(
@@ -367,10 +223,9 @@ def initialize_training_state(
             init_checkpoint["model_state_dict"],
             strict=False,
         )
-        agent = RNaDAgent(base_model)
+        agent = RNaDModel(base_model)
         learner = initialize_learner(config, agent, base_model)
 
-        worker_model_path = config.training.initialize_path
         worker_model_config = cfg
     else:
         logger.info("Initializing fresh model from config...")
@@ -380,615 +235,362 @@ def initialize_training_state(
             omniscient=False,
         )
         base_model = build_model_from_config(cfg, embedder, config.hardware.device, None)
-        agent = RNaDAgent(base_model)
+        agent = RNaDModel(base_model)
         learner = initialize_learner(config, agent, base_model)
 
-        worker_model_path = resolve_worker_model_source(config, agent)
         worker_model_config = cfg
 
     return (
         agent,
         learner,
-        worker_model_path,
         worker_model_config,
-        start_step,
         resume_curriculum,
     )
 
 
-def get_dead_workers(
-    processes: List[mp.Process], error_queue: MPQueue, verbose: bool = True
-) -> List[mp.Process]:
-    dead_procs = [p for p in processes if not p.is_alive()]
+def setup_run_directory(config: RNaDConfig, run_name: str) -> str:
+    """Create <save_dir>/<run_name>/{ghosts,exploiters} and copy resume snapshots.
 
-    if verbose and len(dead_procs) > 0:
-        logger.error("=" * 60)
-        logger.error("%d worker process(es) died:", len(dead_procs))
-        for p in dead_procs:
-            exit_code = p.exitcode
-            exit_reason = {
-                None: "still running (race condition?)",
-                0: "normal exit",
-                1: "general error",
-                -9: "SIGKILL (out of memory?)",
-                -11: "SIGSEGV (segmentation fault)",
-                -15: "SIGTERM (terminated)",
-            }.get(exit_code, f"exit code {exit_code}")
-            logger.error("  - %s (PID: %s): %s", p.name, p.pid, exit_reason)
+    On resume, the source run's ghosts/ and exploiters/ contents are copied
+    into the new dir so the curriculum keeps continuity — new snapshots
+    accumulate alongside the copies, leaving the source untouched.
 
-        # Check error queue for detailed error messages from workers
-        logger.error("Checking for error reports from workers...")
-        error_found = False
-        while True:
-            try:
-                error_info = error_queue.get_nowait()
-                error_found = True
-                logger.error(
-                    "Error from Worker %s: %s",
-                    error_info["worker_id"],
-                    error_info["error"],
-                )
-                logger.error("Traceback:\n%s", error_info["traceback"])
-            except Exception:
-                break
-        if not error_found:
-            logger.error(
-                "No error reports in queue (worker may have crashed before reporting)"
-            )
-
-        logger.error("Training cannot continue. Saving checkpoint and exiting...")
-        logger.error("=" * 60)
-
-    return dead_procs
-
-
-def collate_trajectories(trajectories, device, gamma, gae_lambda, max_seq_len=40):
-    """Collate list of trajectories into batched tensors with padding.
-
-    What this is for
-    ----------------
-    Workers ship variable-length trajectories — battle 1 might be 12 turns,
-    battle 2 might be 38 turns. The learner expects fixed-shape padded
-    tensors. This function does that conversion AND computes the GAE
-    advantages and returns that PPO needs.
-
-    Steps performed:
-      1. Truncate trajectories longer than max_seq_len. We keep the LAST N
-         steps because late-game decisions tend to matter more for outcomes.
-      2. Pre-allocate (B, T, ...) tensors and copy fields in.
-      3. Compute GAE advantages backwards through each trajectory:
-              δ_t   = r_t + γ V(s_{t+1}) - V(s_t)
-              A_t   = δ_t + γ λ A_{t+1}
-              R_t   = V(s_t) + A_t
-         where δ is the TD error, A is the advantage, R is the return target.
-      4. Move everything to the learner device.
-
-    Args:
-        trajectories: List of trajectory dicts ({"steps": [...], ...}).
-        device: torch device for the final batch.
-        gamma: Discount factor γ.
-        gae_lambda: GAE λ.
-        max_seq_len: Truncate trajectories longer than this (keeps the tail).
-
-    Returns:
-        Dict of padded tensors keyed by name (states, actions, …).
+    Returns the absolute run_dir path; also sets config.training.run_dir
+    as a side effect since downstream code reads it from there.
     """
-    trajectories = [
-        traj["steps"][-max_seq_len:] if len(traj["steps"]) > max_seq_len else traj["steps"]
-        for traj in trajectories
-    ]
+    run_dir = os.path.join(config.training.save_dir, run_name)
+    os.makedirs(run_dir, exist_ok=True)
+    os.makedirs(os.path.join(run_dir, "ghosts"), exist_ok=True)
+    os.makedirs(os.path.join(run_dir, "exploiters"), exist_ok=True)
+    config.training.run_dir = run_dir
+    logger.info("Run directory: %s", run_dir)
 
-    batch_size = len(trajectories)
-    max_len = max(len(t) for t in trajectories)
-    dim = len(trajectories[0][0]["state"])
-    action_space = MDBO.action_space()
+    if not config.training.resume_from:
+        return run_dir
 
-    # ── Pre-allocate numpy buffers and fill them per-trajectory ──────────────
-    # Avoids the per-step `torch.tensor(...)` calls in the inner loop, each of
-    # which is a separate allocation + dtype check. Numpy slice-assign is
-    # ~10× cheaper for the dimensions we care about. Final torch.from_numpy
-    # is zero-copy.
-    np_states = np.zeros((batch_size, max_len, dim), dtype=np.float32)
-    np_actions = np.zeros((batch_size, max_len), dtype=np.int64)
-    np_rewards = np.zeros((batch_size, max_len), dtype=np.float32)
-    np_log_probs = np.zeros((batch_size, max_len), dtype=np.float32)
-    np_values = np.zeros((batch_size, max_len), dtype=np.float32)
-    np_is_tp = np.zeros((batch_size, max_len), dtype=bool)
-    np_padding = np.zeros((batch_size, max_len), dtype=bool)
-    # Default to all-1s; turn steps overwrite with the real mask. Teampreview
-    # and padded positions stay all-1s (the learner ignores them via flat_is_tp
-    # and padding_mask anyway).
-    np_masks = np.ones((batch_size, max_len, action_space), dtype=np.float32)
-
-    for i, traj in enumerate(trajectories):
-        seq_len = len(traj)
-
-        np_states[i, :seq_len] = np.stack([step["state"] for step in traj])
-        np_actions[i, :seq_len] = [step["action"] for step in traj]
-        np_rewards[i, :seq_len] = [step["reward"] for step in traj]
-        np_log_probs[i, :seq_len] = [step["log_prob"] for step in traj]
-        np_values[i, :seq_len] = [step["value"] for step in traj]
-        np_is_tp[i, :seq_len] = [step["is_teampreview"] for step in traj]
-        np_padding[i, :seq_len] = True
-
-        for t, step in enumerate(traj):
-            if not step["is_teampreview"]:
-                np_masks[i, t] = step["mask"]
-
-    # Convert to torch (zero-copy on CPU). Move to device once at the end.
-    states = torch.from_numpy(np_states)
-    actions = torch.from_numpy(np_actions)
-    rewards = torch.from_numpy(np_rewards)
-    log_probs = torch.from_numpy(np_log_probs)
-    values = torch.from_numpy(np_values)
-    is_tp = torch.from_numpy(np_is_tp)
-    padding_mask = torch.from_numpy(np_padding)
-    masks = torch.from_numpy(np_masks)
-
-    # ── Vectorized GAE ───────────────────────────────────────────────────────
-    # Single reverse-T loop with (B,) vector ops instead of B*T Python
-    # iterations. Padding handled by masking the gae update (gae stays at 0
-    # for batches whose t is past their seq_len, since the initial value is 0
-    # and we never updated it through the all-padded suffix).
-    advantages = torch.zeros(batch_size, max_len, dtype=torch.float32)
-    gae = torch.zeros(batch_size, dtype=torch.float32)
-    pad_float = padding_mask.float()
-    for t in reversed(range(max_len)):
-        if t + 1 < max_len:
-            # When t+1 is padded, treat next_val as 0 (terminal at end-of-traj).
-            next_val = values[:, t + 1] * pad_float[:, t + 1]
-        else:
-            next_val = torch.zeros(batch_size, dtype=torch.float32)
-        delta = rewards[:, t] + gamma * next_val - values[:, t]
-        gae_new = delta + gamma * gae_lambda * gae
-        gae = torch.where(padding_mask[:, t], gae_new, gae)
-        advantages[:, t] = gae
-    returns = (advantages + values) * pad_float
-
-    return {
-        "states": states.to(device, non_blocking=True),
-        "actions": actions.to(device, non_blocking=True),
-        "rewards": rewards.to(device, non_blocking=True),
-        "log_probs": log_probs.to(device, non_blocking=True),
-        "values": values.to(device, non_blocking=True),
-        "is_teampreview": is_tp.to(device, non_blocking=True),
-        "advantages": advantages.to(device, non_blocking=True),
-        "returns": returns.to(device, non_blocking=True),
-        "padding_mask": padding_mask.to(device, non_blocking=True),
-        "masks": masks.to(device, non_blocking=True),
-    }
-
-
-# ╔═════════════════════════════════════════════════════════════════════════════╗
-# ║ In-process exploiter co-training helpers                                    ║
-# ╠═════════════════════════════════════════════════════════════════════════════╣
-# ║ The exploiter pipeline is a SECOND learner that lives in this same process. ║
-# ║ It optimizes a pure exploitation objective (no RNaD regularization) against ║
-# ║ a frozen copy of the main agent ("the victim"). When it sustains a win-rate ║
-# ║ ≥ threshold over the rolling window, it "graduates" — gets snapshotted to   ║
-# ║ disk (entering the EXPLOITERS curriculum slot for main to defend against)   ║
-# ║ and a fresh generation is initialized from the BC checkpoint.               ║
-# ║                                                                             ║
-# ║ Why in-process and not a separate script (the OLD subprocess pipeline       ║
-# ║ removed in this change):                                                    ║
-# ║   - Reuses the existing worker pool — no extra CPU pressure.                ║
-# ║   - Uses spare GPU capacity for the second learner's gradients.             ║
-# ║   - One run, one config, one wandb stream — no subprocess orchestration.    ║
-# ║                                                                             ║
-# ║ Why graduation instead of fixed-interval snapshots:                         ║
-# ║   - Quality control: every entry in the curriculum is a validated weakness. ║
-# ║   - Diversity: fresh-init each generation finds DIFFERENT exploits (each    ║
-# ║     graduation pushes main to defend against the previous exploit, so the   ║
-# ║     next generation can't rely on the same trick).                          ║
-# ║   - Implicit difficulty curriculum: when main is robust, no exploit can     ║
-# ║     graduate; the pipeline naturally winds down rather than churning the    ║
-# ║     curriculum with weak checkpoints.                                       ║
-# ║                                                                             ║
-# ║ See planning/stage2/2026-05-07-07-58-exploiter-data-plane.md and            ║
-# ║ src/elitefurretai/rl/exploiter_implementation_plan.md for full design.      ║
-# ╚═════════════════════════════════════════════════════════════════════════════╝
-
-
-def _train_exploiter_weight(config: RNaDConfig) -> float:
-    """Read the curriculum weight that gates the entire pipeline.
-
-    `train_exploiter > 0` is the SINGLE source of truth — there is no
-    separate `exploiter_enabled` flag. A weight-only gate prevents the
-    inconsistent-state bug where a flag and a weight could disagree
-    (e.g., flag off but weight 0.20 → workers sample exploiter battles
-    that get silently dropped because no learner exists to consume them).
-    """
-    return float(config.curriculum.curriculum_weights.get("train_exploiter", 0.0))
-
-
-def _build_exploiter_config(main_config: RNaDConfig) -> RNaDConfig:
-    """Construct a config for the exploiter learner from the main config.
-
-    The exploiter shares almost everything with main (architecture, value
-    head, hardware) but needs algorithmic overrides:
-      - rnad_alpha = 0: the exploiter has no Nash regularizer. Its goal
-        is pure exploitation, not equilibrium. (PortfolioRNaDLearner
-        reduces to plain PPO when rnad_alpha=0 and max_portfolio_size=1.)
-      - ent_coef = ent_coef_end = exploiter_ent_coef: no annealing —
-        exploiter trains for relatively short generations and we want a
-        constant entropy bonus to prevent premature mode collapse onto
-        a single exploit. (Main anneals from ent_coef → ent_coef_end
-        because main trains for 100K+ updates; the exploiter's 5K-cap
-        per generation doesn't justify a schedule.)
-      - backbone_lr = heads_lr = exploiter_lr: a single LR override
-        applied to both parameter groups. The plan calls for one number
-        (`exploiter_lr=1e-4`); the cleanest interpretation is to use it
-        for both groups. Could be split if we later observe one group
-        needs different treatment.
-      - max_portfolio_size = 1: no rolling reference portfolio for the
-        exploiter. With rnad_alpha=0 the references are unused anyway,
-        but reducing portfolio size avoids needless deepcopies.
-
-    Everything else (architecture, value head, hardware) is inherited
-    from main so the exploiter's model has the same shape and the same
-    inference path on workers.
-    """
-    cfg = copy.deepcopy(main_config)
-    cfg.algorithm.rnad_alpha = 0.0
-    cfg.algorithm.ent_coef = main_config.exploiter.ent_coef
-    cfg.algorithm.ent_coef_end = main_config.exploiter.ent_coef
-    cfg.optimizer.backbone_lr = main_config.exploiter.lr
-    cfg.optimizer.heads_lr = main_config.exploiter.lr
-    cfg.optimizer.lr = main_config.exploiter.lr
-    cfg.portfolio.max_portfolio_size = 1
-    return cfg
-
-
-def _load_bc_state_dict(
-    bc_model_path: Optional[str], device: str
-) -> Optional[Dict[str, Any]]:
-    """Load and cache the BC checkpoint's state_dict for fresh-init each generation.
-
-    Cached so we don't re-read from disk every graduation event (which
-    happens up to once per ~15 minutes of wall-clock; not a bottleneck
-    but unnecessary I/O if the file is huge). Returns None when no BC
-    path is configured — caller should validate before reaching here.
-    """
-    if not bc_model_path:
-        return None
-    bc_checkpoint = torch.load(bc_model_path, map_location=device, weights_only=False)
-    return bc_checkpoint["model_state_dict"]
-
-
-def _initialize_exploiter_pipeline(
-    config: RNaDConfig,
-    agent: RNaDAgent,
-    worker_model_config: Dict[str, Any],
-) -> Tuple[
-    Optional[RNaDAgent],
-    Optional[RNaDAgent],
-    Optional[PortfolioRNaDLearner],
-    Optional[Dict[str, Any]],
-]:
-    """Build the exploiter learner stack in the main process.
-
-    Returns (exploiter_agent, victim_agent, exploiter_learner, bc_state_dict).
-    All four are None when `train_exploiter == 0` (the pipeline is dormant
-    and the four state slots aren't allocated, saving GPU memory).
-
-    Generation 0 init source = deepcopy of main_agent (per design decisions
-    confirmed 2026-05-07). The first generation gets a competent starting
-    point that's already trained on the same task. Subsequent generations
-    re-initialize from BC (`bc_state_dict`) to force a *different* basin —
-    if we re-deepcopied main, the exploiter would just chase main's current
-    policy and find the same exploit repeatedly.
-
-    The victim_agent is constructed from BC initially; it'll be overwritten
-    by the first victim_refresh broadcast (which copies main's current
-    weights). Doing it this way keeps the victim_agent shape-compatible
-    with the model architecture even if the warmup gate fires before the
-    first refresh.
-
-    The exploiter_ref_agent is a frozen deepcopy of the initial exploiter.
-    With rnad_alpha=0 it's mathematically unused (the KL-to-ref term zeroes
-    out), but PortfolioRNaDLearner's __init__ requires a non-empty ref list
-    and tracks per-ref selection counts — easier to satisfy that interface
-    than to special-case it.
-    """
-    if _train_exploiter_weight(config) <= 0:
-        return None, None, None, None
-
-    if not config.curriculum.bc_model_path:
-        raise ValueError(
-            "exploiter co-training requires `curriculum.bc_model_path` to be "
-            "set — each new generation re-initializes from BC to find a "
-            "different exploit basin. Set bc_model_path or set "
-            "train_exploiter to 0 in curriculum_weights."
+    resume_parent = os.path.dirname(os.path.abspath(config.training.resume_from))
+    # If resuming from a ghost or exploiter file, walk up one level.
+    if os.path.basename(resume_parent) in ("ghosts", "exploiters"):
+        resume_parent = os.path.dirname(resume_parent)
+    if os.path.abspath(resume_parent) == os.path.abspath(run_dir):
+        logger.info(
+            "Resume copy: source matches new run_dir (%s) — no copy needed", run_dir
         )
+        return run_dir
 
-    device = config.hardware.device
+    for subdir in ("ghosts", "exploiters"):
+        src_dir = os.path.join(resume_parent, subdir)
+        dst_dir = os.path.join(run_dir, subdir)
+        if not os.path.isdir(src_dir):
+            logger.info("Resume copy: %s not present in source run, skipping", src_dir)
+            continue
+        files = sorted(
+            f for f in os.listdir(src_dir) if os.path.isfile(os.path.join(src_dir, f))
+        )
+        if not files:
+            logger.info("Resume copy: %s is empty, nothing to copy", src_dir)
+            continue
+        total_bytes = 0
+        for fname in files:
+            src_path = os.path.join(src_dir, fname)
+            dst_path = os.path.join(dst_dir, fname)
+            total_bytes += os.path.getsize(src_path)
+            shutil.copy2(src_path, dst_path)
+        logger.info(
+            "Resume copy: %d file(s), %.1f MB total copied into %s",
+            len(files),
+            total_bytes / 1e6,
+            dst_dir,
+        )
+    return run_dir
 
-    # ── Generation 0: deepcopy of main ──────────────────────────────────
-    # The first generation inherits main's weights. Main has been trained
-    # via supervised learning + RNaD, so it's a strong starting point.
-    # Using a fresh BC init for gen 0 would waste 200 warmup updates
-    # learning basics the exploiter already knows from main.
-    exploiter_model = copy.deepcopy(agent.model)
-    exploiter_agent = RNaDAgent(exploiter_model)
 
-    # ── Victim: BC-init, will be overwritten by first refresh ───────────
-    # The victim is the frozen target. We init from BC so it has a real
-    # policy (not random) in case warmup ends and a train_exploiter battle
-    # samples before the first victim_refresh fires. Once main process
-    # broadcasts victim_weights, this gets replaced with current main.
-    bc_state_dict = _load_bc_state_dict(config.curriculum.bc_model_path, device)
-    embedder = Embedder(
+def setup_model_registry(
+    config: RNaDConfig,
+    agent: RNaDModel,
+    worker_model_config: Dict[str, Any],
+    opponent_pool: OpponentPool,
+) -> ModelRegistry:
+    """Build and start the ModelRegistry with all inference services.
+
+    Trainer process owns a ModelRegistry of InferenceServices that workers
+    submit inference requests to. Each service holds an independent copy
+    of its model so the learner can update without racing with inference;
+    weights sync at broadcast cadence via registry.sync_weights.
+
+    Registers:
+      - `main` always (initialized from `agent`).
+      - `bc` in the "frozen" subprocess if a BC checkpoint is configured
+        AND its curriculum weight > 0. BC never re-syncs after startup,
+        so subprocess co-location costs nothing and frees a GIL contender.
+      - `exploiter` (in-process) + `victim` (frozen subprocess) if
+        `train_exploiter` curriculum weight > 0. Exploiter must stay
+        in-process because its sync rate is too high for IPC; victim's
+        rare refresh fits the subprocess path comfortably.
+      - `ghost_{0..max_ghosts}` and `exploiter_snap_{0..max_exploiter_models}`
+        slots in the "frozen" subprocess. Slots are fixed-size; LRU swaps
+        happen mid-run via sync_weights, never re-registration. Weights
+        are loaded from disk for any snapshots OpponentPool pre-assigned
+        at startup.
+
+    Calls `registry.start_all()` before returning so the services are
+    ready to accept inference requests from workers.
+    """
+    inference_device = config.hardware.device
+    inference_embedder = Embedder(
         format=config.curriculum.battle_format,
         feature_set=config.training.embedder_feature_set,
         omniscient=False,
     )
-    # strict=False mirrors the main-agent BC load (train.py:303-312): the BC
-    # checkpoint may have a different value/win head shape than the runtime
-    # architecture (e.g. sep_arch's deep value head). Trunk + policy load fine;
-    # mismatched heads get fresh-initialized — they'll be overwritten on the
-    # first victim_refresh anyway.
-    victim_model = build_model_from_config(
-        worker_model_config, embedder, device, bc_state_dict, strict=False
-    )
-    victim_model.eval()
-    for param in victim_model.parameters():
-        param.requires_grad = False
-    victim_agent = RNaDAgent(victim_model)
-
-    # ── Reference for the exploiter learner ──────────────────────────────
-    # Frozen copy of the initial exploiter. Mathematically unused under
-    # rnad_alpha=0 but PortfolioRNaDLearner's interface requires it.
-    exploiter_ref_agent = RNaDAgent(copy.deepcopy(exploiter_model))
-
-    exploiter_config = _build_exploiter_config(config)
-    exploiter_learner = PortfolioRNaDLearner(
-        exploiter_agent,
-        [exploiter_ref_agent],
-        config=exploiter_config,
+    registry = ModelRegistry(
+        num_workers=config.hardware.num_workers,
+        batch_size=config.hardware.batch_size,
+        batch_timeout=config.hardware.batch_timeout,
+        device=inference_device,
+        compile_mode=config.hardware.compile_inference_model,
+        embedding_size=inference_embedder.embedding_size,
     )
 
-    logger.info(
-        "Exploiter pipeline initialized | gen 0 from main | victim from BC | "
-        "lr=%g, ent_coef=%g, batch=%d, threshold=%.2f over %d battles, "
-        "max_updates_per_gen=%d, victim_refresh=%d",
-        config.exploiter.lr,
-        config.exploiter.ent_coef,
-        config.exploiter.batch_size,
-        config.exploiter.graduation_threshold,
-        config.exploiter.graduation_window,
-        config.exploiter.max_updates_per_generation,
-        config.exploiter.victim_refresh_interval,
+    # Build a CPU-or-GPU copy of the main model for inference, kept
+    # independent of the learner's model so backward+forward don't race.
+    main_inference_base = build_model_from_config(
+        worker_model_config, inference_embedder, inference_device, None, strict=False
     )
-    return exploiter_agent, victim_agent, exploiter_learner, bc_state_dict
+    main_inference_base.eval()
+    main_inference_base.load_state_dict(agent.model.state_dict())
+    registry.register("main", RNaDModel(main_inference_base))
+
+    bc_checkpoint_path = config.curriculum.bc_model_path
+    bc_curriculum_weight = config.curriculum.curriculum_weights.get(
+        OpponentPool.BC_PLAYER, 0.0
+    )
+    if bc_checkpoint_path and bc_curriculum_weight > 0:
+        logger.info(
+            "Registering BC model from %s (curriculum weight %.3f)",
+            bc_checkpoint_path,
+            bc_curriculum_weight,
+        )
+        bc_checkpoint = torch.load(
+            bc_checkpoint_path, map_location="cpu", weights_only=False
+        )
+        bc_inference_base = build_model_from_config(
+            worker_model_config,
+            inference_embedder,
+            inference_device,
+            bc_checkpoint["model_state_dict"],
+            strict=False,
+        )
+        bc_inference_base.eval()
+        for param in bc_inference_base.parameters():
+            param.requires_grad = False
+        bc_inference_base.cpu()
+        registry.register(
+            "bc",
+            RNaDModel(bc_inference_base),
+            compile=True,
+            process_group="frozen",
+        )
+        del bc_checkpoint
+
+    exploiter_curriculum_weight = config.curriculum.curriculum_weights.get(
+        OpponentPool.TRAIN_EXPLOITER, 0.0
+    )
+    if exploiter_curriculum_weight > 0:
+        logger.info(
+            "Registering exploiter (in-process) + victim (frozen subprocess) "
+            "(curriculum weight %.3f)",
+            exploiter_curriculum_weight,
+        )
+        exploiter_base = build_model_from_config(
+            worker_model_config, inference_embedder, inference_device, None, strict=False
+        )
+        exploiter_base.eval()
+        # Exploiter starts with whatever build_model_from_config gave us
+        # (BC init if `initialize_path` is set, else fresh). It'll be
+        # sync'd as the exploiter learner produces updates.
+        registry.register("exploiter", RNaDModel(exploiter_base), compile=True)
+
+        victim_base = build_model_from_config(
+            worker_model_config, inference_embedder, "cpu", None, strict=False
+        )
+        victim_base.eval()
+        # Victim starts as a copy of main; weights refresh periodically
+        # via registry.sync_weights("victim", ...).
+        victim_base.load_state_dict(agent.model.state_dict())
+        for param in victim_base.parameters():
+            param.requires_grad = False
+        registry.register(
+            "victim",
+            RNaDModel(victim_base),
+            compile=True,
+            process_group="frozen",
+        )
+
+    # Ghost + exploiter-snapshot slot pools: fixed-size at registration,
+    # LRU-swapped mid-run via sync_weights. Both live in the "frozen"
+    # subprocess (low sync rate). Workers route to a slot only if it's
+    # in opponent_pool.active_*_slots().
+    registry.register_snapshot_slots(
+        "ghost_", config.curriculum.max_ghosts, source_name="main"
+    )
+    for path, slot in opponent_pool.slot_for_ghost_path.items():
+        checkpoint = torch.load(path, map_location="cpu")
+        registry.sync_weights(f"ghost_{slot}", checkpoint["model_state_dict"])
+
+    registry.register_snapshot_slots(
+        "exploiter_snap_", config.curriculum.max_exploiter_models, source_name="main"
+    )
+    for path, slot in opponent_pool.slot_for_exploiter_path.items():
+        checkpoint = torch.load(path, map_location="cpu")
+        registry.sync_weights(f"exploiter_snap_{slot}", checkpoint["model_state_dict"])
+
+    # Start all services before workers spawn — workers send requests
+    # immediately after spawn.
+    registry.start_all()
+    return registry
 
 
-def _mask_curriculum_during_warmup(
-    curriculum: Dict[str, float], in_warmup: bool
-) -> Dict[str, float]:
-    """Zero `train_exploiter` and redistribute its weight proportionally to
-    other slots while in warmup.
-
-    Why warmup masks the curriculum (and doesn't just drop trajectories
-    server-side): if workers sample train_exploiter battles during warmup,
-    we'd burn 20% of CPU on battles whose trajectories we'd then discard.
-    Better to redistribute so all workers spend warmup time generating
-    useful main-learner data.
-
-    Why proportional redistribution rather than dumping into self_play:
-    keeps the BC/ghost/baseline mix during warmup the same as steady
-    state. If the user configured 0.4 self_play / 0.4 train_exploiter
-    / 0.2 ghosts, masking-then-self-play would yield 0.8/0.0/0.2 during
-    warmup (over-weighting self-play). Proportional gives 0.667/0.0/0.333,
-    preserving the relative mix.
-    """
-    if not in_warmup:
-        return dict(curriculum)
-    if "train_exploiter" not in curriculum:
-        return dict(curriculum)
-    masked_weight = curriculum["train_exploiter"]
-    if masked_weight <= 0:
-        return dict(curriculum)
-    remainder_total = sum(v for k, v in curriculum.items() if k != "train_exploiter")
-    if remainder_total <= 0:
-        # Pathological case: only train_exploiter in the curriculum. Fall
-        # back to self_play during warmup so workers still produce data.
-        return {"self_play": 1.0}
-    scale = (remainder_total + masked_weight) / remainder_total
-    masked = {
-        k: (v * scale if k != "train_exploiter" else 0.0) for k, v in curriculum.items()
-    }
-    return masked
-
-
-def _maybe_run_exploiter_update(
+def broadcast_weights_to_workers(
     config: RNaDConfig,
     updates: int,
-    agent: RNaDAgent,
-    exploiter_learner: Optional[PortfolioRNaDLearner],
-    exploiter_agent: Optional[RNaDAgent],
-    victim_agent: Optional[RNaDAgent],
-    bc_state_dict: Optional[Dict[str, Any]],
+    agent: RNaDModel,
+    exploiter_agent: Optional[RNaDModel],
+    victim_agent: Optional[RNaDModel],
     opponent_pool: OpponentPool,
-    exploiter_trajectories: List[Dict[str, Any]],
-    exploiter_win_buffer: "deque[float]",
-    exploiter_updates_total: int,
-    exploiter_updates_in_generation: int,
-    exploiter_generation: int,
-    registry: Optional[ModelRegistry] = None,
-) -> Dict[str, Any]:
-    """Maybe run one exploiter learner update and handle graduation/reset.
+    registry: Optional[ModelRegistry],
+    control_queues: List[MPQueue],
+    exploiter_state: ExploiterPipelineState,
+    exploiter_pipeline_on: bool,
+) -> None:
+    """Sync new weights into the inference services and broadcast a control payload.
 
-    Fires when (a) pipeline is on, (b) past warmup, and (c) the exploiter
-    buffer has ≥ `exploiter.batch_size` trajectories. Otherwise returns the
-    existing counters unchanged.
+    Two distinct things happen here at the same cadence:
 
-    Mutates `exploiter_trajectories` (cleared after a fired update) and
-    `exploiter_win_buffer` (cleared on graduation/timeout) in place so the
-    caller's references see the update without reassignment.
+      1. WEIGHTS — synced trainer-side via `registry.sync_weights(...)` for
+         every registered service whose weights changed (main always; live
+         exploiter if the pipeline is on; victim if a refresh tick fired
+         since the last broadcast). This is how policy refreshes actually
+         reach inference under centralized inference. Workers never see
+         these weights — they call into the InferenceService via mp.Queue.
 
-    On graduation or timeout, saves a snapshot under `<run_dir>/exploiters/`,
-    registers it with the opponent pool, reinitializes the exploiter from BC,
-    refreshes the victim from current main, and increments the generation
-    counter. The returned `victim_needs_broadcast` flag tells the caller to
-    include `victim_weights` in the next checkpoint broadcast.
+      2. CONTROL PAYLOAD — a small dict (curriculum, sampling knobs,
+         active ghost/exploiter slot lists) shipped to each worker's
+         control_queue. Bundling these into one dict guarantees workers
+         transition together rather than racing between curriculum and
+         sampling updates.
 
-    Returns a dict with keys: `updates_total`, `updates_in_generation`,
-    `generation`, `victim_needs_broadcast`.
+    The function name is historical: under centralized inference the
+    control payload no longer carries weights (workers don't hold a policy).
+    It still owns the "do everything that needs to happen at broadcast
+    cadence" responsibility, including the registry weight syncs.
+
+    Curriculum is masked during warmup so workers don't sample
+    train_exploiter battles before the exploiter learner has seen any
+    updates (see `mask_curriculum_during_warmup`).
+
+    State_dicts are moved to CPU before handing to `registry.sync_weights`
+    so subprocess-hosted services can pickle them across the control queue.
+
+    Side effects:
+      - `registry.sync_weights` for main / exploiter / victim as applicable.
+      - Clears `exploiter_state.victim_needs_broadcast` after a victim sync
+        (so each refresh is processed exactly once).
+      - Drain-then-put on each worker's control_queue (keep-at-most-latest).
     """
-    # Guard: pipeline off, in warmup, or buffer underfull → no-op. Fires when:
-    #   1. Pipeline is on (exploiter_learner is not None — gated by
-    #      train_exploiter > 0 at startup).
-    #   2. Past warmup (main has settled into RNaD basin; first exploits
-    #      found will target real weaknesses, not BC artifacts).
-    #   3. Exploiter buffer has ≥ exploiter_train_batch_size trajectories.
-    # Independent of main learner update — both can fire in the same outer
-    # iteration, or just one, depending on the 80/20 trajectory split and
-    # the buffer fill rates.
+    logger.info("[Update %d] Broadcasting weights + control payload...", updates)
+
+    # ── Weight syncs into the trainer-side InferenceServices ───────────
+    # The service copy MUST be kept current or workers play increasingly
+    # off-policy. Moves to CPU first so subprocess services can receive
+    # the state_dict across their control queue.
+    cpu_weights = {k: v.cpu() for k, v in agent.model.state_dict().items()}
+    if registry is not None and "main" in registry.names():
+        registry.sync_weights("main", cpu_weights)
+
+    if exploiter_pipeline_on and exploiter_agent is not None:
+        exploiter_cpu = {k: v.cpu() for k, v in exploiter_agent.model.state_dict().items()}
+        if registry is not None and "exploiter" in registry.names():
+            registry.sync_weights("exploiter", exploiter_cpu)
     if (
-        exploiter_learner is None
-        or updates < config.exploiter.warmup_updates
-        or len(exploiter_trajectories) < config.exploiter.batch_size
+        exploiter_pipeline_on
+        and victim_agent is not None
+        and exploiter_state.victim_needs_broadcast
     ):
-        return {
-            "updates_total": exploiter_updates_total,
-            "updates_in_generation": exploiter_updates_in_generation,
-            "generation": exploiter_generation,
-            "victim_needs_broadcast": False,
-        }
+        victim_cpu = {k: v.cpu() for k, v in victim_agent.model.state_dict().items()}
+        if registry is not None and "victim" in registry.names():
+            registry.sync_weights("victim", victim_cpu)
+        # Cleared after the sync queues: each refresh is processed exactly
+        # once, then we wait for the next refresh tick.
+        exploiter_state.victim_needs_broadcast = False
 
-    exp_batch = collate_trajectories(
-        exploiter_trajectories,
-        config.hardware.device,
-        config.algorithm.gamma,
-        config.algorithm.gae_lambda,
-        max_seq_len=config.architecture.max_seq_len,
-    )
-    exp_metrics = exploiter_learner.update(exp_batch)
-    exploiter_updates_total += 1
-    exploiter_updates_in_generation += 1
-    exploiter_trajectories.clear()
-
-    # Win rate over the rolling window (only meaningful once the buffer has
-    # filled; before that we'd be reading from too few samples for a robust gate).
-    buffer_full = len(exploiter_win_buffer) >= config.exploiter.graduation_window
-    cur_win_rate = (
-        sum(exploiter_win_buffer) / len(exploiter_win_buffer)
-        if len(exploiter_win_buffer) > 0
-        else 0.0
-    )
-
-    # Log under `exploiter/` namespace to keep the wandb UI uncluttered
-    # (main learner metrics keep the bare names).
-    if config.training.use_wandb:
-        exp_log = {f"exploiter/{k}": v for k, v in exp_metrics.items()}
-        exp_log["exploiter/generation"] = exploiter_generation
-        exp_log["exploiter/updates_total"] = exploiter_updates_total
-        exp_log["exploiter/updates_in_generation"] = exploiter_updates_in_generation
-        exp_log["exploiter/win_rate_rolling"] = cur_win_rate
-        exp_log["exploiter/win_buffer_size"] = len(exploiter_win_buffer)
-        wandb.log(exp_log)
-
-    # ===== GRADUATION CHECK =====
-    # Two paths:
-    #   - graduated: buffer full AND win rate ≥ threshold. The exploiter has
-    #     demonstrated a real exploit and deserves a place in the curriculum.
-    #   - timed_out: this generation hit the per-gen update cap without
-    #     graduating. Either main is robust to this basin OR the exploiter
-    #     is stuck in a local optimum. Either way, save the best-effort
-    #     weights and try a different basin via BC re-init.
-    graduated = buffer_full and cur_win_rate >= config.exploiter.graduation_threshold
-    timed_out = (
-        exploiter_updates_in_generation >= config.exploiter.max_updates_per_generation
-    )
-
-    victim_needs_broadcast = False
-    if graduated or timed_out:
-        snapshot_filename = f"exploiter_gen_{exploiter_generation}_step_{updates}.pt"
-        snapshot_path = os.path.join(
-            str(config.training.run_dir),
-            "exploiters",
-            snapshot_filename,
-        )
-        # Save in the same format checkpoints use (so
-        # is_checkpoint_compatible_with_model_config can validate it for the
-        # curriculum loader).
-        torch.save(
-            {
-                "model_state_dict": exploiter_agent.model.state_dict()
-                if exploiter_agent is not None
-                else {},
-                "config": config.to_dict(),
-                "step": updates,
-                "exploiter_generation": exploiter_generation,
-                "exploiter_win_rate": cur_win_rate,
-                "graduated": graduated,
-                "timed_out": timed_out,
-                "timestamp": datetime.now().isoformat(),
-            },
-            snapshot_path,
-        )
-        opponent_pool.add_exploiter(snapshot_path)
-        if registry is not None:
-            new_slot = opponent_pool.slot_for_exploiter_path[snapshot_path]
-            checkpoint = torch.load(
-                snapshot_path,
-                map_location=registry.device,
-            )
-            registry.sync_weights(
-                f"exploiter_snap_{new_slot}",
-                checkpoint["model_state_dict"],
-            )
-
-        logger.info(
-            "[Update %d] Exploiter generation %d %s | "
-            "win_rate=%.3f over %d battles | "
-            "exploiter_updates_in_gen=%d | snapshot=%s",
-            updates,
-            exploiter_generation,
-            "GRADUATED" if graduated else "TIMED OUT (force-reset)",
-            cur_win_rate,
-            len(exploiter_win_buffer),
-            exploiter_updates_in_generation,
-            snapshot_path,
-        )
-        if config.training.use_wandb:
-            wandb.log(
-                {
-                    "exploiter/graduation_event": 1.0,
-                    "exploiter/graduation_win_rate": cur_win_rate,
-                    "exploiter/generation_completed": exploiter_generation,
-                    "exploiter/generation_was_timeout": float(timed_out),
-                }
-            )
-
-        # ── Reinitialize for a fresh generation ─────────────────────────────
-        # BC init forces a different starting basin so the next generation
-        # can't just re-learn the exploit main has already defended against
-        # (it would converge to the same weights from the same start).
-        # Refresh victim from CURRENT main so the new exploiter immediately
-        # faces the latest defender rather than a snapshot from the previous
-        # victim refresh tick.
-        if bc_state_dict is not None and exploiter_agent is not None:
-            # strict=False: BC checkpoint may have a different value/win head
-            # shape than the runtime architecture; trunk + policy load, heads
-            # fresh-initialize. Same rationale as the victim init above.
-            exploiter_agent.model.load_state_dict(bc_state_dict, strict=False)
-        if victim_agent is not None:
-            victim_agent.model.load_state_dict(agent.model.state_dict())
-            # Workers must sync to the new victim before the next generation's
-            # first train_exploiter battle.
-            victim_needs_broadcast = True
-
-        exploiter_generation += 1
-        exploiter_updates_in_generation = 0
-        exploiter_win_buffer.clear()
-
-    return {
-        "updates_total": exploiter_updates_total,
-        "updates_in_generation": exploiter_updates_in_generation,
-        "generation": exploiter_generation,
-        "victim_needs_broadcast": victim_needs_broadcast,
+    # ── Control payload broadcast to each worker ───────────────────────
+    in_warmup = updates < config.exploiter.warmup_updates
+    control_payload: Dict[str, Any] = {
+        "curriculum": mask_curriculum_during_warmup(opponent_pool.curriculum, in_warmup),
+        "temperature": config.temperature_at_step(updates),
+        "top_p": config.exploration.top_p,
+        "active_ghost_slots": sorted(opponent_pool.active_ghost_slots()),
+        "active_exploiter_slots": sorted(opponent_pool.active_exploiter_slots()),
     }
+    for i, q in enumerate(control_queues):
+        try:
+            # Keep-at-most-latest semantics prevents workers from replaying
+            # stale control snapshots when learner is faster than consumers.
+            while not q.empty():
+                try:
+                    q.get_nowait()
+                except Exception:
+                    break
+            q.put_nowait(control_payload)
+        except Exception as e:
+            logger.warning("Failed to broadcast to worker %d: %s", i, e)
+
+
+def get_dead_workers(
+    processes: List[mp.Process], error_queue: MPQueue
+) -> List[mp.Process]:
+    dead_procs = [p for p in processes if not p.is_alive()]
+
+    if len(dead_procs) == 0:
+        return []
+
+    logger.error("=" * 60)
+    logger.error("%d worker process(es) died:", len(dead_procs))
+    for p in dead_procs:
+        exit_reason = {
+            None: "still running (race condition?)",
+            0: "normal exit",
+            1: "general error",
+            -9: "SIGKILL (out of memory?)",
+            -11: "SIGSEGV (segmentation fault)",
+            -15: "SIGTERM (terminated)",
+        }.get(p.exitcode, f"exit code {p.exitcode}")
+        logger.error("  - %s (PID: %s): %s", p.name, p.pid, exit_reason)
+
+    # Check error queue for detailed error messages from workers
+    logger.error("Checking for error reports from workers...")
+    error_found = False
+    while True:
+        try:
+            error_info = error_queue.get_nowait()
+            error_found = True
+            logger.error(
+                "Error from Worker %s: %s",
+                error_info["worker_id"],
+                error_info["error"],
+            )
+            logger.error("Traceback:\n%s", error_info["traceback"])
+        except Exception:
+            break
+    if not error_found:
+        logger.error(
+            "No error reports in queue (worker may have crashed before reporting)"
+        )
+
+    logger.error("Training cannot continue. Saving checkpoint and exiting...")
+    logger.error("=" * 60)
+
+    return dead_procs
 
 
 def _build_update_metrics(
@@ -1018,6 +620,7 @@ def _build_update_metrics(
     `learner_trajectories_per_second` (all "recent" — i.e., over the last
     update interval rather than cumulative since start).
     """
+
     metrics["update_step"] = updates
     metrics["total_battles"] = total_battles
     metrics["battles_per_second"] = total_battles / total_time
@@ -1080,54 +683,17 @@ def main():
     config = RNaDConfig.load(args.config)
     config.verify()
 
-    # Memory watchdog: request graceful shutdown if combined RSS approaches
-    # the WSL2 VM ceiling, so we get a clean checkpoint instead of a
-    # Hyper-V supervisor kill. See
-    # planning/stage2/2026-05-12-09-30-second-wsl-crash-and-watchdog.md.
+    # Memory watchdog: request graceful shutdown if we approach dangerous
+    # memory territory so we get a clean checkpoint before we break
     start_memory_watchdog(shutdown_requested, config.training.memory_watchdog_threshold_gb)
 
-    # ── Rust backend + exploiter co-training are mutually exclusive ───────
-    # Co-training requires async multi-agent inference: each worker holds
-    # 3 model copies (main, exploiter, victim) driven by independent
-    # BatchInferencePlayers, with weights synced via separate broadcast
-    # keys. The Rust backend uses a synchronous single-model driver and
-    # has no path for this; adding one would duplicate substantial
-    # machinery for what is currently a fallback execution path. This
-    # guard surfaces the requirement loudly rather than silently falling
-    # back to broken behavior (e.g., the Rust backend's update_*_weights
-    # methods are no-ops by design — exploiter weights would never reach
-    # workers, and train_exploiter battles would silently use stale
-    # random-init exploiter/victim weights).
-    if (
-        config.hardware.battle_backend == RUST_ENGINE_BACKEND
-        and _train_exploiter_weight(config) > 0
-    ):
-        raise ValueError(
-            "In-process exploiter co-training (curriculum_weights["
-            "'train_exploiter'] > 0) requires the showdown_websocket "
-            "backend. The Rust backend does not implement the multi-agent "
-            "inference path needed for exploiter/victim. Either set "
-            "battle_backend=showdown_websocket or set train_exploiter=0."
-        )
-
-    server_processes: List[subprocess.Popen] = []
-    if config.hardware.battle_backend != RUST_ENGINE_BACKEND:
-        server_processes = launch_showdown_servers(
-            config.hardware.num_servers, config.hardware.showdown_start_port
-        )
-
-    # Auto-launch external vgc-bench runners based on curriculum: when
-    # vgc_bench_baseline has positive curriculum weight the runners
-    # come up; otherwise they're skipped to avoid ~3.7 GB host RAM for
-    # opponents nobody is asking for.
-    vgcbench_manager: Optional[VGCBenchManager] = None
-    vgc_bench_curriculum_weight = config.curriculum.curriculum_weights.get(
-        OpponentPool.VGC_BENCH_BASELINE, 0.0
+    server_processes: List[subprocess.Popen] = launch_showdown_servers(
+        config.hardware.num_servers, config.hardware.showdown_start_port
     )
-    if (
-        vgc_bench_curriculum_weight > 0
-        and config.hardware.battle_backend != RUST_ENGINE_BACKEND
-    ):
+
+    # Auto-launch external vgc-bench runners based on curriculum
+    vgcbench_manager: Optional[VGCBenchManager] = None
+    if config.curriculum.curriculum_weights.get(OpponentPool.VGC_BENCH_BASELINE, 0.0) > 0:
         server_ports = [
             config.hardware.showdown_start_port + i
             for i in range(config.hardware.num_servers)
@@ -1136,7 +702,6 @@ def main():
         vgcbench_manager.launch()
 
     # Generate unique run ID to avoid stale-account collisions on Showdown server.
-    # Include date + high-resolution random bits so rapid restarts don't reuse IDs.
     run_id = f"{datetime.now().strftime('%m%d%H%M%S')}{random.getrandbits(16):04x}"
 
     # Initialize wandb. If wandb_run_name is None, wandb auto-assigns a random
@@ -1152,86 +717,18 @@ def main():
     else:
         run_name = config.training.wandb_run_name or run_id
 
-    # Resolve the per-run directory. Each wandb run gets its own directory
-    # under save_dir to keep checkpoints traceable to their run. On resume,
-    # we copy the source run's ghosts/ and exploiters/ snapshots into the new
-    # directory so the curriculum (which samples opponents from those
-    # subdirs) keeps continuity — new snapshots produced this run accumulate
-    # alongside the copies in the new dir, leaving the source untouched.
-    run_dir = os.path.join(config.training.save_dir, run_name)
-    os.makedirs(run_dir, exist_ok=True)
-    os.makedirs(os.path.join(run_dir, "ghosts"), exist_ok=True)
-    os.makedirs(os.path.join(run_dir, "exploiters"), exist_ok=True)
-    config.training.run_dir = run_dir
-    logger.info("Run directory: %s", run_dir)
-
-    if config.training.resume_from:
-        resume_parent = os.path.dirname(os.path.abspath(config.training.resume_from))
-        # If resuming from a ghost or exploiter file, walk up one level.
-        if os.path.basename(resume_parent) in ("ghosts", "exploiters"):
-            resume_parent = os.path.dirname(resume_parent)
-        if os.path.abspath(resume_parent) != os.path.abspath(run_dir):
-            for subdir in ("ghosts", "exploiters"):
-                src_dir = os.path.join(resume_parent, subdir)
-                dst_dir = os.path.join(run_dir, subdir)
-                if not os.path.isdir(src_dir):
-                    logger.info(
-                        "Resume copy: %s not present in source run, skipping", src_dir
-                    )
-                    continue
-                files = sorted(
-                    f
-                    for f in os.listdir(src_dir)
-                    if os.path.isfile(os.path.join(src_dir, f))
-                )
-                if not files:
-                    logger.info("Resume copy: %s is empty, nothing to copy", src_dir)
-                    continue
-                total_bytes = 0
-                for fname in files:
-                    src_path = os.path.join(src_dir, fname)
-                    dst_path = os.path.join(dst_dir, fname)
-                    size = os.path.getsize(src_path)
-                    total_bytes += size
-                    logger.info(
-                        "Resume copy: %s/%s (%.1f MB) → %s",
-                        subdir,
-                        fname,
-                        size / 1e6,
-                        dst_dir,
-                    )
-                    shutil.copy2(src_path, dst_path)
-                logger.info(
-                    "Resume copy: %d file(s), %.1f MB total copied into %s",
-                    len(files),
-                    total_bytes / 1e6,
-                    dst_dir,
-                )
-        else:
-            logger.info(
-                "Resume copy: resume source matches new run_dir (%s) — no copy needed",
-                run_dir,
-            )
+    run_dir = setup_run_directory(config, run_name)
 
     # Initialize model and learner given the config (handles fresh start, resume, and weight initialization cases)
     (
         agent,
         learner,
-        worker_model_path,
         worker_model_config,
-        start_step,
         resume_curriculum,
     ) = initialize_training_state(config)
 
     # Create opponent pool
     logger.info("Initializing opponent pool...")
-    # The yaml's curriculum wins over the resumed-checkpoint curriculum so
-    # users can switch matchup mixes (e.g. enable train_exploiter mid-curve)
-    # without re-running from scratch. Log loudly when the yaml differs from
-    # the checkpoint, since the change also affects what the registry
-    # registers (BC/exploiter/victim) at startup — silent mismatches
-    # previously left the registry holding services the opponent pool would
-    # never sample from.
     active_curriculum = config.curriculum.curriculum_weights
     if resume_curriculum and resume_curriculum != active_curriculum:
         logger.warning(
@@ -1243,31 +740,22 @@ def main():
             resume_curriculum,
         )
     opponent_pool = OpponentPool(
-        main_model=agent,
-        device=config.hardware.device,
-        battle_format=config.curriculum.battle_format,
         bc_model_path=config.curriculum.bc_model_path,
         exploiter_models_dir=os.path.join(run_dir, "exploiters"),
         ghosts_dir=os.path.join(run_dir, "ghosts"),
-        vgc_bench_checkpoint_path=config.curriculum.vgc_bench_checkpoint_path,
         max_ghosts=config.curriculum.max_ghosts,
         max_exploiter_models=config.curriculum.max_exploiter_models,
         curriculum=active_curriculum,
     )
 
-    # ── Initialize the exploiter co-training pipeline ──────────────────────
+    # ── Initialize the exploiter co-training pipeline ──
     # All four returned values are None when train_exploiter == 0 (default).
-    # Live state lives in this main process (GPU); workers construct their
-    # own CPU model copies and receive weight updates via broadcasts (the
-    # `exploiter_weights` / `victim_weights` keys). There is no need to
-    # pass agent references to workers — their copies are independent
-    # nn.Module instances synchronized by state_dict broadcasts only.
     (
         exploiter_agent,
         victim_agent,
         exploiter_learner,
         bc_state_dict,
-    ) = _initialize_exploiter_pipeline(config, agent, worker_model_config)
+    ) = initialize_exploiter_pipeline(config, agent, worker_model_config)
     exploiter_pipeline_on = exploiter_learner is not None
 
     start = time.time()
@@ -1275,278 +763,63 @@ def main():
     # ==================== START WORKERS ====================
     # Each worker is a separate OS process running worker.py:mp_worker_process.
     # We give each worker:
-    #   - a unique server_port (or 0 for Rust backend)
+    #   - a unique server_port for its Showdown connection
     #   - the model checkpoint path to bootstrap from (loaded fresh per worker)
     #   - shared mp queues for trajectories (in) and weight updates (out)
     #   - an mp.Event for graceful shutdown
-    # The trainer process itself does NOT play battles; it only collects
-    # trajectories and trains. All Showdown websocket activity lives in workers.
-    if config.hardware.battle_backend == RUST_ENGINE_BACKEND:
-        worker_ports = [0 for _ in range(config.hardware.num_workers)]
-        server_loads: List[int] = []
-    else:
-        worker_ports, server_loads = allocate_server_ports(
-            config.hardware.num_workers,
-            config.hardware.players_per_worker,  # Number of concurrent players each worker runs
-            config.hardware.num_servers,
-            config.hardware.max_players_per_server,
-            config.hardware.showdown_start_port,
-        )
+    worker_ports, server_loads = allocate_server_ports(
+        config.hardware.num_workers,
+        config.hardware.players_per_worker,
+        config.hardware.num_servers,
+        config.hardware.max_players_per_server,
+        config.hardware.showdown_start_port,
+    )
 
     # ── Multiprocessing queues for inter-process communication ──────────────
-    #   mp_traj_queue (workers → trainer): completed trajectory dicts
-    #     maxsize=1024 prevents unbounded memory growth if the trainer falls
-    #     behind. If the queue fills, workers block until the trainer drains.
-    #   weight_queues (trainer → each worker): one queue per worker so we can
-    #     broadcast new weights without serializing through a shared queue.
-    #     maxsize=2 with "drain before put" semantics prevents stale weight
-    #     payloads from piling up.
+    #   mp_traj_queue (workers → trainer): completed trajectory dicts.
+    #   control_queues (trainer → each worker): trainer-to-worker CONTROL
+    #     broadcasts — curriculum, sampling knobs (temperature, top_p),
+    #     and active ghost/exploiter slot lists. One queue per worker so
+    #     we can fan out without contending on a shared queue.
+    #     NOTE: this is NOT how policy weights reach inference under
+    #     centralized inference. Workers don't hold a policy; the trainer
+    #     syncs weights directly into trainer-side InferenceServices via
+    #     `registry.sync_weights(...)`. These queues only carry the
+    #     control plane that workers use to choose opponents and sample.
     #   mp_error_queue: workers push tracebacks here on crash so the trainer
     #     can surface them in logs before exiting.
     #   mp_stop_event: trainer sets this on shutdown to ask workers to exit.
     # ────────────────────────────────────────────────────────────────────────
     mp_traj_queue: MPQueue = MPQueue(maxsize=1024)
-    weight_queues: List[MPQueue] = [
+    control_queues: List[MPQueue] = [
         MPQueue(maxsize=2) for _ in range(config.hardware.num_workers)
     ]
     mp_error_queue: MPQueue = MPQueue(maxsize=100)
     mp_stop_event: MPEvent = mp.Event()
 
-    # ── Centralized inference ────────────────────────────────────────────
-    # Trainer process owns a ModelRegistry of InferenceServices (main
-    # always, BC if curriculum uses it, exploiter/victim if
-    # train_exploiter is on). Workers submit inference requests via
-    # mp.Queues. Each service holds an independent copy of its model so
-    # the learner can update without racing with inference; we sync
-    # weights into them at the same cadence as the per-worker broadcast.
-    registry: Optional[ModelRegistry] = None
-    main_request_queue: Optional[MPQueue] = None
-    main_response_queues: List[Optional[MPQueue]] = [None] * config.hardware.num_workers
-    inference_device = config.hardware.device
-    inference_embedder = Embedder(
-        format=config.curriculum.battle_format,
-        feature_set=config.training.embedder_feature_set,
-        omniscient=False,
-    )
-    registry = ModelRegistry(
-        num_workers=config.hardware.num_workers,
-        batch_size=config.hardware.batch_size,
-        batch_timeout=config.hardware.batch_timeout,
-        device=inference_device,
-        compile_mode=config.hardware.compile_inference_model,
-        embedding_size=inference_embedder.embedding_size,
-    )
-
-    # Build a CPU-or-GPU copy of the main model for inference (kept
-    # independent of the learner's model so backward+forward don't
-    # race; weights sync at broadcast cadence via registry.sync_weights).
-    main_inference_base = build_model_from_config(
-        worker_model_config,
-        inference_embedder,
-        inference_device,
-        None,
-        strict=False,
-    )
-    main_inference_base.eval()
-    main_inference_base.load_state_dict(agent.model.state_dict())
-    registry.register("main", RNaDAgent(main_inference_base))
-
-    # Step 3: register BC if a BC checkpoint is configured AND the
-    # curriculum will actually use it. Wasting a service slot on an
-    # unused model would still cost compile time + GPU memory; the
-    # curriculum check keeps that gated.
-    bc_checkpoint_path = config.curriculum.bc_model_path
-    bc_curriculum_weight = config.curriculum.curriculum_weights.get(
-        OpponentPool.BC_PLAYER, 0.0
-    )
-    if bc_checkpoint_path and bc_curriculum_weight > 0:
-        logger.info(
-            "Step 3: registering BC model from %s (curriculum weight %.3f)",
-            bc_checkpoint_path,
-            bc_curriculum_weight,
-        )
-        bc_checkpoint = torch.load(
-            bc_checkpoint_path, map_location="cpu", weights_only=False
-        )
-        bc_inference_base = build_model_from_config(
-            worker_model_config,
-            inference_embedder,
-            inference_device,
-            bc_checkpoint["model_state_dict"],
-            strict=False,
-        )
-        bc_inference_base.eval()
-        for param in bc_inference_base.parameters():
-            param.requires_grad = False
-        # compile=True: safe now that RealModelBatchHandler holds
-        # _COMPILE_LOCK (a global process-wide threading.Lock) around
-        # every compiled forward call. The lock serializes dynamo's
-        # global trace state across concurrent InferenceService threads,
-        # eliminating the "FX symbolic trace of dynamo-optimized function"
-        # race. See unit_tests/rl/test_compile_race_reproducer.py.
-        # bc moves to the "frozen" subprocess: never syncs after
-        # startup (BC is frozen forever), so subprocess co-location
-        # costs nothing — and frees one GIL-contender from the trainer
-        # process. The trainer's GIL ceiling proved binding when 4
-        # services contend; moving bc out brings the count to 3
-        # (main + exploiter + victim).
-        bc_inference_base.cpu()
-        registry.register(
-            "bc",
-            RNaDAgent(bc_inference_base),
-            compile=True,
-            process_group="frozen",
-        )
-        del bc_checkpoint
-
-    # Step 4: register exploiter (live-trained adversary) + victim
-    # (frozen periodically-refreshed copy of main) if the curriculum
-    # gates the train_exploiter pipeline ON. exploiter is sync'd from
-    # the exploiter learner each update; victim is sync'd from main
-    # at victim_refresh_interval. Both registered with compile=True
-    # now that the global _COMPILE_LOCK in RealModelBatchHandler
-    # serializes dynamo's trace state across concurrent threads.
-    #
-    # Plan C grouping for live-trained pair:
-    #   - exploiter STAYS IN-PROCESS. The exploiter learner runs in the
-    #     trainer and updates exploiter weights at high frequency;
-    #     cross-process sync (~24ms per IPC) can't keep up.
-    #   - victim MOVES TO "frozen". It refreshes every
-    #     victim_refresh_interval (1000 battles ≈ 3 min at 6 traj/s),
-    #     well below the IPC throughput ceiling — and getting it out of
-    #     trainer keeps the trainer GIL contention bounded.
-    train_exploiter_weight = config.curriculum.curriculum_weights.get(
-        OpponentPool.TRAIN_EXPLOITER, 0.0
-    )
-    if train_exploiter_weight > 0:
-        logger.info(
-            "Step 4: registering exploiter (in-process) + victim (frozen subprocess) "
-            "(curriculum weight %.3f)",
-            train_exploiter_weight,
-        )
-        # exploiter: in-trainer (sync-rate constraint)
-        exploiter_base = build_model_from_config(
-            worker_model_config,
-            inference_embedder,
-            inference_device,
-            None,
-            strict=False,
-        )
-        exploiter_base.eval()
-        # exploiter starts with whatever build_model_from_config gave
-        # us (BC init if `initialize_path` is set, else fresh). It'll
-        # be sync'd as the exploiter learner produces updates.
-        registry.register("exploiter", RNaDAgent(exploiter_base), compile=True)
-        # victim: subprocess (rare refresh, no sync-rate constraint)
-        victim_base = build_model_from_config(
-            worker_model_config,
-            inference_embedder,
-            "cpu",
-            None,
-            strict=False,
-        )
-        victim_base.eval()
-        # Victim starts as a copy of main; weights refresh periodically
-        # via registry.sync_weights("victim", ...).
-        victim_base.load_state_dict(agent.model.state_dict())
-        for param in victim_base.parameters():
-            param.requires_grad = False
-        registry.register(
-            "victim",
-            RNaDAgent(victim_base),
-            compile=True,
-            process_group="frozen",
-        )
-
-    # Ghost slots: pre-register max_ghosts services so the slot pool is
-    # fixed-size and the registration plumbing never happens mid-run.
-    # Slots start with main-agent weights as placeholders; only slots
-    # listed in `opponent_pool.active_ghost_slots()` are valid routing
-    # targets (workers filter on that set). compile=True now that the
-    # global _COMPILE_LOCK in RealModelBatchHandler eliminates the
-    # torch.compile multi-thread race (see registry plan).
-    #
-    # 2026-05-15 Plan C step 5: ghosts (LRU swaps on checkpoint events)
-    # AND exploiter_snaps (LRU swaps on graduation events) share a
-    # single "frozen" subprocess. They have homogeneous low-frequency
-    # weight-sync semantics. Earlier the plan called for two separate
-    # subprocesses ("ghosts" + "snaps"), but the compile-peak memory
-    # footprint (~4.6 GB per subprocess) tripped the watchdog at 3-
-    # subprocess fanout. Merging halves per-subprocess fixed overhead
-    # (Python interpreter, PyTorch import, CUDA context) at the cost of
-    # serializing forwards within the merged subprocess — acceptable
-    # because both groups are low-traffic vs main/bc in trainer.
-    # Checkpoints load to CPU because the subprocess does its own
-    # device move + compile at startup; loading directly to cuda would
-    # leak transient GPU allocations during trainer-side staging.
-    for slot in range(config.curriculum.max_ghosts):
-        ghost_agent = copy.deepcopy(registry._raw_agents["main"])
-        ghost_agent.model.cpu()
-        registry.register(
-            f"ghost_{slot}", ghost_agent, compile=True, process_group="frozen"
-        )
-    # Load weights for any pre-existing ghost checkpoints onto their
-    # assigned slots. `slot_for_ghost_path` was populated by
-    # OpponentPool._load_ghosts. sync_weights pre-start_all() updates
-    # the trainer-side CPU shadow only; the subprocess picks up the
-    # latest weights via the shadow at spawn time.
-    for path, slot in opponent_pool.slot_for_ghost_path.items():
-        checkpoint = torch.load(path, map_location="cpu")
-        registry.sync_weights(f"ghost_{slot}", checkpoint["model_state_dict"])
-
-    # Exploiter snapshot slots: pre-register max_exploiter_models services
-    # (parallel to ghosts). Each holds an independent agent; sync_weights
-    # populates real exploiter snapshot weights from disk for any slot
-    # OpponentPool's _load_exploiter_models pre-assigned at startup.
-    #
-    # Plan C step 5: snaps SHARE the "frozen" subprocess with ghosts
-    # (see ghost loop above for rationale).
-    for slot in range(config.curriculum.max_exploiter_models):
-        exploiter_snap_agent = copy.deepcopy(registry._raw_agents["main"])
-        exploiter_snap_agent.model.cpu()
-        registry.register(
-            f"exploiter_snap_{slot}",
-            exploiter_snap_agent,
-            compile=True,
-            process_group="frozen",
-        )
-    for path, slot in opponent_pool.slot_for_exploiter_path.items():
-        checkpoint = torch.load(path, map_location="cpu")
-        registry.sync_weights(f"exploiter_snap_{slot}", checkpoint["model_state_dict"])
-
-    # All services registered — start in-process service threads and
-    # spawn subprocesses for any process_group set above. Must happen
-    # before workers connect because workers will start sending requests
-    # immediately after spawn.
-    registry.start_all()
-
-    # Pull out main's queues for the back-compat per-worker
-    # spawn-args interface. The full bundle is also passed below so
-    # workers can construct WorkerInferenceClients with one client
-    # per registered model.
-    all_queues = registry.queues_for_workers()
-    main_request_queue, main_response_qs = all_queues["main"]
-    main_response_queues = list(main_response_qs)
+    # Initialize model registry, which holds all models in GPU
+    registry = setup_model_registry(config, agent, worker_model_config, opponent_pool)
 
     logger.info(
         "ModelRegistry initialized; %d models registered (%s). "
         "device=%s batch_size=%d batch_timeout=%.4f compile=%s",
         len(registry.names()),
         ", ".join(registry.names()),
-        inference_device,
+        config.hardware.device,
         config.hardware.batch_size,
         config.hardware.batch_timeout,
         config.hardware.compile_inference_model,
     )
 
     # Per-worker bundle of (request_q, response_q) pairs keyed by model
-    # name. Each worker gets ITS slice of the response queues; the
+    # name. Each worker gets its slice of the response queues; the
     # request queue is shared across workers per model. Workers wrap
     # their slice in WorkerInferenceClients on the worker side.
     queues_by_worker: List[Optional[Dict[str, Any]]] = [None] * config.hardware.num_workers
     for w in range(config.hardware.num_workers):
         queues_by_worker[w] = {
-            name: (req_q, resp_qs[w]) for name, (req_q, resp_qs) in all_queues.items()
+            name: (req_q, resp_qs[w])
+            for name, (req_q, resp_qs) in registry.queues_for_workers().items()
         }
 
     # Create Processes
@@ -1558,23 +831,19 @@ def main():
             args=(
                 i,  # worker_id
                 server_port,
-                worker_model_path,
                 worker_model_config,
                 mp_traj_queue,
-                weight_queues[i],
+                control_queues[i],
                 mp_error_queue,
                 mp_stop_event,
                 run_id,
                 config,
-                False,  # verbose
-                main_request_queue,
-                main_response_queues[i],
                 queues_by_worker[i],
                 sorted(opponent_pool.active_ghost_slots()),
                 sorted(opponent_pool.active_exploiter_slots()),
             ),
             daemon=True,
-            name=f"MPWorker-{i}",
+            name=f"Worker-{i}",
         )
         p.start()
         processes.append(p)
@@ -1582,6 +851,7 @@ def main():
             "Started multiprocessing worker %d (PID: %s) on port %d", i, p.pid, server_port
         )
 
+    # Print state of workers, players and servers
     if server_loads:
         logger.info("Server allocation (players per server):")
         for idx, load in enumerate(server_loads):
@@ -1611,7 +881,7 @@ def main():
     #      main, and increment the generation counter.
     # ─────────────────────────────────────────────────────────────────────────
     trajectories = []  # Main learner buffer
-    updates = start_step  # Main update step (may be >0 if resumed from checkpoint)
+    updates = 0  # Main update step; resets to 0 each run (learner schedules keep continuity via load_resume_state)
     total_battles = 0  # Total battles completed across all workers
     total_received_trajectories = 0
     total_received_steps = 0
@@ -1620,28 +890,8 @@ def main():
     last_update_time = time.time()
     prev_total_battles = 0  # snapshot at last log for recent b/s
 
-    # ── Exploiter pipeline state (only meaningful when on) ───────────────────
-    # `exploiter_trajectories` is the second buffer for the exploiter learner.
-    # `exploiter_updates_total` counts gradient updates since startup; used
-    #   for global logging.
-    # `exploiter_updates_in_generation` resets on graduation; used to enforce
-    #   the `exploiter_max_updates_per_generation` stall safeguard.
-    # `exploiter_generation` is incremented every time an exploiter graduates
-    #   (or hits the stall cap and is force-reset). 0-indexed, so generation
-    #   0 is the deepcopy-of-main start.
-    # `exploiter_win_buffer` is a rolling deque of 1.0/0.0 wins over the last
-    #   `graduation_window` train_exploiter battles. We don't reuse
-    #   opponent_pool.win_rate_tracking because that uses a fixed
-    #   tracking_window (default 100) sized for live logging — too small
-    #   to be a statistically robust graduation gate.
-    # `victim_needs_broadcast` flags the next broadcast to include refreshed
-    #   victim weights. Cleared after the broadcast fires.
-    exploiter_trajectories: List[Dict[str, Any]] = []
-    exploiter_updates_total = 0
-    exploiter_updates_in_generation = 0
-    exploiter_generation = 0
-    exploiter_win_buffer: "deque[float]" = deque(maxlen=config.exploiter.graduation_window)
-    victim_needs_broadcast = False
+    # Exploiter pipeline loop-state (only meaningful when the pipeline is on).
+    exploiter_state = ExploiterPipelineState.new(config)
 
     try:
         while updates < config.training.max_updates:
@@ -1662,7 +912,8 @@ def main():
             # ===== COLLECT TRAJECTORIES FROM WORKERS =====
             # Workers push completed battle trajectories to the queue asynchronously.
             # Each trajectory carries an `opponent_type` tag set at battle setup time
-            # (see WorkerOpponentFactory.configure_opponent_for_batch). The tag tells
+            # (see WorkerOpponentFactory.sample_opp_type_for / apply_opp_type_to_pair).
+            # The tag tells
             # us which learner the trajectory belongs to:
             #   - "train_exploiter" → exploiter learner (player WAS the exploiter,
             #     opponent WAS the frozen victim; trajectory captures exploiter's
@@ -1699,8 +950,8 @@ def main():
                     exploiter_pipeline_on
                     and traj["opponent_type"] == OpponentPool.TRAIN_EXPLOITER
                 ):
-                    exploiter_trajectories.append(traj)
-                    exploiter_win_buffer.append(1.0 if traj["won"] else 0.0)
+                    exploiter_state.trajectories.append(traj)
+                    exploiter_state.win_buffer.append(1.0 if traj["won"] else 0.0)
                 else:
                     trajectories.append(traj)
             except queue.Empty:
@@ -1791,18 +1042,6 @@ def main():
                     config.training.use_wandb
                     and updates % config.training.log_interval == 0
                 ):
-                    metrics["portfolio_size"] = len(learner.ref_models)
-
-                    # Reference selection counts
-                    total_selections = sum(learner.portfolio_selection_counts)
-                    if total_selections > 0:
-                        for ref_idx, count in enumerate(
-                            learner.portfolio_selection_counts
-                        ):
-                            metrics[f"portfolio_selection_pct_ref_{ref_idx}"] = (
-                                count / total_selections
-                            ) * 100
-
                     wandb.log(metrics)
 
                 # ===== ADD NEW REFERENCE TO PORTFOLIO =====
@@ -1821,7 +1060,7 @@ def main():
                     )
                     _t_add_ref = time.perf_counter()
                     learner.add_reference_model(
-                        RNaDAgent(copy.deepcopy(agent.model))
+                        RNaDModel(copy.deepcopy(agent.model))
                     )  # Snapshot current policy
                     logger.info(
                         "[Update %d] add_reference_model: %.1fms (portfolio_size=%d)",
@@ -1838,10 +1077,8 @@ def main():
                     logger.info(
                         "[Update %d] Saving checkpoint and updating curriculum...", updates
                     )
-                    _t_block_start = time.perf_counter()
 
                     # Save model, for safety and to use to battle against
-                    _t_save = time.perf_counter()
                     ghost_checkpoint_path = save_checkpoint(
                         agent,
                         learner,
@@ -1850,15 +1087,10 @@ def main():
                         opponent_pool.curriculum,
                         os.path.join(str(config.training.run_dir), "ghosts"),
                     )
-                    logger.info(
-                        "[Update %d] save_checkpoint: %.1fms",
-                        updates,
-                        (time.perf_counter() - _t_save) * 1000.0,
-                    )
 
                     # Add checkpoint to ghosts pool for opponent diversity
                     # Workers can sample these past versions as opponents
-                    opponent_pool.add_ghost(updates, ghost_checkpoint_path)
+                    opponent_pool.add_ghost(ghost_checkpoint_path)
                     # Sync new weights into the registry slot. OpponentPool
                     # already assigned the slot in add_ghost; look it up.
                     if registry is not None:
@@ -1877,109 +1109,18 @@ def main():
                     if config.curriculum.adaptive_curriculum:
                         opponent_pool.update_curriculum()
 
-                    # ===== BROADCAST WEIGHTS TO WORKERS =====
-                    # We send a single dict per worker containing weights AND
-                    # the new curriculum AND sampling knobs. Doing them in one
-                    # payload guarantees workers transition together instead
-                    # of one updating curriculum first and another updating
-                    # weights first (which could produce inconsistent data).
-                    #
-                    # When the exploiter pipeline is on, the payload is also
-                    # the carrier for `exploiter_weights` (live exploiter,
-                    # included EVERY broadcast — workers' exploiter copies
-                    # need to track gradient updates closely) and
-                    # `victim_weights` (frozen victim, included ONLY when
-                    # refreshed — sending it every broadcast would waste
-                    # bandwidth since the victim is intentionally stale).
-                    #
-                    # The curriculum we send is also masked during warmup so
-                    # workers don't sample train_exploiter battles before the
-                    # exploiter learner has seen any updates (see
-                    # `_mask_curriculum_during_warmup` for the rationale).
-                    #
-                    # Note: state_dicts are moved to CPU before pickling.
-                    # Workers are CPU-only so this both fits their device and
-                    # is the only way to transfer GPU tensors via mp.Queue.
-                    logger.info(
-                        "[Update %d] Broadcasting weights to worker processes...", updates
-                    )
-                    _t_cpu_move = time.perf_counter()
-                    cpu_weights = {k: v.cpu() for k, v in agent.model.state_dict().items()}
-                    logger.info(
-                        "[Update %d] main->cpu state_dict: %.1fms",
-                        updates,
-                        (time.perf_counter() - _t_cpu_move) * 1000.0,
-                    )
-                    # Centralized inference: sync the trainer-side
-                    # InferenceService model(s) from the learner. Same
-                    # cadence as the worker broadcast — workers in
-                    # centralized mode ignore the broadcasted weights
-                    # (their VGCEnvironment.update_weights drops on
-                    # None model) but the service copy MUST be kept
-                    # current or workers will play increasingly
-                    # off-policy. Step 2 syncs only "main"; step 4 will
-                    # also sync "exploiter" + "victim" here.
-                    if registry is not None and "main" in registry.names():
-                        registry.sync_weights("main", cpu_weights)
-                    in_warmup = updates < config.exploiter.warmup_updates
-                    update_payload: Dict[str, Any] = {
-                        "weights": cpu_weights,
-                        "curriculum": _mask_curriculum_during_warmup(
-                            opponent_pool.curriculum, in_warmup
-                        ),
-                        "temperature": config.temperature_at_step(updates),
-                        "top_p": config.exploration.top_p,
-                        "active_ghost_slots": sorted(opponent_pool.active_ghost_slots()),
-                        "active_exploiter_slots": sorted(
-                            opponent_pool.active_exploiter_slots()
-                        ),
-                    }
-                    if exploiter_pipeline_on and exploiter_agent is not None:
-                        exploiter_cpu = {
-                            k: v.cpu()
-                            for k, v in exploiter_agent.model.state_dict().items()
-                        }
-                        update_payload["exploiter_weights"] = exploiter_cpu
-                        # Step 4: sync the trainer-side exploiter
-                        # InferenceService at the same cadence as the
-                        # worker broadcast.
-                        if registry is not None and "exploiter" in registry.names():
-                            registry.sync_weights("exploiter", exploiter_cpu)
-                    if (
-                        exploiter_pipeline_on
-                        and victim_agent is not None
-                        and victim_needs_broadcast
-                    ):
-                        victim_cpu = {
-                            k: v.cpu() for k, v in victim_agent.model.state_dict().items()
-                        }
-                        update_payload["victim_weights"] = victim_cpu
-                        if registry is not None and "victim" in registry.names():
-                            registry.sync_weights("victim", victim_cpu)
-                        # Cleared after queueing: each refresh is broadcast
-                        # exactly once, then we wait for the next refresh tick.
-                        victim_needs_broadcast = False
-                    _t_wq = time.perf_counter()
-                    for i, wq in enumerate(weight_queues):
-                        try:
-                            # Clear old weights to avoid queue overflow
-                            # Keep-at-most-latest semantics prevents workers from replaying stale
-                            # curriculum/weight snapshots when learner is faster than consumers.
-                            while not wq.empty():
-                                try:
-                                    wq.get_nowait()
-                                except Exception:
-                                    break
-                            wq.put_nowait(update_payload)
-                        except Exception as e:
-                            logger.warning("Failed to broadcast to worker %d: %s", i, e)
-                    logger.info(
-                        "[Update %d] worker queue broadcast (%d workers): %.1fms | "
-                        "checkpoint+broadcast block total=%.1fms",
-                        updates,
-                        len(weight_queues),
-                        (time.perf_counter() - _t_wq) * 1000.0,
-                        (time.perf_counter() - _t_block_start) * 1000.0,
+                    # Broadcast all new model weights to workers
+                    broadcast_weights_to_workers(
+                        config=config,
+                        updates=updates,
+                        agent=agent,
+                        exploiter_agent=exploiter_agent,
+                        victim_agent=victim_agent,
+                        opponent_pool=opponent_pool,
+                        registry=registry,
+                        control_queues=control_queues,
+                        exploiter_state=exploiter_state,
+                        exploiter_pipeline_on=exploiter_pipeline_on,
                     )
 
                 # ===== VICTIM REFRESH =====
@@ -1988,8 +1129,9 @@ def main():
                 # refreshed, the exploiter would eventually master a stale
                 # main and graduate snapshots irrelevant to the *current*
                 # main. So every `victim_refresh_interval` main updates,
-                # copy main's current state_dict into the victim and queue
-                # a `victim_weights` broadcast so workers sync up.
+                # copy main's current state_dict into the victim and flag
+                # the next broadcast to push victim weights into the
+                # registry's victim InferenceService.
                 #
                 # Indexed on MAIN updates (not exploiter updates) so the
                 # cadence is independent of `exploiter_train_batch_size`.
@@ -2005,15 +1147,17 @@ def main():
                     # Flag for the NEXT broadcast (which may be this
                     # iteration if the schedules align, or the next
                     # checkpoint_interval otherwise).
-                    victim_needs_broadcast = True
+                    exploiter_state.victim_needs_broadcast = True
                     logger.info("[Update %d] Refreshed victim from current main", updates)
 
                 # ===== EXPLOITER LEARNER UPDATE + GRADUATION =====
-                # All exploiter-side logic lives in `_maybe_run_exploiter_update`:
+                # All exploiter-side logic lives in `maybe_run_exploiter_update`:
                 # gating on warmup/buffer-fill, the learner step, win-rate
-                # graduation, snapshot save, and BC re-init. Helper mutates the
-                # trajectory/win buffers in place and returns the updated counters.
-                exploiter_result = _maybe_run_exploiter_update(
+                # graduation, snapshot save, and BC re-init. Helper mutates
+                # `exploiter_state` in place — both the buffers and the counters
+                # (including `victim_needs_broadcast` on graduation, which the
+                # broadcast block above will clear after queueing).
+                maybe_run_exploiter_update(
                     config=config,
                     updates=updates,
                     agent=agent,
@@ -2022,21 +1166,8 @@ def main():
                     victim_agent=victim_agent,
                     bc_state_dict=bc_state_dict,
                     opponent_pool=opponent_pool,
-                    exploiter_trajectories=exploiter_trajectories,
-                    exploiter_win_buffer=exploiter_win_buffer,
-                    exploiter_updates_total=exploiter_updates_total,
-                    exploiter_updates_in_generation=exploiter_updates_in_generation,
-                    exploiter_generation=exploiter_generation,
+                    state=exploiter_state,
                     registry=registry,
-                )
-                exploiter_updates_total = exploiter_result["updates_total"]
-                exploiter_updates_in_generation = exploiter_result["updates_in_generation"]
-                exploiter_generation = exploiter_result["generation"]
-                # OR with current flag: a pending victim refresh from earlier this
-                # iteration (the `victim_refresh_interval` block above) must not be
-                # cleared by a no-op exploiter call.
-                victim_needs_broadcast = (
-                    victim_needs_broadcast or exploiter_result["victim_needs_broadcast"]
                 )
 
                 # Clear trajectory buffer after successful update
@@ -2087,7 +1218,6 @@ def main():
             wandb.finish()
 
         # Final cleanup: Shutdown workers and Showdown servers
-        cleanup_worker_executors()
         # Stop every InferenceService thread the registry started. Drain
         # nothing — workers have exited so no new requests will arrive;
         # any already-buffered ones get dropped.
@@ -2109,18 +1239,6 @@ if __name__ == "__main__":
     configure_torch_multiprocessing(use_file_system_sharing=True)
     suppress_third_party_warnings(suppress_pydantic_field_warnings=True)
 
-    # Root logger at WARNING silences poke-env's per-player loggers (named
-    # by random username e.g. "M00OP00E08ED700") which otherwise echo every
-    # raw Showdown websocket request/response at INFO. On a 200-update run
-    # those add up to ~10+ GB of log — enough to OOM/disk-fill WSL2.
-    # Our own modules sit under "elitefurretai" and stay at INFO so training
-    # progress (Update N: ..., curriculum, checkpoint events) is preserved.
-    logging.basicConfig(
-        level=logging.WARNING,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
-    logging.getLogger("elitefurretai").setLevel(logging.INFO)
-    logging.getLogger("__main__").setLevel(logging.INFO)
+    setup_logging()
 
     main()

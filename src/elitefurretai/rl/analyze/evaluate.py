@@ -23,6 +23,7 @@ import datetime
 import json
 import multiprocessing as mp
 import os
+import random
 import subprocess
 import time
 import uuid
@@ -47,12 +48,12 @@ from elitefurretai.rl.analyze.eval_schema import (
     write_manifest,
 )
 from elitefurretai.rl.analyze.player_factory import (
-    PlayerSpec,
+    PlayerSpecification,
     build_player,
     launch_external_player,
-    parse_player_spec,
+    parse_player_specification,
 )
-from elitefurretai.rl.analyze.team_provider import TeamProvider, parse_team_spec
+from elitefurretai.rl.analyze.team_provider import TeamProvider, parse_team_specification
 
 
 @dataclass
@@ -115,7 +116,7 @@ def _print_result(result: EvalResult, p1_label: str, p2_label: str) -> None:
 
 
 def _build_model_player(
-    spec: PlayerSpec,
+    specification: PlayerSpecification,
     team_str: str,
     account: AccountConfiguration,
     server_config: ServerConfiguration,
@@ -125,17 +126,17 @@ def _build_model_player(
 
     When ``collector`` is set, returns a ``RecordingModelPlayer`` so
     per-turn data flows into the analysis pipeline (Plan B). When
-    None, falls back to the spec's standard factory (plain
+    None, falls back to the specification's standard factory (plain
     ``SimpleModelPlayer``). All other kinds construct unchanged.
 
     ``team_str`` is pre-resolved by the worker so the collector and
     the player see the same team string (and so the same team_hash
     appears in BattleRecord and in the player's actual battle).
     """
-    if spec.kind == "model" and collector is not None:
+    if specification.kind == "model" and collector is not None:
         return RecordingModelPlayer(
-            model_path=spec.raw,
-            device=_detect_device_from_spec(spec),
+            model_path=specification.raw,
+            device=_detect_device_from_specification(specification),
             battle_format=collector.battle_format,
             probabilistic=False,
             account_configuration=account,
@@ -145,7 +146,7 @@ def _build_model_player(
             collector=collector,
         )
     return build_player(
-        spec,
+        specification,
         team=team_str,
         account_configuration=account,
         server_configuration=server_config,
@@ -153,22 +154,22 @@ def _build_model_player(
     )
 
 
-def _detect_device_from_spec(spec: PlayerSpec) -> str:
-    """Extract device from a model spec.
+def _detect_device_from_specification(specification: PlayerSpecification) -> str:
+    """Extract device from a model specification.
 
     For ``kind="model"`` the device was set at parse time and lives in
-    ``spec.params["device"]``. For other kinds (baseline / external)
+    ``specification.params["device"]``. For other kinds (baseline / external)
     there is no model, so fall back to ``"cpu"``.
     """
-    if spec.kind == "model":
-        return str(spec.params.get("device", "cpu"))
+    if specification.kind == "model":
+        return str(specification.params.get("device", "cpu"))
     return "cpu"
 
 
 def _run_worker(
     worker_id: int,
-    p1: PlayerSpec,
-    p2: PlayerSpec,
+    p1: PlayerSpecification,
+    p2: PlayerSpecification,
     cells: List[tuple],
     battles_per_cell: int,
     server_url: str,
@@ -220,16 +221,17 @@ def _run_worker(
 
     first_agent_team, first_opp_team = cells[0]
 
-    # Per-server battle_id prefix so the same Showdown ``battle_tag``
-    # produced on two different servers doesn't collide in parquet
-    # rows or replay filenames. Each Showdown server has its own
-    # battle counter (independent restart counters and concurrent
-    # workers can produce identical ids, e.g. 1511502 on two ports).
+    # Per-server, per-session battle_id prefix so the same Showdown
+    # ``battle_tag`` produced on two different servers OR across two
+    # restarts of the same server doesn't collide in parquet rows or
+    # replay filenames. Each Showdown server has its own battle
+    # counter that resets on restart, so port alone is not enough to
+    # uniquely identify rows that join battles ↔ turns across sessions.
     try:
         server_port = server_url.rsplit(":", 1)[1]
     except IndexError:
         server_port = "0"
-    battle_id_prefix = f"p{server_port}_"
+    battle_id_prefix = f"p{server_port}_{run_tag}_"
 
     # One collector per worker, initialized with the first cell's teams.
     # set_cell() updates between cells; all rows go into the same shard.
@@ -243,7 +245,7 @@ def _run_worker(
                 opp_team_str=first_opp_team,
                 opp_player_kind=p2.kind,
                 opp_player_name=p2.name,
-                battle_format=_battle_format_from_spec(p1),
+                battle_format=_battle_format_from_specification(p1),
                 run_dir=collect_run_dir,
                 worker_id=worker_id,
                 replay_sample_rate=replay_sample_rate,
@@ -260,7 +262,7 @@ def _run_worker(
                 opp_team_str=first_agent_team,
                 opp_player_kind=p1.kind,
                 opp_player_name=p1.name,
-                battle_format=_battle_format_from_spec(p2),
+                battle_format=_battle_format_from_specification(p2),
                 run_dir=collect_run_dir,
                 worker_id=worker_id,
                 replay_sample_rate=replay_sample_rate,
@@ -414,29 +416,29 @@ def _run_worker(
 
 
 def _build_player(
-    spec: PlayerSpec,
+    specification: PlayerSpecification,
     team_str: str,
     account: AccountConfiguration,
     server_config: ServerConfiguration,
     collector: Optional[TrajectoryCollector],
 ) -> Any:
     """Dispatch player construction: ``RecordingModelPlayer`` if recording
-    is on for a model spec, otherwise the spec's standard factory."""
-    return _build_model_player(spec, team_str, account, server_config, collector)
+    is on for a model specification, otherwise the specification's standard factory."""
+    return _build_model_player(specification, team_str, account, server_config, collector)
 
 
-def _battle_format_from_spec(spec: PlayerSpec) -> str:
-    """Read ``battle_format`` directly from the spec's params.
+def _battle_format_from_specification(specification: PlayerSpecification) -> str:
+    """Read ``battle_format`` directly from the specification's params.
 
-    All three spec kinds carry ``battle_format`` in ``params``.
+    All three specification kinds carry ``battle_format`` in ``params``.
     Defaults to ``gen9vgc2024regg`` if unexpectedly missing.
     """
-    return str(spec.params.get("battle_format", "gen9vgc2024regg"))
+    return str(specification.params.get("battle_format", "gen9vgc2024regg"))
 
 
 def run_eval_parallel(
-    p1: PlayerSpec,
-    p2: PlayerSpec,
+    p1: PlayerSpecification,
+    p2: PlayerSpecification,
     cells: List[tuple],
     battles_per_cell: int,
     server_urls: List[str],
@@ -549,16 +551,19 @@ def build_cells(
     team1_path: Optional[str],
     team2_path: Optional[str],
 ) -> List[tuple]:
-    """Resolve CLI team specs into a concrete list of
+    """Resolve CLI team specifications into a concrete list of
     ``(agent_team_str, opp_team_str)`` cells.
 
     Single-cell mode (default): call each team provider once. Same as
     Plan A behavior — one team per side for the whole eval.
 
-    Cell-iteration mode: both team specs must be directories. Lists
+    Cell-iteration mode: both team specifications must be directories. Lists
     every ``.txt`` file in each, reads them, and yields the Cartesian
-    product (N_agent × N_opp cells). Order is deterministic (sorted
-    filename) for reproducibility.
+    product (N_agent × N_opp cells), then shuffles with a fixed seed.
+    The shuffle is reproducible run-to-run but breaks the row-major
+    sorted-filename ordering — so partial sweeps (early termination from
+    crash or kill) sample uniformly across (agent_team, opp_team) pairs
+    instead of missing the same agent_team tail every time.
     """
     if not cell_iteration:
         return [(t1(), t2())]
@@ -586,7 +591,9 @@ def build_cells(
 
     p1_strs = [p.read_text() for p in p1_teams]
     p2_strs = [p.read_text() for p in p2_teams]
-    return [(a, b) for a in p1_strs for b in p2_strs]
+    cells = [(a, b) for a in p1_strs for b in p2_strs]
+    random.Random(42).shuffle(cells)
+    return cells
 
 
 def main() -> None:
@@ -597,14 +604,14 @@ def main() -> None:
         "--player1",
         required=True,
         type=str,
-        help="Player 1 spec: checkpoint path or baseline name "
+        help="Player 1 specification: checkpoint path or baseline name "
         "(max_damage, max_base_power, simple_heuristic, vgc_bench, random)",
     )
     parser.add_argument(
         "--player2",
         required=True,
         type=str,
-        help="Player 2 spec (same accepted values as --player1)",
+        help="Player 2 specification (same accepted values as --player1)",
     )
     parser.add_argument(
         "--team1",
@@ -689,20 +696,20 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    p1 = parse_player_spec(
+    p1 = parse_player_specification(
         args.player1,
         device=args.device,
         battle_format=args.battle_format,
         vgc_bench_checkpoint_path=args.vgc_bench_checkpoint_path,
     )
-    p2 = parse_player_spec(
+    p2 = parse_player_specification(
         args.player2,
         device=args.device,
         battle_format=args.battle_format,
         vgc_bench_checkpoint_path=args.vgc_bench_checkpoint_path,
     )
-    t1 = parse_team_spec(args.team1, battle_format=args.battle_format)
-    t2 = parse_team_spec(args.team2, battle_format=args.battle_format)
+    t1 = parse_team_specification(args.team1, battle_format=args.battle_format)
+    t2 = parse_team_specification(args.team2, battle_format=args.battle_format)
 
     # Resolve cell list before launching servers / collection — a bad
     # CLI combination here should fail fast, not after Showdown is up.
@@ -777,8 +784,8 @@ def main() -> None:
             payload: Dict[str, Any] = {
                 "p1": {"raw": p1.raw, "kind": p1.kind, "name": p1.name},
                 "p2": {"raw": p2.raw, "kind": p2.kind, "name": p2.name},
-                "team1_spec": args.team1,
-                "team2_spec": args.team2,
+                "team1_specification": args.team1,
+                "team2_specification": args.team2,
                 "battle_format": args.battle_format,
                 "duration_sec": round(duration, 2),
                 "result": asdict(result),

@@ -10,7 +10,7 @@ string. Three sources are supported:
 * default — sample from the format's root team directory under
   ``data/teams/<format>/`` (mirrors evaluate.py's prior fallback).
 
-``parse_team_spec`` does file-or-directory dispatch via filesystem
+``parse_team_specification`` does file-or-directory dispatch via filesystem
 checks; callers don't need to switch on type.
 """
 
@@ -24,7 +24,7 @@ from elitefurretai.etl import TeamRepo
 TeamProvider = Callable[[], str]
 
 
-def parse_team_spec(raw: Optional[str], *, battle_format: str) -> TeamProvider:
+def parse_team_specification(raw: Optional[str], *, battle_format: str) -> TeamProvider:
     """Resolve ``raw`` into a ``TeamProvider``.
 
     Resolution order:
@@ -46,7 +46,7 @@ def parse_team_spec(raw: Optional[str], *, battle_format: str) -> TeamProvider:
         return _directory_provider(path, battle_format)
 
     raise ValueError(
-        f"Could not resolve team spec {raw!r}: not a file and not a directory"
+        f"Could not resolve team specification {raw!r}: not a file and not a directory"
     )
 
 

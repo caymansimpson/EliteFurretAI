@@ -24,7 +24,7 @@ Big-picture map of the sub-configs
 - OptimizerConfig    — AdamW / Adam, per-group LRs, schedule (cosine/linear)
 - ValueHeadConfig    — C51 distributional value head bin layout
 - ArchitectureConfig — Model shape: transformer layer sizes, heads
-- HardwareConfig     — Worker topology, device, battle backend, batching
+- HardwareConfig     — Worker topology, device, batching
 - CurriculumConfig   — Opponent mix, team pools, BC model paths, ghosts
 - ExploiterConfig    — In-process exploiter co-training (graduation-based)
 - TrainingConfig     — Loop limits, checkpoint intervals, wandb
@@ -32,14 +32,6 @@ Big-picture map of the sub-configs
 The two annealing helpers (`temperature_at_step`, `ent_coef_at_step`) and the
 LR scheduler (`lr_lambda`) live on the top-level RNaDConfig because they need
 to read across multiple sub-configs.
-
-Battle backends
----------------
-There are two ways to actually play battles during training:
-  - "showdown_websocket": a real local Pokemon Showdown server, talked to over
-    websockets. The current primary path, as proven faster w/ optimizations.
-  - "rust_engine": an in-process Rust simulator. Faster but less production-
-    proven. Kept available for fallback and parity checks.
 """
 
 import math
@@ -49,12 +41,6 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
-# Backend identifiers — referenced by hardware.battle_backend and by the
-# worker/learner branches that pick which battle execution path to use.
-SHOWDOWN_WEBSOCKET_BACKEND = "showdown_websocket"
-RUST_ENGINE_BACKEND = "rust_engine"
-SUPPORTED_BATTLE_BACKENDS = {SHOWDOWN_WEBSOCKET_BACKEND, RUST_ENGINE_BACKEND}
-
 
 @dataclass
 class AlgorithmConfig:
@@ -63,8 +49,12 @@ class AlgorithmConfig:
     Quick glossary for ML researchers new to this code:
     - clip_range: PPO's importance-weight clip ε. Larger ε = bigger policy
       updates allowed per epoch; smaller ε = more conservative.
-    - ent_coef / ent_coef_end: entropy bonus γ. Linearly annealed from start
-      to end over `temperature_anneal_steps` updates. Encourages exploration.
+    - ent_coef / ent_coef_end: entropy bonus γ on the PPO loss term. Linearly
+      annealed from start to end over `ExplorationConfig.exploration_anneal_steps`
+      updates (shared with the temperature schedule so rollout-side and
+      learner-side exploration collapse in sync — see `ent_coef_at_step` below).
+      Encourages the *learned* policy to keep entropy and resist mode collapse,
+      complementing the sampling-side `temperature` knob.
     - gae_lambda: λ for Generalized Advantage Estimation (Schulman 2016).
       0 = pure 1-step TD, 1 = pure Monte-Carlo. 0.95 is the standard sweet spot.
     - gamma: discount factor for future rewards. We use 1.0 in our YAML
@@ -119,8 +109,9 @@ class PortfolioConfig:
                     ages on average without preferring any selection signal.
       - "diverse" : reserved name for a diversity-maximising eviction policy
                     (e.g. drop the reference whose representations are closest
-                    to another's). NOT YET IMPLEMENTED — selecting it raises
-                    NotImplementedError.
+                    to another's). Calculates N^2 KL between all models and
+                    drops the one that is most similar to the others on a small
+                    set of holdout trajectories.
     """
 
     max_portfolio_size: int = 5
@@ -254,27 +245,36 @@ class ExploiterConfig:
 
 @dataclass
 class ExplorationConfig:
-    """Temperature annealing and nucleus sampling for action selection.
+    """Annealing schedule + nucleus sampling for exploration.
 
-    Used by `temperature_at_step` (below) and pushed to workers via
-    `players.top_p` / the per-update sampling broadcast. The same annealing
-    schedule also drives `ent_coef_at_step` (entropy bonus annealing).
+    Two exploration mechanisms run on the same schedule, at different points
+    in the training loop:
+      - Sampling-side: `temperature` reshapes the action distribution at
+        rollout time (workers). Pushed via `update_sampling` broadcasts.
+        Higher temperature → more diverse trajectories in the buffer.
+      - Learner-side: `AlgorithmConfig.ent_coef` adds an entropy bonus to
+        the PPO loss. Regularizes the *learned* policy against mode collapse
+        during gradient updates.
+    Both knobs anneal linearly over `exploration_anneal_steps`. Keeping them
+    on one schedule prevents drift (e.g. ent_coef still pushing for
+    exploration after temperature has already collapsed to greedy).
 
     - temperature_start / temperature_end: softmax temperature on action
       logits. Higher = flatter distribution = more exploration. Linearly
-      annealed from start → end over `temperature_anneal_steps` updates.
+      annealed from start → end over `exploration_anneal_steps` updates.
       Raising the start widens early exploration but slows convergence;
       lowering the end sharpens late-stage exploitation.
-    - temperature_anneal_steps: horizon of the linear schedule. Should be set
-      relative to `training.max_updates` (typically ~half of it). Smaller =
-      faster collapse to greedy play; larger = sustained exploration.
+    - exploration_anneal_steps: horizon of the linear schedule. Drives both
+      `temperature_at_step` (sampling) and `ent_coef_at_step` (loss). Should
+      be set relative to `training.max_updates` (typically ~half of it).
+      Smaller = faster collapse to greedy play; larger = sustained exploration.
     - top_p: nucleus-sampling cutoff applied AFTER temperature. Restricts
       sampling to the smallest set of actions whose cumulative probability
       exceeds top_p. 1.0 disables nucleus filtering; 0.95 is the standard
       "drop the long tail" setting. Used in `inference_trainer.softmax_with_top_p`.
     """
 
-    temperature_anneal_steps: int = 50000
+    exploration_anneal_steps: int = 50000
     temperature_end: float = 0.5
     temperature_start: float = 1.5
     top_p: float = 0.95
@@ -306,6 +306,12 @@ class ValueHeadConfig:
     num_value_bins: int = 51
     value_max: float = 1.0
     value_min: float = -1.0
+    # Mixes a uniform component into the twohot C51 target before the
+    # cross-entropy loss: smoothed = (1 - ε) · twohot + ε / num_value_bins.
+    # 0.0 = stock behavior (one/two-hot target). Small positive values
+    # (0.03–0.10) address value-head over-confidence — see
+    # src/elitefurretai/rl/analyze/MODEL_EVALUATION.md Priority 2.
+    value_label_smoothing: float = 0.0
 
 
 @dataclass
@@ -327,12 +333,7 @@ class ArchitectureConfig:
     teampreview_head_dropout: float = 0.3
     teampreview_head_layers: List[int] = field(default_factory=lambda: [512, 256])
     turn_head_layers: List[int] = field(default_factory=lambda: [2048, 1024, 1024, 1024])
-    # Optional deep value head: if non-empty, a ResidualBlock stack with these
-    # widths is inserted between late_ff_stack and the final value linear,
-    # giving the value head its own integrative depth instead of sharing all
-    # representation capacity with the policy head. When empty, the legacy
-    # 2-layer MLP (output_size -> 128 -> num_value_bins) is used.
-    value_head_layers: List[int] = field(default_factory=lambda: [])
+    value_head_layers: List[int] = field(default_factory=lambda: [512, 256])
     # Multiplier applied to the value-head gradient as it flows back into the
     # shared `late_ff_stack` and the transformer trunk. Forward is identity;
     # backward through the inserted node multiplies grad by this value.
@@ -341,8 +342,7 @@ class ArchitectureConfig:
     # `vf_coef * value_loss / |policy_loss|` runs >> 1. Differing values are
     # checkpoint-compatible because weight shapes are unchanged. Lives in
     # ArchitectureConfig because it is a model-construction attribute set on
-    # `self` (parallels `use_decision_tokens`), not a loss coefficient. See
-    # planning/stage2/2026-05-16-22-30-value-grad-scale-and-mean-kl.md.
+    # `self` (parallels `use_decision_tokens`), not a loss coefficient.
     value_to_trunk_grad_scale: float = 1.0
     # Number bank embeddings
     number_bank_embedding_dim: int = 16
@@ -354,12 +354,6 @@ class ArchitectureConfig:
     transformer_ff_dim: int = 2048
     transformer_heads: int = 16
     transformer_layers: int = 6
-
-    # Note: `use_causal_mask` and `use_decision_tokens` used to live here.
-    # RL training always uses both (set to True). The flags survive only on
-    # the supervised side (`model_archs.TransformerThreeHeadedModel` kwargs +
-    # supervised YAMLs) where ablations still need them; `build_model_from_config`
-    # defaults to True when the keys are absent.
 
 
 @dataclass
@@ -396,18 +390,12 @@ class HardwareConfig:
 
     batch_size: int = 16
     batch_timeout: float = 0.05
-    battle_backend: str = SHOWDOWN_WEBSOCKET_BACKEND
     device: str = "cuda"
     max_battle_steps: int = 40
     num_battles_per_pair: int = 20
     num_players: int = 3
     num_servers: int = 3
     num_workers: int = 3
-    # Optional override for the Rust backend's auto-computed per-worker
-    # concurrency cap (see `rust_max_concurrent_battles_per_worker` property
-    # below). Kept while the Rust backend exists; once Showdown is the only
-    # backend, this field and the property can be removed together.
-    rust_max_concurrent_battles_override: Optional[int] = None
     showdown_start_port: int = 8000
     use_multiprocessing: bool = False
     # Per-player concurrent-battle cap (poke-env's `max_concurrent_battles`
@@ -416,7 +404,7 @@ class HardwareConfig:
     # `_battle_count_queue.put(None)`
     # Set to `num_battles_per_pair` to let a player run all its pair's
     # battles concurrently without queue-blocking. Only flows to
-    # `BatchInferencePlayer` constructions in `WorkerOpponentFactory`
+    # `RLTrajectoryPlayer` constructions in `WorkerOpponentFactory`
     # (Showdown training path); analysis scripts are unaffected.
     max_concurrent_battles_per_player: Optional[int] = 20
 
@@ -428,13 +416,6 @@ class HardwareConfig:
     # Note: first call after launch pays compile cost (10–60s typical);
     # subsequent calls reuse the cached graph.
     compile_inference_model: Optional[str] = None
-
-    def __post_init__(self) -> None:
-        if self.battle_backend not in SUPPORTED_BATTLE_BACKENDS:
-            raise ValueError(
-                f"battle_backend must be one of {sorted(SUPPORTED_BATTLE_BACKENDS)}, "
-                f"got {self.battle_backend!r}"
-            )
 
     @property
     def players_per_worker(self) -> int:
@@ -448,22 +429,6 @@ class HardwareConfig:
     @property
     def max_players_per_server(self) -> int:
         return (self.num_players + self.num_servers - 1) // self.num_servers
-
-    @property
-    def rust_max_concurrent_battles_per_worker(self) -> int:
-        if self.rust_max_concurrent_battles_override is not None:
-            return max(
-                1,
-                min(self.num_battles_per_pair, self.rust_max_concurrent_battles_override),
-            )
-        if self.num_battles_per_pair <= 0:
-            return 1
-        worker_player_budget = max(1, self.players_per_worker)
-        worker_cpu_budget = self.cpu_budget_per_worker
-        return min(
-            self.num_battles_per_pair,
-            max(2, min(worker_player_budget, worker_cpu_budget)),
-        )
 
 
 @dataclass
@@ -567,8 +532,6 @@ class TrainingConfig:
     #                            current best checkpoint (cool-bee-85).
     #   - "full"               : raw + engineered features incl. transition
     #                            features. Larger embedding, slower.
-    #   - "full_no_transition" : "full" minus transition features (kept around
-    #                            for ablations).
     embedder_feature_set: str = "raw"
     initialize_path: Optional[str] = None
     log_interval: int = 1
@@ -634,10 +597,6 @@ class RNaDConfig:
         return self.hardware.max_players_per_server
 
     @property
-    def rust_max_concurrent_battles_per_worker(self) -> int:
-        return self.hardware.rust_max_concurrent_battles_per_worker
-
-    @property
     def num_showdown_servers(self) -> int:
         return self.hardware.num_servers
 
@@ -646,7 +605,7 @@ class RNaDConfig:
     def temperature_at_step(self, step: int) -> float:
         """Compute linearly annealed temperature at a given training step."""
         cfg = self.exploration
-        progress = min(step / max(cfg.temperature_anneal_steps, 1), 1.0)
+        progress = min(step / max(cfg.exploration_anneal_steps, 1), 1.0)
         return cfg.temperature_start + progress * (
             cfg.temperature_end - cfg.temperature_start
         )
@@ -654,7 +613,7 @@ class RNaDConfig:
     def ent_coef_at_step(self, step: int) -> float:
         """Compute linearly annealed entropy coefficient at a given training step."""
         cfg = self.exploration
-        progress = min(step / max(cfg.temperature_anneal_steps, 1), 1.0)
+        progress = min(step / max(cfg.exploration_anneal_steps, 1), 1.0)
         return self.algorithm.ent_coef + progress * (
             self.algorithm.ent_coef_end - self.algorithm.ent_coef
         )

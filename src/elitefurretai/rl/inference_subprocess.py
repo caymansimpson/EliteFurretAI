@@ -7,9 +7,8 @@ Python interpreter (escaping GIL contention with the trainer process)
 and its own CUDA context. Trainer ↔ subprocess communication is via
 two queue types:
 
-  - Per-service `request_queue` / `response_queues` — unchanged from the
-    in-process design; workers send `InferenceRequest`s in, get
-    `InferenceResponse`s back.
+  - Per-service `request_queue` / `response_queues`; workers send
+    `InferenceRequest`s in and get `InferenceResponse`s back.
   - One `control_queue` per subprocess — carries `SyncWeightsMsg` (apply
     a new state_dict to a named service's model) and `ShutdownMsg`
     (stop services and exit).
@@ -23,7 +22,7 @@ Why a separate module (not inside `model_registry.py`):
   callable for `mp.Process(target=run_subprocess, ...)`. Keeping it
   here keeps the registry small and gives the subprocess code a
   natural test boundary.
-- The `SubprocessSpec` dataclass is what crosses the pickle boundary;
+- The `SubprocessSpecification` dataclass is what crosses the pickle boundary;
   having it sit next to the entrypoint makes that contract explicit.
 """
 
@@ -32,7 +31,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Union, cast
+from typing import Any, Dict, List, Optional, Union, assert_never, cast
 
 import torch
 from torch import multiprocessing as torch_mp
@@ -43,7 +42,8 @@ from elitefurretai.rl.inference_trainer import (
     InferenceService,
     RealModelBatchHandler,
 )
-from elitefurretai.rl.rnad_model import RNaDAgent
+from elitefurretai.rl.rl_utils import is_cuda_device
+from elitefurretai.rl.rnad_model import RNaDModel
 
 logger = logging.getLogger(__name__)
 
@@ -55,13 +55,13 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class SyncWeightsMsg:
-    """Apply a state_dict to a named service's raw agent in-place.
+    """Apply a state_dict to a named model's raw agent in-place.
 
     `state_dict` values may be CPU tensors; the subprocess moves them
     to its device on load.
     """
 
-    service_name: str
+    model_name: str
     state_dict: Dict[str, torch.Tensor]
 
 
@@ -74,13 +74,13 @@ ControlMsg = Union[SyncWeightsMsg, ShutdownMsg]
 
 
 # ─────────────────────────────────────────────────────────────────────
-# Specs — sent across the spawn pickle boundary at process start
+# Specifications — sent across the spawn pickle boundary at process start
 # ─────────────────────────────────────────────────────────────────────
 
 
 @dataclass
-class ServiceSpec:
-    """Spec for one service that should run inside a subprocess.
+class ServiceSpecification:
+    """Specification for one service that should run inside a subprocess.
 
     `agent` is constructed on CPU in the trainer process and crosses
     the pickle boundary; the subprocess moves it to its device and
@@ -88,7 +88,7 @@ class ServiceSpec:
     """
 
     name: str
-    agent: RNaDAgent
+    agent: RNaDModel
     request_queue: "torch_mp.Queue[Union[InferenceRequest, EvictRequest]]"
     response_queues: Dict[int, "torch_mp.Queue[InferenceResponse]"]
     compile: bool = True
@@ -96,11 +96,11 @@ class ServiceSpec:
 
 
 @dataclass
-class SubprocessSpec:
-    """Spec passed to `run_subprocess` via `mp.Process(args=(spec,))`."""
+class SubprocessSpecification:
+    """Specification passed to `run_subprocess` via `mp.Process(args=(specification,))`."""
 
     group_name: str
-    services: List[ServiceSpec]
+    services: List[ServiceSpecification]
     control_queue: "torch_mp.Queue[ControlMsg]"
     device: str = "cpu"
     batch_size: int = 32
@@ -114,11 +114,11 @@ class SubprocessSpec:
 # ─────────────────────────────────────────────────────────────────────
 
 
-def run_subprocess(spec: SubprocessSpec) -> None:
+def run_subprocess(specification: SubprocessSpecification) -> None:
     """Main entrypoint for an inference subprocess.
 
-    Builds an `InferenceService` for each entry in `spec.services`,
-    starts them, then listens on `spec.control_queue` for
+    Builds an `InferenceService` for each entry in `specification.services`,
+    starts them, then listens on `specification.control_queue` for
     `SyncWeightsMsg` / `ShutdownMsg`. Returns cleanly on `ShutdownMsg`.
     """
     torch.set_num_threads(1)
@@ -131,16 +131,16 @@ def run_subprocess(spec: SubprocessSpec) -> None:
     # (the model `.to(device)` calls below) create the context lazily
     # gives the allocator a chance to size to actual need. Single-GPU
     # setups (the only ones we support) get cuda:0 by default.
-    # If multi-GPU support is added, we'd want to parse spec.device
+    # If multi-GPU support is added, we'd want to parse specification.device
     # and use CUDA_VISIBLE_DEVICES at process spawn time instead.
-    if spec.device.startswith("cuda") and not torch.cuda.is_available():
+    if is_cuda_device(specification.device) and not torch.cuda.is_available():
         raise RuntimeError(
-            f"InferenceSubprocess[{spec.group_name}] requested device "
-            f"{spec.device!r} but CUDA is not available"
+            f"InferenceSubprocess[{specification.group_name}] requested device "
+            f"{specification.device!r} but CUDA is not available"
         )
 
     services: Dict[str, InferenceService] = {}
-    raw_agents: Dict[str, RNaDAgent] = {}
+    raw_agents: Dict[str, RNaDModel] = {}
 
     # PASS 1: build (compile + warmup + handler) for every service.
     # No service threads start yet — if we started thread N now, while
@@ -150,29 +150,31 @@ def run_subprocess(spec: SubprocessSpec) -> None:
     # symbolically trace a dynamo-optimized function". ModelRegistry on
     # the trainer side uses the same split (register → start_all) for
     # exactly this reason; the subprocess needs it too.
-    for service_spec in spec.services:
-        agent = service_spec.agent
-        agent.model.to(spec.device).eval()
-        raw_agents[service_spec.name] = agent
+    for service_specification in specification.services:
+        agent = service_specification.agent
+        agent.model.to(specification.device).eval()
+        raw_agents[service_specification.name] = agent
 
-        agent_for_handler: RNaDAgent
-        if spec.compile_mode and service_spec.compile:
+        agent_for_handler: RNaDModel
+        if specification.compile_mode and service_specification.compile:
             logger.info(
                 "InferenceSubprocess[%s]: compiling '%s' mode=%s",
-                spec.group_name,
-                service_spec.name,
-                spec.compile_mode,
+                specification.group_name,
+                service_specification.name,
+                specification.compile_mode,
             )
             compiled = cast(
-                RNaDAgent,
-                torch.compile(agent, mode=spec.compile_mode, dynamic=True),
+                RNaDModel,
+                torch.compile(agent, mode=specification.compile_mode, dynamic=True),
             )
-            assert spec.embedding_size is not None, (
+            assert specification.embedding_size is not None, (
                 "embedding_size required when compile_mode is set"
             )
             with torch.no_grad():
                 for B in (1, 4, 16, 32):
-                    x = torch.zeros(B, 1, spec.embedding_size, device=spec.device)
+                    x = torch.zeros(
+                        B, 1, specification.embedding_size, device=specification.device
+                    )
                     _, _, _, _, ctx = compiled(x, None)
                     compiled(x, ctx)
             agent_for_handler = compiled
@@ -181,18 +183,18 @@ def run_subprocess(spec: SubprocessSpec) -> None:
 
         handler = RealModelBatchHandler(
             agent_for_handler,
-            device=spec.device,
-            probabilistic=service_spec.probabilistic,
+            device=specification.device,
+            probabilistic=service_specification.probabilistic,
         )
         service = InferenceService(
-            name=service_spec.name,
+            name=service_specification.name,
             batch_handler=handler,
-            request_queue=service_spec.request_queue,
-            response_queues=service_spec.response_queues,
-            batch_size=spec.batch_size,
-            batch_timeout=spec.batch_timeout,
+            request_queue=service_specification.request_queue,
+            response_queues=service_specification.response_queues,
+            batch_size=specification.batch_size,
+            batch_timeout=specification.batch_timeout,
         )
-        services[service_spec.name] = service
+        services[service_specification.name] = service
 
     # PASS 2: start every service thread. All compiles are now complete,
     # so no in-flight forward can collide with a fresh dynamo trace.
@@ -201,41 +203,38 @@ def run_subprocess(spec: SubprocessSpec) -> None:
 
     logger.info(
         "InferenceSubprocess[%s] up with %d services: %s",
-        spec.group_name,
+        specification.group_name,
         len(services),
         sorted(services.keys()),
     )
 
     while True:
-        msg = spec.control_queue.get()
+        msg = specification.control_queue.get()
         if isinstance(msg, ShutdownMsg):
-            logger.info("InferenceSubprocess[%s] received shutdown", spec.group_name)
+            logger.info(
+                "InferenceSubprocess[%s] received shutdown", specification.group_name
+            )
             break
-        if isinstance(msg, SyncWeightsMsg):
-            if msg.service_name not in raw_agents:
+        elif isinstance(msg, SyncWeightsMsg):
+            if msg.model_name not in raw_agents:
                 logger.error(
-                    "InferenceSubprocess[%s] sync_weights: unknown service '%s' "
-                    "(known: %s)",
-                    spec.group_name,
-                    msg.service_name,
+                    "InferenceSubprocess[%s] sync_weights: unknown model '%s' (known: %s)",
+                    specification.group_name,
+                    msg.model_name,
                     sorted(raw_agents.keys()),
                 )
                 continue
             t_start = time.perf_counter()
-            raw_agents[msg.service_name].model.load_state_dict(msg.state_dict)
+            raw_agents[msg.model_name].model.load_state_dict(msg.state_dict)
             t_loaded = time.perf_counter()
             logger.info(
                 "InferenceSubprocess[%s] synced weights for '%s' load=%.1fms",
-                spec.group_name,
-                msg.service_name,
+                specification.group_name,
+                msg.model_name,
                 (t_loaded - t_start) * 1000.0,
             )
         else:
-            logger.warning(
-                "InferenceSubprocess[%s] unknown control message type: %s",
-                spec.group_name,
-                type(msg),
-            )
+            assert_never(msg)
 
     for service in services.values():
         service.stop()
@@ -251,7 +250,7 @@ class InferenceSubprocessHandle:
 
     Owns the `mp.Process` and the control queue. Use:
 
-        handle = InferenceSubprocessHandle(spec)
+        handle = InferenceSubprocessHandle(specification)
         handle.start()
         ...
         handle.sync_weights("ghost_0", new_state_dict)
@@ -261,12 +260,12 @@ class InferenceSubprocessHandle:
 
     def __init__(
         self,
-        spec: SubprocessSpec,
+        specification: SubprocessSpecification,
         ctx: Optional[Any] = None,
     ):
-        self.group_name = spec.group_name
-        self.spec = spec
-        self.control_queue = spec.control_queue
+        self.group_name = specification.group_name
+        self.specification = specification
+        self.control_queue = specification.control_queue
         self._ctx = ctx if ctx is not None else torch_mp.get_context("spawn")
         self._process: Optional[Any] = None  # mp.Process
 
@@ -275,20 +274,20 @@ class InferenceSubprocessHandle:
             raise RuntimeError(f"InferenceSubprocess[{self.group_name}] already started")
         proc = self._ctx.Process(
             target=run_subprocess,
-            args=(self.spec,),
+            args=(self.specification,),
             name=f"InferenceSubprocess-{self.group_name}",
             daemon=False,
         )
         proc.start()
         self._process = proc
 
-    def sync_weights(self, service_name: str, state_dict: Dict[str, torch.Tensor]) -> None:
+    def sync_weights(self, model_name: str, state_dict: Dict[str, torch.Tensor]) -> None:
         if self._process is None or not self._process.is_alive():
             raise RuntimeError(
                 f"InferenceSubprocess[{self.group_name}] not running; cannot sync"
             )
         self.control_queue.put(
-            SyncWeightsMsg(service_name=service_name, state_dict=state_dict)
+            SyncWeightsMsg(model_name=model_name, state_dict=state_dict)
         )
 
     def is_alive(self) -> bool:

@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """Player specification parsing for the unified evaluation entry point.
 
-A ``PlayerSpec`` is a small typed record produced from a single CLI
+A ``PlayerSpecification`` is a small typed record produced from a single CLI
 string. The string is either a path to a model checkpoint or one of a
-fixed set of baseline names. ``parse_player_spec`` does the routing.
+fixed set of baseline names. ``parse_player_specification`` does the routing.
 
 Three player kinds are supported:
 
@@ -19,7 +19,7 @@ Three player kinds are supported:
   side to challenge. The worker handles this asymmetry — see
   ``_run_worker`` in ``evaluate.py``.
 
-PlayerSpec carries only pickleable data (no closures), so it can be
+PlayerSpecification carries only pickleable data (no closures), so it can be
 shipped across process boundaries — required by the ProcessPoolExecutor
 fan-out in ``run_eval_parallel``.
 """
@@ -92,7 +92,7 @@ class RunningExternal:
 
 
 @dataclass(frozen=True)
-class PlayerSpec:
+class PlayerSpecification:
     """Parsed player specification — pure data, no closures.
 
     Fields:
@@ -133,7 +133,7 @@ def canonicalize_baseline(raw: str) -> Optional[str]:
     return _BASELINE_ALIASES.get(key)
 
 
-def parse_player_spec(
+def parse_player_specification(
     raw: str,
     *,
     device: str,
@@ -141,8 +141,8 @@ def parse_player_spec(
     vgc_bench_checkpoint_path: str = "data/models/vgc-bench-sb3-model.zip",
     vgc_bench_team_file: str = "data/teams/gen9vgc2024regg/vgcbench.txt",
     vgc_bench_python_executable: str = "/home/cayman/Repositories/venv-vgcbench/bin/python",
-) -> PlayerSpec:
-    """Resolve ``raw`` into a ``PlayerSpec``.
+) -> PlayerSpecification:
+    """Resolve ``raw`` into a ``PlayerSpecification``.
 
     Resolution order:
         1. If ``raw`` is a path to an existing file → ``kind="model"``.
@@ -155,19 +155,19 @@ def parse_player_spec(
     ``random.pt`` should resolve to a model, not the random baseline.
     """
     if os.path.isfile(raw):
-        return _model_spec(raw, device=device, battle_format=battle_format)
+        return _model_specification(raw, device=device, battle_format=battle_format)
 
     canonical = canonicalize_baseline(raw)
     if canonical is None:
         accepted = sorted(_CANONICAL_BASELINES + _EXTERNAL_BASELINES)
         raise ValueError(
-            f"Could not resolve player spec {raw!r}. Provide a checkpoint "
+            f"Could not resolve player specification {raw!r}. Provide a checkpoint "
             f"path that exists, or one of: {accepted} "
             f"(aliases also accepted: {sorted(_BASELINE_ALIASES)})."
         )
 
     if canonical in _EXTERNAL_BASELINES:
-        return _external_spec(
+        return _external_specification(
             raw,
             canonical,
             battle_format=battle_format,
@@ -176,12 +176,14 @@ def parse_player_spec(
             python_executable=vgc_bench_python_executable,
         )
 
-    return _baseline_spec(raw, canonical, battle_format=battle_format)
+    return _baseline_specification(raw, canonical, battle_format=battle_format)
 
 
-def _model_spec(path: str, *, device: str, battle_format: str) -> PlayerSpec:
+def _model_specification(
+    path: str, *, device: str, battle_format: str
+) -> PlayerSpecification:
     name = os.path.splitext(os.path.basename(path))[0]
-    return PlayerSpec(
+    return PlayerSpecification(
         raw=path,
         kind="model",
         name=name,
@@ -190,8 +192,10 @@ def _model_spec(path: str, *, device: str, battle_format: str) -> PlayerSpec:
     )
 
 
-def _baseline_spec(raw: str, canonical: str, *, battle_format: str) -> PlayerSpec:
-    return PlayerSpec(
+def _baseline_specification(
+    raw: str, canonical: str, *, battle_format: str
+) -> PlayerSpecification:
+    return PlayerSpecification(
         raw=raw,
         kind="baseline",
         name=canonical,
@@ -200,7 +204,7 @@ def _baseline_spec(raw: str, canonical: str, *, battle_format: str) -> PlayerSpe
     )
 
 
-def _external_spec(
+def _external_specification(
     raw: str,
     canonical: str,
     *,
@@ -208,11 +212,11 @@ def _external_spec(
     checkpoint_path: str,
     team_file: str,
     python_executable: str,
-) -> PlayerSpec:
+) -> PlayerSpecification:
     assert canonical == "vgc_bench", (
         f"unreachable: unknown external baseline {canonical!r}"
     )
-    return PlayerSpec(
+    return PlayerSpecification(
         raw=raw,
         kind="external",
         name=canonical,
@@ -227,26 +231,26 @@ def _external_spec(
 
 
 def build_player(
-    spec: PlayerSpec,
+    specification: PlayerSpecification,
     *,
     team: str,
     account_configuration: AccountConfiguration,
     server_configuration: ServerConfiguration,
     accept_open_team_sheet: bool = False,
 ) -> Player:
-    """Construct a poke-env ``Player`` from a ``PlayerSpec``.
+    """Construct a poke-env ``Player`` from a ``PlayerSpecification``.
 
     Handles ``kind="model"`` and ``kind="baseline"``. For ``kind="external"``
     use ``launch_external_player`` — there is no in-process Player.
 
-    This is a top-level function (not a closure on the spec) so the spec
+    This is a top-level function (not a closure on the specification) so the specification
     itself remains pickleable and process-pool friendly.
     """
-    if spec.kind == "model":
+    if specification.kind == "model":
         return SimpleModelPlayer(
-            model_path=spec.params["path"],
-            device=spec.params["device"],
-            battle_format=spec.params["battle_format"],
+            model_path=specification.params["path"],
+            device=specification.params["device"],
+            battle_format=specification.params["battle_format"],
             probabilistic=False,
             account_configuration=account_configuration,
             server_configuration=server_configuration,
@@ -254,10 +258,10 @@ def build_player(
             accept_open_team_sheet=accept_open_team_sheet,
         )
 
-    if spec.kind == "baseline":
-        canonical = spec.params["canonical"]
+    if specification.kind == "baseline":
+        canonical = specification.params["canonical"]
         common = dict(
-            battle_format=spec.params["battle_format"],
+            battle_format=specification.params["battle_format"],
             account_configuration=account_configuration,
             server_configuration=server_configuration,
             team=team,
@@ -276,31 +280,33 @@ def build_player(
         raise AssertionError(f"unreachable: unknown canonical baseline {canonical!r}")
 
     raise ValueError(
-        f"build_player() does not handle kind={spec.kind!r}; "
+        f"build_player() does not handle kind={specification.kind!r}; "
         "use launch_external_player() for external opponents."
     )
 
 
-def launch_external_player(spec: PlayerSpec, server_url: str) -> RunningExternal:
+def launch_external_player(
+    specification: PlayerSpecification, server_url: str
+) -> RunningExternal:
     """Spawn the external opponent subprocess and return a handle.
 
-    Requires ``spec.kind == "external"``. Currently the only external
+    Requires ``specification.kind == "external"``. Currently the only external
     opponent is ``vgc_bench``; this dispatch grows when more arrive.
     """
-    if spec.kind != "external":
+    if specification.kind != "external":
         raise ValueError(
-            f"launch_external_player() requires kind='external', got {spec.kind!r}"
+            f"launch_external_player() requires kind='external', got {specification.kind!r}"
         )
-    if spec.name != "vgc_bench":
+    if specification.name != "vgc_bench":
         raise ValueError(
-            f"launch_external_player() does not handle external opponent {spec.name!r}"
+            f"launch_external_player() does not handle external opponent {specification.name!r}"
         )
     return _launch_vgc_bench_subprocess(
         server_url=server_url,
-        battle_format=spec.params["battle_format"],
-        checkpoint_path=spec.params["checkpoint_path"],
-        team_file=spec.params["team_file"],
-        python_executable=spec.params["python_executable"],
+        battle_format=specification.params["battle_format"],
+        checkpoint_path=specification.params["checkpoint_path"],
+        team_file=specification.params["team_file"],
+        python_executable=specification.params["python_executable"],
     )
 
 

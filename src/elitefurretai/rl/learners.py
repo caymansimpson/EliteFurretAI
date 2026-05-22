@@ -55,8 +55,6 @@ train.py main loop:
 
 import logging
 import os
-import time
-from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -68,7 +66,8 @@ from torch.optim.lr_scheduler import LambdaLR
 
 from elitefurretai.etl import MDBO, Embedder
 from elitefurretai.rl.config import RNaDConfig
-from elitefurretai.rl.rnad_model import RNaDAgent
+from elitefurretai.rl.rl_utils import is_cuda_device, timestamp_iso
+from elitefurretai.rl.rnad_model import RNaDModel
 from elitefurretai.supervised.model_archs import TransformerThreeHeadedModel, twohot_encode
 
 logger = logging.getLogger(__name__)
@@ -140,7 +139,7 @@ def _build_optimizer(
 
     if opt.type == "adamw":
         # fused AdamW is CUDA-only and ~10-20% faster than the default foreach path.
-        use_fused = device.startswith("cuda")
+        use_fused = is_cuda_device(device)
         return optim.AdamW(param_groups, fused=use_fused)
     else:
         return optim.Adam(param_groups)
@@ -154,8 +153,8 @@ def _build_scheduler(optimizer: optim.Optimizer, config: RNaDConfig) -> LambdaLR
 class PortfolioRNaDLearner:
     def __init__(
         self,
-        model: RNaDAgent,
-        ref_models: List[RNaDAgent],
+        model: RNaDModel,
+        ref_models: List[RNaDModel],
         config: RNaDConfig,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
     ):
@@ -177,6 +176,13 @@ class PortfolioRNaDLearner:
         self.portfolio_update_strategy = config.portfolio.portfolio_update_strategy
         self._step = 0
 
+        # One-shot eval batch used by the "diverse" pruning strategy to
+        # measure pairwise policy KL between refs. Lazily snapshotted from
+        # the first real `update()` batch — random states would give a
+        # meaningless KL. Only allocated when the strategy is actually
+        # "diverse" to keep VRAM use unchanged for other strategies.
+        self._diversity_eval_states: Optional[torch.Tensor] = None
+
         # Distributional value head support
         self.num_value_bins = config.value_head.num_value_bins
         self.value_support = torch.linspace(
@@ -184,10 +190,14 @@ class PortfolioRNaDLearner:
             config.value_head.value_max,
             config.value_head.num_value_bins,
         ).to(device)
+        # Mix a uniform component into the twohot C51 target before the
+        # cross-entropy. 0.0 = stock twohot. See ValueHeadConfig docstring
+        # and MODEL_EVALUATION.md Priority 2 for motivation.
+        self.value_label_smoothing = config.value_head.value_label_smoothing
 
         self.scaler = (
             torch.amp.GradScaler(device=self.device)  # type: ignore[attr-defined]
-            if str(self.device).startswith("cuda")
+            if is_cuda_device(self.device)
             else None
         )
 
@@ -197,16 +207,6 @@ class PortfolioRNaDLearner:
 
         self.portfolio_kl_history: List[List[float]] = [[] for _ in range(len(ref_models))]
         self.portfolio_selection_counts: List[int] = [0] * len(ref_models)
-
-        # Telemetry: rolling stats on the ref-model forward loop in update().
-        # Logged every _ref_fwd_log_every learner updates so we can see whether
-        # portfolio growth (new ref at every portfolio_add_interval) is the
-        # source of the post-update-100 slowdown without log-spamming.
-        self._ref_fwd_log_every = 50
-        self._ref_fwd_calls_since_log = 0
-        self._ref_fwd_time_sum_s = 0.0
-        self._ref_fwd_count_sum = 0
-        self._main_fwd_time_sum_s = 0.0
 
     def load_resume_state(self, checkpoint: Dict[str, Any]) -> None:
         """Restore optimizer, scheduler, and `_step` from a checkpoint dict.
@@ -235,7 +235,7 @@ class PortfolioRNaDLearner:
         else:
             self._step = global_step
 
-    def add_reference_model(self, new_ref: RNaDAgent):
+    def add_reference_model(self, new_ref: RNaDModel):
         new_ref = new_ref.to(self.device)
         for param in new_ref.parameters():
             param.requires_grad = False
@@ -248,17 +248,45 @@ class PortfolioRNaDLearner:
             self._prune_portfolio()
 
     def _prune_portfolio(self):
+        """Pick one reference to evict so the portfolio fits max_portfolio_size.
+
+        Strategies trade off recency, load-bearing-ness, and exploration of
+        the anchor space. The choice matters because the RNaD KL term anchors
+        the current policy to whichever reference is selected as min-KL at
+        each step — what we keep here directly shapes the next regularization
+        signal.
+        """
         if len(self.ref_models) <= 1:
             return
 
         if self.portfolio_update_strategy == "recent":
+            # Drop the oldest reference (refs are appended in time order, so
+            # idx 0 is the eldest). Cheapest + most stable rotation; keeps the
+            # portfolio biased toward recent policies. Recommended default.
             idx = 0
         elif self.portfolio_update_strategy == "best":
+            # Drop the reference that was the closest-to-current-policy LEAST
+            # often. Under mean-KL loss this is the ref the policy has drifted
+            # FARTHEST from on average — so keeping the others concentrates the
+            # anchor field near the current policy (weaker but more locally
+            # focused regularization).
             idx = int(np.argmin(self.portfolio_selection_counts))
         elif self.portfolio_update_strategy == "random":
+            # Uniformly-random eviction. Cheapest unbiased alternative to
+            # "recent" — wider mix of anchor ages on average without preferring
+            # any selection signal. Useful as an ablation baseline.
             idx = int(np.random.randint(len(self.ref_models)))
         elif self.portfolio_update_strategy == "diverse":
-            raise NotImplementedError("Diverse strategy not implemented yet")
+            # Drop the ref whose policy is most redundant with another's,
+            # measured by min pairwise KL on a one-shot eval batch
+            # (`_diversity_eval_states`). Keeps survivors spread across
+            # policy space instead of clustering around the most-recent
+            # snapshots — guards against portfolios that fill with
+            # near-duplicates added at every portfolio_add_interval.
+            #
+            # Falls back to "recent" until the first update() call has run
+            # and stashed an eval batch.
+            idx = self._diverse_eviction_index()
         else:
             raise ValueError(
                 f"Unknown portfolio update strategy: {self.portfolio_update_strategy}"
@@ -268,6 +296,43 @@ class PortfolioRNaDLearner:
         self.portfolio_kl_history.pop(idx)
         self.portfolio_selection_counts.pop(idx)
 
+    def _diverse_eviction_index(self) -> int:
+        """Pick the most-redundant ref for the "diverse" pruning strategy.
+
+        Algorithm: for each ref, compute its min pairwise turn-policy KL to
+        any other ref (on `_diversity_eval_states`). Return the index of the
+        ref whose nearest neighbor is closest — i.e. the ref whose policy
+        a sibling already covers.
+
+        Returns 0 (fall back to "recent") if no eval batch has been
+        snapshotted yet (no update() call has run).
+        """
+        if self._diversity_eval_states is None:
+            return 0
+
+        with torch.no_grad():
+            ref_dists: List[Categorical] = []
+            for r in self.ref_models:
+                turn_logits, _, _, _ = r.model.forward(self._diversity_eval_states)
+                logits_flat = turn_logits.reshape(-1, turn_logits.shape[-1])
+                ref_dists.append(Categorical(logits=logits_flat))
+
+            n = len(ref_dists)
+            redundancy = []
+            for i in range(n):
+                nearest = float("inf")
+                for j in range(n):
+                    if i == j:
+                        continue
+                    kl_ij = (
+                        torch.distributions.kl_divergence(ref_dists[i], ref_dists[j])
+                        .mean()
+                        .item()
+                    )
+                    nearest = min(nearest, kl_ij)
+                redundancy.append(nearest)
+        return int(np.argmin(redundancy))
+
     def _compute_portfolio_kl(
         self,
         curr_dist: Categorical,
@@ -276,13 +341,8 @@ class PortfolioRNaDLearner:
     ) -> torch.Tensor:
         """Return MEAN KL from curr_dist to all reference policies.
 
-        Mean-KL (not min-KL) anchors the policy against the average of the
-        portfolio. The previous min-KL was permissive — drifting away from
-        all references was free as long as the policy stayed close to the
-        single most-recent self-snapshot. Mean-KL costs scale with distance
-        from every reference, including older anchors like BC while it's in
-        the portfolio. See planning/stage2/2026-05-16-22-30-value-grad-
-        scale-and-mean-kl.md.
+        Mean-KL anchors the policy against the average of the
+        portfolio.
 
         track=True records the per-ref KL into history and bumps the
         selection counter for the closest reference — set False on PPO
@@ -354,6 +414,13 @@ class PortfolioRNaDLearner:
         ent_coef = self.config.ent_coef_at_step(self._step)
 
         states = batch["states"].to(self.device)
+        # Lazy snapshot for the "diverse" pruning strategy. Done here (not
+        # in __init__) because we need a representative real-data batch.
+        if (
+            self.portfolio_update_strategy == "diverse"
+            and self._diversity_eval_states is None
+        ):
+            self._diversity_eval_states = states.detach().clone()
         actions = batch["actions"].to(self.device)
         old_log_probs = batch["log_probs"].to(self.device)
         advantages = batch["advantages"].to(self.device)
@@ -412,8 +479,12 @@ class PortfolioRNaDLearner:
             turn_mask_neg_inf = None
 
         # Distributional value targets — twohot is just a binning op, no grad.
+        # Optional uniform smoothing: target = (1-ε)·twohot + ε/num_bins.
         if has_padded:
             value_targets = twohot_encode(flat_returns, self.value_support)
+            if self.value_label_smoothing > 0.0:
+                eps = self.value_label_smoothing
+                value_targets = value_targets * (1.0 - eps) + (eps / self.num_value_bins)
             valid_count_clamped = flat_padding_mask.sum().clamp(min=1.0)
         else:
             value_targets = None
@@ -425,7 +496,6 @@ class PortfolioRNaDLearner:
         # so the inner loop only computes the main model.
         ref_tp_logits_list: list = []
         ref_turn_logits_list: list = []
-        ref_fwd_start = time.perf_counter()
         if len(self.ref_models) > 0:
             with torch.amp.autocast(  # pyright: ignore[reportPrivateImportUsage]
                 device_type=self.device
@@ -445,21 +515,13 @@ class PortfolioRNaDLearner:
                             )
             if self.device == "cuda":
                 torch.cuda.synchronize()
-        ref_fwd_elapsed = time.perf_counter() - ref_fwd_start
-        self._ref_fwd_time_sum_s += ref_fwd_elapsed
-        self._ref_fwd_count_sum += len(self.ref_models)
 
         # ── PPO inner loop ────────────────────────────────────────────────────
-        # K=1 reproduces original behavior. K>1 reuses old log probs from
-        # collection time (standard PPO) — `flat_old_log_probs` does NOT update
-        # across epochs.
-        ppo_epochs = self.ppo_epochs
-        kl_early_stop = self.ppo_kl_early_stop
         metrics: Dict[str, Any] = {}
         epochs_run = 0
         approx_kl = 0.0
 
-        for epoch in range(ppo_epochs):
+        for epoch in range(self.ppo_epochs):
             # Bookkeeping (selection counts / kl history) tracks ONCE per update,
             # on the first epoch — it represents "which ref was closest at the
             # *start* of this update", not how many forward passes we did.
@@ -614,9 +676,9 @@ class PortfolioRNaDLearner:
             # Optional safety: stop the inner loop if the policy has drifted
             # too far from the collection-time policy.
             if (
-                kl_early_stop is not None
-                and approx_kl > kl_early_stop
-                and epoch + 1 < ppo_epochs
+                self.ppo_kl_early_stop is not None
+                and approx_kl > self.ppo_kl_early_stop
+                and epoch + 1 < self.ppo_epochs
             ):
                 break
 
@@ -633,27 +695,6 @@ class PortfolioRNaDLearner:
             }
         )
 
-        # Telemetry: every Nth call, emit rolling ref-fwd-loop stats so we can
-        # see whether portfolio growth explains throughput collapse after
-        # portfolio_add_interval ticks.
-        self._ref_fwd_calls_since_log += 1
-        if self._ref_fwd_calls_since_log >= self._ref_fwd_log_every:
-            calls = self._ref_fwd_calls_since_log
-            avg_total_ms = (self._ref_fwd_time_sum_s / calls) * 1000.0
-            avg_refs = self._ref_fwd_count_sum / max(1, calls)
-            per_ref_ms = avg_total_ms / max(1.0, avg_refs)
-            logger.info(
-                "ref_fwd[last %d updates]: portfolio_size=%d avg_total=%.1fms "
-                "avg_refs=%.2f per_ref=%.1fms",
-                calls,
-                len(self.ref_models),
-                avg_total_ms,
-                avg_refs,
-                per_ref_ms,
-            )
-            self._ref_fwd_calls_since_log = 0
-            self._ref_fwd_time_sum_s = 0.0
-            self._ref_fwd_count_sum = 0
         return metrics
 
     def get_portfolio_stats(self) -> Dict[str, Any]:
@@ -679,8 +720,7 @@ __all__ = ["PortfolioRNaDLearner"]
 # that produced the model.
 #
 # Callers: train.py (save_checkpoint, load_checkpoint, build_model_from_config),
-#          worker.py (load_model_from_checkpoint, load_agent_from_checkpoint),
-#          exploiter_train.py, analyze/play_model.py.
+#          worker.py (load_model_from_checkpoint).
 # ══════════════════════════════════════════════════════════════════════════════
 
 # Config keys that define model architecture — used to check checkpoint compatibility.
@@ -866,18 +906,8 @@ def load_model_from_checkpoint(
     return model, embedder, config_dict
 
 
-def load_agent_from_checkpoint(
-    checkpoint_path: str,
-    device: str,
-    embedder: Optional[Embedder] = None,
-) -> RNaDAgent:
-    """Load a checkpoint and wrap it in an RNaDAgent."""
-    model, _, _ = load_model_from_checkpoint(checkpoint_path, device, embedder)
-    return RNaDAgent(model)
-
-
 def save_checkpoint(
-    model: RNaDAgent,
+    model: RNaDModel,
     learner: "PortfolioRNaDLearner",
     step: int,
     config: RNaDConfig,
@@ -903,7 +933,7 @@ def save_checkpoint(
         "step": step,
         "curriculum": curriculum,
         "config": config.to_dict(),
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": timestamp_iso(),
     }
 
     torch.save(checkpoint, filepath)

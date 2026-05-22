@@ -227,10 +227,9 @@ class WorkerInferenceClients:
             ", ".join(self._clients.keys()),
         )
 
-    def get(self, model_name: str) -> InferenceClient:
-        """Return the InferenceClient for `model_name`. Raises KeyError
-        if the model wasn't registered (catches typos and missing
-        opt-in registrations early)."""
+    def __getitem__(self, model_name: str) -> InferenceClient:
+        """Strict access. Raises KeyError if the model wasn't registered
+        (catches typos and missing opt-in registrations early)."""
         if model_name not in self._clients:
             raise KeyError(
                 f"No inference client for '{model_name}' in worker "
@@ -238,7 +237,13 @@ class WorkerInferenceClients:
             )
         return self._clients[model_name]
 
-    def has(self, model_name: str) -> bool:
+    def get(self, model_name: str) -> Optional[InferenceClient]:
+        """dict-style access — returns None when the model is not
+        registered. Use for opt-in models (BC, ghost/exploiter slots);
+        use `clients[name]` when the registration is required."""
+        return self._clients.get(model_name)
+
+    def __contains__(self, model_name: str) -> bool:
         return model_name in self._clients
 
     def names(self) -> List[str]:

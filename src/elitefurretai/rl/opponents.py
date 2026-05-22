@@ -9,7 +9,6 @@ battle. Two cooperating classes:
 1) `OpponentPool` — main-process curriculum manager
     - Owns the curriculum: a probability distribution over opponent *types*
       (self-play, BC clone, ghosts, exploiters, MaxDamage, …).
-    - Caches model artifacts so we don't reload from disk every battle.
     - Tracks per-opponent win rates and can adapt curriculum over time
       (PFSP-style: focus on opponents we're currently losing to).
     - Lives in the trainer process; speaks to workers via the broadcast queue.
@@ -17,7 +16,7 @@ battle. Two cooperating classes:
 2) `WorkerOpponentFactory` — per-worker actor factory
     - Lives inside each worker process.
     - When the curriculum says "play self vs BC", this is what actually
-      *constructs* the BatchInferencePlayer / BCPlayer / MaxDamagePlayer
+      *constructs* the RLTrajectoryPlayer / BCPlayer / MaxDamagePlayer
       instances and connects them to Showdown.
     - Reuses player objects across battles where possible (each player
       construction triggers a websocket login, which is expensive).
@@ -54,49 +53,35 @@ import logging
 import os
 import queue
 import random
-from collections import deque
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple
-
-if TYPE_CHECKING:
-    from elitefurretai.rl.inference_worker import (
-        InferenceClient,
-        WorkerInferenceClients,
-    )
+from collections import OrderedDict, defaultdict, deque
+from typing import Any, Dict, List, Optional, Set, Tuple, Type, TypeVar
 
 import numpy as np
-import torch
 from poke_env import AccountConfiguration, ServerConfiguration
 from poke_env.player import MaxBasePowerPlayer, Player, RandomPlayer
+from poke_env.player.baselines import SimpleHeuristicsPlayer
 from poke_env.teambuilder import ConstantTeambuilder
 
 from elitefurretai.agents.max_damage_player import MaxDamagePlayer
 from elitefurretai.etl import Embedder, TeamRepo
-from elitefurretai.rl.batch_inference_player import BatchInferencePlayer
-from elitefurretai.rl.learners import (
-    build_model_from_config,
-    is_checkpoint_compatible_with_model_config,
-    load_model_from_checkpoint,
-)
-from elitefurretai.rl.rnad_model import RNaDAgent
+from elitefurretai.rl.inference_worker import WorkerInferenceClients
+from elitefurretai.rl.rl_trajectory_player import RLTrajectoryPlayer
+from elitefurretai.rl.rl_utils import list_pt_files, normalize_curriculum
 
 logger = logging.getLogger(__name__)
 
-SimpleHeuristicBaselineCls: Optional[type]
-try:
-    from poke_env.player.baselines import SimpleHeuristicsPlayer as _SimpleHeuristicsPlayer
 
-    SimpleHeuristicBaselineCls = _SimpleHeuristicsPlayer
-except Exception:
-    SimpleHeuristicBaselineCls = None
+# TypeVar for `_make_baseline_pool`: lets the helper return the concrete
+# player class (MaxDamagePlayer/RandomPlayer/...) without a cast.
+_P = TypeVar("_P", bound=Player)
 
 
 class OpponentPool:
-    """Main-process opponent sampler and model cache.
+    """Main-process opponent sampler.
 
     Responsibilities:
     - Own the curriculum distribution over opponent types.
     - Resolve sampled opponent types into concrete `Player` instances.
-    - Cache expensive model artifacts (BC/exploiter/ghost models).
     - Track win rates per opponent type and (optionally) adapt curriculum.
 
     Curriculum adaptation (PFSP-style)
@@ -135,183 +120,123 @@ class OpponentPool:
     # frozen exploiter snapshots from disk).
     TRAIN_EXPLOITER = "train_exploiter"
 
+    # Canonical set of opp-type tags. Used by the worker factory's
+    # sample step to drop unrecognized samples.
+    KNOWN_OPP_TYPES: Tuple[str, ...] = (
+        SELF_PLAY,
+        BC_PLAYER,
+        EXPLOITERS,
+        GHOSTS,
+        TRAIN_EXPLOITER,
+        MAX_DAMAGE,
+        RANDOM_BASELINE,
+        MAX_BASE_POWER_BASELINE,
+        SIMPLE_HEURISTIC_BASELINE,
+        VGC_BENCH_BASELINE,
+    )
+
     def __init__(
         self,
-        main_model: RNaDAgent,
-        device: str,
-        battle_format: str = "gen9vgc2023regc",
+        curriculum: Dict[str, float],
         bc_model_path: Optional[str] = None,
         exploiter_models_dir: str = "data/models/exploiters",
         ghosts_dir: str = "data/models/ghosts",
-        vgc_bench_checkpoint_path: Optional[str] = None,
         max_ghosts: int = 10,
         max_exploiter_models: int = 10,
         tracking_window: int = 100,
-        curriculum: Optional[Dict[str, float]] = None,
     ):
-        self.main_model = main_model
-        self.device = device
-        self.battle_format = battle_format
         self.max_ghosts = max_ghosts
-        # Cap on the number of graduated exploiter snapshots kept in the
-        # curriculum pool. Older ones get evicted when new ones graduate.
-        # Mirrors max_ghosts semantics; was previously implicit (the list
-        # got trimmed by max_ghosts due to a typo, fixed in this change).
         self.max_exploiter_models = max_exploiter_models
-        self.vgc_bench_checkpoint_path = vgc_bench_checkpoint_path
         self.tracking_window = tracking_window
-
-        self.curriculum = curriculum or {
-            self.SELF_PLAY: 0.40,
-            self.BC_PLAYER: 0.20,
-            self.EXPLOITERS: 0.20,
-            self.GHOSTS: 0.20,
-            self.MAX_DAMAGE: 0.0,
-            self.RANDOM_BASELINE: 0.0,
-            self.MAX_BASE_POWER_BASELINE: 0.0,
-            self.SIMPLE_HEURISTIC_BASELINE: 0.0,
-            self.VGC_BENCH_BASELINE: 0.0,
-            self.TRAIN_EXPLOITER: 0.0,
-        }
+        self.curriculum = curriculum
 
         total = sum(self.curriculum.values())
         if not np.isclose(total, 1.0):
             raise ValueError(f"Curriculum weights must sum to 1.0, got {total}")
 
         self.bc_model_path: Optional[str] = bc_model_path
-        self._cached_bc_model: Optional[Any] = None
-        self._cached_bc_embedder: Optional[Any] = None
-        self._cached_bc_config: Optional[Dict] = None
-
-        if bc_model_path:
-            self._preload_bc_model()
 
         self.exploiter_models_dir = exploiter_models_dir
         os.makedirs(self.exploiter_models_dir, exist_ok=True)
-        self.exploiter_models: List[Tuple[float, str]] = []
-        # Exploiter snapshot slot lifecycle: each path is assigned a slot
-        # 0..max_exploiter_models-1. `slot_for_exploiter_path` maps file
-        # path -> slot index. `_exploiter_slot_lru` is an
-        # insertion-ordered list of currently-occupied slots; head is
-        # oldest. Loaded exploiters from disk on startup get slots 0..K-1.
-        self.slot_for_exploiter_path: Dict[str, int] = {}
-        self._exploiter_slot_lru: List[int] = []
+        self.slot_for_exploiter_path: "OrderedDict[str, int]" = OrderedDict()
         self._load_exploiter_models()
 
         self.ghosts_dir = ghosts_dir
         os.makedirs(ghosts_dir, exist_ok=True)
-        self.ghosts: List[Tuple[int, str]] = []
-        # Ghost slot lifecycle: each path is assigned a slot 0..max_ghosts-1.
-        # `slot_for_ghost_path` maps file path -> slot index. `_slot_lru` is
-        # an insertion-ordered list of currently-occupied slots; head is
-        # oldest. Loaded ghosts from disk on startup get slots 0..K-1.
-        self.slot_for_ghost_path: Dict[str, int] = {}
-        self._slot_lru: List[int] = []
+        self.slot_for_ghost_path: "OrderedDict[str, int]" = OrderedDict()
         self._load_ghosts()
 
-        self.win_rates: Dict[str, List[float]] = {
-            self.SELF_PLAY: [],
-            self.BC_PLAYER: [],
-            self.EXPLOITERS: [],
-            self.GHOSTS: [],
-            self.MAX_DAMAGE: [],
-            self.RANDOM_BASELINE: [],
-            self.MAX_BASE_POWER_BASELINE: [],
-            self.SIMPLE_HEURISTIC_BASELINE: [],
-            self.VGC_BENCH_BASELINE: [],
-            self.TRAIN_EXPLOITER: [],
-        }
-        self.win_rate_tracking: Dict[str, deque[float]] = {
-            opp_type: deque(maxlen=self.tracking_window) for opp_type in self.win_rates
-        }
-        self.battle_length_tracking: Dict[str, deque[int]] = {
-            opp_type: deque(maxlen=self.tracking_window) for opp_type in self.win_rates
-        }
+        self.win_rates: Dict[str, List[float]] = defaultdict(
+            list,
+            {
+                OpponentPool.SELF_PLAY: [],
+                OpponentPool.BC_PLAYER: [],
+                OpponentPool.EXPLOITERS: [],
+                OpponentPool.GHOSTS: [],
+                OpponentPool.MAX_DAMAGE: [],
+                OpponentPool.RANDOM_BASELINE: [],
+                OpponentPool.MAX_BASE_POWER_BASELINE: [],
+                OpponentPool.SIMPLE_HEURISTIC_BASELINE: [],
+                OpponentPool.VGC_BENCH_BASELINE: [],
+                OpponentPool.TRAIN_EXPLOITER: [],
+            },
+        )
+        self.win_rate_tracking: Dict[str, deque[float]] = defaultdict(
+            lambda: deque(maxlen=self.tracking_window),
+            {opp_type: deque(maxlen=self.tracking_window) for opp_type in self.win_rates},
+        )
+        self.battle_length_tracking: Dict[str, deque[int]] = defaultdict(
+            lambda: deque(maxlen=self.tracking_window),
+            {opp_type: deque(maxlen=self.tracking_window) for opp_type in self.win_rates},
+        )
         self.total_battles_tracked = 0
         self.total_forfeits_tracked = 0
 
-    def _normalize_curriculum(self, curriculum: Dict[str, float]) -> Dict[str, float]:
-        total = float(sum(curriculum.values()))
-        if total <= 0:
-            return {self.SELF_PLAY: 1.0}
-        return {key: value / total for key, value in curriculum.items()}
-
     def _opponent_available(self, opponent_type: str) -> bool:
-        if opponent_type == self.BC_PLAYER:
+        if opponent_type == OpponentPool.BC_PLAYER:
             return self.bc_model_path is not None
-        if opponent_type == self.EXPLOITERS:
-            return len(self.exploiter_models) > 0
-        if opponent_type == self.GHOSTS:
-            return len(self.ghosts) > 0
+        if opponent_type == OpponentPool.EXPLOITERS:
+            return len(self.slot_for_exploiter_path) > 0
+        if opponent_type == OpponentPool.GHOSTS:
+            return len(self.slot_for_ghost_path) > 0
         return True
 
-    def _ensure_tracking_key(self, opponent_type: str) -> None:
-        if opponent_type not in self.win_rate_tracking:
-            self.win_rate_tracking[opponent_type] = deque(maxlen=self.tracking_window)
-        if opponent_type not in self.battle_length_tracking:
-            self.battle_length_tracking[opponent_type] = deque(maxlen=self.tracking_window)
-        if opponent_type not in self.win_rates:
-            self.win_rates[opponent_type] = []
+    @staticmethod
+    def _add_to_slot_pool(
+        pool: "OrderedDict[str, int]", filepath: str, max_size: int
+    ) -> None:
+        """Register `filepath` in a slot pool with stable slot IDs.
 
-    def _preload_bc_model(self):
-        if not self.bc_model_path:
+        Insertion order is the eviction queue: re-adding a known path is a
+        no-op (keeps its slot and FIFO position); a new path takes the next
+        free slot, or recycles the slot of the longest-resident entry when
+        the pool is full. Workers reference slots by integer in their
+        inference bundle (`ghost_<slot>` / `exploiter_snap_<slot>`), so
+        stability minimizes weight reloads on eviction.
+        """
+        if filepath in pool:
             return
-
-        from elitefurretai.etl.embedder import Embedder
-        from elitefurretai.rl.learners import build_model_from_config
-
-        filepath = self.bc_model_path
-        logger.info("Pre-loading BC model from %s...", filepath)
-
-        checkpoint = torch.load(filepath, map_location=self.device)
-        config = checkpoint["config"]
-
-        embedder = Embedder(
-            format=self.battle_format,
-            feature_set=config.get("embedder_feature_set", "raw"),
-            omniscient=False,
-        )
-
-        model = build_model_from_config(
-            config, embedder, self.device, checkpoint["model_state_dict"]
-        )
-        model.eval()
-
-        self._cached_bc_model = model
-        self._cached_bc_embedder = embedder
-        self._cached_bc_config = config
-
-        logger.info("BC model cached (saves ~500MB per BCPlayer instance)")
-
-    def _list_model_checkpoints(self, directory: str) -> List[str]:
-        if not os.path.exists(directory):
-            return []
-        return [
-            os.path.join(directory, filename)
-            for filename in os.listdir(directory)
-            if filename.endswith(".pt")
-        ]
+        if len(pool) < max_size:
+            slot = len(pool)
+        else:
+            _, slot = pool.popitem(last=False)
+        pool[filepath] = slot
 
     def _load_exploiter_models(self) -> None:
-        files = self._list_model_checkpoints(self.exploiter_models_dir)
-        models = [
-            (os.path.getmtime(filepath), filepath)
-            for filepath in files
-            if os.path.isfile(filepath)
-        ]
-        models.sort(key=lambda item: item[0], reverse=True)
-        self.exploiter_models = models[: self.max_exploiter_models]
-        # Assign slots in oldest-first order (slot 0 = oldest = first to
-        # be evicted by LRU). `self.exploiter_models` is sorted newest-first
-        # by mtime, so iterate in reverse for slot assignment.
-        self.slot_for_exploiter_path = {}
-        self._exploiter_slot_lru = []
-        for slot, (_, path) in enumerate(reversed(self.exploiter_models)):
-            self.slot_for_exploiter_path[path] = slot
-            self._exploiter_slot_lru.append(slot)
+        files = list_pt_files(self.exploiter_models_dir)
+        models = sorted(
+            ((os.path.getmtime(fp), fp) for fp in files if os.path.isfile(fp)),
+            reverse=True,
+        )[: self.max_exploiter_models]
+        # Insert oldest-first so slot 0 = oldest = first to evict.
+        self.slot_for_exploiter_path.clear()
+        for _, path in reversed(models):
+            self._add_to_slot_pool(
+                self.slot_for_exploiter_path, path, self.max_exploiter_models
+            )
 
     def _load_ghosts(self) -> None:
-        files = self._list_model_checkpoints(self.ghosts_dir)
+        files = list_pt_files(self.ghosts_dir)
         models: List[Tuple[int, str]] = []
         for filepath in files:
             filename = os.path.basename(filepath)
@@ -321,52 +246,28 @@ class OpponentPool:
                 step = int(os.path.getmtime(filepath))
             models.append((step, filepath))
 
-        models.sort(key=lambda item: item[0], reverse=True)
-        self.ghosts = models[: self.max_ghosts]
-        # Assign slots in oldest-first order (slot 0 = oldest = first to
-        # be evicted by LRU). `self.ghosts` is sorted newest-first, so
-        # iterate in reverse for slot assignment.
-        self.slot_for_ghost_path = {}
-        self._slot_lru = []
-        for slot, (_, path) in enumerate(reversed(self.ghosts)):
-            self.slot_for_ghost_path[path] = slot
-            self._slot_lru.append(slot)
+        models.sort(reverse=True)
+        models = models[: self.max_ghosts]
+        # Insert oldest-first so slot 0 = oldest = first to evict.
+        self.slot_for_ghost_path.clear()
+        for _, path in reversed(models):
+            self._add_to_slot_pool(self.slot_for_ghost_path, path, self.max_ghosts)
 
-    def add_ghost(self, step: int, filepath: str):
-        # Determine slot: reuse if path already known, else allocate
-        # next free or evict LRU.
-        if filepath in self.slot_for_ghost_path:
-            slot = self.slot_for_ghost_path[filepath]
-        elif len(self._slot_lru) < self.max_ghosts:
-            slot = len(self._slot_lru)
-            self._slot_lru.append(slot)
-        else:
-            # Evict the LRU slot. Find which path currently holds it,
-            # drop the mapping, and reuse the slot for the new path.
-            slot = self._slot_lru.pop(0)
-            evicted_path = next(
-                p for p, s in self.slot_for_ghost_path.items() if s == slot
-            )
-            del self.slot_for_ghost_path[evicted_path]
-            self._slot_lru.append(slot)
-        self.slot_for_ghost_path[filepath] = slot
-
-        self.ghosts.append((step, filepath))
-        self.ghosts.sort(key=lambda x: x[0], reverse=True)
-        self.ghosts = self.ghosts[: self.max_ghosts]
+    def add_ghost(self, filepath: str) -> None:
+        self._add_to_slot_pool(self.slot_for_ghost_path, filepath, self.max_ghosts)
 
     def active_ghost_slots(self) -> Set[int]:
         """Slots currently populated with real ghost weights."""
-        return set(self._slot_lru)
+        return set(self.slot_for_ghost_path.values())
 
-    def add_exploiter(self, filepath: str):
+    def add_exploiter(self, filepath: str) -> None:
         """Register a newly-graduated exploiter snapshot.
 
         Used by the in-process exploiter pipeline (train.py): after an
         exploiter generation graduates and its weights are saved to disk,
         this records the file in the pool so the next broadcast's
-        `exploiter_paths` key includes it. Sorted by mtime descending so
-        the newest snapshots stay if we exceed `max_exploiter_models`.
+        `exploiter_paths` key includes it. Eviction is FIFO by registration
+        order — the longest-resident snapshot loses its slot when full.
 
         Mirrors `add_ghost` for symmetry. The startup-only directory scan
         in `_load_exploiter_models` still handles initial population
@@ -374,30 +275,13 @@ class OpponentPool:
         """
         if not os.path.isfile(filepath):
             return
-
-        # Determine slot: reuse if path known, else allocate next free
-        # or evict LRU. Mirrors add_ghost.
-        if filepath in self.slot_for_exploiter_path:
-            slot = self.slot_for_exploiter_path[filepath]
-        elif len(self._exploiter_slot_lru) < self.max_exploiter_models:
-            slot = len(self._exploiter_slot_lru)
-            self._exploiter_slot_lru.append(slot)
-        else:
-            slot = self._exploiter_slot_lru.pop(0)
-            evicted_path = next(
-                p for p, s in self.slot_for_exploiter_path.items() if s == slot
-            )
-            del self.slot_for_exploiter_path[evicted_path]
-            self._exploiter_slot_lru.append(slot)
-        self.slot_for_exploiter_path[filepath] = slot
-
-        self.exploiter_models.append((os.path.getmtime(filepath), filepath))
-        self.exploiter_models.sort(key=lambda x: x[0], reverse=True)
-        self.exploiter_models = self.exploiter_models[: self.max_exploiter_models]
+        self._add_to_slot_pool(
+            self.slot_for_exploiter_path, filepath, self.max_exploiter_models
+        )
 
     def active_exploiter_slots(self) -> Set[int]:
         """Slots currently populated with real exploiter snapshot weights."""
-        return set(self._exploiter_slot_lru)
+        return set(self.slot_for_exploiter_path.values())
 
     def record_battle_result(
         self,
@@ -406,8 +290,6 @@ class OpponentPool:
         battle_length: int = 0,
         forfeited: bool = False,
     ) -> None:
-        self._ensure_tracking_key(opponent_type)
-
         win_value = 1.0 if won else 0.0
         self.win_rates[opponent_type].append(win_value)
         self.win_rate_tracking[opponent_type].append(win_value)
@@ -418,10 +300,6 @@ class OpponentPool:
         self.total_battles_tracked += 1
         if forfeited:
             self.total_forfeits_tracked += 1
-
-    def update_win_rate(self, opponent_type: str, won: bool) -> None:
-        """Backward-compatible wrapper used by older tests and callers."""
-        self.record_battle_result(opponent_type=opponent_type, won=won)
 
     def get_win_rate_stats(self, window: int = 100) -> Dict[str, float]:
         stats: Dict[str, float] = {}
@@ -543,12 +421,12 @@ class OpponentPool:
 
         # Keep explicit anchor exposure to avoid forgetting and mode collapse.
         floors: Dict[str, float] = {}
-        if self._opponent_available(self.SELF_PLAY):
-            floors[self.SELF_PLAY] = 0.20
-        if self._opponent_available(self.BC_PLAYER):
-            floors[self.BC_PLAYER] = 0.10
-        if self._opponent_available(self.GHOSTS):
-            floors[self.GHOSTS] = 0.10
+        if self._opponent_available(OpponentPool.SELF_PLAY):
+            floors[OpponentPool.SELF_PLAY] = 0.20
+        if self._opponent_available(OpponentPool.BC_PLAYER):
+            floors[OpponentPool.BC_PLAYER] = 0.10
+        if self._opponent_available(OpponentPool.GHOSTS):
+            floors[OpponentPool.GHOSTS] = 0.10
 
         floor_sum = sum(floors.values())
         if floor_sum > 0.95:
@@ -573,8 +451,8 @@ class OpponentPool:
                 for opp_type in base
                 if self._opponent_available(opp_type)
             }
-            if self.SELF_PLAY not in new_curriculum:
-                new_curriculum[self.SELF_PLAY] = 1.0
+            if OpponentPool.SELF_PLAY not in new_curriculum:
+                new_curriculum[OpponentPool.SELF_PLAY] = 1.0
         else:
             new_curriculum = {}
             for opp_type in base:
@@ -585,7 +463,7 @@ class OpponentPool:
                 new_curriculum[opp_type] = floor + (remaining_mass * residual)
 
             # Final normalization protects against drift from rounding and availability gating.
-        self.curriculum = self._normalize_curriculum(new_curriculum)
+        self.curriculum = normalize_curriculum(new_curriculum)
 
 
 class WorkerOpponentFactory:
@@ -615,126 +493,60 @@ class WorkerOpponentFactory:
     factory_tag + rebuild_generation. See its docstring for the gory details.
     """
 
-    SELF_PLAY = "self_play"
-    BC_PLAYER = "bc_player"
-    EXPLOITERS = "exploiters"
-    GHOSTS = "ghosts"
-    MAX_DAMAGE = "max_damage"
-    RANDOM_BASELINE = "random_baseline"
-    MAX_BASE_POWER_BASELINE = "max_base_power_baseline"
-    SIMPLE_HEURISTIC_BASELINE = "simple_heuristic_baseline"
-    VGC_BENCH_BASELINE = "vgc_bench_baseline"
-    # Exploiter-vs-victim battles whose trajectories train the in-process
-    # exploiter learner. Distinct from EXPLOITERS (main fights frozen
-    # exploiter snapshots from disk).
-    TRAIN_EXPLOITER = "train_exploiter"
-
     def __init__(
         self,
         team_repo: TeamRepo,
         battle_format: str,
         team_subdirectory: Optional[str],
         server_config: ServerConfiguration,
-        main_agent: Optional[RNaDAgent],
-        bc_agent: Optional[RNaDAgent],
         curriculum: Optional[Dict[str, float]],
         embedder: Embedder,
         worker_id: int,
         run_id: str,
-        device: str,
-        batch_size: int = 16,
-        batch_timeout: float = 0.01,
+        worker_inference_clients: WorkerInferenceClients,
         max_battle_steps: int = 40,
-        vgc_bench_checkpoint_path: Optional[str] = None,
         external_vgcbench_usernames: Optional[List[str]] = None,
-        model_config: Optional[Dict[str, Any]] = None,
         agent_team_path: Optional[str] = None,
-        exploiter_agent: Optional[RNaDAgent] = None,
-        victim_agent: Optional[RNaDAgent] = None,
         max_concurrent_battles_per_player: Optional[int] = None,
-        # Centralized inference: when set, the factory wires
-        # BatchInferencePlayers to submit through the trainer-side
-        # InferenceService instead of holding a model copy. `main_agent`
-        # may be None when this is set.
-        main_inference_client: Optional["InferenceClient"] = None,
-        # Full bundle of inference clients (one per registered model
-        # name in the trainer's ModelRegistry). When set, takes
-        # precedence over the singular `main_inference_client` —
-        # `configure_opponent_for_batch` uses bundle.get("main") /
-        # bundle.get("bc") / etc. to hot-swap opponent.inference_client
-        # per curriculum pick. `main_inference_client` is retained as
-        # a fallback for callers that haven't been updated to the
-        # bundle interface.
-        worker_inference_clients: Optional["WorkerInferenceClients"] = None,
     ):
-        if main_agent is None and main_inference_client is None:
-            raise ValueError(
-                "WorkerOpponentFactory requires either main_agent (legacy "
-                "per-player inference) or main_inference_client (centralized)"
-            )
         self.team_repo = team_repo
         self.battle_format = battle_format
         self.team_subdirectory = team_subdirectory
         self.server_config = server_config
-        self.main_agent = main_agent
-        # The bundle is the source of truth in centralized mode (step 3+).
-        # `main_inference_client` is kept as a back-compat fallback for
-        # callers that haven't switched to the bundle interface.
         self.worker_inference_clients = worker_inference_clients
-        self.main_inference_client = main_inference_client
-        self.bc_agent = bc_agent
-        # poke-env Player's `max_concurrent_battles` kwarg. None preserves
-        # the library default of 1. See Track C in
-        # planning/stage2/2026-05-12-09-30-second-wsl-crash-and-watchdog.md.
         self.max_concurrent_battles_per_player = max_concurrent_battles_per_player
-        # Co-training agents (None until train_exploiter > 0). exploiter_agent
-        # is the live policy being optimized to beat main; victim_agent is a
-        # frozen, periodically-refreshed copy of main that the exploiter
-        # trains against. Both are CPU model copies in the worker — main
-        # process owns the GPU originals and broadcasts state_dicts.
-        self.exploiter_agent = exploiter_agent
-        self.victim_agent = victim_agent
-        self.curriculum = curriculum or {self.SELF_PLAY: 1.0}
+        self.curriculum = curriculum or {OpponentPool.SELF_PLAY: 1.0}
         self.embedder = embedder
         self.worker_id = worker_id
         self.run_id = run_id
-        self.device = device
-        self.batch_size = batch_size
-        self.batch_timeout = batch_timeout
         self.max_battle_steps = max_battle_steps
-        self.vgc_bench_checkpoint_path = vgc_bench_checkpoint_path
-        self.model_config = model_config
-        self.agent_team_path = agent_team_path
-        self._agent_team_string: Optional[str] = None
-        self._agent_team_strings: Optional[List[str]] = None
+        self._agent_teams: List[str] = []
         if agent_team_path:
             if os.path.isdir(agent_team_path):
-                self._agent_team_strings = []
                 for fname in sorted(os.listdir(agent_team_path)):
                     if fname.endswith(".txt"):
                         with open(os.path.join(agent_team_path, fname)) as f:
-                            self._agent_team_strings.append(f.read())
+                            self._agent_teams.append(f.read())
                 logger.info(
                     "Loaded %d agent teams from directory %s",
-                    len(self._agent_team_strings),
+                    len(self._agent_teams),
                     agent_team_path,
                 )
             else:
                 with open(agent_team_path) as f:
-                    self._agent_team_string = f.read()
+                    self._agent_teams.append(f.read())
         self.external_vgcbench_usernames = [
             username.strip()
             for username in (external_vgcbench_usernames or [])
             if username and username.strip()
         ]
 
-        self.players: List[BatchInferencePlayer] = []
-        self.opponents: List[BatchInferencePlayer] = []
+        self.players: List[RLTrajectoryPlayer] = []
+        self.opponents: List[RLTrajectoryPlayer] = []
         self.max_damage_opponents: List[MaxDamagePlayer] = []
         self.random_baseline_opponents: List[RandomPlayer] = []
         self.max_base_power_baseline_opponents: List[MaxBasePowerPlayer] = []
         self.simple_heuristic_baseline_opponents: List[Player] = []
-        self.vgc_bench_baseline_opponents: List[Player] = []
         self._active_ghost_slots: Set[int] = set()
         self._active_exploiter_slots: Set[int] = set()
         self._batch_count = 0
@@ -752,50 +564,23 @@ class WorkerOpponentFactory:
     def _account_name(self, role: str, idx: int) -> str:
         """Create compact, rebuild-unique account names.
 
-        Why: the previous naming scheme reused identical usernames during rebuilds,
-        which produced `|nametaken|` errors and prevented worker recovery.
+        Format: `{role}{worker:02X}{idx:02X}{run_tag}{factory_tag}{gen:02X}`,
+        e.g. `MaxD0100000A3B43AF`. Role token leads so the player type is
+        visible at a glance in the Showdown UI; the trailing tokens
+        guarantee uniqueness across workers, indices, runs, and rebuilds
+        (`|nametaken|` errors from reused names prevented worker recovery
+        before this scheme).
         """
         worker_token = f"{self.worker_id % 256:02X}"
         idx_token = f"{idx % 256:02X}"
         gen_token = f"{self._rebuild_generation % 256:02X}"
-        return f"M{worker_token}{role}{idx_token}{self._run_tag}{self._factory_tag}{gen_token}"
+        return (
+            f"{role}{worker_token}{idx_token}{self._run_tag}{self._factory_tag}{gen_token}"
+        )
 
     def update_curriculum(self, curriculum: Dict[str, float]) -> None:
         """Update worker-local curriculum and refresh dependent opponent pools."""
-        total = float(sum(curriculum.values()))
-        if total <= 0:
-            self.curriculum = {self.SELF_PLAY: 1.0}
-        else:
-            self.curriculum = {
-                key: float(value) / total for key, value in curriculum.items() if value > 0
-            }
-            if not self.curriculum:
-                self.curriculum = {self.SELF_PLAY: 1.0}
-
-        # Important: do NOT recreate baseline/max-damage opponent clients here.
-        # Why: curriculum updates can happen repeatedly at runtime (including local
-        # vgc-bench disable fallbacks). Recreating players with the same generation
-        # can trigger duplicate login attempts and `|nametaken|` collisions.
-        # Existing baseline pools are kept alive; sampling already follows the new
-        # probabilities in `self.curriculum`.
-
-    def _list_model_checkpoints(self, directory: Optional[str]) -> List[str]:
-        if not directory or not os.path.exists(directory):
-            return []
-        model_paths = [
-            os.path.join(directory, filename)
-            for filename in os.listdir(directory)
-            if filename.endswith(".pt")
-        ]
-        if not self.model_config:
-            return model_paths
-
-        compatible_paths: List[str] = []
-        for model_path in model_paths:
-            if is_checkpoint_compatible_with_model_config(model_path, self.model_config):
-                compatible_paths.append(model_path)
-
-        return compatible_paths
+        self.curriculum = normalize_curriculum(curriculum)
 
     def set_active_ghost_slots(self, slots: List[int]) -> None:
         """Update the set of populated ghost slots from a trainer broadcast.
@@ -803,7 +588,7 @@ class WorkerOpponentFactory:
         Workers use this to know which `ghost_<slot>` clients in the
         inference bundle correspond to real ghost weights vs placeholders.
         Only slots in this set are valid targets for GHOSTS opponent
-        routing in `configure_opponent_for_batch`.
+        routing in `apply_opp_type_to_pair`.
         """
         self._active_ghost_slots = set(slots)
 
@@ -815,26 +600,6 @@ class WorkerOpponentFactory:
         """
         self._active_exploiter_slots = set(slots)
 
-    def update_exploiter_weights(self, state_dict: Dict) -> None:
-        """Apply broadcasted exploiter weights to the worker-local exploiter agent.
-
-        No-op if `exploiter_agent` is None (co-training disabled). Loading is
-        in-place so any BatchInferencePlayer holding a reference to the same
-        nn.Module picks up the new weights without rewiring.
-        """
-        if self.exploiter_agent is not None:
-            self.exploiter_agent.model.load_state_dict(state_dict)
-
-    def update_victim_weights(self, state_dict: Dict) -> None:
-        """Apply broadcasted victim weights to the worker-local victim agent.
-
-        Refreshed less frequently than exploiter weights (typically every
-        `victim_refresh_interval` main updates) — the victim is the
-        stationary target the exploiter optimizes against.
-        """
-        if self.victim_agent is not None:
-            self.victim_agent.model.load_state_dict(state_dict)
-
     def sample_team(self) -> str:
         return self.team_repo.sample_team(
             self.battle_format,
@@ -842,30 +607,60 @@ class WorkerOpponentFactory:
         )
 
     def get_agent_team(self) -> str:
-        """Return the agent's team, shuffled. Uses fixed team if agent_team_path is set.
-
-        If agent_team_path was a directory, samples randomly from all loaded teams.
+        """Return the agent's team, shuffled. Uses fixed team(s) if agent_team_path
+        is set; otherwise falls back to opponent-pool sampling.
         """
-        if self._agent_team_strings is not None:
-            team = random.choice(self._agent_team_strings)
-            return self.team_repo._shuffle_team_order(team)
-        if self._agent_team_string is not None:
-            return self.team_repo._shuffle_team_order(self._agent_team_string)
+        if self._agent_teams:
+            return self.team_repo._shuffle_team_order(random.choice(self._agent_teams))
         return self.sample_team()
 
-    def create_player_pairs(
+    def _make_baseline_pool(
+        self,
+        opp_type: str,
+        player_cls: Type[_P],
+        role: str,
+        num_opponents: int,
+    ) -> List[_P]:
+        """Create `num_opponents` of `player_cls` if `opp_type` has nonzero
+        curriculum weight at startup; otherwise return an empty list.
+
+        Pools are not backfilled when `update_curriculum` later raises a
+        weight from 0 — see the note in `update_curriculum` about
+        `|nametaken|` collisions on rebuild.
+        """
+        if self.curriculum.get(opp_type, 0) <= 0:
+            return []
+        return [
+            player_cls(
+                battle_format=self.battle_format,
+                account_configuration=AccountConfiguration(
+                    self._account_name(role, i), None
+                ),
+                server_configuration=self.server_config,
+                team=self.sample_team(),
+            )
+            for i in range(num_opponents)
+        ]
+
+    def create_agents(
         self,
         num_pairs: int,
         local_traj_queue: queue.Queue,
-    ) -> Tuple[List[BatchInferencePlayer], List[BatchInferencePlayer]]:
-        """Create mirrored player/opponent `BatchInferencePlayer` pairs.
+    ) -> Tuple[List[RLTrajectoryPlayer], List[RLTrajectoryPlayer], List[MaxDamagePlayer]]:
+        """Create and cache all worker-local battle participants.
 
-        Players collect trajectories (`trajectory_queue` attached); opponents do
-        not collect trajectories. Both are reused across batches.
+        Always builds `num_pairs` mirrored `RLTrajectoryPlayer` pairs:
+        players ship trajectories (`trajectory_queue` attached), opponents
+        do not. The opponent's `inference_client` is hot-swapped per
+        batch in `apply_opp_type_to_pair` to cover every neural opponent
+        type (self_play / bc / ghosts / exploiters / train_exploiter).
+
+        Heuristic baseline pools (`MaxDamage`, `Random`, `MaxBasePower`,
+        `SimpleHeuristic`) are each `num_pairs` long, created only when
+        the curriculum sampled them at startup. VGCBench is external —
+        workers `/challenge` the usernames in `external_vgcbench_usernames`
+        instead of holding local Player objects.
         """
-        self.players = []
-        self.opponents = []
-
         # Conditionally pass `max_concurrent_battles` so when the config
         # leaves it None we don't override poke-env's default of 1.
         extra_player_kwargs: Dict[str, Any] = {}
@@ -874,147 +669,68 @@ class WorkerOpponentFactory:
                 self.max_concurrent_battles_per_player
             )
 
-        # Centralized vs legacy: in centralized mode the player owns
-        # an `inference_client` and submits requests to the trainer-side
-        # InferenceService; in legacy mode it owns a model copy and runs
-        # its own inference loop. Same constructor accepts either.
-        # Prefer the bundle (worker_inference_clients.get("main")) so
-        # that the same player can be re-pointed at "bc" / ghost slots
-        # later by configure_opponent_for_batch.
-        main_client = self._resolve_centralized_client("main")
-        main_kwargs: Dict[str, Any]
-        if main_client is not None:
-            main_kwargs = {"inference_client": main_client}
-        else:
-            main_kwargs = {"model": self.main_agent}
+        # Centralized inference: the player owns an `inference_client` and
+        # submits requests to the trainer-side InferenceService. "main" is
+        # required; `apply_opp_type_to_pair` can later re-point the
+        # opponent at optional slots ("bc", ghost/exploiter) via .get().
+        main_kwargs: Dict[str, Any] = {
+            "inference_client": self.worker_inference_clients["main"]
+        }
 
+        self.players = []
+        self.opponents = []
         for i in range(num_pairs):
-            player = BatchInferencePlayer(
-                device=self.device,
-                batch_size=self.batch_size,
-                batch_timeout=self.batch_timeout,
-                account_configuration=AccountConfiguration(
-                    self._account_name("SF", i), None
-                ),
-                server_configuration=self.server_config,
-                trajectory_queue=local_traj_queue,
-                battle_format=self.battle_format,
-                team=self.get_agent_team(),
-                worker_id=self.worker_id,
-                embedder=self.embedder,
-                max_battle_steps=self.max_battle_steps,
-                opponent_type=self.SELF_PLAY,
-                **main_kwargs,
-                **extra_player_kwargs,
-            )
-            self.players.append(player)
-
-            opponent = BatchInferencePlayer(
-                device=self.device,
-                batch_size=self.batch_size,
-                batch_timeout=self.batch_timeout,
-                account_configuration=AccountConfiguration(
-                    self._account_name("OP", i), None
-                ),
-                server_configuration=self.server_config,
-                trajectory_queue=None,
-                battle_format=self.battle_format,
-                team=self.sample_team(),
-                worker_id=self.worker_id,
-                embedder=self.embedder,
-                max_battle_steps=self.max_battle_steps,
-                **main_kwargs,
-                **extra_player_kwargs,
-            )
-            self.opponents.append(opponent)
-
-        return self.players, self.opponents
-
-    def create_agents(
-        self,
-        num_pairs: int,
-        local_traj_queue: queue.Queue,
-    ) -> Tuple[
-        List[BatchInferencePlayer], List[BatchInferencePlayer], List[MaxDamagePlayer]
-    ]:
-        """Create and cache all worker-local battle participants.
-
-        This is the high-level setup entrypoint used by worker startup.
-        It creates training players/opponents and conditionally initializes
-        max-damage opponents based on curriculum.
-        """
-        self.create_player_pairs(num_pairs, local_traj_queue)
-        self.create_max_damage_opponents(num_pairs)
-        self.create_baseline_opponents(num_pairs)
-        return self.players, self.opponents, self.max_damage_opponents
-
-    def create_max_damage_opponents(self, num_opponents: int) -> List[MaxDamagePlayer]:
-        self.max_damage_opponents = []
-
-        if self.curriculum.get(self.MAX_DAMAGE, 0) > 0:
-            for i in range(num_opponents):
-                md_opponent = MaxDamagePlayer(
-                    battle_format=self.battle_format,
+            self.players.append(
+                RLTrajectoryPlayer(
                     account_configuration=AccountConfiguration(
-                        self._account_name("MD", i), None
+                        self._account_name("Self", i), None
                     ),
                     server_configuration=self.server_config,
+                    trajectory_queue=local_traj_queue,
+                    battle_format=self.battle_format,
+                    team=self.get_agent_team(),
+                    worker_id=self.worker_id,
+                    embedder=self.embedder,
+                    max_battle_steps=self.max_battle_steps,
+                    opponent_type=OpponentPool.SELF_PLAY,
+                    **main_kwargs,
+                    **extra_player_kwargs,
+                )
+            )
+            self.opponents.append(
+                RLTrajectoryPlayer(
+                    account_configuration=AccountConfiguration(
+                        self._account_name("Opp", i), None
+                    ),
+                    server_configuration=self.server_config,
+                    trajectory_queue=None,
+                    battle_format=self.battle_format,
                     team=self.sample_team(),
+                    worker_id=self.worker_id,
+                    embedder=self.embedder,
+                    max_battle_steps=self.max_battle_steps,
+                    **main_kwargs,
+                    **extra_player_kwargs,
                 )
-                self.max_damage_opponents.append(md_opponent)
+            )
 
-        return self.max_damage_opponents
+        self.max_damage_opponents = self._make_baseline_pool(
+            OpponentPool.MAX_DAMAGE, MaxDamagePlayer, "MaxD", num_pairs
+        )
+        self.random_baseline_opponents = self._make_baseline_pool(
+            OpponentPool.RANDOM_BASELINE, RandomPlayer, "Rand", num_pairs
+        )
+        self.max_base_power_baseline_opponents = self._make_baseline_pool(
+            OpponentPool.MAX_BASE_POWER_BASELINE, MaxBasePowerPlayer, "MaxB", num_pairs
+        )
+        self.simple_heuristic_baseline_opponents = self._make_baseline_pool(
+            OpponentPool.SIMPLE_HEURISTIC_BASELINE,
+            SimpleHeuristicsPlayer,
+            "Heur",
+            num_pairs,
+        )
 
-    def create_baseline_opponents(self, num_opponents: int) -> None:
-        self.random_baseline_opponents = []
-        self.max_base_power_baseline_opponents = []
-        self.simple_heuristic_baseline_opponents = []
-        self.vgc_bench_baseline_opponents = []
-
-        if self.curriculum.get(self.RANDOM_BASELINE, 0) > 0:
-            for i in range(num_opponents):
-                self.random_baseline_opponents.append(
-                    RandomPlayer(
-                        battle_format=self.battle_format,
-                        account_configuration=AccountConfiguration(
-                            self._account_name("RD", i), None
-                        ),
-                        server_configuration=self.server_config,
-                        team=self.sample_team(),
-                    )
-                )
-
-        if self.curriculum.get(self.MAX_BASE_POWER_BASELINE, 0) > 0:
-            for i in range(num_opponents):
-                self.max_base_power_baseline_opponents.append(
-                    MaxBasePowerPlayer(
-                        battle_format=self.battle_format,
-                        account_configuration=AccountConfiguration(
-                            self._account_name("MB", i), None
-                        ),
-                        server_configuration=self.server_config,
-                        team=self.sample_team(),
-                    )
-                )
-
-        if self.curriculum.get(self.SIMPLE_HEURISTIC_BASELINE, 0) > 0:
-            baseline_cls = SimpleHeuristicBaselineCls or MaxBasePowerPlayer
-            for i in range(num_opponents):
-                self.simple_heuristic_baseline_opponents.append(
-                    baseline_cls(
-                        battle_format=self.battle_format,
-                        account_configuration=AccountConfiguration(
-                            self._account_name("SH", i), None
-                        ),
-                        server_configuration=self.server_config,
-                        team=self.sample_team(),
-                    )
-                )
-
-        # vgc_bench_baseline opponents are not constructed in-process here.
-        # Workers reach them by `/challenge`-ing the usernames in
-        # `external_vgcbench_usernames`, populated by VGCBenchManager (see
-        # `prepare_batch_tasks` and `players.VGCBenchManager`).
+        return self.players, self.opponents, self.max_damage_opponents
 
     def sample_opponent_type(self) -> str:
         rand = random.random()
@@ -1025,126 +741,122 @@ class WorkerOpponentFactory:
             if rand < cumulative:
                 return opp_type
 
-        return self.SELF_PLAY
-
-    def _resolve_centralized_client(self, model_name: str) -> Optional["InferenceClient"]:
-        """Return the centralized InferenceClient for `model_name` if
-        available. Order of precedence:
-          1. `worker_inference_clients` bundle (step 3+ canonical path)
-          2. legacy single `main_inference_client` parameter (for "main"
-             only — kept so step 2 callers continue to work)
-          3. None — caller falls back to legacy `model = X` swap
-        """
-        if self.worker_inference_clients is not None and self.worker_inference_clients.has(
-            model_name
-        ):
-            return self.worker_inference_clients.get(model_name)
-        if model_name == "main" and self.main_inference_client is not None:
-            return self.main_inference_client
-        return None
+        return OpponentPool.SELF_PLAY
 
     def _swap_to(
         self,
-        slot: BatchInferencePlayer,
+        slot: RLTrajectoryPlayer,
         centralized_name: str,
     ) -> bool:
         """Re-point one player or opponent slot at a different model.
 
-        Centralized only: assign `slot.inference_client = clients.get(name)`.
-        Returns True if the named client is available, False otherwise
-        (caller should fall back to self-play / main).
+        Returns True if the named client is registered in the bundle,
+        False otherwise (caller should fall back to self-play / main).
         """
-        client = self._resolve_centralized_client(centralized_name)
-        if client is not None:
-            slot.inference_client = client
-            return True
-        return False
+        client = self.worker_inference_clients.get(centralized_name)
+        if client is None:
+            return False
+        slot.inference_client = client
+        return True
 
-    def configure_opponent_for_batch(
-        self,
-        player: BatchInferencePlayer,
-        opponent: BatchInferencePlayer,
-    ) -> str:
-        """Configure one pair for the next batch and return chosen type.
+    def sample_opp_type_for(self, player: RLTrajectoryPlayer) -> str:
+        """Sample an opponent type from the curriculum, resolve it against
+        currently-available pool state, and align `player.inference_client`.
 
-        - `max_damage` is handled by separate MaxDamagePlayer instances
-        - `bc_player` swaps opponent to the BC client (centralized) or
-          model (legacy)
-        - `train_exploiter` swaps player→exploiter, opponent→victim
-        - fallback is self-play against the main agent
+        Falls back to `SELF_PLAY` when:
+        - the sampled type is unrecognized (defensive guard),
+        - `EXPLOITERS` was sampled but no slots are populated,
+        - `GHOSTS` was sampled but no slots are populated, or
+        - `TRAIN_EXPLOITER` was sampled but no "exploiter" client is
+          registered in the worker's bundle.
 
-        In centralized mode (worker_inference_clients set), the swap
-        targets `slot.inference_client`; in legacy mode it targets
-        `slot.model`. `_swap_to` resolves which to use.
+        Aligns `player.inference_client` to the chosen type — "exploiter"
+        for `TRAIN_EXPLOITER` so the player's actions train the exploiter
+        learner; "main" for everything else. The reset runs every batch
+        (including heuristic and VGCBench) so a prior `TRAIN_EXPLOITER`
+        batch never leaks its "exploiter" client into a subsequent main
+        trajectory.
+
+        The opponent's client (BIP only) is handled separately by
+        `apply_opp_type_to_pair`.
         """
         selected_type = self.sample_opponent_type()
 
-        # Default: self-play. Each branch may override.
-        opponent_swapped = False
+        if selected_type not in OpponentPool.KNOWN_OPP_TYPES:
+            selected_type = OpponentPool.SELF_PLAY
+        elif selected_type == OpponentPool.EXPLOITERS and not self._active_exploiter_slots:
+            # Curriculum normally guards this via _opponent_available; this
+            # is the defensive fallback.
+            selected_type = OpponentPool.SELF_PLAY
+        elif selected_type == OpponentPool.GHOSTS and not self._active_ghost_slots:
+            selected_type = OpponentPool.SELF_PLAY
 
-        if selected_type == self.MAX_DAMAGE:
-            pass
-        elif selected_type == self.BC_PLAYER:
-            opponent_swapped = self._swap_to(opponent, "bc")
-            if not opponent_swapped:
-                selected_type = self.SELF_PLAY
-        elif selected_type == self.EXPLOITERS:
-            if not self._active_exploiter_slots:
-                # Curriculum sampled EXPLOITERS but no slots populated —
-                # fall back to self-play. The curriculum's
-                # _opponent_available guard should prevent this.
-                selected_type = self.SELF_PLAY
-            else:
-                slot = random.choice(tuple(self._active_exploiter_slots))
-                opponent_swapped = self._swap_to(opponent, f"exploiter_snap_{slot}")
-                if not opponent_swapped:
-                    selected_type = self.SELF_PLAY
-        elif selected_type == self.TRAIN_EXPLOITER:
-            # Exploiter (player) vs. frozen victim (opponent). Trajectory
-            # is tagged "train_exploiter" so the main process routes it
-            # to the exploiter learner instead of the main learner.
-            player_swapped = self._swap_to(player, "exploiter")
-            opponent_swapped = self._swap_to(opponent, "victim")
-            if not (player_swapped and opponent_swapped):
-                # Co-training agents not provisioned (e.g., curriculum
-                # slot ramped up before main process built them). Fall
-                # back to self-play; trajectory will be routed as main.
-                selected_type = self.SELF_PLAY
+        if selected_type == OpponentPool.TRAIN_EXPLOITER:
+            if not self._swap_to(player, "exploiter"):
+                # Co-training not provisioned (race during ramp-up). Fall
+                # back to self-play and reset player to main.
+                selected_type = OpponentPool.SELF_PLAY
                 self._swap_to(player, "main")
-        elif selected_type == self.GHOSTS:
-            if not self._active_ghost_slots:
-                # Curriculum sampled GHOSTS but no slots are populated —
-                # treat as a desync bug and fall back to self-play loudly
-                # via the standard path. (The curriculum's
-                # _opponent_available guard should prevent this.)
-                selected_type = self.SELF_PLAY
-            else:
-                slot = random.choice(tuple(self._active_ghost_slots))
-                opponent_swapped = self._swap_to(opponent, f"ghost_{slot}")
-                if not opponent_swapped:
-                    selected_type = self.SELF_PLAY
         else:
-            if selected_type not in (
-                self.SELF_PLAY,
-                self.MAX_DAMAGE,
-                self.RANDOM_BASELINE,
-                self.MAX_BASE_POWER_BASELINE,
-                self.SIMPLE_HEURISTIC_BASELINE,
-                self.VGC_BENCH_BASELINE,
-            ):
-                selected_type = self.SELF_PLAY
-
-        # If we fell back to self-play (or were self-play to begin
-        # with), or the chosen branch didn't swap the opponent, point
-        # opponent at main.
-        if not opponent_swapped:
-            self._swap_to(opponent, "main")
+            self._swap_to(player, "main")
 
         player.opponent_type = selected_type
         return selected_type
 
-    # TODO: might want to bring this back into train.py -- seems like train.py should
-    # decide who to battle when
+    def apply_opp_type_to_pair(
+        self,
+        player: RLTrajectoryPlayer,
+        opponent: RLTrajectoryPlayer,
+        opp_type: str,
+    ) -> str:
+        """Re-point the BIP opponent's inference client to match
+        `opp_type`. Called only for opp types that battle the BIP
+        opponent pool (`SELF_PLAY` / `BC_PLAYER` / `EXPLOITERS` /
+        `GHOSTS` / `TRAIN_EXPLOITER`). Heuristic and VGCBench types
+        don't use the BIP so they skip this step.
+
+        The player's client is already aligned by `sample_opp_type_for`;
+        this method only touches the player on a TRAIN_EXPLOITER opponent
+        fall-back, where the victim client is missing and we revert the
+        player from "exploiter" back to "main".
+
+        May fall back to `SELF_PLAY` if a swap target client is missing
+        from the worker's bundle. Updates `player.opponent_type` on fall
+        back; returns the final opp type.
+        """
+        final_type = opp_type
+        opponent_swapped = False
+
+        if opp_type == OpponentPool.BC_PLAYER:
+            opponent_swapped = self._swap_to(opponent, "bc")
+            if not opponent_swapped:
+                final_type = OpponentPool.SELF_PLAY
+        elif opp_type == OpponentPool.EXPLOITERS:
+            slot = random.choice(tuple(self._active_exploiter_slots))
+            opponent_swapped = self._swap_to(opponent, f"exploiter_snap_{slot}")
+            if not opponent_swapped:
+                final_type = OpponentPool.SELF_PLAY
+        elif opp_type == OpponentPool.GHOSTS:
+            slot = random.choice(tuple(self._active_ghost_slots))
+            opponent_swapped = self._swap_to(opponent, f"ghost_{slot}")
+            if not opponent_swapped:
+                final_type = OpponentPool.SELF_PLAY
+        elif opp_type == OpponentPool.TRAIN_EXPLOITER:
+            opponent_swapped = self._swap_to(opponent, "victim")
+            if not opponent_swapped:
+                # No "victim" client. Player was set to "exploiter" by
+                # sample_opp_type_for; revert to "main" for the SELF_PLAY
+                # fall-back so the trajectory routes as main correctly.
+                final_type = OpponentPool.SELF_PLAY
+                self._swap_to(player, "main")
+
+        if not opponent_swapped:
+            self._swap_to(opponent, "main")
+
+        if final_type != opp_type:
+            player.opponent_type = final_type
+        return final_type
+
     def prepare_batch_tasks(
         self,
         num_battles_per_pair: int,
@@ -1162,59 +874,63 @@ class WorkerOpponentFactory:
         batch_opponent_types: List[str] = []
 
         for i, player in enumerate(self.players):
-            opponent = self.opponents[i]
-            opp_type = self.configure_opponent_for_batch(player, opponent)
-            batch_opponent_types.append(opp_type)
+            opp_type = self.sample_opp_type_for(player)
 
-            if opp_type == self.VGC_BENCH_BASELINE and self.external_vgcbench_usernames:
+            if (
+                opp_type == OpponentPool.VGC_BENCH_BASELINE
+                and self.external_vgcbench_usernames
+            ):
                 username = self.external_vgcbench_usernames[
                     (self._batch_count + i) % len(self.external_vgcbench_usernames)
                 ]
-                tasks.append(
-                    player.send_challenges(
-                        username,
-                        num_battles_per_pair,
-                    )
-                )
-                continue
-
-            target_opponent: Player
-
-            if opp_type == self.MAX_DAMAGE and self.max_damage_opponents:
+                task = player.send_challenges(username, num_battles_per_pair)
+            elif opp_type == OpponentPool.MAX_DAMAGE and self.max_damage_opponents:
                 target_opponent = self.max_damage_opponents[
                     i % len(self.max_damage_opponents)
                 ]
-            elif opp_type == self.RANDOM_BASELINE and self.random_baseline_opponents:
+                task = player.battle_against(
+                    target_opponent, n_battles=num_battles_per_pair
+                )
+            elif (
+                opp_type == OpponentPool.RANDOM_BASELINE and self.random_baseline_opponents
+            ):
                 target_opponent = self.random_baseline_opponents[
                     i % len(self.random_baseline_opponents)
                 ]
+                task = player.battle_against(
+                    target_opponent, n_battles=num_battles_per_pair
+                )
             elif (
-                opp_type == self.MAX_BASE_POWER_BASELINE
+                opp_type == OpponentPool.MAX_BASE_POWER_BASELINE
                 and self.max_base_power_baseline_opponents
             ):
                 target_opponent = self.max_base_power_baseline_opponents[
                     i % len(self.max_base_power_baseline_opponents)
                 ]
+                task = player.battle_against(
+                    target_opponent, n_battles=num_battles_per_pair
+                )
             elif (
-                opp_type == self.SIMPLE_HEURISTIC_BASELINE
+                opp_type == OpponentPool.SIMPLE_HEURISTIC_BASELINE
                 and self.simple_heuristic_baseline_opponents
             ):
                 target_opponent = self.simple_heuristic_baseline_opponents[
                     i % len(self.simple_heuristic_baseline_opponents)
                 ]
-            elif opp_type == self.VGC_BENCH_BASELINE and self.vgc_bench_baseline_opponents:
-                target_opponent = self.vgc_bench_baseline_opponents[
-                    i % len(self.vgc_bench_baseline_opponents)
-                ]
-            else:
-                target_opponent = opponent
-
-            tasks.append(
-                player.battle_against(
-                    target_opponent,
-                    n_battles=num_battles_per_pair,
+                task = player.battle_against(
+                    target_opponent, n_battles=num_battles_per_pair
                 )
-            )
+            else:
+                # Neural opp type (SELF_PLAY / BC / EXPLOITERS / GHOSTS /
+                # TRAIN_EXPLOITER). Configure the BIP opponent's inference
+                # client and battle it; `apply_opp_type_to_pair` may
+                # further fall back to SELF_PLAY if a client is missing.
+                opponent = self.opponents[i]
+                opp_type = self.apply_opp_type_to_pair(player, opponent, opp_type)
+                task = player.battle_against(opponent, n_battles=num_battles_per_pair)
+
+            batch_opponent_types.append(opp_type)
+            tasks.append(task)
 
         return tasks, batch_opponent_types
 
@@ -1242,13 +958,6 @@ class WorkerOpponentFactory:
         for heuristic_opp in self.simple_heuristic_baseline_opponents:
             heuristic_opp._team = ConstantTeambuilder(self.sample_team())
 
-        for vgc_opp in self.vgc_bench_baseline_opponents:
-            vgc_opp._team = ConstantTeambuilder(self.sample_team())
-
-    def start_inference_loops(self) -> None:
-        for player in self.players + self.opponents:
-            player.start_inference_loop()
-
     def teardown_runtime_agents(self) -> None:
         """Best-effort teardown of all worker-local players/opponents.
 
@@ -1269,7 +978,6 @@ class WorkerOpponentFactory:
             + self.random_baseline_opponents
             + self.max_base_power_baseline_opponents
             + self.simple_heuristic_baseline_opponents
-            + self.vgc_bench_baseline_opponents
         ):
             stop_fn = getattr(participant, "stop_listening", None)
             if stop_fn is None:
@@ -1312,32 +1020,6 @@ class WorkerOpponentFactory:
             "by_player": by_player,
         }
 
-    def get_runtime_diagnostics(self) -> Dict[str, Dict[str, float]]:
-        def aggregate(participants: List[Any]) -> Dict[str, float]:
-            aggregated: Dict[str, float] = {}
-            for participant in participants:
-                snapshot_fn = getattr(participant, "get_diagnostics_snapshot", None)
-                if snapshot_fn is None:
-                    continue
-                snapshot = snapshot_fn()
-                if not isinstance(snapshot, dict):
-                    continue
-                for key, value in snapshot.items():
-                    aggregated[key] = aggregated.get(key, 0.0) + float(value)
-            return aggregated
-
-        players_diag = aggregate(self.players)
-        opponents_diag = aggregate(self.opponents)
-        combined = dict(players_diag)
-        for key, value in opponents_diag.items():
-            combined[key] = combined.get(key, 0.0) + value
-
-        return {
-            "players": players_diag,
-            "opponents": opponents_diag,
-            "combined": combined,
-        }
-
     def rebuild_runtime_agents(self, local_traj_queue: queue.Queue) -> None:
         """Rebuild player/opponent runtime state after websocket/battle desync.
 
@@ -1365,7 +1047,6 @@ class WorkerOpponentFactory:
         self.random_baseline_opponents.clear()
         self.max_base_power_baseline_opponents.clear()
         self.simple_heuristic_baseline_opponents.clear()
-        self.vgc_bench_baseline_opponents.clear()
 
         # Force a GC cycle to reclaim memory from the old objects.
         gc.collect()
@@ -1374,7 +1055,6 @@ class WorkerOpponentFactory:
         self._rebuild_generation += 1
 
         self.create_agents(num_pairs, local_traj_queue)
-        self.start_inference_loops()
 
     def reset_all_battles(self) -> None:
         """Clear per-battle runtime state after a batch completes."""
@@ -1406,13 +1086,8 @@ class WorkerOpponentFactory:
         for heuristic_opp in self.simple_heuristic_baseline_opponents:
             heuristic_opp.reset_battles()
 
-        for vgc_opp in self.vgc_bench_baseline_opponents:
-            vgc_opp.reset_battles()
-
 
 __all__ = [
     "OpponentPool",
     "WorkerOpponentFactory",
-    "build_model_from_config",
-    "load_model_from_checkpoint",
 ]

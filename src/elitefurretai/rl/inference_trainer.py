@@ -12,7 +12,7 @@ process and the service is constructed by passing a handler to it:
       Handles `EvictRequest` inline.
   - `RealModelBatchHandler`: callable that takes a list of
       `InferenceRequest` and returns a list of `InferenceResponse`. Owns
-      the model (`RNaDAgent`), device, and the trainer-side
+      the model (`RNaDModel`), device, and the trainer-side
       `hidden_states` dict.
   - `echo_batch_handler`: deterministic stub used by IPC plumbing tests.
 
@@ -49,7 +49,7 @@ from elitefurretai.rl.inference_ipc import (
     InferenceRequest,
     InferenceResponse,
 )
-from elitefurretai.rl.rnad_model import RNaDAgent
+from elitefurretai.rl.rnad_model import RNaDModel
 
 logger = logging.getLogger(__name__)
 
@@ -63,12 +63,6 @@ logger = logging.getLogger(__name__)
 # Python-level dynamo code. See reproducer at
 # unit_tests/rl/test_compile_race_reproducer.py.
 _COMPILE_LOCK = threading.Lock()
-
-
-# Type alias for the "model" hook the service uses to produce responses
-# from a list of requests. Swappable for testing (echo, deterministic
-# stub) and for real-model wiring.
-BatchHandler = Callable[[List[InferenceRequest]], List[InferenceResponse]]
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -87,7 +81,7 @@ class InferenceService:
     def __init__(
         self,
         name: str,
-        batch_handler: BatchHandler,
+        batch_handler: Callable[[List[InferenceRequest]], List[InferenceResponse]],
         request_queue: "torch_mp.Queue[Union[InferenceRequest, EvictRequest]]",
         response_queues: Dict[int, "torch_mp.Queue[InferenceResponse]"],
         batch_size: int = 32,
@@ -102,19 +96,6 @@ class InferenceService:
 
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
-
-        # Diagnostics — same fields the legacy per-player batcher logged,
-        # so existing aggregation/observability rolls forward unchanged.
-        self._diagnostics: Dict[str, float] = {
-            "inference_batches": 0.0,
-            "inference_batch_items": 0.0,
-            "inference_batch_size_max": 0.0,
-            "inference_batches_filled_to_max": 0.0,
-            "inference_batches_flushed_timeout": 0.0,
-            "inference_handler_seconds": 0.0,
-            "inference_evictions": 0.0,
-        }
-        self._diag_lock = threading.Lock()
 
     # ── lifecycle ─────────────────────────────────────────────────────
 
@@ -147,7 +128,7 @@ class InferenceService:
     # ── main loop ─────────────────────────────────────────────────────
 
     def _run(self) -> None:
-        # Mirrors BatchInferencePlayer._inference_loop: block for the
+        # Mirrors RLTrajectoryPlayer._inference_loop: block for the
         # first request, then opportunistically gather more up to either
         # batch_size or batch_timeout since the first arrived.
         #
@@ -178,8 +159,6 @@ class InferenceService:
                     continue
                 batch.append(item)
 
-            self._update_batch_diagnostics(len(batch))
-            handler_start = time.monotonic()
             try:
                 responses = self._handler(batch)
             except Exception:
@@ -189,9 +168,6 @@ class InferenceService:
                     len(batch),
                 )
                 continue
-            handler_s = time.monotonic() - handler_start
-            with self._diag_lock:
-                self._diagnostics["inference_handler_seconds"] += handler_s
 
             self._dispatch_responses(batch, responses)
 
@@ -200,8 +176,6 @@ class InferenceService:
         evict_fn = getattr(self._handler, "evict", None)
         if callable(evict_fn):
             evict_fn(req.worker_id, req.player_id, req.battle_tag)
-        with self._diag_lock:
-            self._diagnostics["inference_evictions"] += 1
 
     def _dispatch_responses(
         self,
@@ -230,39 +204,6 @@ class InferenceService:
                 continue
             target.put(resp)
 
-    # ── diagnostics ───────────────────────────────────────────────────
-
-    def _update_batch_diagnostics(self, batch_len: int) -> None:
-        with self._diag_lock:
-            self._diagnostics["inference_batches"] += 1
-            self._diagnostics["inference_batch_items"] += batch_len
-            if batch_len > self._diagnostics["inference_batch_size_max"]:
-                self._diagnostics["inference_batch_size_max"] = float(batch_len)
-            if batch_len >= self.batch_size:
-                self._diagnostics["inference_batches_filled_to_max"] += 1
-            else:
-                self._diagnostics["inference_batches_flushed_timeout"] += 1
-            n = self._diagnostics["inference_batches"]
-            if n % 500 == 0:
-                items = self._diagnostics["inference_batch_items"]
-                filled = self._diagnostics["inference_batches_filled_to_max"]
-                timeout = self._diagnostics["inference_batches_flushed_timeout"]
-                logger.debug(
-                    "[batch-fill svc=%s] n=%d avg=%.2f max=%d filled%%=%.1f "
-                    "timeout%%=%.1f cap=%d",
-                    self.name,
-                    int(n),
-                    items / n,
-                    int(self._diagnostics["inference_batch_size_max"]),
-                    100.0 * filled / n,
-                    100.0 * timeout / n,
-                    self.batch_size,
-                )
-
-    def get_diagnostics_snapshot(self) -> Dict[str, float]:
-        with self._diag_lock:
-            return dict(self._diagnostics)
-
 
 # ─────────────────────────────────────────────────────────────────────
 # Real-model batch handler
@@ -277,7 +218,7 @@ class RealModelBatchHandler:
 
     def __init__(
         self,
-        agent: RNaDAgent,
+        agent: RNaDModel,
         device: str = "cpu",
         probabilistic: bool = True,
     ):
@@ -306,20 +247,6 @@ class RealModelBatchHandler:
         prior_hiddens: List[Optional[torch.Tensor]] = [
             self.hidden_states.get((r.worker_id, r.player_id, r.battle_tag)) for r in batch
         ]
-        # Diagnostic: catch overgrown contexts before they crash inside
-        # the model's positional encoder (max_seq_len bound). This fires
-        # if eviction-on-stale (BatchInferencePlayer._reset_battle_hidden_state)
-        # somehow misses a cleanup site, since each in-flight request
-        # for the same battle would otherwise grow hidden by 1.
-        for ph, req in zip(prior_hiddens, batch):
-            if ph is not None and ph.shape[1] > 35:
-                logger.warning(
-                    "Long context: worker=%d player=%s battle=%s shape=%s",
-                    req.worker_id,
-                    req.player_id,
-                    req.battle_tag,
-                    tuple(ph.shape),
-                )
 
         hidden_batch, hidden_mask = self._pad_transformer_context(prior_hiddens)
         with torch.no_grad(), _COMPILE_LOCK:
@@ -424,7 +351,7 @@ class RealModelBatchHandler:
             (padded to max_T) + `encoded` (length 1), so the new
             encoded state sits at position max_T regardless of this
             request's actual prior length L_i. The legacy
-            BatchInferencePlayer._run_batch sliced [:L_i+1], which
+            RLTrajectoryPlayer._run_batch sliced [:L_i+1], which
             included a padding-derived position at L_i instead of the
             real new state at position max_T. With mixed-length batches
             this corrupted the next-turn hidden state and propagated
@@ -448,7 +375,7 @@ class RealModelBatchHandler:
         top_p: float,
         is_teampreview: bool,
     ) -> tuple[int, float]:
-        """Mirror BatchInferencePlayer's per-request sampling math:
+        """Mirror RLTrajectoryPlayer's per-request sampling math:
         temperature softmax → mask + renormalize → top-p filter →
         multinomial; PPO old_log_prob from the masked T=1 distribution.
         """

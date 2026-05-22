@@ -1,32 +1,18 @@
-"""batch_inference_player.py — high-throughput async Player for RL training.
+"""rl_trajectory_player.py — async Player that produces RL training trajectories.
 
-BatchInferencePlayer gathers per-turn decisions from many concurrent battles
-and *batches* them into one model forward pass for efficiency, then pushes
-finished trajectories to a queue for the learner to consume.
+RLTrajectoryPlayer is the poke-env Player used by every RL worker process.
+On each decision point it embeds the current battle state, submits the
+embedding to the trainer-side InferenceService via `InferenceClient.submit()`,
+and decodes the returned action into a Showdown command. Training-time
+trajectories are accumulated per battle and shipped to the learner once the
+battle finishes — that trajectory output (not how the policy is served) is the
+class's reason for existing.
 
 This is training-time plumbing: coupled to the trajectory queue, the
 InferenceClient IPC layer, and worker-process orchestration. It is NOT a
 user-facing agent — see ``elitefurretai/agents/`` for those (eval Players,
-heuristic baselines, subprocess managers).
-
-Moved here from the former ``rl/players.py`` on 2026-05-19 as part of the
-agents/ directory reorganization (see planning/stage2/2026-05-19-09-30-agents-directory-reorg.md).
-
-How this fits the bigger picture
---------------------------------
-The trainer (train.py) spawns N worker processes (worker.py). Each worker runs
-many battles in parallel. In each battle, every turn is a "decision request":
-the worker needs the model's policy/value for a particular state.
-
-Naive approach: each decision = its own model forward pass. But model forwards
-have meaningful per-call overhead (Python ↔ C++ trampoline, kernel launch,
-cache misses), so doing 100 separate single-state forwards is far slower than
-one batched forward over 100 states.
-
-BatchInferencePlayer solves this by maintaining an asyncio queue of pending
-decisions, running an inference loop that gathers up to `batch_size` requests
-(or waits at most `batch_timeout` seconds) and dispatches them together.
-This is a classic "dynamic batching" pattern.
+heuristic baselines, subprocess managers). This agent is purely for training
+and optimizing for speed during training.
 
 Why so much state-tracking machinery
 ------------------------------------
@@ -45,24 +31,11 @@ trajectory_queue for the learner to train on.
 """
 
 import asyncio
-import concurrent.futures
 import logging
 import random
 import re
-from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
-from threading import Lock
-from typing import (
-    TYPE_CHECKING,
-    Any,
-    Dict,
-    List,
-    Optional,
-    cast,
-)
-
-if TYPE_CHECKING:
-    from elitefurretai.rl.inference_worker import InferenceClient
+from typing import Any, Dict, List, Optional, cast
 
 import numpy as np
 from poke_env.battle import AbstractBattle, DoubleBattle
@@ -72,146 +45,22 @@ from poke_env.player.battle_order import DefaultBattleOrder
 
 from elitefurretai.etl import Embedder
 from elitefurretai.etl.encoder import MDBO
+from elitefurretai.rl.inference_worker import InferenceClient
 from elitefurretai.rl.masking import fast_get_action_mask
 
 logger = logging.getLogger(__name__)
 
 
-def _request_fingerprint(request: Optional[Dict[str, Any]]) -> Optional[tuple]:
-    # ── Why this exists ──────────────────────────────────────────────────────
-    # Showdown sends us a fresh "request" payload before every decision point.
-    # The request describes which moves are available, who's active, whether
-    # we must force-switch, whether terastallization is allowed, etc.
-    #
-    # We use this payload to (a) build the action mask and (b) decode the
-    # network's chosen action back into a Showdown command. Both must agree
-    # on what the request looked like.
-    #
-    # But because inference is async, by the time the model answers, Showdown
-    # may have sent a *new* request (e.g. a force-switch was triggered after
-    # an opponent KO'd us). If we mask & decode against different requests,
-    # we'll send invalid commands.
-    #
-    # This function condenses a request into a hashable tuple ("fingerprint").
-    # Compare fingerprints before sending to detect drift; if they don't match,
-    # discard the decision and let the next request handler re-decide.
-    # ─────────────────────────────────────────────────────────────────────────
-    if request is None:
-        return None
+class RLTrajectoryPlayer(Player):
+    """Async Player that routes every decision through a centralized InferenceService.
 
-    active_entries = []
-    for active in request.get("active", []) or []:
-        if not isinstance(active, dict):
-            active_entries.append(None)
-            continue
-        moves = []
-        for move in active.get("moves", []) or []:
-            if not isinstance(move, dict):
-                continue
-            moves.append(
-                (
-                    move.get("id"),
-                    move.get("target"),
-                    move.get("disabled"),
-                    move.get("pp"),
-                )
-            )
-        active_entries.append(
-            (
-                tuple(moves),
-                active.get("canTerastallize"),
-                active.get("trapped"),
-                active.get("maybeTrapped"),
-                active.get("commanding"),
-            )
-        )
+    Subclasses poke-env's `Player` (which handles the websocket protocol with
+    Showdown) and adds three things:
 
-    side_entries = []
-    side = request.get("side")
-    side_pokemon = side.get("pokemon", []) if isinstance(side, dict) else []
-    for mon in side_pokemon:
-        if not isinstance(mon, dict) or not mon.get("active", False):
-            continue
-        side_entries.append(
-            (
-                mon.get("ident"),
-                mon.get("condition"),
-                mon.get("active"),
-                mon.get("commanding"),
-                mon.get("terastallized"),
-            )
-        )
-
-    force_switch = request.get("forceSwitch")
-    force_switch_fingerprint = (
-        tuple(bool(value) for value in force_switch)
-        if isinstance(force_switch, list)
-        else None
-    )
-
-    return (
-        request.get("rqid"),
-        bool(request.get("teamPreview")),
-        bool(request.get("wait")),
-        force_switch_fingerprint,
-        tuple(active_entries),
-        tuple(side_entries),
-    )
-
-
-# ── Inference executor management ────────────────────────────────────────────
-# We run model.forward() in a background thread (via ThreadPoolExecutor) so the
-# main asyncio event loop (which handles all the websocket I/O for poke-env)
-# isn't blocked while a forward pass runs. One executor per worker keeps
-# inference work isolated and makes thread accounting tidy.
-#
-# Why max_workers=1: we WANT serialization here. If we let two threads run
-# forward passes concurrently inside the same worker process, they'd compete
-# for the same model state, the same Python GIL, and the same CPU. Better to
-# queue them and run one at a time.
-# ─────────────────────────────────────────────────────────────────────────────
-_WORKER_EXECUTORS: Dict[int, ThreadPoolExecutor] = {}
-_EXECUTOR_LOCK = Lock()
-
-# Global fallback executor for non-worker contexts (e.g., testing or scripts)
-_FALLBACK_EXECUTOR = ThreadPoolExecutor(
-    max_workers=1, thread_name_prefix="fallback_inference"
-)
-
-
-def get_worker_executor(worker_id: Optional[int] = None) -> ThreadPoolExecutor:
-    """Get or create a ThreadPoolExecutor for a specific worker."""
-    if worker_id is None:
-        return _FALLBACK_EXECUTOR
-
-    with _EXECUTOR_LOCK:
-        if worker_id not in _WORKER_EXECUTORS:
-            _WORKER_EXECUTORS[worker_id] = ThreadPoolExecutor(
-                max_workers=1,
-                thread_name_prefix=f"worker{worker_id}_inference",
-            )
-        return _WORKER_EXECUTORS[worker_id]
-
-
-def cleanup_worker_executors() -> None:
-    """Shutdown all worker executors (call at training end)."""
-    with _EXECUTOR_LOCK:
-        for executor in _WORKER_EXECUTORS.values():
-            executor.shutdown(wait=False)
-        _WORKER_EXECUTORS.clear()
-
-
-class BatchInferencePlayer(Player):
-    """High-performance player with async batched inference.
-
-    This is the workhorse of the RL data-collection pipeline. It subclasses
-    poke-env's `Player` (which handles the websocket protocol with Showdown)
-    and adds three things:
-
-      1. **Batched inference**: an asyncio queue + background loop that gathers
-         many simultaneous decision requests, runs ONE batched model forward
-         pass over them, and dispatches the answers. Drastically reduces
-         per-decision overhead.
+      1. **Centralized inference submission**: each decision embeds the battle
+         state and `await`s `InferenceClient.submit()`. The trainer-side
+         InferenceService gathers submissions across workers/players and runs
+         ONE batched forward pass per service tick.
 
       2. **Trajectory collection**: every (state, action, log_prob, value, mask)
          tuple is stashed in a per-battle buffer; when the battle finishes,
@@ -233,39 +82,22 @@ class BatchInferencePlayer(Player):
 
     def __init__(
         self,
-        inference_client: "InferenceClient",
-        device="cpu",
-        batch_size=16,
-        batch_timeout=0.01,
-        probabilistic=True,
+        inference_client: InferenceClient,
+        worker_id: int,
+        embedder: Embedder,
         trajectory_queue=None,
         accept_open_team_sheet=False,
-        worker_id: Optional[int] = None,
-        embedder: Optional[Embedder] = None,
         max_battle_steps: int = 40,
         opponent_type: str = "self_play",
         **kwargs,
     ):
-        battle_format = kwargs.get("battle_format", "gen9vgc2023regc")
-
         self.inference_client = inference_client
-        self.device = device
-        self.batch_size = batch_size
-        self.batch_timeout = batch_timeout
-        self.probabilistic = probabilistic
         self.trajectory_queue = trajectory_queue
         self.worker_id = worker_id
         self.opponent_type = opponent_type
-        self.embedder = (
-            embedder
-            if embedder is not None
-            else Embedder(
-                format=battle_format, feature_set=Embedder.FULL, omniscient=False
-            )
-        )
+        self.embedder = embedder
         # context tensor accumulated across turns by TransformerThreeHeadedModel
         self.hidden_states: Dict[str, Any] = {}
-        self._inference_future: Optional[concurrent.futures.Future] = None
         self.temperature: float = 1.0  # Sampling temperature (set by trainer)
         self.top_p: float = 1.0  # Nucleus sampling threshold (set by trainer)
         self.current_trajectories: Dict[str, List[Optional[Dict[str, Any]]]] = {}
@@ -279,41 +111,6 @@ class BatchInferencePlayer(Player):
         # Why: if the inference loop stalls, we prefer fallback behavior over hanging
         # a battle coroutine indefinitely.
         self.inference_request_timeout_s = 8.0
-        self._diagnostics: Dict[str, float] = {
-            "requests_total": 0.0,
-            "default_choice_requests": 0.0,
-            "embed_calls": 0.0,
-            "embed_seconds": 0.0,
-            "inference_batches": 0.0,
-            "inference_batch_items": 0.0,
-            "inference_batch_size_max": 0.0,
-            "inference_batches_filled_to_max": 0.0,
-            "inference_batches_flushed_timeout": 0.0,
-            "inference_executor_seconds": 0.0,
-            "inference_wait_calls": 0.0,
-            "inference_wait_seconds": 0.0,
-            "inference_timeouts": 0.0,
-            "transformer_batched_calls": 0.0,
-            "transformer_context_items": 0.0,
-            "transformer_context_tokens_real": 0.0,
-            "transformer_context_tokens_padded": 0.0,
-            "transformer_context_len_max": 0.0,
-            "stale_request_generation_drops": 0.0,
-            "stale_inference_drops": 0.0,
-            "stale_request_snapshot_drops": 0.0,
-            "mask_mismatches": 0.0,
-            "send_failures": 0.0,
-            "default_send_failures": 0.0,
-            "discarded_battles": 0.0,
-            "trajectory_steps_buffered": 0.0,
-            "completed_trajectories": 0.0,
-            "completed_trajectory_steps": 0.0,
-            "room_lost_recoveries": 0.0,
-            "message_handler_timeouts": 0.0,
-            "battle_lock_tasks_cancelled": 0.0,
-            "server_leavebattle_sent": 0.0,
-            "server_leavebattle_send_failed": 0.0,
-        }
 
         # Battles finalized via the "not in that room" popup recovery path
         # (see _recover_room_lost_battle). Read by _battle_finished_callback so
@@ -334,26 +131,16 @@ class BatchInferencePlayer(Player):
         self.ps_client._handle_message = self._handle_message_with_popup_recovery
 
     def _embed_battle_state(self, battle: Any) -> np.ndarray:
-        embed_start = asyncio.get_running_loop().time()
         embed_to_array = getattr(self.embedder, "embed_to_array", None)
         if callable(embed_to_array):
-            result = cast(np.ndarray, embed_to_array(cast(DoubleBattle, battle)))
-        else:
-            result = np.asarray(
-                self.embedder.embed_to_vector(cast(DoubleBattle, battle)),
-                dtype=np.float32,
-            )
-        self._diagnostics["embed_calls"] += 1
-        self._diagnostics["embed_seconds"] += (
-            asyncio.get_running_loop().time() - embed_start
+            return cast(np.ndarray, embed_to_array(cast(DoubleBattle, battle)))
+        return np.asarray(
+            self.embedder.embed_to_vector(cast(DoubleBattle, battle)),
+            dtype=np.float32,
         )
-        return result
 
     def clear_completed_trajectories(self) -> None:
         self.completed_trajectories.clear()
-
-    def get_diagnostics_snapshot(self) -> Dict[str, float]:
-        return dict(self._diagnostics)
 
     async def stop_listening(self):
         await self.ps_client.stop_listening()
@@ -373,57 +160,30 @@ class BatchInferencePlayer(Player):
         if self.inference_client is not None:
             self.inference_client.evict(self.username, battle_tag)
 
-    def stop_inference_loop(self, timeout_s: float = 1.0) -> None:
-        """Stop the background inference loop if it is running.
-
-        Why: during worker-side rebuilds, we must stop old loop tasks before creating
-        fresh players, or stale loops can keep references alive and leak pending work.
-        """
-        if self._inference_future is None:
-            return
-
-        # First request cooperative cancellation.
-        self._inference_future.cancel()
-
-        # Then drain completion briefly so the loop has a chance to unwind cleanly.
-        try:
-            self._inference_future.result(timeout=timeout_s)
-        except (asyncio.CancelledError, concurrent.futures.CancelledError):
-            pass
-        except Exception:
-            pass
-        finally:
-            self._inference_future = None
+    def _abort_decision(self, battle_tag: str) -> DefaultBattleOrder:
+        """Drop the partial trajectory + hidden state for this battle and
+        return a default order. Use whenever inference timed out or its
+        result became stale before send."""
+        self.current_trajectories.pop(battle_tag, None)
+        self._reset_battle_hidden_state(battle_tag)
+        return DefaultBattleOrder()
 
     def teardown_runtime(self, timeout_s: float = 1.5) -> None:
-        """Best-effort teardown of inference + websocket listener state.
+        """Best-effort teardown of websocket listener state.
 
         Why: this is the explicit teardown step needed before rebuilding agents.
         Without it, old clients can remain logged in, causing `|nametaken|` collisions
         and repeated timeout loops after a desync event.
         """
-        # Stop inference first so we don't enqueue decisions while disconnecting.
-        self.stop_inference_loop(timeout_s=timeout_s)
-
-        # Ask poke-env to stop websocket listening on this player.
         try:
             fut = asyncio.run_coroutine_threadsafe(self.stop_listening(), POKE_LOOP)
             fut.result(timeout=timeout_s)
         except Exception:
             pass
 
-    def start_inference_loop(self) -> None:
-        # The trainer-side InferenceService owns its own loop.
-        # Players have no per-instance loop to start. No-op kept for
-        # backward compatibility with callers in opponents.py, evaluate.py,
-        # showdown_benchmark.py, and vgc_environment.py.
-        pass
-
     async def _handle_battle_request(
         self, battle: AbstractBattle, maybe_default_order: bool = False
     ):
-        self._diagnostics["requests_total"] += 1
-
         # Defensive guard: do not attempt to send orders for battles that are already
         # marked finished locally.
         if getattr(battle, "finished", False):
@@ -433,12 +193,10 @@ class BatchInferencePlayer(Player):
         self._request_generation[battle.battle_tag] = request_generation
 
         if maybe_default_order and random.random() < self.DEFAULT_CHOICE_CHANCE:
-            self._diagnostics["default_choice_requests"] += 1
             message = self.choose_default_move().message
             try:
                 await self.ps_client.send_message(message, battle.battle_tag)
             except Exception as exc:
-                self._diagnostics["default_send_failures"] += 1
                 logger.warning(
                     "DEFAULT_SEND_FAILURE "
                     f"tag={battle.battle_tag} turn={getattr(battle, 'turn', '?')} "
@@ -469,9 +227,10 @@ class BatchInferencePlayer(Player):
         else:
             message = str(choice)
 
-        # Root-cause guardrail #1: TODO fix
-        # If battle requires a forced switch but the chosen message is a move command,
-        # rewrite to default order to avoid guaranteed invalid-choice errors.
+        # Guardrail: if a force-switch is active but the chosen message is a
+        # move command, the request and decode disagree (a known race we still
+        # see in production). Falling back to default order is strictly safer
+        # than letting Showdown reject the choice.
         if (
             isinstance(battle, DoubleBattle)
             and any(battle.force_switch)
@@ -480,22 +239,10 @@ class BatchInferencePlayer(Player):
         ):
             message = self.choose_default_move().message
 
-        # Root-cause guardrail #2:
-        # If no active slot can tera, strip accidental tera directive from message.
-        if (
-            isinstance(battle, DoubleBattle)
-            and isinstance(message, str)
-            and "terastallize" in message
-            and hasattr(battle, "can_tera")
-            and not any(getattr(battle, "can_tera", []))
-        ):
-            message = message.replace(" terastallize", "")
-
         if message:
             try:
                 await self.ps_client.send_message(message, battle.battle_tag)
             except Exception as exc:
-                self._diagnostics["send_failures"] += 1
                 # Rich context to diagnose first trigger root causes:
                 # - which battle tag failed
                 # - what message we attempted
@@ -541,7 +288,6 @@ class BatchInferencePlayer(Player):
 
         current_steps = len(self.current_trajectories.get(battle.battle_tag, []))
         if current_steps >= self.max_battle_steps:
-            self._diagnostics["discarded_battles"] += 1
             self._discarded_battles.add(battle.battle_tag)
             self.current_trajectories.pop(battle.battle_tag, None)
             self._reset_battle_hidden_state(battle.battle_tag)
@@ -565,9 +311,12 @@ class BatchInferencePlayer(Player):
         request_snapshot = (
             deepcopy(battle.last_request) if battle.last_request is not None else None
         )
-        # This is cheaper than recomputing the full order twice and lets us drop the
-        # result if the live request has drifted before we send it.
-        request_fingerprint = _request_fingerprint(request_snapshot)
+        # Capture the request's rqid so we can detect drift (Showdown bumps rqid
+        # on every |request| emission; same rqid ⇒ same request state). This is
+        # cheaper than recomputing the full order twice and lets us drop the
+        # result if the live request has drifted before we send it. Sufficient
+        # only on the showdown_websocket backend — direct-sim use omits rqid.
+        request_rqid = request_snapshot.get("rqid") if request_snapshot else None
         mask = (
             None
             if battle.teampreview
@@ -583,7 +332,6 @@ class BatchInferencePlayer(Player):
             else tuple()
         )
 
-        wait_start = asyncio.get_running_loop().time()
         try:
             # Centralized path: trainer-side InferenceService runs the
             # forward + sampling AND owns the hidden state, keyed by
@@ -605,46 +353,31 @@ class BatchInferencePlayer(Player):
                 "log_prob": response.log_prob,
                 "value": response.value,
             }
-            self._diagnostics["inference_wait_calls"] += 1
-            self._diagnostics["inference_wait_seconds"] += (
-                asyncio.get_running_loop().time() - wait_start
-            )
         except asyncio.TimeoutError:
-            self._diagnostics["inference_wait_calls"] += 1
-            self._diagnostics["inference_wait_seconds"] += (
-                asyncio.get_running_loop().time() - wait_start
-            )
-            self._diagnostics["inference_timeouts"] += 1
             logger.debug(
                 "INFERENCE_TIMEOUT tag=%s turn=%s teampreview=%s",
                 battle.battle_tag,
                 getattr(battle, "turn", "?"),
                 battle.teampreview,
             )
-            self.current_trajectories.pop(battle.battle_tag, None)
-            self._reset_battle_hidden_state(battle.battle_tag)
-            return DefaultBattleOrder()
+            return self._abort_decision(battle.battle_tag)
 
         # Request-generation guard: if a newer request is already active for this
         # battle tag, drop this stale result before decoding/sending.
         if request_generation is not None:
             latest_generation = self._request_generation.get(battle.battle_tag, -1)
             if latest_generation != request_generation:
-                self._diagnostics["stale_request_generation_drops"] += 1
                 logger.debug(
                     "STALE_REQUEST_GENERATION_DROP tag=%s request_gen=%d latest_gen=%d",
                     battle.battle_tag,
                     request_generation,
                     latest_generation,
                 )
-                self.current_trajectories.pop(battle.battle_tag, None)
-                self._reset_battle_hidden_state(battle.battle_tag)
-                return DefaultBattleOrder()
+                return self._abort_decision(battle.battle_tag)
 
         action_idx = result["action"]
 
-        # Root-cause guardrail #3:
-        # If battle state changed while waiting on batched inference, discard this
+        # If battle state changed while waiting on inference, discard this
         # decision instead of sending a potentially invalid/stale command.
         current_turn = getattr(battle, "turn", -1)
         current_teampreview = battle.teampreview
@@ -658,7 +391,6 @@ class BatchInferencePlayer(Player):
             or current_teampreview != request_teampreview
             or current_force_switch != request_force_switch
         ):
-            self._diagnostics["stale_inference_drops"] += 1
             logger.debug(
                 "STALE_INFERENCE_DROP tag=%s turn=%d->%d tp=%s->%s fs=%s->%s",
                 battle.battle_tag,
@@ -669,26 +401,20 @@ class BatchInferencePlayer(Player):
                 request_force_switch,
                 current_force_switch,
             )
-            self.current_trajectories.pop(battle.battle_tag, None)
-            self._reset_battle_hidden_state(battle.battle_tag)
-            return DefaultBattleOrder()
+            return self._abort_decision(battle.battle_tag)
 
-        current_request_fingerprint = _request_fingerprint(battle.last_request)
-        if current_request_fingerprint != request_fingerprint:
-            self._diagnostics["stale_request_snapshot_drops"] += 1
+        current_rqid = battle.last_request.get("rqid") if battle.last_request else None
+        if current_rqid != request_rqid:
             logger.debug(
                 "STALE_REQUEST_SNAPSHOT_DROP tag=%s turn=%d rqid=%s->%s",
                 battle.battle_tag,
                 current_turn,
-                None if request_snapshot is None else request_snapshot.get("rqid"),
-                None if battle.last_request is None else battle.last_request.get("rqid"),
+                request_rqid,
+                current_rqid,
             )
-            self.current_trajectories.pop(battle.battle_tag, None)
-            self._reset_battle_hidden_state(battle.battle_tag)
-            return DefaultBattleOrder()
+            return self._abort_decision(battle.battle_tag)
 
         if mask is not None and action_idx < len(mask) and mask[action_idx] == 0:
-            self._diagnostics["mask_mismatches"] += 1
             logger.warning(
                 "MASK_MISMATCH tag=%s turn=%s action_idx=%d mask_value=%s",
                 battle.battle_tag,
@@ -698,7 +424,6 @@ class BatchInferencePlayer(Player):
             )
 
         if self.trajectory_queue is not None:
-            self._diagnostics["trajectory_steps_buffered"] += 1
             self.current_trajectories.setdefault(battle.battle_tag, []).append(
                 {
                     "state": state,
@@ -765,7 +490,6 @@ class BatchInferencePlayer(Player):
                 timeout=self._MESSAGE_HANDLER_TIMEOUT_S,
             )
         except asyncio.TimeoutError:
-            self._diagnostics["message_handler_timeouts"] += 1
             self.logger.warning(
                 "Message handler exceeded %.0fs timeout; preview=%s",
                 self._MESSAGE_HANDLER_TIMEOUT_S,
@@ -787,7 +511,6 @@ class BatchInferencePlayer(Player):
         if battle is None or battle.finished:
             return
 
-        self._diagnostics["room_lost_recoveries"] += 1
         self._room_lost_battles.add(battle_tag)
 
         # Outcome is unknown (we lost the room); record as a loss for reward
@@ -818,13 +541,9 @@ class BatchInferencePlayer(Player):
         ps_client = self.ps_client
         battle_lock_map = getattr(ps_client, "_battle_locks", None)
         if battle_lock_map is not None and battle_tag in battle_lock_map:
-            cancelled = 0
             for task in list(getattr(ps_client, "_active_tasks", ())):
                 if not task.done() and battle_tag in repr(task):
                     task.cancel()
-                    cancelled += 1
-            if cancelled:
-                self._diagnostics["battle_lock_tasks_cancelled"] += cancelled
             battle_lock_map.pop(battle_tag, None)
 
         self._battle_finished_callback(battle)
@@ -849,14 +568,11 @@ class BatchInferencePlayer(Player):
         # hint to the server. Wrapping in try/except is justified here
         # (not a "hide errors" anti-pattern) because send may legitimately
         # fail mid-shutdown — the websocket can be closing as the
-        # popup-recovery fires. Any failure is counted as a diagnostic
-        # so we can spot regressions, and logged at DEBUG so the steady
+        # popup-recovery fires. Failures are logged at DEBUG so the steady
         # stream during a healthy run doesn't clog WARNING-level output.
         try:
             await ps_client.send_message("/leavebattle", room=battle_tag)
-            self._diagnostics["server_leavebattle_sent"] += 1
         except Exception as exc:  # noqa: BLE001
-            self._diagnostics["server_leavebattle_send_failed"] += 1
             self.logger.debug("leavebattle send failed for %s: %s", battle_tag, exc)
 
     def _battle_finished_callback(self, battle: AbstractBattle):
@@ -907,8 +623,6 @@ class BatchInferencePlayer(Player):
                     step["reward"] = 0.0
 
             filtered_traj = [step for step in traj if step is not None]
-            self._diagnostics["completed_trajectories"] += 1
-            self._diagnostics["completed_trajectory_steps"] += len(filtered_traj)
             # Battles finalized via the room-lost popup recovery path have an
             # unknown true outcome, so flag forfeited=True; the curriculum
             # drops these from opponent win-rate tracking.
@@ -929,6 +643,5 @@ class BatchInferencePlayer(Player):
 
 
 __all__ = [
-    "BatchInferencePlayer",
-    "cleanup_worker_executors",
+    "RLTrajectoryPlayer",
 ]

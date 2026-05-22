@@ -5,10 +5,10 @@ This module implements RNaD (Regularized Nash Dynamics) for training Pokemon VGC
 See RL.md for detailed documentation.
 
 Core Components:
-    - RNaDAgent: RL-compatible agent wrapper
+    - RNaDModel: torch.nn.Module wrapper around TransformerThreeHeadedModel
     - PortfolioRNaDLearner: RNaD learner with portfolio of reference models
       (set max_portfolio_size=1, portfolio_update_strategy="recent" for standard RNaD)
-    - BatchInferencePlayer: High-performance battle worker with batched inference
+    - RLTrajectoryPlayer: High-performance battle worker with batched inference
     - OpponentPool: Manages diverse opponent sampling for training
     - RNaDConfig: Configuration system for all hyperparameters
 """
@@ -18,10 +18,6 @@ from elitefurretai.engine.showdown_server_manager import (
     allocate_server_ports,
     launch_showdown_servers,
     shutdown_showdown_servers,
-)
-from elitefurretai.rl.batch_inference_player import (
-    BatchInferencePlayer,
-    cleanup_worker_executors,
 )
 from elitefurretai.rl.config import RNaDConfig
 from elitefurretai.rl.learners import (
@@ -35,15 +31,15 @@ from elitefurretai.rl.opponents import (
     OpponentPool,
     WorkerOpponentFactory,
 )
-from elitefurretai.rl.rnad_model import RNaDAgent
+from elitefurretai.rl.rl_trajectory_player import RLTrajectoryPlayer
+from elitefurretai.rl.rnad_model import RNaDModel
 
 __all__ = [
     # Core training components
-    "RNaDAgent",
+    "RNaDModel",
     "PortfolioRNaDLearner",
     # Workers and infrastructure
-    "BatchInferencePlayer",
-    "cleanup_worker_executors",
+    "RLTrajectoryPlayer",
     "OpponentPool",
     "WorkerOpponentFactory",
     "build_model_from_config",

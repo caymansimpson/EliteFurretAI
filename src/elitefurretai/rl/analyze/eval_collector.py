@@ -289,9 +289,7 @@ class TrajectoryCollector:
                 final_turn=int(battle.turn),
                 agent_final_pokemon_alive=int(agent_alive),
                 opp_final_pokemon_alive=int(opp_alive),
-                timestamp_started=self._battle_start_times.get(
-                    canonical_id, time.time()
-                ),
+                timestamp_started=self._battle_start_times.get(canonical_id, time.time()),
                 replay_saved=replay_saved,
             )
         )

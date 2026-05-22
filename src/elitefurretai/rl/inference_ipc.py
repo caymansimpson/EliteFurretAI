@@ -6,10 +6,9 @@ Workers own one InferenceClient per service. Requests flow worker → trainer
 through `inference_request_queue`; responses flow trainer → worker through
 the per-worker `response_queue[worker_id]`.
 
-These dataclasses are the wire format. Keep them small and pickle-clean.
+These dataclasses are the wire format to keep them small and pickle-clean.
 torch.multiprocessing auto-shares torch.Tensor payloads via /dev/shm; numpy
-arrays and primitives go through pickle. Dataclasses are picklable as long
-as all fields are picklable.
+arrays and primitives go through pickle.
 
 Hidden state lives in trainer, not on the wire
 ----------------------------------------------
@@ -17,8 +16,7 @@ The trainer-side handler keeps a `hidden_states` dict keyed by
 (worker_id, player_id, battle_tag) and looks it up per request. The
 wire only carries the small battle_tag string instead of a bulky
 (1, T, hidden_size) tensor — this shrinks per-request IPC payload by
-~40x and was the design that beat the initial "ship hidden in every
-request" version (~120 KB/request, ~14 MB/sec total, IPC-bound).
+~40x.
 
 Shape conventions
 -----------------
@@ -58,17 +56,7 @@ class InferenceRequest:
 
 @dataclass
 class InferenceResponse:
-    """Trainer → worker. One per resolved request.
-
-    Fields match what the legacy `_run_batch` puts in its future result.
-    The legacy `probs` field is dropped — nothing downstream consumes it.
-    The model's distributional `win_dist_logits` output is also dropped
-    — the learner recomputes it during training and the trajectory format
-    doesn't store it. `next_hidden` was previously here for the worker
-    to store back into its `hidden_states` dict; the trainer-side
-    handler keeps the dict now, so the worker no longer needs it on
-    the wire.
-    """
+    """Trainer → worker. One per resolved request."""
 
     request_id: int
     action_idx: int

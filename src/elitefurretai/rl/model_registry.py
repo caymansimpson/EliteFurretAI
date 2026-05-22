@@ -7,12 +7,16 @@ up a `RealModelBatchHandler` + `InferenceService` + per-worker mp.Queues,
 optionally compiles + warms up the inference path, and exposes a uniform
 API for adding / weight-syncing / shutting down model-driven services.
 
+Centralizing this plumbing lets the rest of the codebase reference
+models by name rather than thread mp.Queue pairs through worker spawn
+args, opponent factories, and weight-broadcast paths individually.
+Workers receive one bundle and pick clients by name; adding a new
+model is one `register(...)` call rather than a multi-file edit.
+
 Why this exists
 ---------------
 Centralized inference ships per-model services (one for main, one for
-BC, optionally one per exploiter/victim/ghost). Doing this manually
-would mean threading a `<name>_inference_client` parameter through
-several files per model type. The registry collapses that into:
+BC, optionally one per exploiter/victim/ghost). The registry allows us to:
 
     registry.register("main", main_agent)
     registry.register("bc", bc_agent)
@@ -30,7 +34,7 @@ What this owns
 - A `Dict[str, mp.Queue]` of request queues (one shared per model).
 - A `Dict[str, List[mp.Queue]]` of response queues (one per worker per
   model).
-- A `Dict[str, RNaDAgent]` of raw agent references (so `sync_weights`
+- A `Dict[str, RNaDModel]` of raw agent references (so `sync_weights`
   can update model parameters in place for in-process services; for
   subprocess services, the trainer keeps a CPU shadow copy so future
   `sync_weights` calls have the latest weights to ship over).
@@ -56,6 +60,7 @@ Lifecycle
 
 from __future__ import annotations
 
+import copy
 import logging
 import time
 from dataclasses import dataclass
@@ -67,11 +72,11 @@ from torch import multiprocessing as torch_mp
 from elitefurretai.rl.inference_ipc import InferenceResponse
 from elitefurretai.rl.inference_subprocess import (
     InferenceSubprocessHandle,
-    ServiceSpec,
-    SubprocessSpec,
+    ServiceSpecification,
+    SubprocessSpecification,
 )
 from elitefurretai.rl.inference_trainer import InferenceService, RealModelBatchHandler
-from elitefurretai.rl.rnad_model import RNaDAgent
+from elitefurretai.rl.rnad_model import RNaDModel
 
 logger = logging.getLogger(__name__)
 
@@ -84,20 +89,20 @@ class _PendingInProcessService:
     """
 
     name: str
-    agent: RNaDAgent
+    agent: RNaDModel
     service: InferenceService
     handler: RealModelBatchHandler
 
 
 @dataclass
 class _PendingSubprocessService:
-    """A subprocess-bound service waiting to be packaged into a SubprocessSpec.
+    """A subprocess-bound service waiting to be packaged into a SubprocessSpecification.
 
     Held by `_pending_subprocess[group]` between `register()` and `start_all()`.
     """
 
     name: str
-    agent: RNaDAgent  # kept on CPU; pickled into the subprocess at spawn
+    agent: RNaDModel  # kept on CPU; pickled into the subprocess at spawn
     compile: bool
     probabilistic: bool
     request_queue: "torch_mp.Queue"
@@ -152,12 +157,12 @@ class ModelRegistry:
         self._services: Dict[str, InferenceService] = {}
         self._handlers: Dict[str, RealModelBatchHandler] = {}
 
-        # Subprocess backend: ServiceSpecs accumulate per group between
+        # Subprocess backend: ServiceSpecifications accumulate per group between
         # register() and start_all(). At start_all(), each group is
-        # packaged into one SubprocessSpec + InferenceSubprocessHandle.
+        # packaged into one SubprocessSpecification + InferenceSubprocessHandle.
         self._pending_subprocess: Dict[str, List[_PendingSubprocessService]] = {}
         self._subprocesses: Dict[str, InferenceSubprocessHandle] = {}
-        # Control queue per group, created at register() so spec captures it.
+        # Control queue per group, created at register() so specification captures it.
         self._control_queues: Dict[str, "torch_mp.Queue"] = {}
 
         # Shared: name → owning group ("__in_process__" or group name).
@@ -167,7 +172,7 @@ class ModelRegistry:
         # CPU shadow copy of agents — needed for sync_weights on
         # subprocess services (we keep weights here so we can ship updated
         # state_dicts over the control queue).
-        self._raw_agents: Dict[str, RNaDAgent] = {}
+        self._raw_agents: Dict[str, RNaDModel] = {}
 
         # Multiprocessing context — used for queues and Process spawning.
         # `spawn` is required for CUDA-safe forks; pinned here to keep
@@ -184,7 +189,7 @@ class ModelRegistry:
     def register(
         self,
         name: str,
-        agent: RNaDAgent,
+        agent: RNaDModel,
         *,
         probabilistic: bool = True,
         compile: bool = True,
@@ -198,8 +203,8 @@ class ModelRegistry:
         ----------
         name : str
             Unique service name (e.g. "main", "ghost_0").
-        agent : RNaDAgent
-            The model wrapped as an RNaDAgent. For in-process services,
+        agent : RNaDModel
+            The model wrapped as an RNaDModel. For in-process services,
             moved to the registry's device. For subprocess services,
             kept on CPU; the subprocess moves it to its device at
             startup.
@@ -264,7 +269,7 @@ class ModelRegistry:
     def _register_in_process(
         self,
         name: str,
-        agent: RNaDAgent,
+        agent: RNaDModel,
         probabilistic: bool,
         compile: bool,
         request_q: "torch_mp.Queue",
@@ -275,7 +280,7 @@ class ModelRegistry:
         agent.model.to(self.device)
         agent.model.eval()
 
-        agent_for_handler: RNaDAgent
+        agent_for_handler: RNaDModel
         if self.compile_mode and compile:
             logger.info(
                 "Registry: compiling model '%s' with mode=%s dynamic=True device=%s",
@@ -284,7 +289,7 @@ class ModelRegistry:
                 self.device,
             )
             compiled = cast(
-                RNaDAgent,
+                RNaDModel,
                 torch.compile(agent, mode=self.compile_mode, dynamic=True),
             )
             assert self.embedding_size is not None
@@ -324,7 +329,7 @@ class ModelRegistry:
     def _register_subprocess(
         self,
         name: str,
-        agent: RNaDAgent,
+        agent: RNaDModel,
         probabilistic: bool,
         compile: bool,
         request_q: "torch_mp.Queue",
@@ -353,12 +358,51 @@ class ModelRegistry:
             )
         )
 
+    def clone_agent(self, name: str, *, to_device: str = "cpu") -> RNaDModel:
+        """Return a deep copy of a registered agent, moved to `to_device`.
+
+        Used by callers that want to allocate new slots seeded from an
+        already-registered model (e.g. ghost / exploiter-snapshot slots
+        cloned from "main"). Goes through this accessor so the registry's
+        CPU shadow store stays encapsulated.
+        """
+        if name not in self._raw_agents:
+            raise KeyError(f"Model '{name}' is not registered")
+        cloned = copy.deepcopy(self._raw_agents[name])
+        cloned.model.to(to_device)
+        return cloned
+
+    def register_snapshot_slots(
+        self,
+        prefix: str,
+        count: int,
+        source_name: str,
+        *,
+        process_group: str = "frozen",
+        compile: bool = True,
+    ) -> None:
+        """Pre-allocate `count` slots named `{prefix}0` .. `{prefix}{count-1}`.
+
+        Each slot is registered with a fresh clone of `source_name`'s
+        agent (CPU). Used for ghost / exploiter-snapshot pools that need
+        a fixed-size slot table at registration time; weights for any
+        pre-existing snapshots can be loaded afterwards via
+        `sync_weights` (which works pre-start_all to update the shadow).
+        """
+        for slot in range(count):
+            self.register(
+                f"{prefix}{slot}",
+                self.clone_agent(source_name, to_device="cpu"),
+                compile=compile,
+                process_group=process_group,
+            )
+
     def start_all(self) -> None:
         """Start every registered service.
 
         - In-process services: `InferenceService.start()` on each.
         - Subprocess groups: package the per-group pending list into a
-          `SubprocessSpec`, spawn an `InferenceSubprocessHandle`.
+          `SubprocessSpecification`, spawn an `InferenceSubprocessHandle`.
 
         After this call no further `register()` is permitted.
         """
@@ -375,8 +419,8 @@ class ModelRegistry:
 
         # Spawn one subprocess per group.
         for group_name, pending_list in self._pending_subprocess.items():
-            service_specs = [
-                ServiceSpec(
+            service_specifications = [
+                ServiceSpecification(
                     name=p.name,
                     agent=p.agent,
                     request_queue=p.request_queue,
@@ -386,9 +430,9 @@ class ModelRegistry:
                 )
                 for p in pending_list
             ]
-            spec = SubprocessSpec(
+            specification = SubprocessSpecification(
                 group_name=group_name,
-                services=service_specs,
+                services=service_specifications,
                 control_queue=self._control_queues[group_name],
                 device=self.device,
                 batch_size=self.batch_size,
@@ -396,14 +440,14 @@ class ModelRegistry:
                 compile_mode=self.compile_mode,
                 embedding_size=self.embedding_size,
             )
-            handle = InferenceSubprocessHandle(spec, ctx=self._mp_ctx)
+            handle = InferenceSubprocessHandle(specification, ctx=self._mp_ctx)
             handle.start()
             self._subprocesses[group_name] = handle
             logger.info(
                 "Registry: started subprocess '%s' with %d services: %s",
                 group_name,
-                len(service_specs),
-                [s.name for s in service_specs],
+                len(service_specifications),
+                [s.name for s in service_specifications],
             )
         self._pending_subprocess.clear()
 
@@ -422,7 +466,7 @@ class ModelRegistry:
 
         May be called either before or after `start_all()`:
           - Before: the trainer-side shadow is updated. For subprocess
-            services, the spawn-time spec's agent reference is the
+            services, the spawn-time specification's agent reference is the
             same object as `_raw_agents[name]`, so the subprocess
             inherits the latest weights when it starts. Used by train.py
             to pre-fill ghost slot weights from disk at startup.
@@ -452,7 +496,7 @@ class ModelRegistry:
         if not self._started:
             # Subprocess hasn't been spawned yet; the shadow update
             # above will be picked up at spawn time when start_all()
-            # pickles the spec's agent reference into the subprocess.
+            # pickles the specification's agent reference into the subprocess.
             logger.info(
                 "sync_weights[%s]: pre-start shadow update load=%.1fms",
                 name,
@@ -500,18 +544,6 @@ class ModelRegistry:
         return {
             name: (self._request_queues[name], self._response_queues[name])
             for name in self._service_to_group
-        }
-
-    def get_diagnostics(self) -> Dict[str, Dict[str, float]]:
-        """Snapshot of per-model service diagnostics (in-process only).
-
-        Subprocess services don't yet surface diagnostics to the trainer
-        — return only in-process names. If diagnostics from subprocess
-        services become important, the control_queue protocol can grow
-        a `DiagnosticsRequestMsg` round-trip; left as future work.
-        """
-        return {
-            name: svc.get_diagnostics_snapshot() for name, svc in self._services.items()
         }
 
     def names(self) -> List[str]:
