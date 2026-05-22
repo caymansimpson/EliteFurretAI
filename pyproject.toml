@@ -78,6 +78,7 @@ addopts = "-ra -q -m 'not slow'"
 testpaths = [
     "unit_tests",
 ]
+pythonpath = ["src"]
 markers = [
     "smoke: end-to-end training smoke tests (deselect with '-m not smoke')",
     "slow: tests taking >1s; skipped by default, run with '-m slow'",

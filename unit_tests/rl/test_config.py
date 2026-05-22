@@ -35,7 +35,8 @@ def test_get_default_config():
     config = get_default_config()
 
     assert isinstance(config, RNaDConfig)
-    assert config.curriculum.battle_format == "gen9vgc2023regc"
+    assert config.curriculum.primary_format == "gen9vgc2023regc"
+    assert config.curriculum.battle_formats == {"gen9vgc2023regc": 1.0}
     assert config.hardware.device in ["cuda", "cpu"]
 
 
@@ -116,7 +117,7 @@ def test_config_save_and_load():
 
         # Create config with custom values
         config = get_default_config()
-        config.curriculum.battle_format = "gen9vgc2024regg"
+        config.curriculum.battle_formats = {"gen9vgc2024regg": 1.0}
         config.optimizer.lr = 0.0005
         config.hardware.num_players = 4
         config.training.train_batch_size = 64
@@ -131,7 +132,8 @@ def test_config_save_and_load():
         loaded = RNaDConfig.load(config_path)
 
         # Verify values match
-        assert loaded.curriculum.battle_format == "gen9vgc2024regg"
+        assert loaded.curriculum.primary_format == "gen9vgc2024regg"
+        assert loaded.curriculum.battle_formats == {"gen9vgc2024regg": 1.0}
         assert loaded.optimizer.lr == 0.0005
         assert loaded.hardware.num_players == 4
         assert loaded.training.train_batch_size == 64
@@ -241,7 +243,7 @@ def test_config_yaml_format():
         assert "hardware" in data
         assert "algorithm" in data
         assert isinstance(data["curriculum"], dict)
-        assert "battle_format" in data["curriculum"]
+        assert "battle_formats" in data["curriculum"]
         assert "curriculum_weights" in data["curriculum"]
 
 
@@ -271,7 +273,7 @@ def test_config_to_dict():
     assert "optimizer" in d
 
     # Check nested access
-    assert "battle_format" in d["curriculum"]
+    assert "battle_formats" in d["curriculum"]
     assert "lr" in d["optimizer"]
     assert "num_players" in d["hardware"]
     assert "use_wandb" in d["training"]
@@ -537,8 +539,42 @@ def test_load_partial_yaml():
         assert loaded.hardware.num_players == 8
 
         # Default values for unspecified fields
-        assert loaded.curriculum.battle_format == "gen9vgc2023regc"
+        assert loaded.curriculum.primary_format == "gen9vgc2023regc"
+        assert loaded.curriculum.battle_formats == {"gen9vgc2023regc": 1.0}
         assert loaded.algorithm.gamma == 0.99
+
+
+# =============================================================================
+# BATTLE_FORMATS DISTRIBUTION TESTS
+# =============================================================================
+
+
+def test_battle_formats_default_is_single_format_distribution():
+    """Default CurriculumConfig has battle_formats == {default: 1.0}."""
+    config = get_default_config()
+    assert config.curriculum.battle_formats == {"gen9vgc2023regc": 1.0}
+    assert config.curriculum.primary_format == "gen9vgc2023regc"
+
+
+def test_battle_formats_validation_rejects_non_unit_sum():
+    from elitefurretai.rl.config import CurriculumConfig
+
+    with pytest.raises(ValueError, match="must sum to 1.0"):
+        CurriculumConfig(battle_formats={"gen9vgc2024regg": 0.5, "gen9vgc2024regh": 0.4})
+
+
+def test_battle_formats_validation_rejects_negative_weight():
+    from elitefurretai.rl.config import CurriculumConfig
+
+    with pytest.raises(ValueError, match="positive"):
+        CurriculumConfig(battle_formats={"gen9vgc2024regg": 1.2, "gen9vgc2024regh": -0.2})
+
+
+def test_primary_format_returns_highest_weight():
+    from elitefurretai.rl.config import CurriculumConfig
+
+    cur = CurriculumConfig(battle_formats={"gen9vgc2024regg": 0.7, "gen9vgc2024regh": 0.3})
+    assert cur.primary_format == "gen9vgc2024regg"
 
 
 if __name__ == "__main__":

@@ -438,17 +438,27 @@ class CurriculumConfig:
     Path conventions
     ----------------
     Both `opponent_team_pool_path` and `agent_team_path` are *relative* to
-    `<base_team_path>/<battle_format>/`. Callers should resolve via
+    `<base_team_path>/<primary_format>/`. Callers should resolve via
     `resolved_agent_team_path()` (file or directory) and pass
     `opponent_team_pool_path` as the `subdirectory=` arg to TeamRepo.
+    Team files are located at `<base_team_path>/<format>/` for every key
+    in `battle_formats`. (Task 2 generalizes path resolution to a
+    per-format dict; for now single-format callers use `primary_format`.)
     """
 
     # Battle format and team sources. agent_team_path is a relative path
-    # (file or directory) under <base_team_path>/<battle_format>/.
+    # (file or directory) under <base_team_path>/<primary_format>/.
     agent_team_path: Optional[str] = None
     base_team_path: str = "data/teams"
-    battle_format: str = "gen9vgc2023regc"
-    # Subdirectory under <base_team_path>/<battle_format>/ sampled from for
+    # Probability distribution over battle formats. Must sum to 1.0.
+    # Each rollout pair is pinned to one sampled format at create_agents time
+    # (see WorkerOpponentFactory). The embedder is built once against
+    # primary_format — vocab is gen-keyed (format_str[3]) so all entries must
+    # share the same gen.
+    battle_formats: Dict[str, float] = field(
+        default_factory=lambda: {"gen9vgc2023regc": 1.0}
+    )
+    # Subdirectory under <base_team_path>/<primary_format>/ sampled from for
     # opponent teams.
     opponent_team_pool_path: Optional[str] = None
     # Behavior cloning model used as opponent
@@ -497,16 +507,51 @@ class CurriculumConfig:
     external_vgcbench_team_file: str = "data/teams/gen9vgc2024regg/vgcbench.txt"
     vgc_bench_checkpoint_path: str = "data/models/vgc-bench-sb3-model.zip"
 
+    def __post_init__(self) -> None:
+        if not self.battle_formats:
+            raise ValueError("battle_formats must not be empty")
+        for fmt, weight in self.battle_formats.items():
+            if not isinstance(fmt, str) or not fmt:
+                raise ValueError(
+                    f"battle_formats key must be non-empty string, got {fmt!r}"
+                )
+            if weight <= 0:
+                raise ValueError(
+                    f"battle_formats weight for {fmt!r} must be positive, got {weight}"
+                )
+        total = sum(self.battle_formats.values())
+        if abs(total - 1.0) > 1e-6:
+            raise ValueError(
+                f"battle_formats weights must sum to 1.0, got {total} "
+                f"({self.battle_formats})"
+            )
+        gens = {fmt[3] for fmt in self.battle_formats}
+        if len(gens) > 1:
+            raise ValueError(
+                f"All battle_formats must share the same gen (format[3]); got {gens}"
+            )
+
+    @property
+    def primary_format(self) -> str:
+        """Highest-weight format. Used for embedder construction only.
+
+        Vocab is gen-keyed (see embedder.build_*_to_id), so the chosen
+        primary_format determines the gen but not which species are
+        embeddable — every species in the gen's pokedex is reachable
+        regardless of which doubles format is sampled at runtime.
+        """
+        return max(self.battle_formats.items(), key=lambda kv: kv[1])[0]
+
     def resolved_agent_team_path(self) -> Optional[str]:
         """Full filesystem path for `agent_team_path`, or None if unset.
 
         Joins the relative `agent_team_path` with
-        `<base_team_path>/<battle_format>/`. Returns the resolved path
-        whether the underlying target is a single file or a directory.
+        `<base_team_path>/<primary_format>/`. (Task 2 generalizes this to a
+        per-format dict; for now this preserves single-format callers.)
         """
         if not self.agent_team_path:
             return None
-        return os.path.join(self.base_team_path, self.battle_format, self.agent_team_path)
+        return os.path.join(self.base_team_path, self.primary_format, self.agent_team_path)
 
 
 @dataclass
@@ -688,7 +733,7 @@ class RNaDConfig:
 
         if cur.opponent_team_pool_path:
             full_pool = os.path.join(
-                cur.base_team_path, cur.battle_format, cur.opponent_team_pool_path
+                cur.base_team_path, cur.primary_format, cur.opponent_team_pool_path
             )
             assert os.path.exists(full_pool), (
                 f"Opponent team pool path not found: {full_pool}"
