@@ -111,16 +111,32 @@ def _build_transformer_kwargs(config: Dict[str, Any]) -> Dict[str, Any]:
         teampreview_head_dropout=config["teampreview_head_dropout"],
         teampreview_attention_heads=config["teampreview_attention_heads"],
         turn_head_layers=config["turn_head_layers"],
+        value_head_layers=config.get("value_head_layers", []),
         max_seq_len=config.get("max_seq_len", 40),
         num_value_bins=config.get("num_value_bins", 51),
         value_min=config.get("value_min", -1.0),
         value_max=config.get("value_max", 1.0),
+        number_bank_hp_bins=config.get("number_bank_hp_bins", 100),
+        number_bank_stat_bins=config.get("number_bank_stat_bins", 600),
+        number_bank_power_bins=config.get("number_bank_power_bins", 250),
+        number_bank_embedding_dim=config.get("number_bank_embedding_dim", 16),
+        number_bank_damage_bins=config.get("number_bank_damage_bins", 600),
+        number_bank_damage_embed_dim=config.get("number_bank_damage_embed_dim", 4),
+        number_bank_turn_bins=config.get("number_bank_turn_bins", 40),
+        number_bank_turn_embed_dim=config.get("number_bank_turn_embed_dim", 16),
+        number_bank_rating_bins=config.get("number_bank_rating_bins", 100),
+        number_bank_rating_embed_dim=config.get("number_bank_rating_embed_dim", 16),
+        ability_embed_dim=config.get("ability_embed_dim", 16),
+        item_embed_dim=config.get("item_embed_dim", 16),
+        species_embed_dim=config.get("species_embed_dim", 32),
+        move_embed_dim=config.get("move_embed_dim", 16),
         transformer_layers=config.get("transformer_layers", 6),
         transformer_heads=config.get("transformer_heads", 16),
         transformer_ff_dim=config.get("transformer_ff_dim", 2048),
         transformer_dropout=config.get("transformer_dropout", 0.1),
         use_decision_tokens=config.get("use_decision_tokens", True),
         use_causal_mask=config.get("use_causal_mask", True),
+        value_to_trunk_grad_scale=config.get("value_to_trunk_grad_scale", 1.0),
     )
 
 
@@ -323,14 +339,12 @@ def finetune(
             optimizer, mode="min", factor=0.5, patience=2
         )
 
-    scaler = torch.amp.GradScaler("cuda") if config["device"] == "cuda" else None  # type: ignore
-
     print("Initialized model! Starting fine-tuning...")
 
     start, steps = time.time(), 0
     best_test_loss = float("inf")
     for epoch in range(config["num_epochs"]):
-        train_metrics = train_epoch(model, train_loader, steps, optimizer, config, scaler)
+        train_metrics = train_epoch(model, train_loader, steps, optimizer, config)
 
         metrics = evaluate(
             model,
