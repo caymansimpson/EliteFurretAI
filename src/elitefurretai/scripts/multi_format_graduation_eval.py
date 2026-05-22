@@ -47,6 +47,8 @@ def main() -> None:
     parser.add_argument("--threshold", type=float, default=0.60)
     args = parser.parse_args()
 
+    if args.formats and args.config:
+        parser.error("Pass either --formats or --config, not both")
     if args.formats:
         formats = args.formats
     elif args.config:
@@ -64,15 +66,12 @@ def main() -> None:
             subprocess.run(
                 [
                     sys.executable,
-                    "src/elitefurretai/rl/analyze/evaluate.py",
+                    "-m",
+                    "elitefurretai.rl.analyze.evaluate",
                     "--player1",
                     f"model:{args.checkpoint}",
                     "--player2",
                     baseline,
-                    "--team1",
-                    f"data/teams/{fmt}/constrained",
-                    "--team2",
-                    f"data/teams/{fmt}/constrained",
                     "--battle-format",
                     fmt,
                     "--battles",

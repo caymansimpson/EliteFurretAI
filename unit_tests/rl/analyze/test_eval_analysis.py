@@ -964,6 +964,14 @@ def test_graduation_summary_fails_when_any_cell_below_threshold():
     assert failing[0]["opp_player_name"] == "vgc_bench"
 
 
+def test_graduation_summary_rejects_empty_battles():
+    """An empty DataFrame must not silently pass graduation."""
+    import pandas as pd
+
+    with pytest.raises(ValueError, match="non-empty"):
+        graduation_summary(pd.DataFrame())
+
+
 def test_graduation_summary_flags_missing_required_opp_type():
     battles = _battles_df(
         [

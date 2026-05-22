@@ -109,6 +109,11 @@ def graduation_summary(
     Overall ``passed`` is True iff every cell passes (no missing
     required opp_types, every win_rate >= threshold).
     """
+    if battles.empty or "battle_format" not in battles.columns:
+        raise ValueError(
+            "graduation_summary requires a non-empty battles DataFrame with a "
+            "'battle_format' column"
+        )
     per_cell = q_format_opp_type_win_rate(battles)
     formats = sorted({str(f) for f in battles["battle_format"].unique()})
     cells: List[dict] = []
