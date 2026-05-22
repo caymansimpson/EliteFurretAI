@@ -326,6 +326,22 @@ Key knobs (in `RNaDConfig.exploiter_pipeline`):
 
 Curriculum weights are configured in YAML (`opponents.curriculum`) and pushed down to workers via the trainer's control queue. Win rates are tracked per category and logged to WandB; sampling does NOT currently adapt to weaknesses automatically — graduation criteria are the feedback loop.
 
+### Multi-Format Training
+
+`CurriculumConfig.battle_formats: Dict[str, float]` declares a probability distribution over battle formats. At each `WorkerOpponentFactory.create_agents` call, formats are apportioned across pairs deterministically via the largest-remainder (Hamilton) method — every pair is pinned to one format for the run, and the apportioned distribution is as close as possible to the configured weights.
+
+Constraints (enforced by `CurriculumConfig.__post_init__`):
+
+- Weights must be positive and sum to 1.0 within 1e-6.
+- All formats must share the same gen (format string char [3]). This is required because the embedder vocab is gen-keyed.
+- Path fields (`agent_team_path`, `opponent_team_pool_path`) accept either a single string (broadcasts to all formats), a dict keyed by format, or null. Dict form must cover every format exactly — no missing or extra keys.
+
+The embedder is built once per worker against `primary_format` (the highest-weight format). Vocab is gen-shared, so every species/move/item in the gen's pokedex is embeddable regardless of which doubles format is sampled at runtime.
+
+VGCBench v1 is single-format; off-`primary_format` pairs cannot challenge it (Showdown rejects mismatched formats). `VGCBenchManager` logs a warning at launch when this configuration is detected. VGCBench v2 (multi-format trained) will replace it later.
+
+For the multi-format graduation check, see `src/elitefurretai/scripts/multi_format_graduation_eval.py` and the `q_format_opp_type_win_rate` / `graduation_summary` metrics.
+
 ### VGCBench: Fork-Safe External Opponent
 
 `vgc-bench` depends on a different fork of `poke-env` than EliteFurretAI. You can't import both into one Python process without API conflicts.
@@ -518,7 +534,11 @@ exploiter_pipeline:
 
 ```yaml
 checkpoint_path: "data/models/supervised/cool-bee-85-finetune_best.pt"
-opponent_team_pool_path: "data/teams/gen9vgc2024regg"
+
+curriculum:
+  battle_formats:
+    gen9vgc2024regg: 1.0
+  # opponent_team_pool_path: <subdir under data/teams/<format>/, or dict-per-format>
 
 hardware:
   num_workers: 4
@@ -622,7 +642,7 @@ Evaluation utilities, plotters, VGCBench external runner glue.
 ## 11. Future Directions
 
 1. **Adaptive Exploiter Allocation**: Dynamic adjustment of exploiter check interval based on win-rate stability.
-2. **Multi-Format Training**: Single agent across Reg C, D, E, F.
+2. **Multi-Format Adaptive Curriculum**: Format weights are currently static. Dynamic re-weighting (à la `adaptive_curriculum`) based on per-format performance is a natural follow-up to the shipped multi-format infrastructure (see "Multi-Format Training" section under Curriculum).
 3. **Team Generation**: Generate novel teams instead of sampling from a fixed pool.
 4. **Native Battle Engine**: Port Showdown to Python to eliminate WebSocket overhead.
 5. **Number Bank Tuning**: Optimize bin counts and embedding dimensions for production training.
