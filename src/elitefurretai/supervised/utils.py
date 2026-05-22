@@ -2,6 +2,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import torch
 
+from elitefurretai.etl.cuda_prefetcher import CudaStreamPrefetcher
 from elitefurretai.etl.encoder import MDBO
 
 
@@ -367,21 +368,23 @@ def evaluate(
     metrics = create_empty_metrics()
     steps = 0
 
-    for batch in dataloader:
-        states = batch["states"].to(device).to(torch.float32)
-        actions = batch["actions"].to(device)
-        action_masks = (
-            batch["action_masks"].to(device) if "action_masks" in batch else None
-        )
-        masks = batch["masks"].to(device) if "masks" in batch else None
+    _eval_iterator = (
+        CudaStreamPrefetcher(dataloader, device=device) if device == "cuda" else dataloader
+    )
+
+    for batch in _eval_iterator:
+        if device != "cuda":
+            batch = {k: v.to(device) for k, v in batch.items()}
+        states = batch["states"].to(torch.float32)
+        actions = batch["actions"]
+        action_masks = batch["action_masks"] if "action_masks" in batch else None
+        masks = batch["masks"] if "masks" in batch else None
         wins = (
-            batch["wins"].to(device).to(torch.float32)
-            if has_win_head and "wins" in batch
-            else None
+            batch["wins"].to(torch.float32) if has_win_head and "wins" in batch else None
         )
-        move_orders = batch["move_orders"].to(device) if "move_orders" in batch else None
-        kos = batch["kos"].to(device) if "kos" in batch else None
-        switches = batch["switches"].to(device) if "switches" in batch else None
+        move_orders = batch["move_orders"] if "move_orders" in batch else None
+        kos = batch["kos"] if "kos" in batch else None
+        switches = batch["switches"] if "switches" in batch else None
 
         # Apply action masking if provided
         if action_mask_fn and action_masks is None:
@@ -852,23 +855,25 @@ def analyze(
         },
     }
 
-    for batch in dataloader:
-        states = batch["states"].to(device).to(torch.float32)
+    _analyze_iterator = (
+        CudaStreamPrefetcher(dataloader, device=device) if device == "cuda" else dataloader
+    )
+
+    for batch in _analyze_iterator:
+        if device != "cuda":
+            batch = {k: v.to(device) for k, v in batch.items()}
+        states = batch["states"].to(torch.float32)
         if state_input_dim is not None and state_input_dim < states.shape[-1]:
             states = states[..., :state_input_dim]
-        actions = batch["actions"].to(device)
-        action_masks = (
-            batch["action_masks"].to(device) if "action_masks" in batch else None
-        )
-        masks = batch["masks"].to(device) if "masks" in batch else None
+        actions = batch["actions"]
+        action_masks = batch["action_masks"] if "action_masks" in batch else None
+        masks = batch["masks"] if "masks" in batch else None
         wins = (
-            batch["wins"].to(device).to(torch.float32)
-            if has_win_head and "wins" in batch
-            else None
+            batch["wins"].to(torch.float32) if has_win_head and "wins" in batch else None
         )
-        move_orders = batch["move_orders"].to(device) if "move_orders" in batch else None
-        kos = batch["kos"].to(device) if "kos" in batch else None
-        switches = batch["switches"].to(device) if "switches" in batch else None
+        move_orders = batch["move_orders"] if "move_orders" in batch else None
+        kos = batch["kos"] if "kos" in batch else None
+        switches = batch["switches"] if "switches" in batch else None
 
         # Apply action masking if provided
         if action_mask_fn and action_masks is None:

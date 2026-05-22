@@ -20,6 +20,7 @@ from elitefurretai.etl import (
     Embedder,
     OptimizedBattleDataLoader,
 )
+from elitefurretai.etl.cuda_prefetcher import CudaStreamPrefetcher
 from elitefurretai.etl.system_utils import configure_torch_multiprocessing
 from elitefurretai.supervised.model_archs import TransformerThreeHeadedModel
 from elitefurretai.supervised.utils import (
@@ -56,11 +57,14 @@ def train_epoch(
     accumulation_steps = config.get("accumulation_steps", 1)
     accumulation_counter = 0
 
-    for batch in dataloader:
-        # Transfer data to the right device
-        if config["device"] == "cuda":
-            batch = {k: v.cuda(non_blocking=True) for k, v in batch.items()}
-        else:
+    iterator = (
+        CudaStreamPrefetcher(dataloader, device=config["device"])
+        if config["device"] == "cuda"
+        else dataloader
+    )
+
+    for batch in iterator:
+        if config["device"] != "cuda":
             batch = {k: v.to(config["device"]) for k, v in batch.items()}
 
         states = batch["states"].to(torch.float32)
