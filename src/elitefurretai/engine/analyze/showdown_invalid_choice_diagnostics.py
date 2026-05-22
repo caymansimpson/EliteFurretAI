@@ -5,7 +5,7 @@ Two modes share this file:
 
   --player model         (default) — model-driven self-play used to capture
                                      invalid-choice errors against a trained
-                                     BatchInferencePlayer for ad-hoc analysis.
+                                     RLTrajectoryPlayer for ad-hoc analysis.
 
   --player random-masked            — fuzz-test rl/masking.py end-to-end with
                                      two masked-random players. Loops team
@@ -102,7 +102,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["model", "random-masked"],
         default="model",
         help=(
-            "model: existing diagnostic mode using a trained BatchInferencePlayer. "
+            "model: existing diagnostic mode using a trained RLTrajectoryPlayer. "
             "random-masked: fuzz-test masking.py with two players that sample uniformly "
             "from legal-mask actions, looping team-resamplings until SIGINT or first failure."
         ),
