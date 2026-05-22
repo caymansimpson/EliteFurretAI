@@ -3,7 +3,6 @@ from types import SimpleNamespace
 from typing import cast
 from unittest.mock import MagicMock
 
-import pytest
 from poke_env import ServerConfiguration
 
 from elitefurretai.etl import Embedder, TeamRepo
@@ -320,11 +319,11 @@ def test_largest_remainder_apportionment_single_format():
     assert result == ["only"] * 4
 
 
-@pytest.mark.xfail(reason="create_agents per-pair format wired in Task 4", strict=True)
 def test_create_agents_assigns_pair_formats_via_apportionment(monkeypatch):
     """4 pairs at 50/50 should produce a pair_formats list with two of each format."""
     factory = _make_factory(
         curriculum={OpponentPool.SELF_PLAY: 1.0},
+        worker_inference_clients=_clients_with("main"),
         battle_formats={"gen9vgc2024regg": 0.5, "gen9vgc2024regh": 0.5},
     )
     constructed_formats: list[str] = []

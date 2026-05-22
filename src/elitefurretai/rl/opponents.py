@@ -642,29 +642,33 @@ class WorkerOpponentFactory:
         """
         self._active_exploiter_slots = set(slots)
 
-    def sample_team(self) -> str:
+    def sample_team(self, battle_format: str) -> str:
         return self.team_repo.sample_team(
-            self.battle_format,
-            subdirectory=self.team_subdirectory,
+            battle_format,
+            subdirectory=self.opponent_team_subdirectories.get(battle_format),
         )
 
-    def get_agent_team(self) -> str:
-        """Return the agent's team, shuffled. Uses fixed team(s) if agent_team_path
-        is set; otherwise falls back to opponent-pool sampling.
+    def get_agent_team(self, battle_format: str) -> str:
+        """Return the agent's team for the given format, shuffled.
+
+        Uses fixed team(s) from ``self._agent_teams_by_format[battle_format]``
+        when any are loaded for this format; otherwise falls back to
+        sampling from the opponent team pool for that format.
         """
-        if self._agent_teams:
-            return self.team_repo._shuffle_team_order(random.choice(self._agent_teams))
-        return self.sample_team()
+        teams = self._agent_teams_by_format.get(battle_format, [])
+        if teams:
+            return self.team_repo._shuffle_team_order(random.choice(teams))
+        return self.sample_team(battle_format)
 
     def _make_baseline_pool(
         self,
         opp_type: str,
         player_cls: Type[_P],
         role: str,
-        num_opponents: int,
+        pair_formats: List[str],
     ) -> List[_P]:
-        """Create `num_opponents` of `player_cls` if `opp_type` has nonzero
-        curriculum weight at startup; otherwise return an empty list.
+        """Create one ``player_cls`` per entry in ``pair_formats``, each pinned
+        to that pair's format and team. Returns [] when curriculum weight is 0.
 
         Pools are not backfilled when `update_curriculum` later raises a
         weight from 0 — see the note in `update_curriculum` about
@@ -674,14 +678,14 @@ class WorkerOpponentFactory:
             return []
         return [
             player_cls(
-                battle_format=self.battle_format,
+                battle_format=fmt,
                 account_configuration=AccountConfiguration(
                     self._account_name(role, i), None
                 ),
                 server_configuration=self.server_config,
-                team=self.sample_team(),
+                team=self.sample_team(fmt),
             )
-            for i in range(num_opponents)
+            for i, fmt in enumerate(pair_formats)
         ]
 
     def create_agents(
@@ -719,9 +723,14 @@ class WorkerOpponentFactory:
             "inference_client": self.worker_inference_clients["main"]
         }
 
+        # Apportion formats across pairs deterministically (see Task 3 plan).
+        self.pair_formats = largest_remainder_apportionment(
+            num_items=num_pairs, weights=self.battle_formats
+        )
+
         self.players = []
         self.opponents = []
-        for i in range(num_pairs):
+        for i, fmt in enumerate(self.pair_formats):
             self.players.append(
                 RLTrajectoryPlayer(
                     account_configuration=AccountConfiguration(
@@ -729,8 +738,8 @@ class WorkerOpponentFactory:
                     ),
                     server_configuration=self.server_config,
                     trajectory_queue=local_traj_queue,
-                    battle_format=self.battle_format,
-                    team=self.get_agent_team(),
+                    battle_format=fmt,
+                    team=self.get_agent_team(fmt),
                     worker_id=self.worker_id,
                     embedder=self.embedder,
                     max_battle_steps=self.max_battle_steps,
@@ -746,8 +755,8 @@ class WorkerOpponentFactory:
                     ),
                     server_configuration=self.server_config,
                     trajectory_queue=None,
-                    battle_format=self.battle_format,
-                    team=self.sample_team(),
+                    battle_format=fmt,
+                    team=self.sample_team(fmt),
                     worker_id=self.worker_id,
                     embedder=self.embedder,
                     max_battle_steps=self.max_battle_steps,
@@ -757,19 +766,22 @@ class WorkerOpponentFactory:
             )
 
         self.max_damage_opponents = self._make_baseline_pool(
-            OpponentPool.MAX_DAMAGE, MaxDamagePlayer, "MaxD", num_pairs
+            OpponentPool.MAX_DAMAGE, MaxDamagePlayer, "MaxD", self.pair_formats
         )
         self.random_baseline_opponents = self._make_baseline_pool(
-            OpponentPool.RANDOM_BASELINE, RandomPlayer, "Rand", num_pairs
+            OpponentPool.RANDOM_BASELINE, RandomPlayer, "Rand", self.pair_formats
         )
         self.max_base_power_baseline_opponents = self._make_baseline_pool(
-            OpponentPool.MAX_BASE_POWER_BASELINE, MaxBasePowerPlayer, "MaxB", num_pairs
+            OpponentPool.MAX_BASE_POWER_BASELINE,
+            MaxBasePowerPlayer,
+            "MaxB",
+            self.pair_formats,
         )
         self.simple_heuristic_baseline_opponents = self._make_baseline_pool(
             OpponentPool.SIMPLE_HEURISTIC_BASELINE,
             SimpleHeuristicsPlayer,
             "Heur",
-            num_pairs,
+            self.pair_formats,
         )
 
         return self.players, self.opponents, self.max_damage_opponents
@@ -979,26 +991,34 @@ class WorkerOpponentFactory:
     def randomize_all_teams(self) -> None:
         """Resample teams for all participants before the next batch.
 
-        Players use the fixed agent team if agent_team_path is set,
-        otherwise sample randomly. Opponents always sample randomly.
+        Each slot is pinned to its pair's format (see `self.pair_formats`).
+        Players use the fixed agent team(s) for that format if configured,
+        otherwise sample from the format's opponent team pool. Baseline
+        pools mirror the same per-slot format pinning.
         """
-        for player in self.players:
-            player._team = ConstantTeambuilder(self.get_agent_team())
+        for i, player in enumerate(self.players):
+            fmt = self.pair_formats[i]
+            player._team = ConstantTeambuilder(self.get_agent_team(fmt))
 
-        for opponent in self.opponents:
-            opponent._team = ConstantTeambuilder(self.sample_team())
+        for i, opponent in enumerate(self.opponents):
+            fmt = self.pair_formats[i]
+            opponent._team = ConstantTeambuilder(self.sample_team(fmt))
 
-        for md_opp in self.max_damage_opponents:
-            md_opp._team = ConstantTeambuilder(self.sample_team())
+        for i, md_opp in enumerate(self.max_damage_opponents):
+            fmt = self.pair_formats[i]
+            md_opp._team = ConstantTeambuilder(self.sample_team(fmt))
 
-        for random_opp in self.random_baseline_opponents:
-            random_opp._team = ConstantTeambuilder(self.sample_team())
+        for i, random_opp in enumerate(self.random_baseline_opponents):
+            fmt = self.pair_formats[i]
+            random_opp._team = ConstantTeambuilder(self.sample_team(fmt))
 
-        for maxbp_opp in self.max_base_power_baseline_opponents:
-            maxbp_opp._team = ConstantTeambuilder(self.sample_team())
+        for i, maxbp_opp in enumerate(self.max_base_power_baseline_opponents):
+            fmt = self.pair_formats[i]
+            maxbp_opp._team = ConstantTeambuilder(self.sample_team(fmt))
 
-        for heuristic_opp in self.simple_heuristic_baseline_opponents:
-            heuristic_opp._team = ConstantTeambuilder(self.sample_team())
+        for i, heuristic_opp in enumerate(self.simple_heuristic_baseline_opponents):
+            fmt = self.pair_formats[i]
+            heuristic_opp._team = ConstantTeambuilder(self.sample_team(fmt))
 
     def teardown_runtime_agents(self) -> None:
         """Best-effort teardown of all worker-local players/opponents.
