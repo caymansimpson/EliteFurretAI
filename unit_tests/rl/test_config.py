@@ -615,10 +615,22 @@ def test_resolved_agent_team_paths_dict_form_used_verbatim_per_format():
 
 
 def test_resolved_agent_team_paths_dict_form_rejects_missing_format():
-    with pytest.raises(ValueError, match="missing entry for format"):
+    with pytest.raises(ValueError, match="missing="):
         CurriculumConfig(
             battle_formats={"gen9vgc2024regg": 0.5, "gen9vgc2024regh": 0.5},
             agent_team_path={"gen9vgc2024regg": "constrained"},  # missing regh
+        )
+
+
+def test_resolved_agent_team_paths_dict_form_rejects_extra_format():
+    """Dict-form path config with extra keys not in battle_formats is rejected."""
+    with pytest.raises(ValueError, match="extra="):
+        CurriculumConfig(
+            battle_formats={"gen9vgc2024regg": 1.0},
+            agent_team_path={
+                "gen9vgc2024regg": "constrained",
+                "gen9vgc2024regh": "rentals",
+            },
         )
 
 
@@ -634,6 +646,28 @@ def test_resolved_opponent_team_pool_paths_matches_format_keys():
     )
     assert cur.resolved_opponent_team_pool_paths() == {
         "gen9vgc2024regg": "ranked",
+        "gen9vgc2024regh": None,
+    }
+
+
+def test_resolved_opponent_team_pool_paths_string_form_broadcasts():
+    cur = CurriculumConfig(
+        battle_formats={"gen9vgc2024regg": 0.5, "gen9vgc2024regh": 0.5},
+        opponent_team_pool_path="ranked",
+    )
+    assert cur.resolved_opponent_team_pool_paths() == {
+        "gen9vgc2024regg": "ranked",
+        "gen9vgc2024regh": "ranked",
+    }
+
+
+def test_resolved_opponent_team_pool_paths_none_maps_every_format_to_none():
+    cur = CurriculumConfig(
+        battle_formats={"gen9vgc2024regg": 0.5, "gen9vgc2024regh": 0.5},
+        opponent_team_pool_path=None,
+    )
+    assert cur.resolved_opponent_team_pool_paths() == {
+        "gen9vgc2024regg": None,
         "gen9vgc2024regh": None,
     }
 

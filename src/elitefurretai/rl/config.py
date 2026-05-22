@@ -553,11 +553,14 @@ class CurriculumConfig:
         for attr in ("agent_team_path", "opponent_team_pool_path"):
             value = getattr(self, attr)
             if isinstance(value, dict):
-                missing = set(self.battle_formats) - set(value)
-                if missing:
+                expected = set(self.battle_formats)
+                actual = set(value)
+                missing = expected - actual
+                extra = actual - expected
+                if missing or extra:
                     raise ValueError(
-                        f"{attr} (dict form) is missing entry for format(s) "
-                        f"{sorted(missing)}; got keys {sorted(value)}"
+                        f"{attr} (dict form) keys must match battle_formats exactly; "
+                        f"missing={sorted(missing)} extra={sorted(extra)}"
                     )
 
     @property
@@ -794,20 +797,17 @@ class RNaDConfig:
         )
 
         for fmt, pool_subdir in cur.resolved_opponent_team_pool_paths().items():
-            if pool_subdir is not None:
+            if pool_subdir:
                 full_pool = os.path.join(cur.base_team_path, fmt, pool_subdir)
                 assert os.path.exists(full_pool), (
                     f"Opponent team pool path not found: {full_pool}"
                 )
-        agent_team_path = cur.resolved_agent_team_path()
-        if agent_team_path is not None:
-            assert os.path.exists(agent_team_path), (
-                f"Agent team path not found: {agent_team_path}"
-            )
-            if os.path.isdir(agent_team_path):
-                team_files = [f for f in os.listdir(agent_team_path) if f.endswith(".txt")]
+        for fmt, ap in cur.resolved_agent_team_paths().items():
+            assert os.path.exists(ap), f"Agent team path not found ({fmt}): {ap}"
+            if os.path.isdir(ap):
+                team_files = [f for f in os.listdir(ap) if f.endswith(".txt")]
                 assert len(team_files) > 0, (
-                    f"No .txt team files in agent_team_path: {agent_team_path}"
+                    f"No .txt team files in agent_team_path ({fmt}): {ap}"
                 )
         if trn.resume_from:
             assert os.path.exists(trn.resume_from), (
