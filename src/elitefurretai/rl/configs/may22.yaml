@@ -118,7 +118,8 @@ hardware:
   compile_inference_model: default
 
 curriculum:
-  battle_format: gen9vgc2024regg
+  battle_formats:
+    gen9vgc2024regg: 1.0
   base_team_path: data/teams
   opponent_team_pool_path: constrained
   agent_team_path: constrained
