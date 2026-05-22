@@ -1,3 +1,8 @@
+# Smoke-test config for multi-format wiring (50/50 across gen9vgc2024regg
+# and gen9vgc2024regh). Requires the local pokemon-showdown install to
+# define gen9vgc2024regh; otherwise the regh half is rejected at challenge
+# time by Showdown (external blocker, not a code bug).
+#
 # Only non-default values are listed. Defaults live in
 # `src/elitefurretai/rl/config.py` (the `@dataclass` definitions).
 algorithm:
@@ -74,6 +79,7 @@ curriculum:
   max_ghosts: 5
   vgc_bench_checkpoint_path: data/models/vgc-bench-sb3-model.zip
   external_vgcbench_python_executable: /home/cayman/Repositories/venv-vgcbench/bin/python
+  # VGCBench v1 is single-format (regg-only). Unused while vgc_bench_baseline=0.
   external_vgcbench_team_file: data/teams/gen9vgc2024regg/vgcbench.txt
 
 training:

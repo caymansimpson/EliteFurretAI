@@ -107,8 +107,8 @@ curriculum:
   #          gen9vgc2024regg: constrained/38dessert.txt
   #          gen9vgc2024regh: setup
   #
-  # In dict form every active format MUST appear as a key — the config
-  # validator raises ValueError on missing entries (no implicit fallback).
+  # In dict form keys must match battle_formats exactly — the config
+  # validator raises ValueError on both missing AND extra keys.
   # ──────────────────────────────────────────────────────────────────────
   base_team_path: data/teams
   opponent_team_pool_path: constrained
