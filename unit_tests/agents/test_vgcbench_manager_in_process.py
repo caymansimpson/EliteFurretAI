@@ -17,18 +17,36 @@ from __future__ import annotations
 
 import importlib.metadata
 import os
+from typing import TYPE_CHECKING, TypedDict
 from unittest.mock import patch
 
 import pytest
 
 from elitefurretai.agents.vgcbench_manager import _create_vgc_bench_player
 
+if TYPE_CHECKING:
+    from poke_env.ps_client import AccountConfiguration, ServerConfiguration
 
-def _make_dummy_kwargs(checkpoint_path: str = "data/models/vgc-bench-sb3-model.zip"):
+
+class _DummyKwargs(TypedDict):
+    """Typed kwargs for `_create_vgc_bench_player` so `**` unpacking narrows
+    each key to its specific parameter type for static analysis."""
+
+    device: str
+    player_config: AccountConfiguration
+    server_config: ServerConfiguration
+    team: str
+    battle_format: str
+    checkpoint_path: str
+
+
+def _make_dummy_kwargs(
+    checkpoint_path: str = "data/models/vgc-bench-sb3-model.zip",
+) -> _DummyKwargs:
     """Minimal kwargs for the function — we exercise pre-load guards only."""
     from poke_env.ps_client import AccountConfiguration, ServerConfiguration
 
-    return dict(
+    return _DummyKwargs(
         device="cpu",
         player_config=AccountConfiguration("TEST", None),
         server_config=ServerConfiguration("ws://localhost:8000/showdown/websocket", ""),
