@@ -1,0 +1,134 @@
+# may23: BC config building on may22, targeted at fixing the regressions
+# observed in sandy-firefly-98 vs classic-firebrand-90. See
+# planning/stage2/2026-05-23-*-bc-action-quality-fixes.md for the full
+# diagnostic write-up and the rationale for each change.
+#
+# Architecture is unchanged from may22.yaml (still 1:1 with the RL trunk
+# in src/elitefurretai/rl/configs/may22.yaml's `architecture:` block).
+# Only loss-weighting, regularization, value-head smoothing, and the
+# save-best criterion are touched.
+
+# ===== Architecture - Backbone =====
+max_seq_len: 40
+grouped_encoder_hidden_dim: 256
+grouped_encoder_aggregated_dim: 2048
+pokemon_attention_heads: 8
+early_layers: [1024, 512, 512]
+
+# ===== Architecture - Transformer =====
+transformer_layers: 4
+transformer_heads: 8
+transformer_ff_dim: 2048
+transformer_dropout: 0.1
+use_decision_tokens: true
+use_causal_mask: true
+late_layers: [512, 512]
+
+# ===== Architecture - Teampreview Head =====
+teampreview_head_layers: [256, 128]
+# Teampreview is a single decision per battle and not RL-critical; we
+# leave dropout high since this head receives little gradient anyway.
+teampreview_head_dropout: 0.3
+teampreview_attention_heads: 2
+
+# ===== Architecture - Turn Action Head =====
+turn_head_layers: [512, 256, 256]
+
+# ===== Distributional Value Head (C51) =====
+num_value_bins: 51
+value_min: -1.0
+value_max: 1.0
+value_head_layers: [512, 512, 256]
+# CHANGE: was 0.05. C51 targets are already a soft categorical
+# distribution over bins around the target value; smoothing on top
+# is double-smoothing. Win Corr was unstable across all of
+# sandy-firefly's training; remove the smoothing as a confound.
+value_label_smoothing: 0.0
+
+# ===== Architecture - Number Banks & Embeddings =====
+number_bank_hp_bins: 100
+number_bank_stat_bins: 600
+number_bank_power_bins: 250
+number_bank_embedding_dim: 16
+number_bank_damage_bins: 600
+number_bank_damage_embed_dim: 4
+number_bank_turn_bins: 40
+number_bank_turn_embed_dim: 16
+number_bank_rating_bins: 100
+number_bank_rating_embed_dim: 16
+ability_embed_dim: 16
+item_embed_dim: 16
+species_embed_dim: 32
+move_embed_dim: 16
+
+# ===== Training =====
+num_epochs: 50
+eval_every: 2
+batch_size: 512
+learning_rate: 5.44e-05
+optimizer: AdamW
+lr_schedule: ReduceLROnPlateau
+max_grad_norm: 1.0
+accumulation_steps: 1
+seed: 21
+
+# CHANGE: was 0.2. Bigger model (FF dim 2048, ~30M params) overfits
+# the action heads earlier when trained for 50 epochs. Bumping trunk
+# dropout slows the per-head argmax collapse without changing
+# architecture.
+dropout: 0.25
+
+# CHANGE: was 0.000144. Same justification as the dropout bump —
+# stronger regularization to delay overfitting on a long run with a
+# wider transformer.
+weight_decay: 3.0e-4
+
+# ===== Loss Weights =====
+turn_loss_weight: 1.0
+move_loss_weight: 1.0
+
+# CHANGE: was 0.1. Diagnostics showed SWITCH Top-1 collapsed from
+# 99% (classic-firebrand) to 75% (sandy-firefly), and BOTH Top-5 from
+# 73% to 23%. SWITCH is a per-turn RL decision (~5 per battle) and
+# shares the trunk with MOVE; under-weighting it 10x starved the
+# trunk's gradient signal on switch-side tokens, which then degraded
+# the joint MOVE+SWITCH (BOTH) predictions too.
+switch_loss_weight: 1.0
+
+# Teampreview stays at 0.1 — single decision per battle, not
+# RL-critical, near-saturated metric (97-99% Top-1 either way).
+teampreview_loss_weight: 0.1
+
+value_to_trunk_grad_scale: 1.0
+win_loss_weight: 0.35
+turn_loss_type: topk
+train_topk_k: 2025
+entropy_weight: 0.0
+focal_alpha: 0.25
+focal_gamma: 2.0
+
+# ===== Save-best criterion =====
+# CHANGE: new field. Without this, `--save-best` keys on Test Loss,
+# which is dominated by turn_top3_loss (top-3 probability sharpness).
+# Sandy-firefly's MOVE Top-1 peaked at eval 5 (0.197) and decayed to
+# 0.110 by the best-on-Test-Loss eval at #17. We want the saved
+# checkpoint to track action argmax quality (what RL actually uses),
+# not top-3 envelope sharpness. See train.py:743 for the resulting
+# composite definition.
+save_best_metric: action_score
+
+# ===== Data =====
+embedder_feature_set: raw
+battle_format: gen9vgc2023regc
+keep_force_switch: false
+
+# ===== DataLoader =====
+num_workers: 4
+files_per_worker: 3
+prefetch_factor: 2
+worker_batch_size: 512
+persistent_workers: true
+
+# ===== Hardware =====
+device: cuda
+save_path: data/models/supervised/

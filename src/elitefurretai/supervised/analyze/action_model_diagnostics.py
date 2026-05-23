@@ -383,7 +383,7 @@ def main(model_path: str, data_path: str, max_batches: Optional[int] = 100):
 
     # Initialize embedder
     embedder = Embedder(
-        format="gen9vgc2023regc",
+        gen=9,
         feature_set=config["embedder_feature_set"],
         omniscient=False,
     )
@@ -403,6 +403,25 @@ def main(model_path: str, data_path: str, max_batches: Optional[int] = 100):
         new_key = k.replace("_orig_mod.", "") if k.startswith("_orig_mod.") else k
         stripped_state_dict[new_key] = v
 
+    passthrough_keys = [
+        "number_bank_hp_bins",
+        "number_bank_stat_bins",
+        "number_bank_power_bins",
+        "number_bank_embedding_dim",
+        "number_bank_damage_bins",
+        "number_bank_damage_embed_dim",
+        "number_bank_turn_bins",
+        "number_bank_turn_embed_dim",
+        "number_bank_rating_bins",
+        "number_bank_rating_embed_dim",
+        "ability_embed_dim",
+        "item_embed_dim",
+        "species_embed_dim",
+        "move_embed_dim",
+        "value_to_trunk_grad_scale",
+    ]
+    extra_kwargs = {k: config[k] for k in passthrough_keys if k in config}
+
     model = TransformerThreeHeadedModel(
         embedder=embedder,
         early_layers=config["early_layers"],
@@ -421,12 +440,14 @@ def main(model_path: str, data_path: str, max_batches: Optional[int] = 100):
         num_value_bins=config.get("num_value_bins", 51),
         value_min=config.get("value_min", -1.0),
         value_max=config.get("value_max", 1.0),
+        value_head_layers=config.get("value_head_layers"),
         transformer_layers=config.get("transformer_layers", 6),
         transformer_heads=config.get("transformer_heads", 16),
         transformer_ff_dim=config.get("transformer_ff_dim", 2048),
         transformer_dropout=0.0,
         use_decision_tokens=config.get("use_decision_tokens", True),
         use_causal_mask=config.get("use_causal_mask", True),
+        **extra_kwargs,
     ).to(device)
 
     model.load_state_dict(stripped_state_dict)

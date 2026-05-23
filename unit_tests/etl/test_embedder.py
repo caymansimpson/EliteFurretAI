@@ -129,7 +129,7 @@ def test_embed_move():
 def test_generate_pokemon_features():
     embedder = Embedder()
     dummy_battle = DoubleBattle("tag", "elitefurretai", None, gen=9)  # type: ignore
-    dummy_battle._format = embedder.format
+    dummy_battle._format = f"gen{embedder.gen}default"
     dummy_battle.player_role = "p1"
 
     # Test that we're creating correct features for None
@@ -216,7 +216,7 @@ def test_generate_pokemon_features():
 def test_generate_opponent_pokemon_features(vgc_battle_p1_logs):
     embedder = Embedder()
     dummy_battle = DoubleBattle("tag", "elitefurretai", None, gen=9)  # type: ignore
-    dummy_battle._format = embedder.format
+    dummy_battle._format = f"gen{embedder.gen}default"
     dummy_battle.player_role = "p1"
 
     # Test that we featurize none correctly
@@ -316,7 +316,7 @@ def test_generate_opponent_pokemon_features(vgc_battle_p1_logs):
 def test_feature_dict_to_vector_requires_full_embed():
     embedder = Embedder()
     dummy_battle = DoubleBattle("tag", "elitefurretai", None, gen=9)  # type: ignore
-    dummy_battle._format = embedder.format
+    dummy_battle._format = f"gen{embedder.gen}default"
     dummy_battle.player_role = "p1"
 
     partial = embedder.generate_move_features(None)
@@ -456,7 +456,7 @@ def test_species_id_feature():
     """Test that species_id is correctly added to pokemon features."""
     embedder = Embedder()
     dummy_battle = DoubleBattle("tag", "elitefurretai", None, gen=9)  # type: ignore
-    dummy_battle._format = embedder.format
+    dummy_battle._format = f"gen{embedder.gen}default"
     dummy_battle.player_role = "p1"
 
     # furret should have a valid species_id
@@ -520,7 +520,7 @@ def test_pruned_features_absent():
     """Verify that pruned features are no longer in embeddings."""
     embedder = Embedder()
     dummy_battle = DoubleBattle("tag", "elitefurretai", None, gen=9)  # type: ignore
-    dummy_battle._format = embedder.format
+    dummy_battle._format = f"gen{embedder.gen}default"
     dummy_battle.player_role = "p1"
 
     # Move-level SC, FIELD, WEATHER, EFFECT OHE should be pruned
@@ -542,7 +542,7 @@ def test_feature_consistency_across_feature_sets():
     for feature_set in ["raw", "full"]:
         embedder = Embedder(feature_set=feature_set)
         dummy_battle = DoubleBattle("tag", "elitefurretai", None, gen=9)  # type: ignore
-        dummy_battle._format = embedder.format
+        dummy_battle._format = f"gen{embedder.gen}default"
         dummy_battle.player_role = "p1"
 
         furret = Pokemon(gen=9, species="furret")

@@ -10,9 +10,9 @@ import time
 from typing import Any, Dict
 
 import torch
-import wandb
 import yaml
 
+import wandb
 from elitefurretai.etl import Embedder, PreprocessedBattleDataset
 from elitefurretai.supervised.model_archs import DNN
 from elitefurretai.supervised.utils import (
@@ -142,9 +142,7 @@ def main(train_path, test_path, val_path, config={}):
     torch.cuda.manual_seed(config["seed"])
     random.seed(config["seed"])
 
-    embedder = Embedder(
-        format="gen9vgc2023regc", feature_set=Embedder.FULL, omniscient=True
-    )
+    embedder = Embedder(gen=9, feature_set=Embedder.FULL, omniscient=True)
     feature_names = {name: i for i, name in enumerate(embedder.feature_names)}
     config["teampreview_idx"] = feature_names["teampreview"]
     config["force_switch_indices"] = [

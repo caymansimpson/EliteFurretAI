@@ -126,7 +126,7 @@ class BCPlayer(Player):
         if self._verbose:
             print("  Creating embedder...")
         embedder = Embedder(
-            format=self._battle_format,
+            gen=int(self._battle_format[3]),
             feature_set=config["embedder_feature_set"],
             omniscient=False,
         )

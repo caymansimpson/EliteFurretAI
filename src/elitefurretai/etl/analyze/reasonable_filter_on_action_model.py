@@ -178,9 +178,7 @@ def generate_data(dataloader):
     batch_masks = []
     batch_turns_til_end = []
 
-    embedder = Embedder(
-        format="gen9vgc2023regc", feature_set=Embedder.FULL, omniscient=True
-    )
+    embedder = Embedder(gen=9, feature_set=Embedder.FULL, omniscient=True)
     max_seq_len = 17
 
     for batch in dataloader:
@@ -302,9 +300,7 @@ def main(battlefile_path, model_filepath, num_battles):
         files = orjson.loads(f.read())[:num_battles]
 
     # Prepare embedder and dataset
-    embedder = Embedder(
-        format="gen9vgc2023regc", feature_set=Embedder.FULL, omniscient=True
-    )
+    embedder = Embedder(gen=9, feature_set=Embedder.FULL, omniscient=True)
     dataset = BattleDataset(files)
 
     # Initialize and load the trained model

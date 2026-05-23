@@ -28,9 +28,9 @@ import time
 from typing import Any, Dict, Optional, cast
 
 import torch
-import wandb
 import yaml
 
+import wandb
 from elitefurretai.etl import (
     MDBO,
     Embedder,
@@ -156,7 +156,7 @@ def load_model_and_config(model_path: str, device: str):
     print(f"Loaded config with {len(config)} parameters")
 
     embedder = Embedder(
-        format=config.get("battle_format", "gen9vgc2023regc"),
+        gen=int(config.get("battle_format", "gen9vgc2023regc")[3]),
         feature_set=config.get("embedder_feature_set", Embedder.FULL),
         omniscient=False,
     )
@@ -229,7 +229,7 @@ def finetune(
     # Recompute embedder-derived indices from a fresh embedder. Saved indices
     # could be stale if the feature schema evolved between training runs.
     embedder = Embedder(
-        format=config.get("battle_format", "gen9vgc2023regc"),
+        gen=int(config.get("battle_format", "gen9vgc2023regc")[3]),
         feature_set=config.get("embedder_feature_set", Embedder.FULL),
         omniscient=False,
     )

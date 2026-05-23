@@ -140,7 +140,7 @@ def mp_worker_process(
         setup_logging(force=True)
         suppress_third_party_warnings(suppress_pydantic_field_warnings=True)
 
-        primary_format = config.curriculum.primary_format
+        gen = config.curriculum.gen
         base_team_path = config.curriculum.base_team_path
         num_battles_per_pair = config.hardware.num_battles_per_pair
         logger.debug(
@@ -178,7 +178,7 @@ def mp_worker_process(
         else:
             embedder_feature_set = model_config.get("embedder_feature_set", "full")
         embedder = Embedder(
-            format=primary_format,
+            gen=gen,
             feature_set=embedder_feature_set,
             omniscient=False,
         )

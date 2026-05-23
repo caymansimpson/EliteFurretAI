@@ -80,7 +80,7 @@ def trajectories(
     print(f"Processing {len(files)} battle files into trajectories...")
 
     # Create an Embedder instance for feature extraction
-    emb = Embedder(format="gen9vgc2023regc", feature_set=Embedder.FULL, omniscient=False)
+    emb = Embedder(gen=9, feature_set=Embedder.FULL, omniscient=False)
 
     # Create a BattleDataset that yields full trajectories (one per __getitem__)
     dataset = BattleDataset(

@@ -729,7 +729,7 @@ async def _run(args: argparse.Namespace) -> None:
         )
 
         embedder = Embedder(
-            format=config.curriculum.primary_format,
+            gen=config.curriculum.gen,
             feature_set=feature_set,
             omniscient=False,
         )

@@ -12,9 +12,9 @@ import time
 from typing import Any, Dict, cast
 
 import torch
-import wandb
 import yaml
 
+import wandb
 from elitefurretai.etl import (
     MDBO,
     Embedder,
@@ -499,7 +499,7 @@ def main(train_path, test_path, val_path, config={}, save_best=False):
     # Initialize Embedder and find indices of special features; these will be used
     # for weighting training and analyzing model performance
     embedder = Embedder(
-        format=config["battle_format"],
+        gen=int(config["battle_format"][3]),
         feature_set=config["embedder_feature_set"],
         omniscient=False,
     )
@@ -646,7 +646,14 @@ def main(train_path, test_path, val_path, config={}, save_best=False):
     # Training loop
     start, steps = time.time(), 0
     best_test_loss = float("inf")
+    # Higher is better; tracked separately from test_loss so that
+    # `save_best_metric: action_score` saves on argmax-action quality
+    # rather than top-3 probability sharpness (which Test Loss
+    # measures via its turn_top3_loss term). See planning/stage2/
+    # 2026-05-23-*-bc-action-quality-fixes.md.
+    best_action_score = float("-inf")
     test_loss = float("inf")
+    action_score = float("-inf")
     for epoch in range(config["num_epochs"]):
         train_metrics = train_epoch(model, train_loader, steps, optimizer, config)
         steps += train_metrics["steps"]
@@ -679,6 +686,16 @@ def main(train_path, test_path, val_path, config={}, save_best=False):
                 * config["teampreview_loss_weight"]
                 + metrics.get("turn_top3_loss", 0) * config["turn_loss_weight"]
             )
+            # Composite of the metrics we actually care about for
+            # downstream RL: MOVE/BOTH argmax quality (most decisions),
+            # SWITCH Top-1 (high base rate, easy), and Win Corr (the
+            # value head that becomes the RL critic).
+            action_score = (
+                metrics.get("move_top3_acc", 0) * 0.5
+                + metrics.get("both_top3_acc", 0) * 0.3
+                + metrics.get("switch_top1_acc", 0) * 0.1
+                + metrics.get("win_corr", 0) * 0.1
+            )
             log = {
                 "Total Steps": steps,
                 "Train Loss": train_metrics["loss"],
@@ -708,6 +725,7 @@ def main(train_path, test_path, val_path, config={}, save_best=False):
                 "Test BOTH Top1": metrics.get("both_top1_acc", 0),
                 "Test BOTH Top3": metrics.get("both_top3_acc", 0),
                 "Test BOTH Top5": metrics.get("both_top5_acc", 0),
+                "Action Score": action_score,
             }
         else:
             log = {
@@ -739,13 +757,45 @@ def main(train_path, test_path, val_path, config={}, save_best=False):
             else:
                 scheduler.step()
 
-            # Save best checkpoint if requested
-            if save_best and test_loss < best_test_loss:
-                best_test_loss = test_loss
-                best_save_dict = {"model_state_dict": model.state_dict(), "config": config}
-                best_path = os.path.join(config["save_path"], f"{wandb.run.name}_best.pt")  # type: ignore
-                torch.save(best_save_dict, best_path)
-                print(f"New best model saved to {best_path} (test_loss={test_loss:.4f})")
+            # Save best checkpoint if requested. The metric is selected
+            # by `save_best_metric` in the config; default is "test_loss"
+            # for backwards compatibility with prior configs that don't
+            # set the field.
+            save_best_metric = config.get("save_best_metric", "test_loss")
+            if save_best:
+                if save_best_metric == "action_score":
+                    improved = action_score > best_action_score
+                    if improved:
+                        best_action_score = action_score
+                elif save_best_metric == "test_loss":
+                    improved = test_loss < best_test_loss
+                    if improved:
+                        best_test_loss = test_loss
+                else:
+                    raise ValueError(
+                        f"Unknown save_best_metric={save_best_metric!r}; "
+                        f"expected 'test_loss' or 'action_score'"
+                    )
+                if improved:
+                    best_save_dict = {
+                        "model_state_dict": model.state_dict(),
+                        "config": config,
+                    }
+                    best_path = os.path.join(
+                        config["save_path"],
+                        f"{wandb.run.name}_best.pt",  # type: ignore[union-attr]
+                    )
+                    torch.save(best_save_dict, best_path)
+                    if save_best_metric == "action_score":
+                        print(
+                            f"New best model saved to {best_path} "
+                            f"(action_score={action_score:.4f})"
+                        )
+                    else:
+                        print(
+                            f"New best model saved to {best_path} "
+                            f"(test_loss={test_loss:.4f})"
+                        )
         else:
             # ReduceLROnPlateau requires a test_loss; skip the step on non-eval epochs.
             if not isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):

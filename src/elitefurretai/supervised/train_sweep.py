@@ -27,9 +27,9 @@ import time
 from typing import Any, Dict, Union, cast
 
 import torch
-import wandb
 import yaml
 
+import wandb
 from elitefurretai.etl import (
     MDBO,
     Embedder,
@@ -166,7 +166,7 @@ def sweep_train() -> None:
 
     # Initialize embedder and locate special feature indices
     embedder = Embedder(
-        format=config["battle_format"],
+        gen=int(config["battle_format"][3]),
         feature_set=config["embedder_feature_set"],
         omniscient=False,
     )

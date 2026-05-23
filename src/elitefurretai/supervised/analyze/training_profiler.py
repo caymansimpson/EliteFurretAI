@@ -746,9 +746,7 @@ def main(data_path):
     # You can play around with the parameters here to find the right balance
     embedder, train_loader = None, None
     try:
-        embedder = Embedder(
-            format="gen9vgc2023regc", feature_set=Embedder.FULL, omniscient=False
-        )
+        embedder = Embedder(gen=9, feature_set=Embedder.FULL, omniscient=False)
         print(
             f"\nEmbedder initialized. Size: {embedder.embedding_size}! Loading datasets..."
         )

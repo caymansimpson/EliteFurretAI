@@ -910,7 +910,7 @@ def load_model_from_checkpoint(
     if embedder is None:
         cfg = RNaDConfig.from_dict(config_dict)
         embedder = Embedder(
-            format=cfg.curriculum.primary_format,
+            gen=cfg.curriculum.gen,
             feature_set=cfg.training.embedder_feature_set,
             omniscient=False,
         )

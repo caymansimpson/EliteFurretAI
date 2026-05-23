@@ -56,16 +56,22 @@ class Embedder:
     )
 
     def __init__(
-        self, format="gen9vgc2023regc", feature_set: str = "raw", omniscient=False
+        self,
+        gen: int = 9,
+        feature_set: str = "raw",
+        omniscient: bool = False,
     ):
-        """
-        Initialize the Embedder with a given format and feature set.
-        Sets up knowledge bases for enums and tracked elements, and computes embedding sizes.
+        """Initialize the Embedder for a given Pokemon gen and feature set.
+
+        Vocab tables (species, moves, abilities) are gen-keyed — every species
+        / move / ability registered for that gen is embeddable regardless of
+        which doubles format is actually sampled at runtime. See
+        ``build_*_to_id`` for the underlying GenData sources.
         """
         self._knowledge: Dict[str, Any] = {}
-        self._format: str = format
+        self._gen: int = gen
         self._omniscient: bool = omniscient
-        self._ability_to_id: Dict[str, int] = build_ability_to_id(self._format)
+        self._ability_to_id: Dict[str, int] = build_ability_to_id(self._gen)
         self._num_abilities: int = len(self._ability_to_id) + 1
 
         assert feature_set in [self.SIMPLE, self.RAW, self.FULL, self.FULL_NO_TRANSITION]
@@ -82,9 +88,7 @@ class Embedder:
             self._knowledge[key] = set(enum)
 
         # Track all relevant game elements for encoding
-        self._knowledge["Pokemon"] = set(
-            GenData.from_gen(int(self._format[3])).pokedex.keys()
-        )
+        self._knowledge["Pokemon"] = set(GenData.from_gen(self._gen).pokedex.keys())
         self._knowledge["Effect_VolatileStatus"] = TRACKED_EFFECTS
         self._knowledge["Item"] = TRACKED_ITEMS
         self._knowledge["Target"] = TRACKED_TARGET_TYPES
@@ -95,9 +99,9 @@ class Embedder:
         self._knowledge["Ability"] = set(self._ability_to_id.keys())
 
         # Species and move ID mappings for entity ID encoding
-        self._species_to_id: Dict[str, int] = build_species_to_id(self._format)
+        self._species_to_id: Dict[str, int] = build_species_to_id(self._gen)
         self._num_species: int = len(self._species_to_id) + 1
-        self._move_to_id: Dict[str, int] = build_move_to_id(self._format)
+        self._move_to_id: Dict[str, int] = build_move_to_id(self._gen)
         self._num_moves: int = len(self._move_to_id) + 1
 
         # Cache for static move features (move.id -> features dict without prefix)
@@ -200,13 +204,16 @@ class Embedder:
         return grouped_names
 
     def _generate_dummy_battle(self) -> DoubleBattle:
-        """
-        Generates a dummy DoubleBattle for feature size calculation and testing.
+        """Generate a dummy DoubleBattle for feature size calculation and testing.
+
+        The ``_format`` value is a synthetic placeholder — feature extraction
+        only consults ``battle.format`` for the FORMAT: one-hot at embed() time,
+        which is keyed off the actual runtime battle, not this dummy.
         """
         dummy_battle = DoubleBattle(
-            "tag", "elitefurretai", logging.Logger("example"), gen=int(self._format[3])
+            "tag", "elitefurretai", logging.Logger("example"), gen=self._gen
         )
-        dummy_battle._format = self._format
+        dummy_battle._format = f"gen{self._gen}default"
         dummy_battle.player_role = "p1"
         return dummy_battle
 
@@ -294,11 +301,9 @@ class Embedder:
         return self._feature_set
 
     @property
-    def format(self) -> str:
-        """
-        Returns the battle format string.
-        """
-        return self._format
+    def gen(self) -> int:
+        """Returns the Pokemon gen this embedder was built for."""
+        return self._gen
 
     @property
     def omniscient(self) -> bool:
@@ -1738,12 +1743,12 @@ BOOST_RANGE = list(range(-6, 7))
 ITEM_TO_ID = {item: i + 1 for i, item in enumerate(sorted(TRACKED_ITEMS))}
 
 
-def build_ability_to_id(format_str: str) -> Dict[str, int]:
-    """Build ability ID mapping from poke-env GenData for the given format.
+def build_ability_to_id(gen: int) -> Dict[str, int]:
+    """Build ability ID mapping from poke-env GenData for the given gen.
 
     IDs are 1-indexed; 0 is reserved for unknown/unseen abilities.
     """
-    pokedex = GenData.from_gen(int(format_str[3])).pokedex
+    pokedex = GenData.from_gen(gen).pokedex
     abilities: set[str] = set()
 
     for entry in pokedex.values():
@@ -1754,30 +1759,30 @@ def build_ability_to_id(format_str: str) -> Dict[str, int]:
     return {ability: i + 1 for i, ability in enumerate(sorted(abilities))}
 
 
-def build_species_to_id(format_str: str) -> Dict[str, int]:
-    """Build species ID mapping from poke-env GenData for the given format.
+def build_species_to_id(gen: int) -> Dict[str, int]:
+    """Build species ID mapping from poke-env GenData for the given gen.
 
     IDs are 1-indexed; 0 is reserved for unknown/unseen species.
     """
-    pokedex = GenData.from_gen(int(format_str[3])).pokedex
+    pokedex = GenData.from_gen(gen).pokedex
     species = sorted(pokedex.keys())
     return {s: i + 1 for i, s in enumerate(species)}
 
 
-def build_move_to_id(format_str: str) -> Dict[str, int]:
-    """Build move ID mapping from poke-env GenData for the given format.
+def build_move_to_id(gen: int) -> Dict[str, int]:
+    """Build move ID mapping from poke-env GenData for the given gen.
 
     IDs are 1-indexed; 0 is reserved for unknown/unseen moves.
     """
-    movedex = GenData.from_gen(int(format_str[3])).moves
+    movedex = GenData.from_gen(gen).moves
     moves = sorted(movedex.keys())
     return {m: i + 1 for i, m in enumerate(moves)}
 
 
-DEFAULT_FORMAT = "gen9vgc2023regc"
-ABILITY_TO_ID = build_ability_to_id(DEFAULT_FORMAT)
-SPECIES_TO_ID = build_species_to_id(DEFAULT_FORMAT)
-MOVE_TO_ID = build_move_to_id(DEFAULT_FORMAT)
+DEFAULT_GEN = 9
+ABILITY_TO_ID = build_ability_to_id(DEFAULT_GEN)
+SPECIES_TO_ID = build_species_to_id(DEFAULT_GEN)
+MOVE_TO_ID = build_move_to_id(DEFAULT_GEN)
 
 # Vocabulary sizes (including the 0 = unknown token)
 NUM_ABILITIES = len(ABILITY_TO_ID) + 1  # +1 for unknown (index 0)

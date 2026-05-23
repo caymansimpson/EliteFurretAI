@@ -28,9 +28,7 @@ def diagnose_leakage(val_data_path: str, max_samples: int = 10000):
     print(f"Max samples: {max_samples}\n")
 
     # Initialize embedder
-    embedder = Embedder(
-        format="gen9vgc2023regc", feature_set=Embedder.FULL, omniscient=False
-    )
+    embedder = Embedder(gen=9, feature_set=Embedder.FULL, omniscient=False)
 
     print(f"Embedder size: {embedder.embedding_size}")
     print(f"Feature names (first 50): {embedder.feature_names[:50]}")

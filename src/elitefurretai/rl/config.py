@@ -564,14 +564,22 @@ class CurriculumConfig:
 
     @property
     def primary_format(self) -> str:
-        """Highest-weight format. Used for embedder construction only.
+        """Highest-weight format. Used by VGCBench (single-format binding) and
+        team-pool routing where a representative format string is needed.
 
-        Vocab is gen-keyed (see embedder.build_*_to_id), so the chosen
-        primary_format determines the gen but not which species are
-        embeddable — every species in the gen's pokedex is reachable
-        regardless of which doubles format is sampled at runtime.
+        For embedder construction, prefer ``self.gen`` — vocab is gen-keyed,
+        not format-keyed.
         """
         return max(self.battle_formats.items(), key=lambda kv: kv[1])[0]
+
+    @property
+    def gen(self) -> int:
+        """Pokemon gen number derived from any battle_formats entry.
+
+        Every entry in ``battle_formats`` shares the same gen (enforced by
+        ``__post_init__``), so reading the first key is unambiguous.
+        """
+        return int(next(iter(self.battle_formats))[3])
 
     def resolved_agent_team_paths(self) -> Dict[str, str]:
         """Return absolute agent-team paths per format, or {} if unset.

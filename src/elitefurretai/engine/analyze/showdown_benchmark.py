@@ -113,7 +113,7 @@ async def _run_benchmark(args: argparse.Namespace) -> None:
             config = RNaDConfig.load(args.config)
             feature_set = args.feature_set or config.training.embedder_feature_set
             embedder = Embedder(
-                format=config.curriculum.primary_format,
+                gen=config.curriculum.gen,
                 feature_set=feature_set,
                 omniscient=False,
             )

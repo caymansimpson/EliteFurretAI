@@ -601,7 +601,7 @@ def load_model_from_checkpoint(
     # Create embedder using the SAVED featureset from config — must match training
     # so that group_embedding_sizes line up with the checkpoint's encoders.
     embedder = Embedder(
-        format=config.get("battle_format", "gen9vgc2023regc"),
+        gen=int(config.get("battle_format", "gen9vgc2023regc")[3]),
         feature_set=config.get("embedder_feature_set", "full"),
         omniscient=False,
     )
@@ -691,7 +691,7 @@ def main():
 
     # Setup embedder
     embedder = Embedder(
-        format="gen9vgc2023regc",
+        gen=9,
         feature_set=config.get("embedder_feature_set", "full"),
         omniscient=False,
     )

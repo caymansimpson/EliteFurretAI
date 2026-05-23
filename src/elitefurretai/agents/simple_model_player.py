@@ -61,7 +61,7 @@ class SimpleModelPlayer(Player):
         self.device = device
         self.probabilistic = probabilistic
         self.embedder = embedder or Embedder(
-            format=battle_format, feature_set=Embedder.FULL, omniscient=False
+            gen=int(battle_format[3]), feature_set=Embedder.FULL, omniscient=False
         )
         # Hidden state shape is opaque (None for fresh battles; a context
         # tensor for Transformer after the first step). Don't decompose it.
