@@ -22,19 +22,6 @@ def test_config_to_flat_arch_derives_gen_from_battle_formats():
     assert flat["_gen"] == "9"
 
 
-def test_config_to_flat_arch_derives_gen_from_legacy_battle_format():
-    """_config_to_flat_arch derives _gen from a legacy single-format string field."""
-    from elitefurretai.rl.learners import _config_to_flat_arch
-
-    flat = _config_to_flat_arch(
-        {
-            "curriculum": {"battle_format": "gen8vgc2022"},
-            "training": {"embedder_feature_set": "raw"},
-        }
-    )
-    assert flat["_gen"] == "8"
-
-
 def test_checkpoint_compatibility_rejects_cross_gen(tmp_path):
     """A checkpoint built on gen8 should be rejected by a gen9 model config."""
     import torch
@@ -43,7 +30,7 @@ def test_checkpoint_compatibility_rejects_cross_gen(tmp_path):
 
     gen8_ckpt = tmp_path / "gen8.pt"
     torch.save(
-        {"config": {"curriculum": {"battle_format": "gen8vgc2022"}}},
+        {"config": {"curriculum": {"battle_formats": {"gen8vgc2022": 1.0}}}},
         gen8_ckpt,
     )
 

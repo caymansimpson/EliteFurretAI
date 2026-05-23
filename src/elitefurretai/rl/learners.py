@@ -767,16 +767,12 @@ def _config_to_flat_arch(d: Dict[str, Any]) -> Dict[str, Any]:
     at the top level. Always-flatten is safe because no MODEL_ARCH_CONFIG_KEYS
     value is itself a dict — top-level dict values are always sections.
 
-    Adds a synthetic "_gen" key derived from the format/formats config. Vocab is
+    Adds a synthetic "_gen" key derived from curriculum.battle_formats. Vocab is
     gen-keyed (Embedder.build_*_to_id uses format_str[3]), so cross-gen
     checkpoints are architecturally incompatible regardless of which exact
-    format string was used. The _gen key carries that signal:
-
-    - New configs have curriculum.battle_formats: Dict[str, float]; _gen comes
-      from the first format's gen digit (the __post_init__ validator already
-      requires every entry to share a gen).
-    - Legacy checkpoints had curriculum.battle_format: str; _gen is derived from
-      that string's 4th character.
+    format string was used. The __post_init__ validator on CurriculumConfig
+    already requires every battle_formats entry to share a gen, so reading the
+    first key is unambiguous.
     """
     flat: Dict[str, Any] = {}
     for k, v in d.items():
@@ -785,17 +781,11 @@ def _config_to_flat_arch(d: Dict[str, Any]) -> Dict[str, Any]:
         else:
             flat[k] = v
 
-    # Derive _gen from whichever schema is present. Skip silently if neither
-    # is — the caller will hit a None mismatch on _gen and the result is fine.
     battle_formats = flat.get("battle_formats")
     if isinstance(battle_formats, dict) and battle_formats:
         any_format = next(iter(battle_formats))
         if len(any_format) >= 4:
             flat["_gen"] = any_format[3]
-    elif isinstance(flat.get("battle_format"), str):
-        legacy_format = flat["battle_format"]
-        if len(legacy_format) >= 4:
-            flat["_gen"] = legacy_format[3]
 
     return flat
 
