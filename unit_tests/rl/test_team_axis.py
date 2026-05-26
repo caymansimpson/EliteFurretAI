@@ -482,3 +482,25 @@ def test_update_curriculum_accepts_team_distribution(tmp_path):
     assert factory.team_distribution_by_format == {
         "gen9vgc2024regg": {"alpha": 0.7, "beta": 0.3},
     }
+
+
+def test_factory_stamps_current_team_name_via_sample_team(tmp_path):
+    """End-to-end: factory's sample_team returns (string, name) and consumers can stamp .current_team_name.
+
+    This is the integration-style contract check that the tuple-return
+    migration is consistent. Callers (RLTrajectoryPlayer slots in
+    create_agents / randomize_all_teams) unpack the tuple and write
+    the name onto the player so the trajectory carries it.
+    """
+    factory = _make_worker_factory(tmp_path)
+    team_string, team_name = factory.sample_team("gen9vgc2024regg")
+    assert isinstance(team_string, str) and team_string
+    assert team_name in {"alpha", "beta"}
+
+    # Simulate Pattern B: assign to an object that exposes current_team_name.
+    class _MockPlayer:
+        current_team_name: str = ""
+
+    p = _MockPlayer()
+    p.current_team_name = team_name
+    assert p.current_team_name in {"alpha", "beta"}

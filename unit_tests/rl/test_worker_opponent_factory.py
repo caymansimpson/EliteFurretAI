@@ -18,6 +18,19 @@ class _DummyTeamRepo:
     def sample_team(self, battle_format, subdirectory=None):
         return "Pikachu @ Light Ball"
 
+    def sample_team_name(self, battle_format, subdirectory=None):
+        # Mirror sample_team's stable return: WorkerOpponentFactory.sample_team
+        # now calls sample_team_name first, then get() to materialize the
+        # team string. The stub keeps both wired so callers see consistent
+        # mock data regardless of which entry point exercises the repo.
+        return "mock_team"
+
+    def get(self, battle_format, name):
+        return "Pikachu @ Light Ball"
+
+    def _shuffle_team_order(self, team_string):
+        return team_string
+
 
 class _DummyPlayer:
     """Stand-in for a RLTrajectoryPlayer slot. Tests mutate
@@ -364,7 +377,17 @@ def test_randomize_all_teams_uses_pair_format_per_slot(monkeypatch):
 
     class _RecordingTeamRepo:
         def sample_team(self, battle_format, subdirectory=None):
+            # Kept for any direct callers; the migrated WorkerOpponentFactory
+            # routes through sample_team_name + get(), which is what this
+            # test asserts on below.
             sampled_formats.append(battle_format)
+            return "Pikachu @ Light Ball"
+
+        def sample_team_name(self, battle_format, subdirectory=None):
+            sampled_formats.append(battle_format)
+            return "mock_team"
+
+        def get(self, battle_format, name):
             return "Pikachu @ Light Ball"
 
         def _shuffle_team_order(self, team):

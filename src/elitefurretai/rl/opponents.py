@@ -862,16 +862,23 @@ class WorkerOpponentFactory:
         team_string = self.team_repo.get(battle_format, name)
         return self.team_repo._shuffle_team_order(team_string), name
 
-    def get_agent_team(self, battle_format: str) -> str:
-        """Return the agent's team for the given format, shuffled.
+    def get_agent_team(self, battle_format: str) -> Tuple[str, str]:
+        """Return ``(team_string, team_name)`` for the agent in this format.
 
         Uses fixed team(s) from ``self._agent_teams_by_format[battle_format]``
         when any are loaded for this format; otherwise falls back to
         sampling from the opponent team pool for that format.
+
+        For the fixed-team path the team name is ``"agent_fixed"`` —
+        the file-level identity is irrelevant because the trajectory's
+        per-team adaptive curriculum only tracks teams the pool samples.
         """
         teams = self._agent_teams_by_format.get(battle_format, [])
         if teams:
-            return self.team_repo._shuffle_team_order(random.choice(teams))
+            return (
+                self.team_repo._shuffle_team_order(random.choice(teams)),
+                "agent_fixed",
+            )
         return self.sample_team(battle_format)
 
     def _make_baseline_pool(
@@ -890,6 +897,8 @@ class WorkerOpponentFactory:
         """
         if self.curriculum.get(opp_type, 0) <= 0:
             return []
+        # Heuristic baselines don't produce trajectories, so the team
+        # name is discarded.
         return [
             player_cls(
                 battle_format=fmt,
@@ -897,7 +906,7 @@ class WorkerOpponentFactory:
                     self._account_name(role, i), None
                 ),
                 server_configuration=self.server_config,
-                team=self.sample_team(fmt),
+                team=self.sample_team(fmt)[0],
             )
             for i, fmt in enumerate(pair_formats)
         ]
@@ -955,39 +964,42 @@ class WorkerOpponentFactory:
         self.players = []
         self.opponents = []
         for i, fmt in enumerate(self.pair_formats):
-            self.players.append(
-                RLTrajectoryPlayer(
-                    account_configuration=AccountConfiguration(
-                        self._account_name("Self", i), None
-                    ),
-                    server_configuration=self.server_config,
-                    trajectory_queue=local_traj_queue,
-                    battle_format=fmt,
-                    team=self.get_agent_team(fmt),
-                    worker_id=self.worker_id,
-                    embedder=self.embedder,
-                    max_battle_steps=self.max_battle_steps,
-                    opponent_type=OpponentPool.SELF_PLAY,
-                    **main_kwargs,
-                    **extra_player_kwargs,
-                )
+            player_team_string, player_team_name = self.get_agent_team(fmt)
+            player = RLTrajectoryPlayer(
+                account_configuration=AccountConfiguration(
+                    self._account_name("Self", i), None
+                ),
+                server_configuration=self.server_config,
+                trajectory_queue=local_traj_queue,
+                battle_format=fmt,
+                team=player_team_string,
+                worker_id=self.worker_id,
+                embedder=self.embedder,
+                max_battle_steps=self.max_battle_steps,
+                opponent_type=OpponentPool.SELF_PLAY,
+                **main_kwargs,
+                **extra_player_kwargs,
             )
-            self.opponents.append(
-                RLTrajectoryPlayer(
-                    account_configuration=AccountConfiguration(
-                        self._account_name("Opp", i), None
-                    ),
-                    server_configuration=self.server_config,
-                    trajectory_queue=None,
-                    battle_format=fmt,
-                    team=self.sample_team(fmt),
-                    worker_id=self.worker_id,
-                    embedder=self.embedder,
-                    max_battle_steps=self.max_battle_steps,
-                    **main_kwargs,
-                    **extra_player_kwargs,
-                )
+            player.current_team_name = player_team_name
+            self.players.append(player)
+
+            opp_team_string, opp_team_name = self.sample_team(fmt)
+            opponent = RLTrajectoryPlayer(
+                account_configuration=AccountConfiguration(
+                    self._account_name("Opp", i), None
+                ),
+                server_configuration=self.server_config,
+                trajectory_queue=None,
+                battle_format=fmt,
+                team=opp_team_string,
+                worker_id=self.worker_id,
+                embedder=self.embedder,
+                max_battle_steps=self.max_battle_steps,
+                **main_kwargs,
+                **extra_player_kwargs,
             )
+            opponent.current_team_name = opp_team_name
+            self.opponents.append(opponent)
 
         self.max_damage_opponents = self._make_baseline_pool(
             OpponentPool.MAX_DAMAGE, MaxDamagePlayer, "MaxD", self.pair_formats
@@ -1222,27 +1234,37 @@ class WorkerOpponentFactory:
         """
         for i, player in enumerate(self.players):
             fmt = self.pair_formats[i]
-            player._team = ConstantTeambuilder(self.get_agent_team(fmt))
+            team_string, team_name = self.get_agent_team(fmt)
+            player._team = ConstantTeambuilder(team_string)
+            player.current_team_name = team_name
 
         for i, opponent in enumerate(self.opponents):
             fmt = self.pair_formats[i]
-            opponent._team = ConstantTeambuilder(self.sample_team(fmt))
+            team_string, team_name = self.sample_team(fmt)
+            opponent._team = ConstantTeambuilder(team_string)
+            opponent.current_team_name = team_name
 
+        # Heuristic baselines below don't produce trajectories, so the
+        # team name is discarded.
         for i, md_opp in enumerate(self.max_damage_opponents):
             fmt = self.pair_formats[i]
-            md_opp._team = ConstantTeambuilder(self.sample_team(fmt))
+            team_string, _ = self.sample_team(fmt)
+            md_opp._team = ConstantTeambuilder(team_string)
 
         for i, random_opp in enumerate(self.random_baseline_opponents):
             fmt = self.pair_formats[i]
-            random_opp._team = ConstantTeambuilder(self.sample_team(fmt))
+            team_string, _ = self.sample_team(fmt)
+            random_opp._team = ConstantTeambuilder(team_string)
 
         for i, maxbp_opp in enumerate(self.max_base_power_baseline_opponents):
             fmt = self.pair_formats[i]
-            maxbp_opp._team = ConstantTeambuilder(self.sample_team(fmt))
+            team_string, _ = self.sample_team(fmt)
+            maxbp_opp._team = ConstantTeambuilder(team_string)
 
         for i, heuristic_opp in enumerate(self.simple_heuristic_baseline_opponents):
             fmt = self.pair_formats[i]
-            heuristic_opp._team = ConstantTeambuilder(self.sample_team(fmt))
+            team_string, _ = self.sample_team(fmt)
+            heuristic_opp._team = ConstantTeambuilder(team_string)
 
     def teardown_runtime_agents(self) -> None:
         """Best-effort teardown of all worker-local players/opponents.
