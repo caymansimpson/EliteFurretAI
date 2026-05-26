@@ -8,6 +8,7 @@ planning/stage2/2026-05-24-12-30-change7-team-axis-curriculum-design.md.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Dict, Optional
 
 from elitefurretai.etl.team_repo import TeamRepo
 from elitefurretai.rl.config import CurriculumConfig
@@ -366,3 +367,118 @@ def test_rl_trajectory_player_class_declares_current_team_name():
         "RLTrajectoryPlayer.current_team_name must be declared as a "
         "class-level attribute defaulting to None."
     )
+
+
+def _make_worker_factory(
+    tmp_path,
+    *,
+    team_distribution_by_format: Optional[Dict[str, Optional[Dict[str, float]]]] = None,
+):
+    """Construct a minimal WorkerOpponentFactory for sample_team tests.
+
+    Most of WorkerOpponentFactory's collaborators (account configs,
+    inference clients, etc.) are unused by the sample_team code path,
+    so we construct a bare instance via __new__ and only populate the
+    attributes sample_team needs. This avoids the heavy real
+    initialization.
+    """
+    from elitefurretai.rl.opponents import WorkerOpponentFactory
+
+    repo = _two_format_repo(tmp_path)
+    factory = WorkerOpponentFactory.__new__(WorkerOpponentFactory)
+    factory.team_repo = repo
+    subdirs: Dict[str, Optional[str]] = {
+        "gen9vgc2024regg": None,
+        "gen9vgc2023regc": None,
+    }
+    factory.opponent_team_subdirectories = subdirs
+    factory.team_distribution_by_format = team_distribution_by_format or {}
+    return factory
+
+
+def test_sample_team_returns_tuple_uniform(tmp_path):
+    """sample_team(battle_format) returns (team_string, team_name) — uniform path."""
+    factory = _make_worker_factory(tmp_path)
+    team_string, team_name = factory.sample_team("gen9vgc2024regg")
+    assert isinstance(team_string, str) and team_string
+    assert team_name in {"alpha", "beta"}
+
+
+def test_sample_team_biased_false_uses_uniform(tmp_path):
+    """sample_team(biased=False) always uses uniform sampling, even if a biased dist is set."""
+    factory = _make_worker_factory(
+        tmp_path,
+        team_distribution_by_format={
+            "gen9vgc2024regg": {"alpha": 1.0, "beta": 0.0},
+        },
+    )
+    seen = set()
+    for _ in range(40):
+        _, name = factory.sample_team("gen9vgc2024regg", biased=False)
+        seen.add(name)
+    # With biased=False both names should appear under uniform sampling.
+    assert seen == {"alpha", "beta"}, seen
+
+
+def test_sample_team_biased_true_uses_distribution(tmp_path):
+    """sample_team(biased=True) draws from the configured per-format distribution."""
+    factory = _make_worker_factory(
+        tmp_path,
+        team_distribution_by_format={
+            "gen9vgc2024regg": {"alpha": 0.95, "beta": 0.05},
+        },
+    )
+    counts = {"alpha": 0, "beta": 0}
+    for _ in range(2000):
+        _, name = factory.sample_team("gen9vgc2024regg", biased=True)
+        counts[name] += 1
+    # alpha should dominate; tolerate sampling noise within reason.
+    assert counts["alpha"] > counts["beta"] * 5, counts
+
+
+def test_sample_team_biased_format_isolation(tmp_path):
+    """Per-format distributions don't cross-pollinate."""
+    factory = _make_worker_factory(
+        tmp_path,
+        team_distribution_by_format={
+            "gen9vgc2024regg": {"alpha": 0.95, "beta": 0.05},
+            "gen9vgc2023regc": {"alpha": 0.05, "beta": 0.95},
+        },
+    )
+    counts_a = {"alpha": 0, "beta": 0}
+    counts_b = {"alpha": 0, "beta": 0}
+    for _ in range(2000):
+        _, name_a = factory.sample_team("gen9vgc2024regg", biased=True)
+        _, name_b = factory.sample_team("gen9vgc2023regc", biased=True)
+        counts_a[name_a] += 1
+        counts_b[name_b] += 1
+    assert counts_a["alpha"] > counts_a["beta"] * 5, counts_a
+    assert counts_b["beta"] > counts_b["alpha"] * 5, counts_b
+
+
+def test_sample_team_falls_back_to_uniform_when_no_distribution(tmp_path):
+    """sample_team(biased=True) falls back to uniform when no distribution exists for the format."""
+    factory = _make_worker_factory(
+        tmp_path,
+        team_distribution_by_format={"gen9vgc2024regg": None},
+    )
+    seen = set()
+    for _ in range(40):
+        _, name = factory.sample_team("gen9vgc2024regg", biased=True)
+        seen.add(name)
+    assert seen == {"alpha", "beta"}, seen
+
+
+def test_update_curriculum_accepts_team_distribution(tmp_path):
+    """WorkerOpponentFactory.update_curriculum accepts team_distribution_by_format and stores it."""
+    factory = _make_worker_factory(tmp_path)
+    factory.curriculum = {}  # update_curriculum normalizes this
+    factory.update_curriculum(
+        {"self_play": 1.0},
+        team_distribution_by_format={
+            "gen9vgc2024regg": {"alpha": 0.7, "beta": 0.3},
+        },
+    )
+    assert factory.team_distribution_by_format == {
+        "gen9vgc2024regg": {"alpha": 0.7, "beta": 0.3},
+    }

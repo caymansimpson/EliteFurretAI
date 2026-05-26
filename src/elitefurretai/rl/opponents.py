@@ -712,6 +712,9 @@ class WorkerOpponentFactory:
         self.team_repo = team_repo
         self.battle_formats = dict(battle_formats)
         self.opponent_team_subdirectories = dict(opponent_team_subdirectories)
+        # ── Change 7: per-format biased team distribution from broadcast ─
+        # None or absent value for a format → fall back to uniform.
+        self.team_distribution_by_format: Dict[str, Optional[Dict[str, float]]] = {}
         self.server_config = server_config
         self.worker_inference_clients = worker_inference_clients
         self.max_concurrent_battles_per_player = max_concurrent_battles_per_player
@@ -793,9 +796,23 @@ class WorkerOpponentFactory:
             f"{role}{worker_token}{idx_token}{self._run_tag}{self._factory_tag}{gen_token}"
         )
 
-    def update_curriculum(self, curriculum: Dict[str, float]) -> None:
-        """Update worker-local curriculum and refresh dependent opponent pools."""
+    def update_curriculum(
+        self,
+        curriculum: Dict[str, float],
+        team_distribution_by_format: Optional[
+            Dict[str, Optional[Dict[str, float]]]
+        ] = None,
+    ) -> None:
+        """Update worker-local curriculum and refresh dependent opponent pools.
+
+        team_distribution_by_format: per-format biased team sampling
+            distributions broadcast from the trainer (Change 7). May
+            contain None values for formats still in warm-up;
+            sample_team falls back to uniform for those.
+        """
         self.curriculum = normalize_curriculum(curriculum)
+        if team_distribution_by_format is not None:
+            self.team_distribution_by_format = dict(team_distribution_by_format)
 
     def set_active_ghost_slots(self, slots: List[int]) -> None:
         """Update the set of populated ghost slots from a trainer broadcast.
@@ -815,11 +832,35 @@ class WorkerOpponentFactory:
         """
         self._active_exploiter_slots = set(slots)
 
-    def sample_team(self, battle_format: str) -> str:
-        return self.team_repo.sample_team(
-            battle_format,
-            subdirectory=self.opponent_team_subdirectories.get(battle_format),
-        )
+    def sample_team(
+        self,
+        battle_format: str,
+        biased: bool = True,
+    ) -> Tuple[str, str]:
+        """Return (team_string, team_name) for the given battle format.
+
+        biased=True (default): if the trainer has broadcast a non-None
+            distribution for ``battle_format``, sample a name from it
+            via numpy.random.choice and look up the corresponding
+            team string. Otherwise (no distribution set, or value is
+            None during warm-up) fall back to the uniform path.
+
+        biased=False: always uniform via team_repo.sample_team_name.
+            Reserved for future eval-at-checkpoint code paths that
+            want the natural team distribution.
+        """
+        dist = self.team_distribution_by_format.get(battle_format) if biased else None
+        if dist:
+            names = list(dist.keys())
+            weights = list(dist.values())
+            name = str(np.random.choice(names, p=weights))
+        else:
+            name = self.team_repo.sample_team_name(
+                battle_format,
+                subdirectory=self.opponent_team_subdirectories.get(battle_format),
+            )
+        team_string = self.team_repo.get(battle_format, name)
+        return self.team_repo._shuffle_team_order(team_string), name
 
     def get_agent_team(self, battle_format: str) -> str:
         """Return the agent's team for the given format, shuffled.
