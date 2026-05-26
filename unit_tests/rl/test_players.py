@@ -342,7 +342,7 @@ def _make_player_with_pending_team(name):
     player._request_generation = {}
     player.current_trajectories = {}
     player.hidden_states = {}
-    player.inference_client = None
+    player.inference_client = None  # type: ignore[assignment]
     player.trajectory_queue = None
     return player
 
