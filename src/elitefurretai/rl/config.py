@@ -530,6 +530,11 @@ class CurriculumConfig:
     # Min normalized weight any team can receive within a format's
     # distribution after the floor pass + renormalization.
     team_per_team_floor: float = 0.005
+    # Stand-in defaults for Changes 5 (half_life) and 4 (pfsp_exponent)
+    # — both of which will repurpose these fields when they land. Defined
+    # here so Change 7 can use config-driven values rather than literals.
+    half_life: float = 50.0
+    pfsp_exponent: float = 1.0
 
     def __post_init__(self) -> None:
         if not self.battle_formats:

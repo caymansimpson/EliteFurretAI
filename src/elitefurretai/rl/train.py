@@ -763,10 +763,8 @@ def main():
         team_axis_enabled=config.curriculum.team_axis_enabled,
         team_warmup_threshold=config.curriculum.team_warmup_threshold,
         team_per_team_floor=config.curriculum.team_per_team_floor,
-        # Change 7 default; Changes 4 & 5 will replace with
-        # config.curriculum.{half_life,pfsp_exponent}.
-        half_life=50.0,
-        pfsp_exponent=1.0,
+        half_life=config.curriculum.half_life,
+        pfsp_exponent=config.curriculum.pfsp_exponent,
     )
 
     # ── Initialize the exploiter co-training pipeline ──
