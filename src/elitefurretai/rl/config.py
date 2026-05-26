@@ -519,6 +519,17 @@ class CurriculumConfig:
     external_vgcbench_python_executable: Optional[str] = None
     external_vgcbench_team_file: str = "data/teams/gen9vgc2024regg/vgcbench.txt"
     vgc_bench_checkpoint_path: str = "data/models/vgc-bench-sb3-model.zip"
+    # ── Change 7: agent-team-axis adaptive curriculum ────────────────────
+    # Master switch. False = bypass entirely; workers ignore broadcast
+    # team_distribution_by_format and stay on uniform team sampling.
+    team_axis_enabled: bool = True
+    # Min battles per (format, team) before that format's biased
+    # distribution activates. Per-format gate; each format latches
+    # independently.
+    team_warmup_threshold: int = 20
+    # Min normalized weight any team can receive within a format's
+    # distribution after the floor pass + renormalization.
+    team_per_team_floor: float = 0.005
 
     def __post_init__(self) -> None:
         if not self.battle_formats:
