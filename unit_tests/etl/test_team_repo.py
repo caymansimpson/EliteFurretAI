@@ -74,3 +74,37 @@ def test_validator():
 
     # Use wrong formats to test we aren't getting false positives
     assert tr.validate_team(tr.teams["gen8vgc2022"]["worlds_chua"], "gen8vgc2021") is False
+
+
+def test_sample_team_delegates_to_sample_team_name(tmp_path, monkeypatch):
+    """sample_team must look the name up via sample_team_name (single source of
+    truth for uniform sampling) and then shuffle. After the merge, calling
+    sample_team_name and resolving via _teams[fmt][name] yields the same
+    string sample_team returns when shuffle is disabled."""
+    # Build a tiny repo with shuffle off. TeamRepo's loader skips VGC teams
+    # whose Ability-line count is not 6, so each fixture lists 6 mons with an
+    # Ability line apiece.
+    fmt_dir = tmp_path / "gen9vgc2024regg"
+    fmt_dir.mkdir()
+    alpha_team = "\n\n".join(
+        f"Furret {i} @ Choice Band\nAbility: Frisk\n- Quick Attack" for i in range(6)
+    )
+    beta_team = "\n\n".join(
+        f"Sentret {i} @ Eviolite\nAbility: Run Away\n- Tackle" for i in range(6)
+    )
+    (fmt_dir / "alpha.txt").write_text(alpha_team)
+    (fmt_dir / "beta.txt").write_text(beta_team)
+
+    from elitefurretai.etl.team_repo import TeamRepo
+
+    repo = TeamRepo(filepath=str(tmp_path), shuffle=False)
+
+    # Force deterministic sample_team_name → "alpha" by stubbing random.choice
+    import random as _r
+
+    monkeypatch.setattr(_r, "choice", lambda seq: "alpha" if "alpha" in seq else seq[0])
+
+    name = repo.sample_team_name("gen9vgc2024regg")
+    team_by_lookup = repo._teams["gen9vgc2024regg"][name]
+    team_via_sample = repo.sample_team("gen9vgc2024regg")
+    assert team_via_sample == team_by_lookup

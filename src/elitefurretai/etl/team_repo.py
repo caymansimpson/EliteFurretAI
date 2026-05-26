@@ -401,10 +401,16 @@ class TeamRepo:
         """
         Sample a random team from the specified format.
 
+        Delegates name selection to ``sample_team_name`` (single source of
+        truth for the uniform sampling distribution and subdirectory
+        filtering), then materializes the team string and applies
+        ``_shuffle_team_order`` if shuffle is enabled.
+
         Args:
             format: Pokemon format (e.g., "gen9vgc2023regc")
-            subdirectory: Optional subdirectory path to sample from (e.g., "rental_teams" or "tournament_teams/worlds_2023")
-                         If None, samples from all teams in the format (default: None)
+            subdirectory: Optional subdirectory path to sample from
+                (e.g., "rental_teams" or "tournament_teams/worlds_2023").
+                If None, samples from all teams in the format (default: None)
 
         Returns:
             Team string in PokePaste format
@@ -413,42 +419,13 @@ class TeamRepo:
             ValueError: If format not found, no teams available, or subdirectory has no teams
 
         Examples:
-            >>> repo.sample_team("gen9vgc2023regc")  # Sample from all teams
-            >>> repo.sample_team("gen9vgc2023regc", "rental_teams")  # Sample from rental_teams only
+            >>> repo.sample_team("gen9vgc2023regc")
+            >>> repo.sample_team("gen9vgc2023regc", "rental_teams")
         """
-        if format not in self._teams:
-            raise ValueError(
-                f"Format '{format}' not found. Available formats: {list(self._teams.keys())}"
-            )
-
-        format_teams = self._teams[format]
-        if not format_teams:
-            raise ValueError(f"No teams found for format '{format}'")
-
-        # Filter by subdirectory if provided
-        if subdirectory is not None:
-            # Normalize subdirectory path separators
-            subdirectory = subdirectory.replace(os.sep, "/")
-            filtered_teams = {
-                name: team
-                for name, team in format_teams.items()
-                if name.startswith(subdirectory + "/") or name == subdirectory
-            }
-            if not filtered_teams:
-                raise ValueError(
-                    f"No teams found in subdirectory '{subdirectory}' for format '{format}'. "
-                    f"Available teams: {list(format_teams.keys())}"
-                )
-            format_teams = filtered_teams
-
-        # Return a random team from the (filtered) format
-        team_name = random.choice(list(format_teams.keys()))
-        team_string = format_teams[team_name]
-
-        # Shuffle Pokemon order if enabled
+        name = self.sample_team_name(format, subdirectory)
+        team_string = self._teams[format][name]
         if self._shuffle:
             team_string = self._shuffle_team_order(team_string)
-
         return team_string
 
     def sample_n_teams(
