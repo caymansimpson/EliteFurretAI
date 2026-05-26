@@ -213,3 +213,138 @@ def test_record_battle_result_no_team_args_is_noop_for_team_state(tmp_path):
         for t in teams:
             assert pool.team_win_rates[fmt][t] == (0.0, 0.0)
             assert pool.team_sample_counts[fmt][t] == 0
+
+
+def _record_wins_losses(
+    pool: OpponentPool,
+    battle_format: str,
+    team_name: str,
+    wins: int,
+    losses: int,
+) -> None:
+    """Helper: record `wins` wins and `losses` losses for (format, team)."""
+    for _ in range(wins):
+        pool.record_battle_result(
+            opponent_type="self_play",
+            won=True,
+            battle_length=10,
+            forfeited=False,
+            battle_format=battle_format,
+            team_name=team_name,
+        )
+    for _ in range(losses):
+        pool.record_battle_result(
+            opponent_type="self_play",
+            won=False,
+            battle_length=10,
+            forfeited=False,
+            battle_format=battle_format,
+            team_name=team_name,
+        )
+
+
+def test_update_team_distribution_warmup_per_format(tmp_path):
+    """Per-format warm-up: format A warms up first; format B stays None until it warms too.
+
+    Also verifies latching: once a format's warm flag is True, draining
+    sample counts back below threshold does not flip it back to None.
+    """
+    pool = _make_opponent_pool(tmp_path, team_warmup_threshold=20, half_life=1e9)
+
+    # Warm up format A only.
+    _record_wins_losses(pool, "gen9vgc2024regg", "alpha", 10, 10)
+    _record_wins_losses(pool, "gen9vgc2024regg", "beta", 10, 10)
+    dist = pool.update_team_distribution()
+    assert isinstance(dist["gen9vgc2024regg"], dict)
+    assert dist["gen9vgc2023regc"] is None
+
+    # Now warm up format B.
+    _record_wins_losses(pool, "gen9vgc2023regc", "alpha", 10, 10)
+    _record_wins_losses(pool, "gen9vgc2023regc", "beta", 10, 10)
+    dist = pool.update_team_distribution()
+    assert isinstance(dist["gen9vgc2024regg"], dict)
+    assert isinstance(dist["gen9vgc2023regc"], dict)
+
+    # Latching: synthetically drop sample counts back to 0.
+    for fmt in pool.team_sample_counts:
+        for t in pool.team_sample_counts[fmt]:
+            pool.team_sample_counts[fmt][t] = 0
+    dist = pool.update_team_distribution()
+    assert isinstance(dist["gen9vgc2024regg"], dict)
+    assert isinstance(dist["gen9vgc2023regc"], dict)
+
+
+def test_update_team_distribution_asymmetric_pfsp_direction(tmp_path):
+    """Asymmetric PFSP over-weights teams the model is worst at piloting.
+
+    5-team single-format setup: 3 strong (90/10 W/L) and 2 weak
+    (20/80 W/L). After warm-up, the two weak teams together get >60%
+    of the format's distribution.
+    """
+    # Build a TeamRepo with 5 teams in one format.
+    fmt_dir = tmp_path / "gen9vgc2024regg"
+    fmt_dir.mkdir()
+    for name in ("s1", "s2", "s3", "w1", "w2"):
+        _write_team_file(fmt_dir / f"{name}.txt", name)
+    repo = TeamRepo(filepath=str(tmp_path))
+    pool = OpponentPool(
+        curriculum={"self_play": 1.0},
+        team_repo=repo,
+        battle_formats={"gen9vgc2024regg": 1.0},
+        opponent_team_subdirectories={"gen9vgc2024regg": None},
+        team_axis_enabled=True,
+        team_warmup_threshold=20,
+        team_per_team_floor=0.0,  # disable floor for pure-PFSP check
+        half_life=1e9,
+        pfsp_exponent=1.0,
+    )
+
+    for name in ("s1", "s2", "s3"):
+        _record_wins_losses(pool, "gen9vgc2024regg", name, 90, 10)
+    for name in ("w1", "w2"):
+        _record_wins_losses(pool, "gen9vgc2024regg", name, 20, 80)
+
+    dist = pool.update_team_distribution()
+    assert isinstance(dist["gen9vgc2024regg"], dict)
+    weak_share = dist["gen9vgc2024regg"]["w1"] + dist["gen9vgc2024regg"]["w2"]
+    assert weak_share > 0.60, f"weak_share={weak_share}, dist={dist}"
+
+
+def test_update_team_distribution_per_team_floor_enforced(tmp_path):
+    """Per-team floor prevents any team from dropping below the configured minimum."""
+    fmt_dir = tmp_path / "gen9vgc2024regg"
+    fmt_dir.mkdir()
+    for name in ("s1", "s2", "s3", "w1", "w2"):
+        _write_team_file(fmt_dir / f"{name}.txt", name)
+    repo = TeamRepo(filepath=str(tmp_path))
+    pool = OpponentPool(
+        curriculum={"self_play": 1.0},
+        team_repo=repo,
+        battle_formats={"gen9vgc2024regg": 1.0},
+        opponent_team_subdirectories={"gen9vgc2024regg": None},
+        team_axis_enabled=True,
+        team_warmup_threshold=20,
+        team_per_team_floor=0.05,
+        half_life=1e9,
+        pfsp_exponent=2.0,  # steeper to make floor relevant
+    )
+    for name in ("s1", "s2", "s3"):
+        _record_wins_losses(pool, "gen9vgc2024regg", name, 95, 5)
+    for name in ("w1", "w2"):
+        _record_wins_losses(pool, "gen9vgc2024regg", name, 5, 95)
+
+    dist = pool.update_team_distribution()["gen9vgc2024regg"]
+    assert isinstance(dist, dict)
+    for name, weight in dist.items():
+        assert weight >= 0.05 - 1e-9, f"team {name} weight {weight} below floor"
+    assert abs(sum(dist.values()) - 1.0) < 1e-6
+
+
+def test_update_team_distribution_disabled_returns_all_none(tmp_path):
+    """team_axis_enabled=False makes update_team_distribution return None per format."""
+    pool = _make_opponent_pool(tmp_path, team_axis_enabled=False)
+    _record_wins_losses(pool, "gen9vgc2024regg", "alpha", 50, 50)
+    _record_wins_losses(pool, "gen9vgc2024regg", "beta", 50, 50)
+    dist = pool.update_team_distribution()
+    assert dist["gen9vgc2024regg"] is None
+    assert dist["gen9vgc2023regc"] is None

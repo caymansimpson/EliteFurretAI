@@ -243,6 +243,12 @@ class OpponentPool:
         self.team_win_rates: Dict[str, Dict[str, Tuple[float, float]]] = {}
         self.team_sample_counts: Dict[str, Dict[str, int]] = {}
         self._team_axis_warm: Dict[str, bool] = {}
+        # Format keys are tracked regardless of team_axis_enabled so the
+        # disabled-path of update_team_distribution can still enumerate
+        # the configured formats (returning {fmt: None} for each).
+        self._team_axis_format_keys: List[str] = (
+            list(battle_formats.keys()) if battle_formats else []
+        )
 
         if team_axis_enabled and team_repo is not None and battle_formats:
             subs = opponent_team_subdirectories or {}
@@ -543,6 +549,121 @@ class OpponentPool:
 
             # Final normalization protects against drift from rounding and availability gating.
         self.curriculum = normalize_curriculum(new_curriculum)
+
+    def update_team_distribution(
+        self,
+    ) -> Dict[str, Optional[Dict[str, float]]]:
+        """Recompute the per-format team sampling distribution.
+
+        For each configured battle_format:
+        - If feature disabled OR any of the format's known_teams has
+          a sample count below team_warmup_threshold AND the format
+          hasn't already latched warm, returns None for that format.
+        - Otherwise computes asymmetric PFSP weights
+          ``(1 - wr_t) ** p`` with Beta(8, 8) smoothing of ``wr_t``,
+          normalizes, applies per-team floor, renormalizes, and
+          returns the resulting distribution.
+
+        Warm-up latches per format: once a format trips True, it
+        stays True regardless of future sample-count drift.
+
+        Returns:
+            Dict keyed by battle_format. Values are either a
+            normalized {team_name: weight} dict OR None during
+            warm-up / when team_axis_enabled is False.
+        """
+        result: Dict[str, Optional[Dict[str, float]]] = {}
+        if not self.team_axis_enabled:
+            for fmt in self._team_axis_format_keys:
+                result[fmt] = None
+            return result
+
+        alpha = 8.0
+        beta = 8.0
+        p = self._team_axis_pfsp_exponent
+        floor = self.team_per_team_floor
+
+        for fmt, teams in self.known_teams.items():
+            if self._team_axis_warm.get(fmt, False):
+                warm = True
+            else:
+                warm = all(
+                    self.team_sample_counts[fmt][t] >= self.team_warmup_threshold
+                    for t in teams
+                )
+                if warm:
+                    self._team_axis_warm[fmt] = True
+
+            if not warm:
+                result[fmt] = None
+                continue
+
+            scores: Dict[str, float] = {}
+            for t in teams:
+                wins, n = self.team_win_rates[fmt][t]
+                wr_t = (wins + alpha) / (n + alpha + beta)
+                scores[t] = max(0.0, (1.0 - wr_t)) ** p
+
+            total = sum(scores.values())
+            if total <= 0.0:
+                # Degenerate case: all teams at wr=1.0 (impossible from
+                # smoothed estimator with finite n, but guarded for safety).
+                result[fmt] = {t: 1.0 / len(teams) for t in teams}
+                continue
+
+            distribution = {t: scores[t] / total for t in teams}
+
+            if floor > 0.0:
+                # Water-filling: iteratively pin below-floor teams at
+                # exactly `floor` and renormalize the remaining mass
+                # proportionally over the unpinned teams. Iterates until
+                # no new teams fall below floor (necessary because
+                # raising some to floor reduces mass available to
+                # others, which can push them below floor in turn).
+                # Capped at len(teams) iterations because at most one
+                # new team can get pinned per pass.
+                num_teams = len(teams)
+                max_total_floor = num_teams * floor
+                if max_total_floor >= 1.0:
+                    # Floor is too aggressive for the team count; fall
+                    # back to a uniform distribution.
+                    distribution = {t: 1.0 / num_teams for t in teams}
+                else:
+                    pinned: Dict[str, float] = {}
+                    for _ in range(num_teams):
+                        remaining_mass = 1.0 - sum(pinned.values())
+                        unpinned = [t for t in teams if t not in pinned]
+                        unpinned_score_total = sum(scores[t] for t in unpinned)
+                        new_pin = False
+                        for t in unpinned:
+                            if unpinned_score_total <= 0.0:
+                                share = remaining_mass / len(unpinned)
+                            else:
+                                share = (scores[t] / unpinned_score_total) * remaining_mass
+                            if share < floor:
+                                pinned[t] = floor
+                                new_pin = True
+                        if not new_pin:
+                            break
+
+                    distribution = {}
+                    remaining_mass = 1.0 - sum(pinned.values())
+                    unpinned = [t for t in teams if t not in pinned]
+                    unpinned_score_total = sum(scores[t] for t in unpinned)
+                    for t in teams:
+                        if t in pinned:
+                            distribution[t] = pinned[t]
+                        else:
+                            if unpinned_score_total <= 0.0:
+                                distribution[t] = remaining_mass / max(len(unpinned), 1)
+                            else:
+                                distribution[t] = (
+                                    scores[t] / unpinned_score_total
+                                ) * remaining_mass
+
+            result[fmt] = distribution
+
+        return result
 
 
 class WorkerOpponentFactory:
