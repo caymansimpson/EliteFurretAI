@@ -413,6 +413,20 @@ class OpponentPool:
         if forfeited:
             self.total_forfeits_tracked += 1
 
+        # Agent-axis EWMA update. Same shape as the team-axis update
+        # below: decay = 0.5 ** (1 / half_life), then add this battle's
+        # contribution. Phase 5.3 reads agent_win_rates via the
+        # adaptive_score primitive in update_curriculum. Forfeits are
+        # included here to match the sliding-window deque update above,
+        # which also does not gate on `forfeited`; both signals stay
+        # consistent for the metrics emitter.
+        agent_half_life = self.adaptive_agent_axis.half_life
+        decay = 0.5 ** (1.0 / max(agent_half_life, 1e-9))
+        prev_wins, prev_n = self.agent_win_rates.get(opponent_type, (0.0, 0.0))
+        new_wins = prev_wins * decay + win_value
+        new_n = prev_n * decay + 1.0
+        self.agent_win_rates[opponent_type] = (new_wins, new_n)
+
         # ── Change 7: per-(format, team) EWMA update ─────────────────────
         if (
             self.team_axis_enabled
@@ -591,116 +605,55 @@ class OpponentPool:
     def update_team_distribution(
         self,
     ) -> Dict[str, Optional[Dict[str, float]]]:
-        """Recompute the per-format team sampling distribution.
+        """Recompute the per-format team sampling distribution using the
+        shared adaptive_distribution primitive.
 
-        For each configured battle_format:
-        - If feature disabled OR any of the format's known_teams has
-          a sample count below team_warmup_threshold AND the format
-          hasn't already latched warm, returns None for that format.
-        - Otherwise computes asymmetric PFSP weights
-          ``(1 - wr_t) ** p`` with Beta(8, 8) smoothing of ``wr_t``,
-          normalizes, applies per-team floor, renormalizes, and
-          returns the resulting distribution.
-
-        Warm-up latches per format: once a format trips True, it
-        stays True regardless of future sample-count drift.
-
-        Returns:
-            Dict keyed by battle_format. Values are either a
-            normalized {team_name: weight} dict OR None during
-            warm-up / when team_axis_enabled is False.
+        See AdaptiveAxisConfig.team_axis_defaults for the parameter
+        choices that reproduce Change 7's team-axis behavior.
         """
-        result: Dict[str, Optional[Dict[str, float]]] = {}
-        if not self.team_axis_enabled:
-            for fmt in self._team_axis_format_keys:
-                result[fmt] = None
+        from elitefurretai.rl.rl_utils import adaptive_distribution, adaptive_score
+
+        result: Dict[str, Optional[Dict[str, float]]] = {
+            fmt: None for fmt in self._team_axis_format_keys
+        }
+        if not self.adaptive_team_axis.enabled:
             return result
 
-        alpha = 8.0
-        beta = 8.0
-        p = self.adaptive_team_axis.weakness_exponent
-        floor = self.team_per_team_floor
-
+        cfg = self.adaptive_team_axis
         for fmt, teams in self.known_teams.items():
-            if self._team_axis_warm.get(fmt, False):
-                warm = True
-            else:
+            if not self._team_axis_warm.get(fmt, False):
                 warm = all(
-                    self.team_sample_counts[fmt][t] >= self.team_warmup_threshold
-                    for t in teams
+                    self.team_sample_counts[fmt][t] >= cfg.min_samples for t in teams
                 )
                 if warm:
                     self._team_axis_warm[fmt] = True
-
-            if not warm:
-                result[fmt] = None
-                continue
+                else:
+                    result[fmt] = None
+                    continue
 
             scores: Dict[str, float] = {}
             for t in teams:
                 wins, n = self.team_win_rates[fmt][t]
-                wr_t = (wins + alpha) / (n + alpha + beta)
-                scores[t] = max(0.0, (1.0 - wr_t)) ** p
+                scores[t] = adaptive_score(
+                    wins=wins,
+                    n=n,
+                    prior_alpha=cfg.prior_alpha,
+                    prior_beta=cfg.prior_beta,
+                    pfsp_mix=cfg.pfsp_mix,
+                    weakness_mix=cfg.weakness_mix,
+                    weakness_exponent=cfg.weakness_exponent,
+                    target_win_rate=cfg.target_win_rate,
+                )
 
-            total = sum(scores.values())
-            if total <= 0.0:
-                # Degenerate case: all teams at wr=1.0 (impossible from
-                # smoothed estimator with finite n, but guarded for safety).
-                result[fmt] = {t: 1.0 / len(teams) for t in teams}
-                continue
-
-            distribution = {t: scores[t] / total for t in teams}
-
-            if floor > 0.0:
-                # Water-filling: iteratively pin below-floor teams at
-                # exactly `floor` and renormalize the remaining mass
-                # proportionally over the unpinned teams. Iterates until
-                # no new teams fall below floor (necessary because
-                # raising some to floor reduces mass available to
-                # others, which can push them below floor in turn).
-                # Capped at len(teams) iterations because each productive
-                # pass strictly grows `pinned`, which is bounded by the
-                # team count.
-                num_teams = len(teams)
-                max_total_floor = num_teams * floor
-                if max_total_floor >= 1.0:
-                    # Floor is too aggressive for the team count; fall
-                    # back to a uniform distribution.
-                    distribution = {t: 1.0 / num_teams for t in teams}
-                else:
-                    pinned: Dict[str, float] = {}
-                    for _ in range(num_teams):
-                        remaining_mass = 1.0 - sum(pinned.values())
-                        unpinned = [t for t in teams if t not in pinned]
-                        unpinned_score_total = sum(scores[t] for t in unpinned)
-                        new_pin = False
-                        for t in unpinned:
-                            if unpinned_score_total <= 0.0:
-                                share = remaining_mass / len(unpinned)
-                            else:
-                                share = (scores[t] / unpinned_score_total) * remaining_mass
-                            if share < floor:
-                                pinned[t] = floor
-                                new_pin = True
-                        if not new_pin:
-                            break
-
-                    distribution = {}
-                    remaining_mass = 1.0 - sum(pinned.values())
-                    unpinned = [t for t in teams if t not in pinned]
-                    unpinned_score_total = sum(scores[t] for t in unpinned)
-                    for t in teams:
-                        if t in pinned:
-                            distribution[t] = pinned[t]
-                        else:
-                            if unpinned_score_total <= 0.0:
-                                distribution[t] = remaining_mass / max(len(unpinned), 1)
-                            else:
-                                distribution[t] = (
-                                    scores[t] / unpinned_score_total
-                                ) * remaining_mass
-
-            result[fmt] = distribution
+            floors = (
+                {t: cfg.per_key_floor for t in teams} if cfg.per_key_floor > 0 else None
+            )
+            result[fmt] = adaptive_distribution(
+                scores,
+                base=None,
+                base_blend=0.0,
+                floors=floors,
+            )
 
         return result
 
