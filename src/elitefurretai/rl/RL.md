@@ -342,6 +342,24 @@ VGCBench v1 is single-format; off-`primary_format` pairs cannot challenge it (Sh
 
 For the multi-format graduation check, see `src/elitefurretai/scripts/multi_format_graduation_eval.py` and the `q_format_opp_type_win_rate` / `graduation_summary` metrics.
 
+### Team-Axis Curriculum
+
+The curriculum biases agent team selection per-format in addition to opponent sampling. `OpponentPool` tracks per-`(battle_format, team_name)` EWMA win rate using the same decay rule as the opponent-axis EWMA. At each curriculum broadcast cadence, `update_team_distribution()` computes per-format `{team_name: weight}` distributions using asymmetric PFSP `(1 - wr) ** p` (sharing `p` with the opponent-axis curriculum), with a per-team floor enforced via water-filling and a per-format warm-up gate.
+
+Workers receive the per-format distributions over the same broadcast mechanism that carries the opponent curriculum. `WorkerOpponentFactory.sample_team(fmt, biased=True)` draws a team from the broadcast distribution when one exists for `fmt`, or falls back to uniform `team_repo.sample_team_name(...)` during warm-up. `RLTrajectoryPlayer.current_team_name` flows the sampled name onto the trajectory dict (alongside `battle_format` read from `battle.format`) so the trainer can route the EWMA update back to the right cell.
+
+Bias scope: every training call site uses the biased distribution. Self-play, ghosts, exploiters, and baseline matchups all draw from the same per-format distribution. The `biased=False` opt-out exists for future eval-at-checkpoint paths that want the natural uniform team distribution.
+
+Config knobs (on `CurriculumConfig`):
+
+- `team_axis_enabled` — master switch. When False the broadcast emits `None` for every format and workers stay on uniform sampling.
+- `team_warmup_threshold` — minimum non-forfeit battles per `(format, team)` before that format's distribution flips on. Each format latches independently.
+- `team_per_team_floor` — minimum post-renormalization weight any team can receive. Enforced by water-filling rather than naive clamp-and-renormalize so the floor invariant is preserved through normalization.
+- `pfsp_exponent` — asymmetric PFSP shape, shared with the opponent-axis curriculum.
+- `half_life` — EWMA decay rate, shared with the opponent-axis curriculum.
+
+Design spec: `planning/stage2/2026-05-24-12-30-change7-team-axis-curriculum-design.md`.
+
 ### VGCBench: Fork-Safe External Opponent
 
 `vgc-bench` depends on a different fork of `poke-env` than EliteFurretAI. You can't import both into one Python process without API conflicts.
