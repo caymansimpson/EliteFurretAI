@@ -176,6 +176,14 @@ class OpponentPool:
         max_ghosts: int = 10,
         max_exploiter_models: int = 10,
         tracking_window: int = 100,
+        team_repo: Optional["TeamRepo"] = None,
+        battle_formats: Optional[Dict[str, float]] = None,
+        opponent_team_subdirectories: Optional[Dict[str, Optional[str]]] = None,
+        team_axis_enabled: bool = True,
+        team_warmup_threshold: int = 20,
+        team_per_team_floor: float = 0.005,
+        half_life: float = 50.0,
+        pfsp_exponent: float = 1.0,
     ):
         self.max_ghosts = max_ghosts
         self.max_exploiter_models = max_exploiter_models
@@ -223,6 +231,32 @@ class OpponentPool:
         )
         self.total_battles_tracked = 0
         self.total_forfeits_tracked = 0
+
+        # ── Change 7: team-axis adaptive curriculum state ────────────────
+        self.team_axis_enabled = team_axis_enabled
+        self.team_warmup_threshold = team_warmup_threshold
+        self.team_per_team_floor = team_per_team_floor
+        self._team_axis_half_life = half_life
+        self._team_axis_pfsp_exponent = pfsp_exponent
+
+        self.known_teams: Dict[str, List[str]] = {}
+        self.team_win_rates: Dict[str, Dict[str, Tuple[float, float]]] = {}
+        self.team_sample_counts: Dict[str, Dict[str, int]] = {}
+        self._team_axis_warm: Dict[str, bool] = {}
+
+        if team_axis_enabled and team_repo is not None and battle_formats:
+            subs = opponent_team_subdirectories or {}
+            for fmt in battle_formats:
+                names = sorted(team_repo.get_all(fmt).keys())
+                # Apply subdirectory filter symmetric with sample_team.
+                sub = subs.get(fmt)
+                if sub is not None:
+                    sub = sub.replace(os.sep, "/")
+                    names = [n for n in names if n.startswith(sub + "/") or n == sub]
+                self.known_teams[fmt] = names
+                self.team_win_rates[fmt] = {n: (0.0, 0.0) for n in names}
+                self.team_sample_counts[fmt] = {n: 0 for n in names}
+                self._team_axis_warm[fmt] = False
 
     def _opponent_available(self, opponent_type: str) -> bool:
         if opponent_type == OpponentPool.BC_PLAYER:

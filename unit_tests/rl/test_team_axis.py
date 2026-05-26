@@ -11,6 +11,7 @@ from pathlib import Path
 
 from elitefurretai.etl.team_repo import TeamRepo
 from elitefurretai.rl.config import CurriculumConfig
+from elitefurretai.rl.opponents import OpponentPool
 
 
 def test_curriculum_config_has_team_axis_defaults():
@@ -66,3 +67,63 @@ def test_sample_team_name_respects_subdirectory(tmp_path):
     for _ in range(50):
         name = repo.sample_team_name("gen9vgc2024regg", subdirectory="constrained")
         assert name.startswith("constrained/"), name
+
+
+def _two_format_repo(tmp_path) -> TeamRepo:
+    """Build a TeamRepo with two formats, two teams each.
+
+    Used by several tests in this module to exercise per-format
+    isolation.
+    """
+    for fmt in ("gen9vgc2024regg", "gen9vgc2023regc"):
+        d = tmp_path / fmt
+        d.mkdir()
+        _write_team_file(d / "alpha.txt", f"{fmt}/alpha")
+        _write_team_file(d / "beta.txt", f"{fmt}/beta")
+    return TeamRepo(filepath=str(tmp_path))
+
+
+def _make_opponent_pool(
+    tmp_path,
+    *,
+    team_axis_enabled: bool = True,
+    team_warmup_threshold: int = 20,
+    team_per_team_floor: float = 0.005,
+    half_life: float = 50.0,
+    pfsp_exponent: float = 1.0,
+) -> OpponentPool:
+    """Construct an OpponentPool with the multi-format test repo."""
+    repo = _two_format_repo(tmp_path)
+    return OpponentPool(
+        curriculum={"self_play": 1.0},
+        team_repo=repo,
+        battle_formats={
+            "gen9vgc2024regg": 0.5,
+            "gen9vgc2023regc": 0.5,
+        },
+        opponent_team_subdirectories={
+            "gen9vgc2024regg": None,
+            "gen9vgc2023regc": None,
+        },
+        team_axis_enabled=team_axis_enabled,
+        team_warmup_threshold=team_warmup_threshold,
+        team_per_team_floor=team_per_team_floor,
+        half_life=half_life,
+        pfsp_exponent=pfsp_exponent,
+    )
+
+
+def test_opponent_pool_initializes_per_format_team_state(tmp_path):
+    """OpponentPool builds per-format team_win_rates / sample_counts / known_teams at init."""
+    pool = _make_opponent_pool(tmp_path)
+    assert set(pool.known_teams.keys()) == {"gen9vgc2024regg", "gen9vgc2023regc"}
+    assert set(pool.known_teams["gen9vgc2024regg"]) == {"alpha", "beta"}
+    assert set(pool.known_teams["gen9vgc2023regc"]) == {"alpha", "beta"}
+    # EWMA state starts at zero for every (format, team).
+    for fmt, teams in pool.known_teams.items():
+        for t in teams:
+            assert pool.team_win_rates[fmt][t] == (0.0, 0.0)
+            assert pool.team_sample_counts[fmt][t] == 0
+    # Warm flag starts False for every format.
+    for fmt in pool.known_teams:
+        assert pool._team_axis_warm.get(fmt, False) is False
