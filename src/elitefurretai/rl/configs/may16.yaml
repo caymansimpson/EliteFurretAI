@@ -131,7 +131,8 @@ curriculum:
     simple_heuristic_baseline: 0.03
     vgc_bench_baseline: 0.05
     train_exploiter: 0
-  adaptive_curriculum: false
+  adaptive_agent_axis:
+    enabled: false
   max_exploiter_models: 5
   max_ghosts: 5
   vgc_bench_checkpoint_path: data/models/vgc-bench-sb3-model.zip
