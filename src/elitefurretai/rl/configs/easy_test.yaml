@@ -51,15 +51,22 @@ hardware:
   num_workers: 6
 
 curriculum:
+  # Single format, single agent team, single opponent team.
+  # Both *_team_path entries are relative to <base_team_path>/<format>/ and
+  # point at the same .txt file so every rollout is a mirror match on this
+  # one team. Swap either side to change the matchup.
   battle_formats:
     gen9vgc2024regg: 1.0
   base_team_path: data/teams
-  opponent_team_pool_path: null
-  agent_team_path: null
-  bc_model_path: data/models/supervised/cool-bee-85-finetune_best.pt
+  agent_team_path: constrained/naicchampion.txt
+  opponent_team_pool_path: constrained/naicchampion.txt
+  # cool-bee-85-finetune is pre-2026-05-24 embedder (input dim 5,032);
+  # no longer loadable against the current 5,056-dim embedder. Run with
+  # no BC init / no BC opponent until a replacement is trained.
+  bc_model_path: null
   curriculum_weights:
-    self_play: 0.35
-    bc_player: 0.15
+    self_play: 0.5
+    bc_player: 0
     exploiters: 0.0
     ghosts: 0.15
     max_damage: 0.15
@@ -68,8 +75,7 @@ curriculum:
     simple_heuristic_baseline: 0.1
     vgc_bench_baseline: 0.1
     train_exploiter: 0.0  # off; bump to 0.20 to activate in-process exploiter co-training
-  adaptive_agent_axis:
-    enabled: false
+  adaptive_curriculum: false
   max_exploiter_models: 5
   max_ghosts: 5
   vgc_bench_checkpoint_path: data/models/vgc-bench-sb3-model.zip
@@ -77,7 +83,10 @@ curriculum:
   external_vgcbench_team_file: data/teams/gen9vgc2024regg/vgcbench.txt
 
 training:
-  initialize_path: data/models/supervised/cool-bee-85-finetune_best.pt
+  # No BC warm-start: cool-bee-85-finetune is incompatible with the
+  # post-2026-05-24 embedder (5,032 → 5,056 input dim). Train from scratch
+  # until a new BC checkpoint is available.
+  initialize_path: null
   resume_from: data/models/rl/bright-pine-189/main_model_step_144.pt
   save_dir: data/models/rl
   train_batch_size: 128

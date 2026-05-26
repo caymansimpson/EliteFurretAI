@@ -345,6 +345,31 @@ class TeamRepo:
         """
         return self._teams[format]
 
+    def _filter_by_subdirectory(
+        self,
+        format: str,
+        format_teams: Dict[str, str],
+        subdirectory: str,
+    ) -> Dict[str, str]:
+        subdirectory = subdirectory.replace(os.sep, "/")
+        # A trailing ".txt" lets callers point at a single team file
+        # (e.g. opponent_team_pool_path = "constrained/naicchampion.txt")
+        # rather than a directory of teams.
+        if subdirectory.endswith(".txt"):
+            subdirectory = subdirectory[:-4]
+        filtered_teams = {
+            name: team
+            for name, team in format_teams.items()
+            if name.startswith(subdirectory + "/") or name == subdirectory
+        }
+        if not filtered_teams:
+            raise ValueError(
+                f"No teams found in subdirectory '{subdirectory}' for "
+                f"format '{format}'. Available teams: "
+                f"{list(format_teams.keys())}"
+            )
+        return filtered_teams
+
     def sample_team_name(
         self,
         format: str,
@@ -352,7 +377,7 @@ class TeamRepo:
     ) -> str:
         """Sample a random team name (filename without .txt) from the format.
 
-        Used by Change 7's per-team adaptive sampling: when the worker
+        Used for per-team adaptive sampling: when the worker
         needs just the name (to stamp on a trajectory or to look up
         the corresponding team string later), this avoids the cost
         and shuffle step of materializing the full team. The uniform
@@ -381,19 +406,7 @@ class TeamRepo:
             raise ValueError(f"No teams found for format '{format}'")
 
         if subdirectory is not None:
-            subdirectory = subdirectory.replace(os.sep, "/")
-            filtered_teams = {
-                name: team
-                for name, team in format_teams.items()
-                if name.startswith(subdirectory + "/") or name == subdirectory
-            }
-            if not filtered_teams:
-                raise ValueError(
-                    f"No teams found in subdirectory '{subdirectory}' for "
-                    f"format '{format}'. Available teams: "
-                    f"{list(format_teams.keys())}"
-                )
-            format_teams = filtered_teams
+            format_teams = self._filter_by_subdirectory(format, format_teams, subdirectory)
 
         return random.choice(list(format_teams.keys()))
 
@@ -464,19 +477,7 @@ class TeamRepo:
 
         # Filter by subdirectory if provided
         if subdirectory is not None:
-            # Normalize subdirectory path separators
-            subdirectory = subdirectory.replace(os.sep, "/")
-            filtered_teams = {
-                name: team
-                for name, team in format_teams.items()
-                if name.startswith(subdirectory + "/") or name == subdirectory
-            }
-            if not filtered_teams:
-                raise ValueError(
-                    f"No teams found in subdirectory '{subdirectory}' for format '{format}'. "
-                    f"Available teams: {list(format_teams.keys())}"
-                )
-            format_teams = filtered_teams
+            format_teams = self._filter_by_subdirectory(format, format_teams, subdirectory)
 
         available_teams = list(format_teams.values())
         num_available = len(available_teams)

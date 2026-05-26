@@ -116,10 +116,13 @@ curriculum:
   base_team_path: data/teams
   opponent_team_pool_path: constrained
   agent_team_path: constrained
-  bc_model_path: data/models/supervised/cool-bee-85-finetune_best.pt
+  # cool-bee-85-finetune is pre-2026-05-24 embedder (input dim 5,032);
+  # no longer loadable against the current 5,056-dim embedder. Run with
+  # no BC init / no BC opponent until a replacement is trained.
+  bc_model_path: null
   curriculum_weights:
-    self_play: 0.56
-    bc_player: 0.03
+    self_play: 0.59
+    bc_player: 0
     exploiters: 0
     ghosts: 0.3
     max_damage: 0.03
@@ -128,8 +131,7 @@ curriculum:
     simple_heuristic_baseline: 0.03
     vgc_bench_baseline: 0.05
     train_exploiter: 0
-  adaptive_agent_axis:
-    enabled: false
+  adaptive_curriculum: false
   max_exploiter_models: 5
   max_ghosts: 5
   vgc_bench_checkpoint_path: data/models/vgc-bench-sb3-model.zip
@@ -138,10 +140,10 @@ curriculum:
 
 training:
   embedder_feature_set: raw
-  # BC partial-load: trunk/encoder/policy head load from cool-bee-85; the
-  # new value_ff_stack + reshaped win_head are fresh-initialized. Strict
-  # load is bypassed in train.py's initialize_path branch.
-  initialize_path: data/models/supervised/cool-bee-85-finetune_best.pt
+  # No BC warm-start: cool-bee-85-finetune is incompatible with the
+  # post-2026-05-24 embedder (5,032 → 5,056 input dim). Train from scratch
+  # until a new BC checkpoint is available.
+  initialize_path: null
   # Fresh run — no resume. Per-run-dir behavior (train.py:1106-1149) means
   # checkpoints will be written under data/models/rl/<wandb_run_name>/
   # from step 0.

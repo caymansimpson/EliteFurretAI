@@ -1,21 +1,5 @@
-# may26.yaml — first multi-format run with FoulPlay eval enabled.
-#
-# Changes vs may25.yaml:
-#   1. battle_formats expanded to 3 (regc, regg, regh) at roughly equal
-#      weights. Per-format `agent_team_path` / `opponent_team_pool_path`
-#      in dict form because only regg has the `constrained/` curated
-#      subdir.
-#   2. vgc_bench_baseline weight set to 0. VGCBench v1 is single-format
-#      (bound to primary_format = regg here, weighted 0.33 → it'd only
-#      apply to ~1/3 of pairs and Showdown would |formaterror| the
-#      others). When multi-format VGCBench v2 lands, weight back up.
-#      Weight redistributed across self_play and ghosts.
-#   3. foulplay_eval.enabled = true with multi-format pool paths. At
-#      `n_battles_per_format=50` and 750 ms search across 3 formats,
-#      one eval pass is ~3 × 50 × 25 s ≈ 60 min wall-clock. The hook
-#      only fires inside the checkpoint block, so effective cadence is
-#      every `max(eval_every_n_updates, checkpoint_interval)` updates.
-#      Cadence here is 500 updates → ~5 eval passes per 5 GPU-hours.
+# may26.yaml — first multi-format run with adaptive curriculum
+# and FoulPlay eval enabled
 
 algorithm:
   clip_range: 0.2
@@ -30,7 +14,7 @@ algorithm:
 
 portfolio:
   max_portfolio_size: 10
-  portfolio_add_interval: 50
+  portfolio_add_interval: 200
   portfolio_update_strategy: recent
 
 exploration:
@@ -113,11 +97,10 @@ curriculum:
     gen9vgc2023regc: straightforward
     gen9vgc2024regg: constrained
     gen9vgc2024regh: ""                # empty string = format root directory
-  bc_model_path: data/models/supervised/rose-sun-108_best.pt
   # vgc_bench_baseline → 0 for multi-format (single-format-bound bot).
   # Its 0.05 weight is split 0.03 → self_play, 0.02 → ghosts.
   curriculum_weights:
-    self_play: 0.59
+    self_play: 0.56
     bc_player: 0.03
     exploiters: 0
     ghosts: 0.32
@@ -125,12 +108,12 @@ curriculum:
     random_baseline: 0
     max_base_power_baseline: 0
     simple_heuristic_baseline: 0.03
-    vgc_bench_baseline: 0
+    vgc_bench_baseline: 0.03
     train_exploiter: 0
-  adaptive_agent_axis:
-    enabled: false
+  adaptive_curriculum: true
   max_exploiter_models: 5
   max_ghosts: 5
+  bc_model_path: data/models/supervised/rose-sun-108_best.pt
   vgc_bench_checkpoint_path: data/models/vgc-bench-sb3-model.zip
   external_vgcbench_python_executable: /home/cayman/Repositories/venv-vgcbench/bin/python
   external_vgcbench_team_file: data/teams/gen9vgc2024regg/vgcbench.txt
@@ -142,7 +125,7 @@ training:
   max_updates: 100000
   save_dir: data/models/rl
   train_batch_size: 128
-  checkpoint_interval: 100
+  checkpoint_interval: 200
   log_interval: 1
   use_wandb: true
   wandb_project: elitefurretai-instruct
@@ -160,16 +143,11 @@ exploiter:
   ent_coef: 0.02
 
 foulplay_eval:
-  # ENABLED for this multi-format run. Wall-clock cost: at
-  # 750 ms search × ~30 turns × 50 battles × 3 formats ≈ 60 min
-  # per eval pass. Effective cadence is the LCM of checkpoint_interval
-  # (100) and eval_every_n_updates (500) — so a pass every 500 updates.
-  # See planning/stage2/2026-05-25-23-37-foulplay-eval-scope-confirmed.md.
   enabled: true
   eval_every_n_updates: 500
   n_battles_per_format: 50
   search_time_ms: 750
-  parallelism: 4
+  parallelism: 6
   python_executable: /home/cayman/Repositories/venv-foulplay/bin/python
   # Explicit per-format pools (required because regh's
   # opponent_team_pool_path is null, which the auto-fallback can't

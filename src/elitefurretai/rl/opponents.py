@@ -252,7 +252,7 @@ class OpponentPool:
         self.total_battles_tracked = 0
         self.total_forfeits_tracked = 0
 
-        # ── Change 7: team-axis adaptive curriculum state ────────────────
+        # ── team-axis adaptive curriculum state ──
         # Keep scalar copies for the fields that are read repeatedly on hot
         # paths inside this class (warm-up latch check, per-team floor pass,
         # record_battle_result gate). Other params (half_life, pfsp/weakness
@@ -427,7 +427,7 @@ class OpponentPool:
         new_n = prev_n * decay + 1.0
         self.agent_win_rates[opponent_type] = (new_wins, new_n)
 
-        # ── Change 7: per-(format, team) EWMA update ─────────────────────
+        # ── per-(format, team) EWMA update ──
         if (
             self.adaptive_team_axis.enabled
             and battle_format is not None
@@ -561,7 +561,7 @@ class OpponentPool:
         shared adaptive_distribution primitive.
 
         See AdaptiveAxisConfig.team_axis_defaults for the parameter
-        choices that reproduce Change 7's team-axis behavior.
+        choices that drive the team-axis behavior.
         """
         from elitefurretai.rl.rl_utils import adaptive_distribution, adaptive_score
 
@@ -656,7 +656,7 @@ class WorkerOpponentFactory:
         self.team_repo = team_repo
         self.battle_formats = dict(battle_formats)
         self.opponent_team_subdirectories = dict(opponent_team_subdirectories)
-        # ── Change 7: per-format biased team distribution from broadcast ─
+        # ── per-format biased team distribution from broadcast ──
         # None or absent value for a format → fall back to uniform.
         self.team_distribution_by_format: Dict[str, Optional[Dict[str, float]]] = {}
         self.server_config = server_config
@@ -750,7 +750,7 @@ class WorkerOpponentFactory:
         """Update worker-local curriculum and refresh dependent opponent pools.
 
         team_distribution_by_format: per-format biased team sampling
-            distributions broadcast from the trainer (Change 7). May
+            distributions broadcast from the trainer. May
             contain None values for formats still in warm-up;
             sample_team falls back to uniform for those.
         """
