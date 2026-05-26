@@ -401,11 +401,6 @@ class TeamRepo:
         """
         Sample a random team from the specified format.
 
-        Delegates name selection to ``sample_team_name`` (single source of
-        truth for the uniform sampling distribution and subdirectory
-        filtering), then materializes the team string and applies
-        ``_shuffle_team_order`` if shuffle is enabled.
-
         Args:
             format: Pokemon format (e.g., "gen9vgc2023regc")
             subdirectory: Optional subdirectory path to sample from

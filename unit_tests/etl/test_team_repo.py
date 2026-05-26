@@ -77,10 +77,8 @@ def test_validator():
 
 
 def test_sample_team_delegates_to_sample_team_name(tmp_path, monkeypatch):
-    """sample_team must look the name up via sample_team_name (single source of
-    truth for uniform sampling) and then shuffle. After the merge, calling
-    sample_team_name and resolving via _teams[fmt][name] yields the same
-    string sample_team returns when shuffle is disabled."""
+    """Regression guard: post-refactor, sample_team must remain a thin wrapper over
+    sample_team_name so the two surfaces share one uniform-sampling distribution."""
     # Build a tiny repo with shuffle off. TeamRepo's loader skips VGC teams
     # whose Ability-line count is not 6, so each fixture lists 6 mons with an
     # Ability line apiece.
@@ -95,16 +93,12 @@ def test_sample_team_delegates_to_sample_team_name(tmp_path, monkeypatch):
     (fmt_dir / "alpha.txt").write_text(alpha_team)
     (fmt_dir / "beta.txt").write_text(beta_team)
 
-    from elitefurretai.etl.team_repo import TeamRepo
-
     repo = TeamRepo(filepath=str(tmp_path), shuffle=False)
 
     # Force deterministic sample_team_name → "alpha" by stubbing random.choice
-    import random as _r
-
-    monkeypatch.setattr(_r, "choice", lambda seq: "alpha" if "alpha" in seq else seq[0])
+    monkeypatch.setattr("random.choice", lambda seq: "alpha")
 
     name = repo.sample_team_name("gen9vgc2024regg")
-    team_by_lookup = repo._teams["gen9vgc2024regg"][name]
+    team_by_lookup = repo.get("gen9vgc2024regg", name)
     team_via_sample = repo.sample_team("gen9vgc2024regg")
     assert team_via_sample == team_by_lookup
