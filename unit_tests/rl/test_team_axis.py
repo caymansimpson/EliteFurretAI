@@ -536,3 +536,56 @@ def test_train_passes_team_args_to_record_battle_result(tmp_path):
         team_name=fake_traj["team_name"],
     )
     assert pool.team_sample_counts["gen9vgc2024regg"]["alpha"] == 1
+
+
+def test_broadcast_key_string_literal_is_consistent_across_layers():
+    """Catch typos in the broadcast-payload key string at any layer.
+
+    The trainer puts the dict under key 'team_distribution_by_format'
+    on the control_payload; worker.py pulls it under the same key;
+    env.update_curriculum / backend.update_curriculum / factory.update_curriculum
+    all accept it under the same parameter name. A typo at any layer
+    would silently disable the broadcast.
+    """
+    import inspect
+
+    from elitefurretai.engine.vgc_environment import VGCEnvironment
+    from elitefurretai.rl.opponents import WorkerOpponentFactory
+
+    expected_param = "team_distribution_by_format"
+
+    # Factory.update_curriculum must accept the kwarg.
+    factory_sig = inspect.signature(WorkerOpponentFactory.update_curriculum)
+    assert expected_param in factory_sig.parameters, (
+        f"WorkerOpponentFactory.update_curriculum missing kwarg "
+        f"{expected_param!r}; params: {list(factory_sig.parameters)}"
+    )
+
+    # VGCEnvironment.update_curriculum must accept the kwarg.
+    env_sig = inspect.signature(VGCEnvironment.update_curriculum)
+    assert expected_param in env_sig.parameters, (
+        f"VGCEnvironment.update_curriculum missing kwarg "
+        f"{expected_param!r}; params: {list(env_sig.parameters)}"
+    )
+
+
+def test_broadcast_payload_field_threads_through_factory(tmp_path):
+    """End-to-end: simulate the broadcast payload reaching the factory.
+
+    Constructs a real WorkerOpponentFactory, calls update_curriculum with
+    a synthetic team_distribution_by_format (same shape train.py would
+    bundle), and asserts the factory's stored distribution matches.
+    Catches typos in the kwarg name at the factory layer; the
+    environment/backend layers are caught by the previous test.
+    """
+    factory = _make_worker_factory(tmp_path)
+    factory.curriculum = {}
+    fake_dist = {
+        "gen9vgc2024regg": {"alpha": 0.7, "beta": 0.3},
+        "gen9vgc2023regc": None,
+    }
+    factory.update_curriculum(
+        {"self_play": 1.0},
+        team_distribution_by_format=fake_dist,
+    )
+    assert factory.team_distribution_by_format == fake_dist

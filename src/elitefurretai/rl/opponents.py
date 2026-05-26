@@ -264,6 +264,21 @@ class OpponentPool:
                 self.team_sample_counts[fmt] = {n: 0 for n in names}
                 self._team_axis_warm[fmt] = False
 
+        if self.team_axis_enabled:
+            for fmt, teams in self.known_teams.items():
+                if teams and len(teams) * self.team_per_team_floor >= 1.0:
+                    logger.warning(
+                        "OpponentPool team-axis: format %r has %d teams * "
+                        "team_per_team_floor=%s >= 1.0; per-team floor will "
+                        "effectively pin all teams uniform. Consider lowering "
+                        "team_per_team_floor (e.g., to %.4f) or using a "
+                        "subdirectory filter to reduce team count.",
+                        fmt,
+                        len(teams),
+                        self.team_per_team_floor,
+                        1.0 / (3 * len(teams)),
+                    )
+
     def _opponent_available(self, opponent_type: str) -> bool:
         if opponent_type == OpponentPool.BC_PLAYER:
             return self.bc_model_path is not None
@@ -620,8 +635,9 @@ class OpponentPool:
                 # no new teams fall below floor (necessary because
                 # raising some to floor reduces mass available to
                 # others, which can push them below floor in turn).
-                # Capped at len(teams) iterations because at most one
-                # new team can get pinned per pass.
+                # Capped at len(teams) iterations because each productive
+                # pass strictly grows `pinned`, which is bounded by the
+                # team count.
                 num_teams = len(teams)
                 max_total_floor = num_teams * floor
                 if max_total_floor >= 1.0:
