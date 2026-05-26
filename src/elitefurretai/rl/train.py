@@ -69,8 +69,8 @@ from multiprocessing.synchronize import Event as MPEvent
 from typing import Any, Dict, List, Optional, Tuple
 
 import torch
-import wandb
 
+import wandb
 from elitefurretai.agents.vgcbench_manager import VGCBenchManager
 from elitefurretai.engine.showdown_server_manager import (
     allocate_server_ports,

@@ -28,9 +28,9 @@ import time
 from typing import Any, Dict, Optional, cast
 
 import torch
-import wandb
 import yaml
 
+import wandb
 from elitefurretai.etl import (
     MDBO,
     Embedder,

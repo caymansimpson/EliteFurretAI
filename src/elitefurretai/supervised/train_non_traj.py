@@ -10,9 +10,9 @@ import time
 from typing import Any, Dict
 
 import torch
-import wandb
 import yaml
 
+import wandb
 from elitefurretai.etl import Embedder, PreprocessedBattleDataset
 from elitefurretai.supervised.model_archs import DNN
 from elitefurretai.supervised.utils import (
