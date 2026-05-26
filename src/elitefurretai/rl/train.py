@@ -836,16 +836,8 @@ def main():
         team_repo=team_repo,
         battle_formats=dict(config.curriculum.battle_formats),
         opponent_team_subdirectories=opponent_team_subdirectories,
-        # Phase 4 bridge: CurriculumConfig now exposes the nested
-        # `adaptive_team_axis: AdaptiveAxisConfig`. OpponentPool's
-        # constructor still takes the legacy flat kwargs (those are
-        # replaced in Phase 5.1). We unpack the sub-dataclass here so
-        # the call site stays correct until Phase 5 lands.
-        team_axis_enabled=config.curriculum.adaptive_team_axis.enabled,
-        team_warmup_threshold=config.curriculum.adaptive_team_axis.min_samples,
-        team_per_team_floor=config.curriculum.adaptive_team_axis.per_key_floor,
-        half_life=config.curriculum.adaptive_team_axis.half_life,
-        pfsp_exponent=config.curriculum.adaptive_team_axis.weakness_exponent,
+        adaptive_team_axis=config.curriculum.adaptive_team_axis,
+        adaptive_agent_axis=config.curriculum.adaptive_agent_axis,
     )
 
     # ── Initialize the exploiter co-training pipeline ──
@@ -1206,13 +1198,11 @@ def main():
                         )
 
                     # Recompute curriculum in the learner/main process only,
-                    # if we want to update it. Algorithm to update the
-                    # curriculum is TODO: define and describe
-                    # Phase 4 bridge: `adaptive_curriculum` (flat bool) is
-                    # subsumed by the nested agent-axis sub-dataclass.
-                    # Phase 5 replaces `update_curriculum`'s implementation
-                    # to consume the full AdaptiveAxisConfig; for now we
-                    # only gate on the enabled bit.
+                    # if we want to update it. The agent-axis enabled flag
+                    # is the master switch; Phase 5.3 will rewrite
+                    # `update_curriculum` to consume the full
+                    # `adaptive_agent_axis: AdaptiveAxisConfig` (currently
+                    # the method still uses its own inline hyperparameters).
                     if config.curriculum.adaptive_agent_axis.enabled:
                         opponent_pool.update_curriculum()
 

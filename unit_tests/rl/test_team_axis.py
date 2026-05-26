@@ -7,11 +7,12 @@ planning/stage2/2026-05-24-12-30-change7-team-axis-curriculum-design.md.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import Dict, Optional
 
 from elitefurretai.etl.team_repo import TeamRepo
-from elitefurretai.rl.config import CurriculumConfig
+from elitefurretai.rl.config import AdaptiveAxisConfig, CurriculumConfig
 from elitefurretai.rl.opponents import OpponentPool
 
 
@@ -94,8 +95,23 @@ def _make_opponent_pool(
     half_life: float = 50.0,
     pfsp_exponent: float = 1.0,
 ) -> OpponentPool:
-    """Construct an OpponentPool with the multi-format test repo."""
+    """Construct an OpponentPool with the multi-format test repo.
+
+    Accepts the legacy flat kwargs for test-author ergonomics and
+    converts them to an `AdaptiveAxisConfig` via `dataclasses.replace`
+    starting from the Change 7 team-axis defaults. `pfsp_exponent` maps
+    to `weakness_exponent` on the new config (the team-axis primitive
+    only exposes the asymmetric-weakness shape; PFSP-mix is held at 0).
+    """
     repo = _two_format_repo(tmp_path)
+    adaptive_team_axis = replace(
+        AdaptiveAxisConfig.team_axis_defaults(),
+        enabled=team_axis_enabled,
+        min_samples=team_warmup_threshold,
+        per_key_floor=team_per_team_floor,
+        half_life=half_life,
+        weakness_exponent=pfsp_exponent,
+    )
     return OpponentPool(
         curriculum={"self_play": 1.0},
         team_repo=repo,
@@ -107,11 +123,7 @@ def _make_opponent_pool(
             "gen9vgc2024regg": None,
             "gen9vgc2023regc": None,
         },
-        team_axis_enabled=team_axis_enabled,
-        team_warmup_threshold=team_warmup_threshold,
-        team_per_team_floor=team_per_team_floor,
-        half_life=half_life,
-        pfsp_exponent=pfsp_exponent,
+        adaptive_team_axis=adaptive_team_axis,
     )
 
 
@@ -294,11 +306,14 @@ def test_update_team_distribution_asymmetric_pfsp_direction(tmp_path):
         team_repo=repo,
         battle_formats={"gen9vgc2024regg": 1.0},
         opponent_team_subdirectories={"gen9vgc2024regg": None},
-        team_axis_enabled=True,
-        team_warmup_threshold=20,
-        team_per_team_floor=0.0,  # disable floor for pure-PFSP check
-        half_life=1e9,
-        pfsp_exponent=1.0,
+        adaptive_team_axis=replace(
+            AdaptiveAxisConfig.team_axis_defaults(),
+            enabled=True,
+            min_samples=20,
+            per_key_floor=0.0,  # disable floor for pure-PFSP check
+            half_life=1e9,
+            weakness_exponent=1.0,
+        ),
     )
 
     for name in ("s1", "s2", "s3"):
@@ -324,11 +339,14 @@ def test_update_team_distribution_per_team_floor_enforced(tmp_path):
         team_repo=repo,
         battle_formats={"gen9vgc2024regg": 1.0},
         opponent_team_subdirectories={"gen9vgc2024regg": None},
-        team_axis_enabled=True,
-        team_warmup_threshold=20,
-        team_per_team_floor=0.05,
-        half_life=1e9,
-        pfsp_exponent=2.0,  # steeper to make floor relevant
+        adaptive_team_axis=replace(
+            AdaptiveAxisConfig.team_axis_defaults(),
+            enabled=True,
+            min_samples=20,
+            per_key_floor=0.05,
+            half_life=1e9,
+            weakness_exponent=2.0,  # steeper to make floor relevant
+        ),
     )
     for name in ("s1", "s2", "s3"):
         _record_wins_losses(pool, "gen9vgc2024regg", name, 95, 5)

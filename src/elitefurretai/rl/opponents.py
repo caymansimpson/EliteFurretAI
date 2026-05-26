@@ -54,7 +54,7 @@ import os
 import queue
 import random
 from collections import OrderedDict, defaultdict, deque
-from typing import Any, Dict, List, Optional, Set, Tuple, Type, TypeVar
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple, Type, TypeVar
 
 import numpy as np
 from poke_env import AccountConfiguration, ServerConfiguration
@@ -67,6 +67,9 @@ from elitefurretai.etl import Embedder, TeamRepo
 from elitefurretai.rl.inference_worker import WorkerInferenceClients
 from elitefurretai.rl.rl_trajectory_player import RLTrajectoryPlayer
 from elitefurretai.rl.rl_utils import list_pt_files, normalize_curriculum
+
+if TYPE_CHECKING:
+    from elitefurretai.rl.config import AdaptiveAxisConfig
 
 logger = logging.getLogger(__name__)
 
@@ -179,12 +182,22 @@ class OpponentPool:
         team_repo: Optional["TeamRepo"] = None,
         battle_formats: Optional[Dict[str, float]] = None,
         opponent_team_subdirectories: Optional[Dict[str, Optional[str]]] = None,
-        team_axis_enabled: bool = True,
-        team_warmup_threshold: int = 20,
-        team_per_team_floor: float = 0.005,
-        half_life: float = 50.0,
-        pfsp_exponent: float = 1.0,
+        adaptive_team_axis: Optional["AdaptiveAxisConfig"] = None,
+        adaptive_agent_axis: Optional["AdaptiveAxisConfig"] = None,
     ):
+        # Resolve adaptive-axis configs to their defaults. Local import
+        # keeps the dependency from `opponents` -> `config` one-directional
+        # at call time (rather than at module import time), which is a
+        # convention this file already follows for other RL-side imports.
+        from elitefurretai.rl.config import AdaptiveAxisConfig
+
+        if adaptive_team_axis is None:
+            adaptive_team_axis = AdaptiveAxisConfig.team_axis_defaults()
+        if adaptive_agent_axis is None:
+            adaptive_agent_axis = AdaptiveAxisConfig.agent_axis_defaults()
+        self.adaptive_team_axis = adaptive_team_axis
+        self.adaptive_agent_axis = adaptive_agent_axis
+
         self.max_ghosts = max_ghosts
         self.max_exploiter_models = max_exploiter_models
         self.tracking_window = tracking_window
@@ -229,15 +242,25 @@ class OpponentPool:
             lambda: deque(maxlen=self.tracking_window),
             {opp_type: deque(maxlen=self.tracking_window) for opp_type in self.win_rates},
         )
+        # Agent-axis EWMA store: maps opp_type → (decayed_wins, decayed_n).
+        # `win_rate_tracking` (deque) stays for the metrics emitter so the
+        # win_rate/<opp> Wandb panels keep showing a sliding-window rate;
+        # the adaptive update (Phase 5.3) reads from this EWMA pair instead.
+        self.agent_win_rates: Dict[str, Tuple[float, float]] = {
+            opp_type: (0.0, 0.0) for opp_type in self.win_rates
+        }
         self.total_battles_tracked = 0
         self.total_forfeits_tracked = 0
 
         # ── Change 7: team-axis adaptive curriculum state ────────────────
-        self.team_axis_enabled = team_axis_enabled
-        self.team_warmup_threshold = team_warmup_threshold
-        self.team_per_team_floor = team_per_team_floor
-        self._team_axis_half_life = half_life
-        self._team_axis_pfsp_exponent = pfsp_exponent
+        # Keep scalar copies for the fields that are read repeatedly on hot
+        # paths inside this class (warm-up latch check, per-team floor pass,
+        # record_battle_result gate). Other params (half_life, pfsp/weakness
+        # mixing) are pulled directly from `self.adaptive_team_axis` at
+        # call time inside update_team_distribution / record_battle_result.
+        self.team_axis_enabled = adaptive_team_axis.enabled
+        self.team_warmup_threshold = adaptive_team_axis.min_samples
+        self.team_per_team_floor = adaptive_team_axis.per_key_floor
 
         self.known_teams: Dict[str, List[str]] = {}
         self.team_win_rates: Dict[str, Dict[str, Tuple[float, float]]] = {}
@@ -250,7 +273,7 @@ class OpponentPool:
             list(battle_formats.keys()) if battle_formats else []
         )
 
-        if team_axis_enabled and team_repo is not None and battle_formats:
+        if self.team_axis_enabled and team_repo is not None and battle_formats:
             subs = opponent_team_subdirectories or {}
             for fmt in battle_formats:
                 names = sorted(team_repo.get_all(fmt).keys())
@@ -399,7 +422,7 @@ class OpponentPool:
             and battle_format in self.team_win_rates
             and team_name in self.team_win_rates[battle_format]
         ):
-            decay = 0.5 ** (1.0 / max(self._team_axis_half_life, 1e-9))
+            decay = 0.5 ** (1.0 / max(self.adaptive_team_axis.half_life, 1e-9))
             prev_wins, prev_n = self.team_win_rates[battle_format][team_name]
             new_wins = prev_wins * decay + (1.0 if won else 0.0)
             new_n = prev_n * decay + 1.0
@@ -595,7 +618,7 @@ class OpponentPool:
 
         alpha = 8.0
         beta = 8.0
-        p = self._team_axis_pfsp_exponent
+        p = self.adaptive_team_axis.weakness_exponent
         floor = self.team_per_team_floor
 
         for fmt, teams in self.known_teams.items():
