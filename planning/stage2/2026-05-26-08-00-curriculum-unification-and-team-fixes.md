@@ -1404,7 +1404,7 @@ All six phases shipped on branch `curriculum-unification`. Commit summary:
 | 5.1 — `OpponentPool` constructor + EWMA storage | `5dc5fb6` | Caught and fixed a latent bare-local reference at the old line 273. `TYPE_CHECKING` split needed for the quoted annotation. |
 | 5.2 — EWMA `record_battle_result` + `update_team_distribution` rewire | `0547d05` | No team-axis golden drift — hand-walk confirmed `(1-wr)^p` reproduces from `adaptive_score` with `target_win_rate=1.0`. |
 | 5.3 — `update_curriculum` rewrite | `38fff10` + `a9003d6` | Lands the announced agent-axis behavior delta: sliding-window deque → EWMA (long-run identical, transient smoother). Pyright fix `a9003d6` narrowly suppresses a non-Optional assignment in the bypass-init test pattern from Phase 2. |
-| 6 — RL.md cleanup + final QA + this update | `<this commit's SHA>` | Final `ruff check src unit_tests`, `ruff format --check src unit_tests`, `pyright src unit_tests`, `pytest unit_tests -q` all green. |
+| 6 — RL.md cleanup + final QA + this update | `86ae548` | Final `ruff check src unit_tests`, `ruff format --check src unit_tests`, `pyright src unit_tests`, `pytest unit_tests -q` all green. |
 
 **Behavior delta validation:**
 - Agent-axis curriculum smoothing changed from sliding-window deque (maxlen=100) to EWMA (half_life=100). For stationary win-rate streams the long-run estimate is unchanged; transient response is smoother and slightly slower. Acceptable per the plan's announced delta.
