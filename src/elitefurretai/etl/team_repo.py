@@ -345,6 +345,58 @@ class TeamRepo:
         """
         return self._teams[format]
 
+    def sample_team_name(
+        self,
+        format: str,
+        subdirectory: Optional[str] = None,
+    ) -> str:
+        """Sample a random team name (filename without .txt) from the format.
+
+        Used by Change 7's per-team adaptive sampling: when the worker
+        needs just the name (to stamp on a trajectory or to look up
+        the corresponding team string later), this avoids the cost
+        and shuffle step of materializing the full team. The uniform
+        sampling distribution is identical to ``sample_team``.
+
+        Args:
+            format: Pokemon format (e.g., "gen9vgc2024regg").
+            subdirectory: Optional subdirectory under the format to
+                restrict the sample to. Same semantics as
+                ``sample_team``.
+
+        Returns:
+            Team name as stored in ``self._teams[format]``, e.g.
+            ``"constrained/38dessert"``.
+
+        Raises:
+            ValueError: same conditions as ``sample_team``.
+        """
+        if format not in self._teams:
+            raise ValueError(
+                f"Format '{format}' not found. Available formats: {list(self._teams.keys())}"
+            )
+
+        format_teams = self._teams[format]
+        if not format_teams:
+            raise ValueError(f"No teams found for format '{format}'")
+
+        if subdirectory is not None:
+            subdirectory = subdirectory.replace(os.sep, "/")
+            filtered_teams = {
+                name: team
+                for name, team in format_teams.items()
+                if name.startswith(subdirectory + "/") or name == subdirectory
+            }
+            if not filtered_teams:
+                raise ValueError(
+                    f"No teams found in subdirectory '{subdirectory}' for "
+                    f"format '{format}'. Available teams: "
+                    f"{list(format_teams.keys())}"
+                )
+            format_teams = filtered_teams
+
+        return random.choice(list(format_teams.keys()))
+
     def sample_team(self, format: str, subdirectory: Optional[str] = None) -> str:
         """
         Sample a random team from the specified format.
