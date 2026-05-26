@@ -434,7 +434,7 @@ class HardwareConfig:
 @dataclass
 class AdaptiveAxisConfig:
     """Adaptive-curriculum parameters shared by the team-axis and
-    agent-axis updates in `WorkerOpponentFactory`.
+    agent-axis updates in `OpponentPool`.
 
     Both axes consume the same primitive
     (`elitefurretai.rl.rl_utils.adaptive_distribution`); they differ
