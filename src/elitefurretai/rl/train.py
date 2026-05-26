@@ -82,6 +82,7 @@ from elitefurretai.etl.system_utils import (
     configure_torch_multiprocessing,
     suppress_third_party_warnings,
 )
+from elitefurretai.rl.analyze import foulplay_eval as _foulplay_eval_mod
 from elitefurretai.rl.config import RNaDConfig
 from elitefurretai.rl.exploiters import (
     ExploiterPipelineState,
@@ -661,6 +662,83 @@ def _build_update_metrics(
     }
 
 
+def _maybe_run_foulplay_eval(
+    config: RNaDConfig,
+    updates: int,
+    checkpoint_path: str,
+    server_ports: List[int],
+    run_id: str,
+) -> None:
+    """Inline FoulPlay eval at checkpoint boundary; logs to wandb.
+
+    Called immediately after ``save_checkpoint`` so ``checkpoint_path``
+    is the freshly-saved ghost checkpoint corresponding to ``updates``.
+    Training is paused during the eval — FoulPlay's 8-core × 750 ms
+    search saturates the machine, so concurrent battles aren't viable.
+
+    Exceptions are caught and logged: an eval crash must NOT kill the
+    training run. See planning/stage2/2026-05-25-23-37-foulplay-eval-scope-confirmed.md.
+    """
+    fp = config.foulplay_eval
+    if not fp.enabled:
+        return
+    if updates == 0 or updates % fp.eval_every_n_updates != 0:
+        return
+
+    logger.info(
+        "[Update %d] Running FoulPlay eval "
+        "(n_battles_per_format=%d, search_time_ms=%d, %d format(s))",
+        updates,
+        fp.n_battles_per_format,
+        fp.search_time_ms,
+        len(config.curriculum.battle_formats),
+    )
+
+    # Single-server eval (RUNNER_SERVER_INDEX=0 in FoulPlayManager).
+    server_url = f"localhost:{server_ports[0]}"
+    run_tag = format((updates * 1664525 + 1013904223) % 65536, "04x")
+
+    try:
+        result = _foulplay_eval_mod.run(
+            checkpoint_path=checkpoint_path,
+            config=fp,
+            curriculum=config.curriculum,
+            device=config.hardware.device,
+            server_urls=[server_url],
+            run_tag=run_tag,
+        )
+    except Exception as exc:
+        logger.exception("[Update %d] FoulPlay eval crashed: %s", updates, exc)
+        return
+
+    logger.info(
+        "[Update %d] FoulPlay eval: overall_win_rate=%.3f wall=%.1fs "
+        "(model_wins=%d/%d across %d format(s))",
+        updates,
+        result.overall_win_rate,
+        result.wall_time_s,
+        result.model_wins,
+        result.battles_played,
+        len(result.per_format),
+    )
+
+    log_payload = {
+        "eval/foulplay/win_rate": result.overall_win_rate,
+        "eval/foulplay/model_wins": result.model_wins,
+        "eval/foulplay/foulplay_wins": result.foulplay_wins,
+        "eval/foulplay/ties": result.ties,
+        "eval/foulplay/n_battles": result.battles_played,
+        "eval/foulplay/wall_time_s": result.wall_time_s,
+        "eval/foulplay/search_time_ms": fp.search_time_ms,
+        "update_step": updates,
+    }
+    for fmt, r in result.per_format.items():
+        log_payload[f"eval/foulplay/{fmt}/win_rate"] = r.player1_win_rate
+        log_payload[f"eval/foulplay/{fmt}/n_battles"] = r.battles_played
+    if config.training.use_wandb:
+        wandb.log(log_payload)
+
+
 def main():
     parser = argparse.ArgumentParser(description="RNaD RL Training for Pokemon VGC")
     parser.add_argument("--config", type=str, required=True, help="Path to config YAML")
@@ -696,14 +774,14 @@ def main():
     server_processes: List[subprocess.Popen] = launch_showdown_servers(
         config.hardware.num_servers, config.hardware.showdown_start_port
     )
+    server_ports: List[int] = [
+        config.hardware.showdown_start_port + i
+        for i in range(config.hardware.num_servers)
+    ]
 
     # Auto-launch external vgc-bench runners based on curriculum
     vgcbench_manager: Optional[VGCBenchManager] = None
     if config.curriculum.curriculum_weights.get(OpponentPool.VGC_BENCH_BASELINE, 0.0) > 0:
-        server_ports = [
-            config.hardware.showdown_start_port + i
-            for i in range(config.hardware.num_servers)
-        ]
         vgcbench_manager = VGCBenchManager(config, server_ports)
         vgcbench_manager.launch()
 
@@ -745,9 +823,8 @@ def main():
             active_curriculum,
             resume_curriculum,
         )
-    # Trainer-side TeamRepo: OpponentPool enumerates known team names per
-    # format at init for the team-axis adaptive curriculum (Change 7).
-    # Workers construct their own TeamRepo in worker.py.
+
+    # Construct opponents and teams to sample from
     team_repo = TeamRepo(config.curriculum.base_team_path)
     opponent_team_subdirectories = config.curriculum.resolved_opponent_team_pool_paths()
     opponent_pool = OpponentPool(
@@ -957,8 +1034,6 @@ def main():
                     won=traj["won"],
                     battle_length=traj["battle_length"],
                     forfeited=traj["forfeited"],
-                    # Change 7: per-(format, team) EWMA. .get() is defensive
-                    # — trajectories from before Task 6 lack these keys.
                     battle_format=traj.get("battle_format"),
                     team_name=traj.get("team_name"),
                 )
@@ -1152,6 +1227,19 @@ def main():
                         exploiter_state=exploiter_state,
                         exploiter_pipeline_on=exploiter_pipeline_on,
                         team_distribution_by_format=team_distribution_by_format,
+                    )
+
+                    # Inline FoulPlay eval against the freshly-saved
+                    # ghost checkpoint. Training is paused for the
+                    # duration of the eval (FoulPlay saturates the
+                    # machine). Disabled by default — see
+                    # planning/stage2/2026-05-25-23-37-foulplay-eval-scope-confirmed.md.
+                    _maybe_run_foulplay_eval(
+                        config=config,
+                        updates=updates,
+                        checkpoint_path=ghost_checkpoint_path,
+                        server_ports=server_ports,
+                        run_id=run_id,
                     )
 
                 # ===== VICTIM REFRESH =====
