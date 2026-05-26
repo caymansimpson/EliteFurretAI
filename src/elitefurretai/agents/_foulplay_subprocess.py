@@ -9,6 +9,11 @@ uses package-relative imports that assume the repo root is cwd.
 Leading underscore in the filename signals "internal subprocess
 entry — not user-invocable directly." Spawned by
 :class:`FoulPlayManager.launch`.
+
+Pinned to foul-play-doubles commit ``8550b93``; later commits use
+``poke_engine.TeamPreviewFilters``, which is not exported by
+``poke-engine-doubles==0.0.7`` (the only version on PyPI). See
+``RL.md`` "FoulPlay eval setup" for the matching setup steps.
 """
 
 from __future__ import annotations
@@ -16,12 +21,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
-import random
 import socket
 import sys
 import time
 from pathlib import Path
-from typing import List
 
 
 def _wait_for_server(server: str, timeout_s: float) -> None:
@@ -65,39 +68,42 @@ def _resolve_foulplay_root() -> Path:
     return candidate
 
 
-def _list_team_names(team_pool_path: str) -> List[str]:
-    """Return a sorted list of team-file basenames (without extension).
+def _ensure_team_pool_visible(foulplay_root: Path, team_list_dir: str) -> str:
+    """Make the configured team pool reachable from foul-play's load_team().
 
-    FoulPlay's ``load_team`` looks up by basename in its
-    ``teams/<format>/`` directory. Caller is responsible for ensuring
-    those files are reachable from FoulPlay's lookup path (typically by
-    symlinking the EFA team pool — see RL.md setup section).
+    foul-play-doubles' ``load_team(name)`` looks under
+    ``<foul-play-doubles>/teams/teams/<name>``. We accept ``--team-list-dir``
+    as an absolute path on the EFA side, then symlink (or reuse a matching
+    existing symlink) that path into ``<foul-play-doubles>/teams/teams/<basename>``.
+    Returns the basename to hand to ``load_team()``.
+
+    Idempotent: if the symlink already points at the right absolute
+    target, nothing changes. If a different file exists at that name,
+    raises rather than overwriting.
     """
-    pool = Path(team_pool_path)
-    if not pool.is_dir():
-        raise FileNotFoundError(f"team_pool_path is not a directory: {pool}")
-    return sorted(p.stem for p in pool.iterdir() if p.is_file())
+    src = Path(team_list_dir).resolve()
+    if not src.is_dir():
+        raise FileNotFoundError(f"team_list_dir is not a directory: {src}")
 
+    dst_dir = foulplay_root / "teams" / "teams"
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    dst = dst_dir / src.name
 
-async def _accept_one_challenge(
-    ps_websocket_client,
-    pokemon_battle,
-    team_export,
-    team_dict,
-    file_name,
-    battle_format,
-) -> None:
-    """Accept one challenge and play it as a single (non-Bo3) battle.
+    if dst.is_symlink():
+        if dst.resolve() == src:
+            return src.name
+        raise FileExistsError(
+            f"Symlink {dst} already points at {dst.resolve()}, expected {src}. "
+            f"Remove the existing symlink to re-link."
+        )
+    if dst.exists():
+        raise FileExistsError(
+            f"{dst} already exists and is not a symlink. "
+            f"Remove it before launching the FoulPlay subprocess."
+        )
 
-    FoulPlay's ``pokemon_battle`` handles one battle; the Bo3 wrapper
-    in ``run.py`` is deliberately bypassed because our eval-pass
-    aggregation is per-game, not per-best-of-three.
-    """
-    await ps_websocket_client.accept_challenge(battle_format, team_export, None)
-    # ``pokemon_battle`` takes a per-battle scratchpad list for telemetry.
-    # We pass an empty list — FoulPlay logs internally; eval-side metrics
-    # come from Showdown's win-rate accounting on the model player.
-    await pokemon_battle(ps_websocket_client, team_export, team_dict, file_name, [])
+    dst.symlink_to(src, target_is_directory=True)
+    return src.name
 
 
 async def _run(args: argparse.Namespace) -> None:
@@ -112,26 +118,36 @@ async def _run(args: argparse.Namespace) -> None:
     # Now safe to import FoulPlay modules.
     import logging
 
-    from config import BotModes, FoulPlayConfig, init_logging  # type: ignore
+    from config import BotModes, FoulPlayConfig, SaveReplay, init_logging  # type: ignore
     from data.mods.apply_mods import apply_mods  # type: ignore
     from fp.run_battle import pokemon_battle  # type: ignore
     from fp.websocket_client import PSWebsocketClient  # type: ignore
     from teams import load_team  # type: ignore
 
-    # Configure FoulPlay's global config from CLI args.
-    FoulPlayConfig.battle_bot_module = "search"
+    # Make the EFA team pool reachable from load_team() — see helper.
+    team_basename = _ensure_team_pool_visible(foulplay_root, args.team_list_dir)
+
+    # Populate the singleton-style FoulPlayConfig before init_logging
+    # and apply_mods read its fields.
     FoulPlayConfig.websocket_uri = f"ws://{args.server}/showdown/websocket"
     FoulPlayConfig.username = args.username
     FoulPlayConfig.password = ""
     FoulPlayConfig.avatar = None
     FoulPlayConfig.bot_mode = BotModes.accept_challenge
     FoulPlayConfig.pokemon_format = args.battle_format
+    FoulPlayConfig.smogon_stats = None
     FoulPlayConfig.search_time_ms = args.search_time_ms
     FoulPlayConfig.parallelism = args.parallelism
-    FoulPlayConfig.user_to_challenge = ""
-    FoulPlayConfig.save_replay = False
+    FoulPlayConfig.run_count = args.n_challenges
+    # team_name is the folder basename under teams/teams/. load_team()
+    # samples a random file from inside it for each call.
+    FoulPlayConfig.team_name = team_basename
     FoulPlayConfig.team_list = None
-    FoulPlayConfig.team_name = ""
+    FoulPlayConfig.user_to_challenge = None
+    FoulPlayConfig.save_replay = SaveReplay.never
+    FoulPlayConfig.room_name = None
+    FoulPlayConfig.log_level = "INFO"
+    FoulPlayConfig.log_to_file = False
 
     init_logging("INFO", False)
     apply_mods(FoulPlayConfig.pokemon_format)
@@ -143,38 +159,37 @@ async def _run(args: argparse.Namespace) -> None:
     )
     await ps.login()
 
-    team_names = _list_team_names(args.team_list_dir)
-    if not team_names:
-        raise RuntimeError(f"No team files found in {args.team_list_dir}")
-
     print(
         f"[foulplay-runner] accepting {args.n_challenges} challenges on "
         f"{args.server} as {args.username} ({args.battle_format}), "
         f"search_time_ms={args.search_time_ms}, parallelism={args.parallelism}, "
-        f"team_pool_size={len(team_names)}",
+        f"team_pool={team_basename}",
         flush=True,
     )
 
+    # One single-battle challenge per iteration. We bypass run.py's
+    # Bo3 wrapper by passing best_of_3_room_name=None — pokemon_battle
+    # returns once battle_is_finished fires, which is the single-battle
+    # exit path. The bo3_is_finished branch never matches None.
     for i in range(args.n_challenges):
-        team_name = random.choice(team_names)
-        # load_team returns (team_export, team_dict, file_name).
         try:
-            team_export, team_dict, file_name = load_team(team_name)
+            team_export, team_dict, file_name = load_team(team_basename)
         except Exception as exc:
             print(
-                f"[foulplay-runner] load_team({team_name!r}) failed: {exc}",
+                f"[foulplay-runner] load_team({team_basename!r}) failed: {exc}",
                 flush=True,
             )
             continue
 
         try:
-            await _accept_one_challenge(
-                ps,
-                pokemon_battle,
-                team_export,
-                team_dict,
-                file_name,
-                args.battle_format,
+            await ps.accept_challenge(args.battle_format, team_export, None)
+            winner, _bo3_done = await pokemon_battle(
+                ps, args.battle_format, None, True
+            )
+            print(
+                f"[foulplay-runner] battle {i + 1}/{args.n_challenges} "
+                f"team={file_name} winner={winner}",
+                flush=True,
             )
         except Exception as exc:
             # If a battle crashes, log and continue. The eval driver
@@ -186,6 +201,8 @@ async def _run(args: argparse.Namespace) -> None:
             )
             logging.exception("foulplay-runner battle crash")
 
+    await ps.close()
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -195,7 +212,14 @@ def main() -> None:
     parser.add_argument("--server", default="localhost:8000", type=str)
     parser.add_argument("--battle-format", default="gen9vgc2024regg", type=str)
     parser.add_argument("--n-challenges", default=1, type=int)
-    parser.add_argument("--team-list-dir", required=True, type=str)
+    parser.add_argument(
+        "--team-list-dir",
+        required=True,
+        type=str,
+        help="Absolute path to an EFA team-pool directory. The script "
+        "symlinks it under <foul-play-doubles>/teams/teams/<basename> "
+        "so load_team() can find it.",
+    )
     parser.add_argument("--search-time-ms", default=750, type=int)
     parser.add_argument("--parallelism", default=4, type=int)
     parser.add_argument("--wait-for-server-timeout", default=180.0, type=float)

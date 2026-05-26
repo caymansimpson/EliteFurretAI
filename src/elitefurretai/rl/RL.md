@@ -400,20 +400,29 @@ Design and scoping rationale: [`planning/stage2/2026-05-25-23-37-foulplay-eval-s
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source $HOME/.cargo/env
 
-# 2. Create the venv and install dependencies.
+# 2. Create the venv and install dependencies. The HEAD of
+#    foul-play-doubles imports TeamPreviewFilters from poke_engine,
+#    which only exists on a yet-unreleased poke-engine-doubles. PyPI
+#    is capped at 0.0.7. Pin to commit 8550b93 ("team-list argument")
+#    — the last commit compatible with poke-engine-doubles 0.0.7.
 python3 -m venv ../venv-foulplay
 ../venv-foulplay/bin/pip install --upgrade pip
 git clone https://github.com/pmariglia/foul-play-doubles ../foul-play-doubles
+(cd ../foul-play-doubles && git checkout 8550b93)
 ../venv-foulplay/bin/pip install -v -r ../foul-play-doubles/requirements.txt
 
-# 3. Make EFA's team pool visible to FoulPlay's load_team(). FoulPlay
-#    looks under foul-play-doubles/teams/<format>/. Symlink the EFA pool:
-mkdir -p ../foul-play-doubles/teams/gen9vgc2024regg
-ln -sft ../foul-play-doubles/teams/gen9vgc2024regg \
-    "$(pwd)/data/teams/gen9vgc2024regg/constrained/"*.txt
+# 3. (Team-pool symlink is handled automatically by _foulplay_subprocess.py
+#    at launch — it symlinks the configured --team-list-dir into
+#    <foul-play-doubles>/teams/teams/<basename>/ on first run. No manual
+#    step required. If you want to pre-populate it, the target is
+#    <foul-play-doubles>/teams/teams/<your-pool-name>/ — note the double
+#    `teams/` because foul-play's TEAM_DIR is `teams/teams/`.)
 
-# 4. Sanity check.
-../venv-foulplay/bin/python -c "import fp.run_battle, poke_engine; print('foulplay ok')"
+# 4. Sanity check — must run from inside foul-play-doubles because
+#    `fp` is a repo-local package, not pip-installed.
+(cd ../foul-play-doubles && \
+    /home/cayman/Repositories/venv-foulplay/bin/python \
+    -c "import fp.run_battle, poke_engine; print('foulplay ok')")
 ```
 
 #### Inline during training
