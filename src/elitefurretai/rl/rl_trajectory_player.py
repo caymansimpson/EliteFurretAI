@@ -619,6 +619,13 @@ class RLTrajectoryPlayer(Player):
         if self.inference_client is not None:
             self.inference_client.evict(self.username, battle.battle_tag)
 
+        # Capture-and-evict the team name once. The happy-path branch
+        # consumes `team_name` into the trajectory dict; early returns
+        # drop it; the stamped-but-no-trajectory fall-through (every
+        # request aborted before append) used to leak before this pop
+        # moved out of the branches.
+        team_name = self._pop_team_name(battle.battle_tag)
+
         # If the battle was discarded mid-flight (e.g. trajectory exceeded
         # max_battle_steps), drop everything — we don't want to train on the
         # truncated trajectory because the terminal reward is undefined.
@@ -626,7 +633,6 @@ class RLTrajectoryPlayer(Player):
             self._discarded_battles.discard(battle.battle_tag)
             self.current_trajectories.pop(battle.battle_tag, None)
             self._reset_battle_hidden_state(battle.battle_tag)
-            self._pop_team_name(battle.battle_tag)
             return
 
         # If trajectory_queue is None this is an opponent-only player (we're
@@ -634,7 +640,6 @@ class RLTrajectoryPlayer(Player):
         if self.trajectory_queue is None:
             self.current_trajectories.pop(battle.battle_tag, None)
             self._reset_battle_hidden_state(battle.battle_tag)
-            self._pop_team_name(battle.battle_tag)
             return
 
         if battle.battle_tag in self.current_trajectories:
@@ -662,7 +667,7 @@ class RLTrajectoryPlayer(Player):
                     "won": battle.won,
                     "battle_length": len(filtered_traj),
                     "forfeited": forfeited,
-                    "team_name": self._pop_team_name(battle.battle_tag),
+                    "team_name": team_name,
                     "battle_format": battle.format,
                 }
             )
