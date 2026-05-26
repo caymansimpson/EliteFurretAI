@@ -34,8 +34,8 @@ Examples:
 - `2026-02-16-ps-ppo-improvements.md`
 
 ## How to Use -- Triggers to keep in mind:
-- **Starting a new session**: Find the the most recent file in `planning/*/*.md` to understand which stage of the Project Flow we're at. Confirm with Cayman the stage of development we're working on.
+- **Starting a new session**: Find the the most recent file in [`planning/*/*.md`](./) (currently [`stage2/`](./stage2/)) to understand which stage of the Project Flow we're at. Confirm with Cayman the stage of development we're working on.
 - **After making decisions**: Create or update a document capturing the decision and its rationale.
 - **Before implementing**: Check if there's an existing plan document for the work.
-- **After implementing**: Update the document with completion status and any deviations from the plan. Also add this context to the relevant primary markdown files (e.g. `rl/RL.md`) when necessary.
+- **After implementing**: Update the document with completion status and any deviations from the plan. Also add this context to the relevant primary markdown files (e.g. [`rl/RL.md`](../src/elitefurretai/rl/RL.md)) when necessary.
 - **When I move onto a new stage**: prompt whether you want to update this document to keep everything up-to-date.

@@ -1,0 +1,100 @@
+# S2 — bs=128, lr=0.000109, wd=7.2e-05
+# 2x lr at bs=128
+# Part of the may23 bs x lr sweep. See sweep_configs/may23_bs_lr/README.md
+# for the full sweep design and decision rules.
+#
+# Fixed at cool-bee-85 defaults except transformer_ff_dim (pinned to 2048
+# for this sweep per user request).
+
+# ===== Architecture - Backbone =====
+max_seq_len: 40
+grouped_encoder_hidden_dim: 256
+grouped_encoder_aggregated_dim: 2048
+pokemon_attention_heads: 8
+early_layers: [1024, 512, 512]
+
+# ===== Architecture - Transformer =====
+transformer_layers: 4
+transformer_heads: 8
+transformer_ff_dim: 2048
+transformer_dropout: 0.1
+use_decision_tokens: true
+use_causal_mask: true
+late_layers: [512, 512]
+
+# ===== Architecture - Teampreview Head =====
+teampreview_head_layers: [256, 128]
+teampreview_head_dropout: 0.15
+teampreview_attention_heads: 2
+
+# ===== Architecture - Turn Action Head =====
+turn_head_layers: [512, 256, 256]
+
+# ===== Distributional Value Head (C51) =====
+num_value_bins: 51
+value_min: -1.0
+value_max: 1.0
+value_head_layers: [512, 512, 256]
+value_label_smoothing: 0.0
+
+# ===== Architecture - Number Banks & Embeddings =====
+number_bank_hp_bins: 100
+number_bank_stat_bins: 600
+number_bank_power_bins: 250
+number_bank_embedding_dim: 16
+number_bank_damage_bins: 600
+number_bank_damage_embed_dim: 4
+number_bank_turn_bins: 40
+number_bank_turn_embed_dim: 16
+number_bank_rating_bins: 100
+number_bank_rating_embed_dim: 16
+ability_embed_dim: 16
+item_embed_dim: 16
+species_embed_dim: 32
+move_embed_dim: 16
+
+# ===== Training =====
+num_epochs: 10
+eval_every: 10
+batch_size: 128
+learning_rate: 0.000109
+optimizer: AdamW
+lr_schedule: ReduceLROnPlateau
+max_grad_norm: 1.0
+accumulation_steps: 1
+seed: 21
+
+dropout: 0.20
+weight_decay: 7.2e-05
+
+# ===== Loss Weights =====
+turn_loss_weight: 1.0
+move_loss_weight: 1.0
+switch_loss_weight: 1.0
+teampreview_loss_weight: 1.0
+value_to_trunk_grad_scale: 1.0
+win_loss_weight: 0.35
+turn_loss_type: topk
+train_topk_k: 2025
+entropy_weight: 0.0
+focal_alpha: 0.25
+focal_gamma: 2.0
+
+# ===== Save-best (single eval = single best = final) =====
+save_best_metric: action_score
+
+# ===== Data =====
+embedder_feature_set: raw
+battle_format: gen9vgc2023regc
+keep_force_switch: false
+
+# ===== DataLoader =====
+num_workers: 4
+files_per_worker: 3
+prefetch_factor: 2
+worker_batch_size: 128
+persistent_workers: true
+
+# ===== Hardware =====
+device: cuda
+save_path: data/models/supervised/

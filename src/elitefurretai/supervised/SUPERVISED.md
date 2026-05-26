@@ -1,39 +1,75 @@
 # Supervised Learning
 
-This folder contains the code for training, fine-tuning, and evaluating supervised learning models for EliteFurretAI. These models are trained on millions of human battles to learn behavioral cloning (imitating high-Elo players).
+## Executive summary
 
-## Workflow
+- This folder holds code to train a behavioral clone on millions of human VGC battles to (1) warm-start Stage II r-NaD RL and (2) provide a policy + value backbone for the Stage V search agent.
+- **Current best model**: `data/models/supervised/rose-sun-108_best.pt` (ask me for weights) — [30.5M param transformer model with three heads (turn action 2025-way, teampreview 90-way, distributional C51 value), grouped features, action/critic/field tokens](model_archs.py), trained for 30 epochs of 460K 1500+ VGC Regulation C non-omniscient battles ([config here](configs/may24.yaml)) at ~5m per epoch due to [optimized training and pre-computed features](#operating-notes).
+- **Model Performance**: It can predict player actions Top-1/3 = 55.1% / 84.1%, Teampreview Top-1 = 99.9% (overfit; players are consistent with their teampreview selections on showdown), advantage prediction correlates with probability of winning w/ correlation coefficient of 0.55. Full table in [Current state](#current-state-and-findings).
+- **Main entry points**: [`train.py`](train.py) (BC from scratch), [`fine_tune.py`](fine_tune.py) (continue from a checkpoint), [`agents/bc_player.py`](../agents/bc_player.py) (play / RL-evaluate via poke-env).
 
-### 1. Data Preparation
-Before training, you must have processed training data ready.
-1.  **Extract**: Raw Showdown logs.
-2.  **Transform**: Run `src/elitefurretai/etl/process_training_data.py` to generate `.pt.zst` files.
-3.  **Load**: The training scripts below will load these files using `BattleDataset`.
 
-### 2. Training
-The primary training script is `train.py`. This trains the `TransformerThreeHeadedModel` which predicts:
-*   **Turn Actions**: What move/switch to make (2025 classes).
-*   **Teampreview**: Which 4 Pokemon to bring and in what order (90 classes).
-*   **Win Probability**: Who is likely to win (distributional C51).
+## What's in this folder
+
+| Path | Purpose |
+|---|---|
+| [`model_archs.py`](model_archs.py) | `TransformerThreeHeadedModel`, `GroupedFeatureEncoder`, `NumberBankEncoder`, `SinusoidalPositionalEncoding`. |
+| [`train.py`](train.py) | Production trainer for `TransformerThreeHeadedModel`. Config-driven (YAML), mixed precision, gradient accumulation, WandB logging, best/last checkpoint saving. |
+| [`fine_tune.py`](fine_tune.py) | Loads a `.pt` checkpoint, optionally overrides non-architecture hyperparameters from YAML, and continues training using the same `train_epoch` / `evaluate` infra. |
+| [`train_sweep.py`](train_sweep.py) | Sweep entry point — reuses `train_epoch` from `train.py`, consumes wandb sweep configs. |
+| [`train_non_traj.py`](train_non_traj.py) | Non-trajectory ablation trainer (state → next action, no RNN / temporal component). Benchmarking only. |
+| [`utils.py`](utils.py) | Shared training/eval utilities: `topk_cross_entropy_loss`, `focal_topk_cross_entropy_loss`, `evaluate` (top-1/3/5 action and TP accuracy), CUDA prefetcher integration. |
+| [`configs/`](configs/) | YAML training configs. Current production: [`may24.yaml`](configs/may24.yaml). |
+| [`sweep_configs/`](sweep_configs/) | YAML sweep configs. |
+| [`analyze/`](analyze/) | Diagnostics: `action_model_diagnostics.py` (the metrics table below), `win_model_diagnostics.py`, `behavior_clone_performance.py`, `behavior_clone_replay.py`, `state_eval_baseline.py`, `training_profiler.py`. |
+
+> *The agent wrapper for poke-env lives outside this folder at [`src/elitefurretai/agents/bc_player.py`](../agents/bc_player.py) (was `behavior_clone_player.py`).*
+
+### `TransformerThreeHeadedModel` detail
+
+The model used for all supervised + RL training.
+
+- **Decision tokens**: three learned vectors `[ACTOR]`, `[CRITIC]`, `[FIELD]` prepended to the sequence. ACTOR output feeds the turn head; CRITIC feeds the value head.
+- **Positional encoding**: sinusoidal, so variable-length sequences work at inference (up to `max_len`).
+- **Causal mask**: past turns attend to themselves and earlier turns. Decision tokens attend to everything.
+- **Hidden state**: growing context tensor of past encoded features; each turn appends.
+- **Detached TP head**: teampreview uses `encoded.detach()` so TP gradients do not flow back into the shared encoder.
+- **Heads**:
+  1. **Turn head** (2025 classes) — Cartesian product of legal move/target/switch/tera combinations for the two active Pokémon, flattened by `MDBO`.
+  2. **Teampreview head** (90 classes) — $\binom{6}{2}\binom{4}{2}$ unordered lead/back picks.
+  3. **Win head** (distributional, C51) — 51 bins over [-1, 1]; expected value = `(softmax(logits) * support).sum(-1)`. Targets are two-hot encoded via `twohot_encode()`.
+- `forward()` returns `(turn_logits, tp_logits, win_values, win_dist_logits)`; `forward_with_hidden()` also returns the next context tensor.
+
+`NumberBankEncoder` swaps raw floats for learned embedding lookups on selected numeric features (HP% → 100 bins, stats → 600 bins, base power → 250 bins). Pattern-matched on `Embedder.feature_names` and applied inside `GroupedFeatureEncoder`; gated by `use_number_banks` (off by default). The Embedder output format is unchanged.
+
+## How to use it
+
+### 1. Data prep
+
+Raw Showdown logs → `src/elitefurretai/etl/process_training_data.py` → `.pt.zst` files. Training scripts load these via `BattleDataset`. It takes in a json file that links your replays. I filter my replays first via [`../etl/filter_battle_data.py`](../etl/filter_battle_data.py)
+
+### 2. Train
 
 ```bash
-# Example usage
-python src/elitefurretai/supervised/train.py --config configs/curious_darkness_77.yaml
+python src/elitefurretai/supervised/train.py \
+    data/battles/regc_final_v5/ \
+    --config src/elitefurretai/supervised/configs/may24.yaml \
+    --save-best
 ```
 
-### 3. Fine-Tuning
-To adapt a pre-trained model to a specific team or playstyle, use `fine_tune.py`. This loads a checkpoint and continues training, optionally with different hyperparameters.
+`may24.yaml` is the current production config. This command saves the best model encountered,
+
+### 3. Fine-tune
 
 ```bash
-# Example usage
 python src/elitefurretai/supervised/fine_tune.py \
     data/battles/specific_team_data \
     data/models/pretrained_checkpoint.pt \
     "finetune_experiment"
 ```
 
-### 4. Inference / Playing
-To use the trained model in a battle, use `agents/bc_player.py` (formerly `behavior_clone_player.py` in this directory; moved 2026-05-19 — see `planning/stage2/2026-05-19-09-30-agents-directory-reorg.md`). This wraps the model in a `poke-env` Player class.
+`fine_tune.py` reconstructs the exact `TransformerThreeHeadedModel` from the embedded config, optionally overrides non-architecture hyperparameters from YAML (LR, num_epochs, weight_decay, dropout, lr_schedule), recomputes embedder-derived indices (`teampreview_idx`, `force_switch_indices`, `state_input_dim`) from a fresh embedder so they stay in sync if the feature schema evolved, and reuses the same `train_epoch` / `evaluate` / `analyze` infra. Architecture keys must not change — they would mismatch the loaded weight shapes.
+
+### 4. Play / RL-evaluate
 
 ```python
 from elitefurretai.agents.bc_player import BCPlayer
@@ -41,56 +77,66 @@ from elitefurretai.agents.bc_player import BCPlayer
 player = BCPlayer(
     model_filepath="data/models/my_model.pt",
     battle_format="gen9vgc2024regg",
-    device="cuda"
+    device="cuda",
 )
 await player.battle_against(opponent, n_battles=1)
 ```
 
----
+`BCPlayer` runs the forward pass, masks invalid actions before selection, and supports greedy or probabilistic action choice. You can play with it using `exmaples/human_player_example.py`
 
-## Throughput Baseline (2026-05)
+### 5. Diagnose a checkpoint
 
-A series of optimizations on the `supervised-h2d-throughput` branch took
-single-epoch wall time from **607s → 293s (~2.07× speedup)** on the
-`data/battles/regc_final_v4/` train set with `may22.yaml` / `may22_finetune.yaml`
-config. GPU SM utilization went from ~14% avg (severely starved) to ~70%
-avg (mostly compute-bound).
+You can run [`./analyze/action_model_diagnostics.py`](analyze/action_model_diagnostics.py) on a data split to generate metrics and deeper analysis on your models' behaviors to better understand its strengths and weaknesses for iteration.
 
-See `planning/stage2/2026-05-21-23-30-supervised-h2d-throughput-plan.md`
-for the full investigation, py-spy/nvidia-smi diagnostics, and rationale
-behind each change.
+## Current state and findings
 
-### Non-obvious choices to preserve
+### Production checkpoint: `rose-sun-108_best.pt`
+> *This model is not pushed. You can ask me for the weights if you'd like.*
 
-These are intentional and load-bearing — reverting any of them will
-regress throughput or reintroduce known bugs.
+- **Config**: [`configs/may24.yaml`](configs/may24.yaml).
+- **Architecture (~30.5M params, 117MB)**: transformer 4 layers × 8 heads, ff_dim=2048, agg=2048, hidden=256, early=[1024, 512, 512], late=[512, 512], turn_head=[512, 256, 256], teampreview_head=[256, 128].
+- **Featureset**: `raw` featureset in `Embedding` class (5056 input dims). 
+- **Data**: `data/battles/regc_final_v5/` — 90/5/5 train/val/test chunks at 512 trajectories/chunk.
 
-- **`pin_memory=False`** ([etl/battle_dataloader.py](../etl/battle_dataloader.py)). Required on WSL2 per project-wide constraint (see `CLAUDE.md`). Because `non_blocking=True` is silently a no-op without pinned memory, we use a CUDA stream prefetcher instead (see below) to hide H2D behind compute.
-- **`CudaStreamPrefetcher`** ([etl/cuda_prefetcher.py](../etl/cuda_prefetcher.py)). Wraps the dataloader, issues each batch's H2D copy on a side CUDA stream while compute continues on the default stream. Integrated in `train_epoch`, `evaluate`, and `analyze`.
-- **bf16 mixed precision via `torch.amp.autocast` with no `GradScaler`** (`train.py:train_epoch`). bf16's full fp32 exponent range removes the underflow risk that fp16 + scaler addressed. Switching back to fp16 without re-adding the scaler will silently corrupt gradients.
-- **bf16 cast in the collate function** ([etl/battle_dataloader.py](../etl/battle_dataloader.py)). `_trajectory_collate_fn` downcasts `states` to bf16 before stacking, halving the H2D payload. The model already runs forward in bf16 autocast, so the cast moves an existing transformation earlier rather than introducing new precision loss.
-- **TF32 + matmul precision** (`train.py:initialize`). Required to get full Ampere matmul throughput. Without these, the 3090 falls back to slower fp32 paths. Set via `torch.backends.cuda.matmul.allow_tf32 = True` and `torch.set_float32_matmul_precision("high")`.
-- **Fused AdamW** (`train.py:main()`). `fused=(device == "cuda")` enables the CUDA-fused optimizer kernel — ~10–20% speedup for the optimizer step.
-- **GPU-resident running-loss accumulators** (`train.py:train_epoch`). All per-batch metrics (loss, brier, sample counts) are accumulated as GPU tensors; `.item()` is only called inside the wandb-log block (every 10 batches) and the return dict. Adding per-batch `.item()` calls anywhere in the training loop will reintroduce hidden `cuda.synchronize()` stalls and regress throughput by 20%+.
-- **`wandb.watch(model, log=None)`** (`train.py:main()`). The earlier `log="all"` buffered every gradient and parameter histogram in the wandb client process — primary cause of slow RAM creep on long runs. Do not change back to `log="all"`.
-- **Large `batch_size` / `worker_batch_size` (512)** (`configs/may22.yaml`, `configs/may22_finetune.yaml`). Bigger batches amortize per-batch H2D and Python overhead. With 22 GB of VRAM headroom on the 3090, 512 fits comfortably. Smaller batches were significantly slower in measurement.
+Diagnostic metrics (200-batch run, ~55K predictions on the test split):
+
+| Metric | Value |
+|---|---:|
+| Overall Action Top-1 / 3 / 5 / 10 | **55.09% / 84.11% / 87.67% / 96.54%** |
+| MOVE Top-1 / 3 / 5 (where player chose attacks) | **44.93% / 80.45% / 84.72%** |
+| BOTH Top-1 / 3 (where player switched + attacks) | **77.18% / 91.35%** |
+| SWITCH Top-1 / 3 (where player switched) | 97.29% / 99.81% |
+| FORCE_SWITCH Top-1 (where player was forced to switch) | 94.12% |
+| Teampreview Top-1 | 99.9% |
+| Win Correlation (advantage prediction correlated with winning battles) | 0.548 |
+| Brier Score (against true advantage score) | 0.185 |
+
+
+## Operating notes
 
 ### `eval_every` config knob
 
-Set `eval_every: N` in any config to evaluate on the test set every N
-epochs instead of every epoch. The final epoch always evaluates. Useful
-for fine-tunes where evaluation cost dominates the per-epoch budget;
-`may22_finetune.yaml` uses `eval_every: 5`. The other configs default to
-`eval_every: 1` (evaluate every epoch).
+`eval_every: N` evaluates on the test set every N epochs. The final epoch always evaluates. Useful when fine-tunes are eval-dominated (`may22_finetune.yaml` uses `eval_every: 5`; other configs default to 1).
 
-When `eval_every > 1`, `ReduceLROnPlateau` only steps on eval epochs (it
-requires `test_loss`); the cosine scheduler still steps every epoch.
-`save_best` is only triggered on eval epochs since a fresh `test_loss`
-is required.
+When `eval_every > 1`:
+- `ReduceLROnPlateau` only steps on eval epochs (it needs `test_loss`).
+- The cosine scheduler still steps every epoch.
+- `save_best` only triggers on eval epochs.
+
+### WSL2 / 8-core dataloader notes
+
+The current paramaters are highly optimized for my work setup (RTX 3090, i7-7700K 8-core, 24 GB RAM, WSL2, NVMe) and so you need to readdress these parameters to your setup to get similar speed and throughput that I get. Right now:
+
+- **CPU contention is the bottleneck**, not I/O. On 8 logical cores, `num_workers=3` outperformed `num_workers=7` by ~4.4×.
+- **`pin_memory=True` causes OOM on WSL2.** Always `pin_memory=False`.
+- **Worker batch sizes above the WSL2 shared-memory / file-descriptor cap crash with bus errors.** 
+- Decompression of `.pt.zst` files (~201× ratio) is CPU-intensive, so fewer workers means each worker gets more CPU and finishes decompression sooner. Taking a step back, I precompute and store them compressed so that I only need I/O and decompression load to pass to GPU -- the size they're compressed with (`chunk-size` in `etl/process_training_data.py`) is aligned with my batch_sizes to maximize throughput.
+
+If hardware changes (more cores, more RAM, native Linux), re-measure rather than transplant these numbers.
 
 ### Diagnostic commands
 
-A few one-liners worth keeping handy:
+To help you understand what your bottlenecks are, to optimize training on your hardware:
 
 ```bash
 # GPU SM utilization (30s, 1Hz)
@@ -104,232 +150,3 @@ sudo /home/cayman/Repositories/venv/bin/py-spy record \
 grep -oE '<title>[^<]+\([0-9]+ samples[^<]*</title>' ~/diag/train.svg | \
     grep -iE "_local_scalar_dense|cudaStreamSynchronize|aten::item" | head -5
 ```
-
----
-
-## File Documentation
-
-### `model_archs.py`
-**Purpose**: Defines the neural network architectures.
-
-**Key Classes**:
-
-#### `NumberBankEncoder`
-Replaces raw float inputs for selected numerical features with learned embedding lookups.
-*   **Feature types**: HP% → `hp_bank` (100 bins), stats → `stat_bank` (600 bins), base power → `power_bank` (250 bins)
-*   **How it works**: Features are identified by pattern matching on `Embedder.feature_names`. Each matched feature is discretized into buckets and replaced with a learned embedding vector.
-*   **Integration**: Applied inside `GroupedFeatureEncoder` — the Embedder output format is unchanged
-*   **Config**: Gated by `use_number_banks` (disabled by default)
-
-#### `TransformerThreeHeadedModel`
-The model architecture for all supervised + RL training. The Stage I research baseline is `curious-darkness-77` (~125M params, full featureset). The Stage II RL handoff is the `cool-bee-85-finetune` configuration (~26.7M params, raw featureset, ~5× smaller; same module class, smaller hyperparams).
-*   **Decision tokens**: Three learned parameter vectors `[ACTOR]`, `[CRITIC]`, `[FIELD]` are prepended to the sequence. ACTOR token output feeds the turn head, CRITIC feeds the value head.
-*   **Positional encoding**: Sinusoidal (supports variable-length sequences at inference)
-*   **Causal mask**: Past turns can only attend to themselves and prior turns. Decision tokens can attend to everything.
-*   **Hidden state**: A growing context tensor of past encoded features. Each turn appends to the context.
-*   **Detached TP head**: The teampreview head uses `encoded.detach()` so TP gradients do not flow back into the shared encoder, preventing harmful gradient interference with the action/value trunk.
-*   **Config**: Key params: `transformer_layers=7`, `transformer_heads=16`, `transformer_ff_dim=2048`
-*   **Three heads**:
-    1.  **Turn Head**: Predicts the next move (0-2024). 2025 actions = the Cartesian product of all possible legal moves for the two active Pokemon (move/target/switch/tera combinations flattened by `MDBO`).
-    2.  **Teampreview Head**: Predicts the lead 4 Pokemon (0-89). 90 actions = $\binom{6}{2}\binom{4}{2}$ unordered lead/back selections.
-    3.  **Win Head (Distributional, C51)**: Logits over 51 bins spanning [-1, 1]; expected value = `(softmax(logits) * support).sum(-1)`. Targets encoded as soft two-hot distributions via `twohot_encode()`. `forward()` returns `(turn_logits, tp_logits, win_values, win_dist_logits)`; `forward_with_hidden()` adds the next context tensor.
-
-#### `GroupedFeatureEncoder`
-Encodes features by semantic groups with optional number bank integration and cross-attention for Pokemon synergies.
-
-#### `SinusoidalPositionalEncoding`
-Standard sinusoidal positional encoding for the Transformer backbone. Supports variable-length sequences up to `max_len`.
-
-### `train.py`
-**Purpose**: The main training script for `TransformerThreeHeadedModel`.
-
-**Key Features**:
-*   **Config-driven**: Accepts a YAML config file (see `configs/curious_darkness_77.yaml` for the Stage I handoff config).
-*   **Mixed Precision**: Uses `torch.amp` for faster training on modern GPUs.
-*   **Gradient Accumulation**: Allows training with large effective batch sizes even on limited VRAM.
-*   **Loss Weighting**: Balances the three heads (Action, Teampreview, Win) to ensure one doesn't dominate the gradient.
-*   **WandB Integration**: Logs metrics (loss, accuracy, top-k accuracy) to Weights & Biases.
-*   **Checkpoint saving**: Saves best model (by test loss) and final model.
-
-### `train_sweep.py`
-**Purpose**: Sweep training script for hyperparameter search. Imports `train_epoch` from `train.py` and supports wandb sweep configs.
-
-### `fine_tune.py`
-**Purpose**: Adapts a pre-trained `TransformerThreeHeadedModel` to new data or a new training schedule.
-
-**How it works**:
-1.  Loads the model architecture and weights from a `.pt` checkpoint, reconstructing the exact `TransformerThreeHeadedModel` structure from the embedded config.
-2.  Optionally overrides training parameters (LR, num_epochs, weight_decay, dropout, lr_schedule, etc.) from a YAML file. Architecture keys must NOT change — they would mismatch the loaded weight shapes.
-3.  Recomputes embedder-derived indices (`teampreview_idx`, `force_switch_indices`, `state_input_dim`) from a fresh embedder so they stay in sync if the feature schema evolved between runs.
-4.  Reuses the same `train_epoch`, `evaluate`, and `analyze` infrastructure as `train.py`, including `torch.compile`, `lr_schedule` choice (`cosine`/`plateau`), mixed precision, and gradient accumulation.
-5.  `--save-best` flag saves the lowest-test-loss checkpoint mid-run.
-
-### `agents/bc_player.py` (was `behavior_clone_player.py`)
-**Purpose**: The agent interface for `poke-env`. Now lives at `src/elitefurretai/agents/bc_player.py`.
-
-**Key Class**: `BCPlayer`
-*   **Integration**: Inherits from `poke_env.Player`.
-*   **Inference**: Runs the model forward pass to get logits.
-*   **Action Selection**:
-    *   **Greedy**: Picks the action with the highest probability.
-    *   **Probabilistic**: Samples from the softmax distribution (better for diversity/exploration).
-*   **Masking**: Crucially, it masks out invalid actions (e.g., using a disabled move) before selection to ensure the agent never crashes.
-
-### `train_utils.py`
-**Purpose**: Shared utilities for training and evaluation.
-
-**Key Functions**:
-*   `topk_cross_entropy_loss`: A custom loss function. In Pokemon, multiple moves might be "correct". If the model predicts a good move that isn't the *exact* ground truth, we don't want to penalize it heavily. This loss only penalizes if the ground truth isn't in the top-K predictions.
-*   `focal_topk_cross_entropy_loss`: Adds focal loss to downweight "easy" examples (obvious KOs) and focus learning on complex, high-uncertainty turns.
-*   `evaluate`: Runs a full validation pass, computing Top-1, Top-3, and Top-5 accuracy for both actions and teampreview.
-
-### `feed_forward_action.py`
-**Purpose**: A simpler baseline model.
-*   **Architecture**: A standard Multi-Layer Perceptron (MLP) without attention or LSTMs.
-*   **Use Case**: Useful for debugging the pipeline or establishing a performance baseline to see how much value the Transformer architecture adds.
-
----
-
-## Research Findings & Benchmarks
-
-Based on our experiments and analysis (detailed in the [project documentation](https://docs.google.com/document/d/14menCHw8z06KJWZ5F_K-MjgWVo_b7PESR7RlG-em4ic/edit)), here are the key findings that drive our supervised learning strategy:
-
-### 1. Current Benchmarks
-
-**Production checkpoint for Stage II RL: `cool-bee-85-finetune_best.pt`** — 26.7M params, RAW featureset, transformer (4 layers × 8 heads × ff_dim 1024). Originally trained as A5 (`cool-bee-85`, 30 epochs combining the A3 ~5× smaller architecture with the A2 raw featureset), then fine-tuned for 15 additional epochs with `win_loss_weight=0.5` and a cosine LR (peak 2.5e-5). See `planning/stage2/2026-05-01-bc-ablation-study.md` for the ablation study that motivated this configuration.
-
-**Reference checkpoint (BC research baseline, not used for RL): `curious-darkness-77_best.pt`** — 125M params, FULL featureset, transformer (7 layers × 16 heads × ff_dim 2048). Stronger pure-BC numbers but ~5× slower at inference and uses transition features (which couple inference to `poke-env`'s observations).
-
-| Metric | `cool-bee-85-finetune_best` (production) | `curious-darkness-77_best` (reference) |
-|---|---:|---:|
-| Params | **26.7M** (~5× smaller) | 125M |
-| Featureset | **raw** (5032 dims) | full (5222 dims) |
-| Overall Top-1 | **45.33%** | 41.36% |
-| Overall Top-3 | **62.15%** | 61.27% |
-| Overall Top-5 | 67.56% | 68.77% |
-| MOVE Top-3 | **52.63%** | 51.23% |
-| SWITCH Top-1 | **99.35%** | 99.06% |
-| BOTH Top-1 | 47.66% | 48.27% |
-| BOTH Top-3 | 64.45% | 65.16% |
-| TP Top-1 | 99.9% | 53.8% |
-| **Actual Win Correlation** | 0.7531 | **0.8175** |
-| **Brier Score** | 0.1623 | **0.1329** |
-| Synthetic Win Correlation | 0.5976 | 0.6653 |
-
-*Takeaway*: At ~5× fewer parameters and using the simpler RAW featureset (which removes engineered/transition features and decouples RL inference from `poke-env` observations), `cool-bee-85-finetune` matches or beats the reference on every action metric (Top-1 +4pt, Top-3 +0.9pt, MOVE Top-3 +1.4pt, SWITCH Top-1 +0.3pt) while trading ~0.05 Win Corr / +0.03 Brier on the value head. The action policy is *better* than the reference; the value head is the only area where the larger model retains an edge. r-NaD self-play is expected to recover the value-head gap during RL training.
-
-### 2. Stage 1 Sweep Learnings
-
-The sweep campaign (see `planning/stage1/`) condensed into the current training recipe:
-
-*   **Train longer**: 15 epochs was the biggest lever over 8 epochs. 30 epochs with `ReduceLROnPlateau` was the best setup for the final model.
-*   **Use standard action CE**: `train_topk_k=2025` with `turn_loss_type=topk` remained the best setup; focal loss and entropy regularization hurt.
-*   **Keep batches large**: `batch_size=128` gave better update efficiency without the noise penalties seen at smaller effective batches.
-*   **Center the action weighting at `sw=1.0`** once the teampreview head is active; the older `0.7` preference did not hold in the detached-TP regime.
-*   **Prefer `dropout=0.20` and `lr` near `5.4e-5`** as the stable center.
-*   **Keep the transformer at `TL=7`** with medium late/turn heads and a causal decision-token setup.
-*   **Detach the teampreview head from the shared encoder** so it can learn TP behavior without feeding harmful gradients back into the action/value trunk. This is implemented in `model_archs.py` via `encoded.detach()` before the TP head.
-*   **ReduceLROnPlateau > cosine annealing** for 30-epoch runs: plateau scheduling found better local optima than cosine.
-*   **Optimize for RL handoff quality, not just WinCorr**: the action metrics (especially BOTH Top-3 and SWITCH Top-1) matter more than a small win-correlation gain when choosing the Stage II initialization checkpoint.
-*   **`move_loss_weight=1.0` is optimal**: Experiments with `1.3` (dark-oath-78) showed it damages the value head without improving move accuracy.
-
-### 3. Strategic Conclusions
-*   **Model-Free RL Limits**: Pure model-free RL is unlikely to produce superhuman performance in VGC due to the massive action space (2025 actions) and high stochasticity.
-*   **The Role of Supervised Learning**: We treat supervised learning not as the end goal, but as the **initialization** for a search-based agent.
-    *   The **Policy Head** (Action logits) prunes the search space for MCTS.
-    *   The **Value Head** (Win Advantage) provides a heuristic evaluation for leaf nodes.
-*   **Search is Necessary**: To bridge the gap between "human-like" (42% Top-5) and "superhuman", we need decision-time planning (MCTS) to handle complex calculations and lookaheads that a static policy network misses.
-
-### 4. Stage II Handoff: `cool-bee-85-finetune_best`
-
-The chosen BC handoff model for Stage II RL is `cool-bee-85-finetune_best.pt`. It is the result of two stages:
-
-1. **Pre-train (`cool-bee-85`)**: 30 epochs with the A3 ~5× smaller transformer architecture and the A2 RAW featureset. Config: `configs/ablation_a5_small5x_raw_30ep.yaml`. (Best at epoch 30.)
-2. **Fine-tune (`cool-bee-85-finetune`)**: 15 additional epochs from `cool-bee-85_best.pt`, with `win_loss_weight=0.5` (was 0.35) to push more gradient through the value head, cosine LR (peak 2.5e-5), and the throughput speedup config (batch 256 / worker_batch 256 / num_workers 4 / pf 3 / fpw 4). Config: `configs/ablation_a5_small5x_raw_30ep_finetune.yaml`. (Best at epoch 8.)
-
-*   **Final BC model path**: `data/models/supervised/cool-bee-85-finetune_best.pt` (~100 MB; not pushed)
-*   **Architecture (~26.7M params)**: transformer 4 layers × 8 heads, ff_dim=1024, agg=2048, hidden=256, early=[1024,512,512], late=[512,512], turn_head=[512,256,256], teampreview_head=[256,128]
-*   **Featureset**: `raw` (5032 input dims; drops engineered + transition features → no `poke-env` observation dependency at RL inference time)
-*   **Overall Top-1/3/5**: 45.33% / 62.15% / 67.56%
-*   **MOVE Top-3**: 52.63%
-*   **BOTH Top-3**: 64.45%
-*   **SWITCH Top-1**: 99.35%
-*   **Actual Win Correlation**: 0.7531
-*   **Brier Score**: 0.1623
-*   **Synthetic Advantage Correlation**: 0.5976
-*   **TP Top-1**: 99.9%
-
-**Why this model?** Action policy quality at or above the 125M reference (Top-1 +4pt, Top-3 +0.9pt, MOVE Top-3 +1.4pt, SWITCH Top-1 +0.3pt) while delivering ~5× faster RL forward passes. The RAW featureset removes the `poke-env` observation dependency from the RL inference path, simplifying the worker pipeline. The value-head gap (Win Corr 0.75 vs 0.82, Brier 0.16 vs 0.13) is r-NaD's job to close during self-play. See the ablation study at `planning/stage2/2026-05-01-bc-ablation-study.md` for the full reasoning.
-
-**Alternatives considered**: `elated-dream-72_best` had the highest entropy (0.652) and best win correlation (0.822), but weaker MOVE Top-3 (45.5%). `dark-oath-78` (with `move_loss_weight=1.3`) showed that upweighting move loss trades value head quality for marginal coordination gains.
-
----
-
-## DataLoader Performance (2026-03-22)
-
-### System Specs
-*   **CPU**: Intel Core i7-7700K @ 4.20GHz (8 logical cores)
-*   **RAM**: 24 GB total (~20 GB available in WSL2)
-*   **GPU**: NVIDIA GeForce RTX 3090 (24 GB VRAM)
-*   **Disk**: NVMe SSD
-*   **OS**: Linux via WSL2
-
-### Data Profile (regc_final_v4)
-*   **Train**: 1522 `.pt.zst` files, 512 trajectories/file, ~1.2 MB compressed each, **1.8 GB total on disk**
-*   **Per file decompressed**: **~244 MB** in tensor memory (201x compression ratio)
-*   **Per trajectory**: ~487 KB (states[40,5222] fp16 + action_masks[40,2025] bool + actions[40] int64 + wins[40] fp16 + masks[40] bool)
-
-### Key Findings
-
-**Optimal DataLoader parameters** (measured via `benchmark_dataloader.py` and `benchmark_dataloader_r2.py`):
-
-| Parameter | Old Value | Optimal Value | Why |
-|---|---|---|---|
-| `worker_batch_size` | 64 | **128** | Larger batches amortize per-batch IPC overhead; 2x batch = fewer send/receive cycles between workers and main process |
-| `num_workers` | 6 | **3** | On 8-core CPU, 3 workers + main process + GPU thread avoids CPU contention. More workers = diminishing returns + IPC overhead |
-| `prefetch_factor` | 4 | **2** | Lower prefetch = less memory pressure and less CPU contention. pf=2 is enough to hide I/O latency |
-| `files_per_worker` | 4 | **3** | With 3 workers, each owning ~507 files, caching 3 decompressed files per worker is sufficient for good cache hit rates |
-| `persistent_workers` | true | **true** | Keeps worker caches across epochs. Critical for epoch 2+ performance |
-
-**Throughput comparison (samples/sec)**:
-
-| Config | samples/sec | RAM Delta | Notes |
-|---|---|---|---|
-| Old: nw=6, fpw=4, pf=4, wb=64 | 205 | 6.76 GB | Current config |
-| **New: nw=3, fpw=3, pf=2, wb=128** | **788** | **3.50 GB** | **3.8x faster, 48% less RAM** |
-| Runner-up: nw=3, fpw=4, pf=2, wb=128 | 764 | 3.50 GB | Similar, slightly more cache |
-| nw=4, fpw=4, pf=4, wb=64 | 440 | 4.48 GB | R1 winner before wb=128 discovery |
-
-### Why Fewer Workers Win
-
-On an 8-core i7-7700K, CPU contention is the primary bottleneck — not I/O:
-
-1. **nw=3 beats nw=7 by 4.4x** (788 vs 178 samples/sec). With 7 workers, all 8 cores are saturated: workers compete for CPU time with each other and with the main process, causing pipeline stalls.
-2. **nw=3 beats nw=4 by 1.8x** (788 vs 440 at wb=64, or 788 vs 638 at wb=128). The marginal benefit of a 4th worker is negative due to context switching.
-3. The decompression of `.pt.zst` files (201x ratio) is CPU-intensive. Fewer workers means each worker gets more CPU time and finishes decompression faster.
-
-### Why worker_batch_size=128 Wins
-
-*   Each worker-to-main transfer has fixed IPC overhead. Doubling batch size halves the number of transfers per epoch.
-*   `wb=128` sends 128 trajectories per batch transfer vs 64, cutting total transfer count in half.
-*   `wb=256` crashes with bus errors on this system (shared memory / file descriptor exhaustion on WSL2). wb=128 is the sweet spot.
-
-### Memory Budget
-
-```
-Total DataLoader RAM = num_workers × files_per_worker × decompressed_file_size
-                     + num_workers × prefetch_factor × worker_batch_size × per_trajectory_size
-                     + worker_overhead
-
-Optimal config:
-  Worker cache: 3 workers × 3 files × 244 MB = 2.2 GB
-  Prefetch buf: 3 workers × 2 batches × 128 traj × 487 KB = 0.37 GB
-  Overhead:     ~1 GB
-  Total:        ~3.5 GB  (leaves ~16.5 GB for model + system)
-```
-
-### Caveats
-*   Results are specific to this hardware (8-core CPU, 24 GB RAM, WSL2). More cores would shift optimal `num_workers` higher.
-*   `pin_memory=True` does NOT work on WSL2 (causes OOM). Always use `pin_memory=False`.
-*   `wb=256` causes "No space left on device" bus errors on WSL2 due to shared memory/file descriptor limits.
-*   These parameters are optimized for the DataLoader pipeline only (CPU → RAM). GPU training throughput depends additionally on model size, VRAM, and mixed precision.

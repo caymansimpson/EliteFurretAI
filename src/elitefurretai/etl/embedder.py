@@ -1005,6 +1005,22 @@ class Embedder:
         name = mon.name if mon else ""
         emb[prefix + "active"] = -1 if mon is None else int(name in active_names)
 
+        # Distinguish which active slot this mon occupies (if any).
+        # MDBO slot k corresponds to battle.active_pokemon[k], so this lets
+        # downstream models resolve "move 2, move 1" → specific mon's move.
+        active_pos_0_name = active_names[0] if len(active_names) > 0 else None
+        active_pos_1_name = active_names[1] if len(active_names) > 1 else None
+        emb[prefix + "active_slot_0"] = (
+            -1
+            if mon is None
+            else int(active_pos_0_name is not None and name == active_pos_0_name)
+        )
+        emb[prefix + "active_slot_1"] = (
+            -1
+            if mon is None
+            else int(active_pos_1_name is not None and name == active_pos_1_name)
+        )
+
         trapped, force_switch = -1, -1
         if name in active_names:
             trapped = battle.trapped[active_names.index(name)]
@@ -1153,13 +1169,25 @@ class Embedder:
             )
         )
 
-        emb[prefix + "active"] = (
+        opp_active_names = list(
+            map(lambda x: x.name if x else None, battle.opponent_active_pokemon)
+        )
+        emb[prefix + "active"] = -1 if mon is None else int(mon.name in opp_active_names)
+
+        # Same active-slot disambiguation as the player side. Lets target
+        # indices in the action ("move N 1", "move N 2") be resolved to a
+        # specific opponent mon.
+        opp_pos_0_name = opp_active_names[0] if len(opp_active_names) > 0 else None
+        opp_pos_1_name = opp_active_names[1] if len(opp_active_names) > 1 else None
+        emb[prefix + "active_slot_0"] = (
             -1
             if mon is None
-            else int(
-                mon.name
-                in map(lambda x: x.name if x else None, battle.opponent_active_pokemon)
-            )
+            else int(opp_pos_0_name is not None and mon.name == opp_pos_0_name)
+        )
+        emb[prefix + "active_slot_1"] = (
+            -1
+            if mon is None
+            else int(opp_pos_1_name is not None and mon.name == opp_pos_1_name)
         )
 
         return emb
@@ -1681,14 +1709,14 @@ TRACKED_ITEMS = {
 }
 
 TRACKED_FORMATS = {
-    "gen6doubblesou",
-    "gen9vgc2025regulationi",
-    "gen9vgc2024regulationf",
-    "gen9vgc2024regulationg",
-    "gen9vgc2024regulationh",
+    "gen9championsvgc2026regma",
+    "gen9vgc2025regi",
+    "gen9vgc2024regf",
+    "gen9vgc2024regg",
+    "gen9vgc2024regh",
     "gen9vgc2023regc",
-    "gen9vgc2023regulationb",
-    "gen9vgc2023regulationa",
+    "gen9vgc2023regb",
+    "gen9vgc2023rega",
 }
 
 TRACKED_FIELDS = {

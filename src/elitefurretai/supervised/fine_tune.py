@@ -353,8 +353,13 @@ def finetune(
         ] - 1
 
         if is_eval_epoch:
+            # Use the un-compiled module for eval — torch.compile's dual_expand
+            # codegen can produce mixed-dtype kernels (BFloat16 vs Float)
+            # that crash addmm. Mirrors train.py's `getattr(model,
+            # "_orig_mod", model)` workaround.
+            eval_model = getattr(model, "_orig_mod", model)
             metrics = evaluate(
-                model,
+                eval_model,
                 test_loader,
                 config["device"],
                 has_teampreview_head=True,
@@ -447,8 +452,9 @@ def finetune(
     print(f"\nModel and config saved to {save_path}")
 
     print("\nEvaluating on Validation Dataset:")
+    val_eval_model = getattr(model, "_orig_mod", model)
     metrics = evaluate(
-        model,
+        val_eval_model,
         val_loader,
         config["device"],
         has_teampreview_head=True,

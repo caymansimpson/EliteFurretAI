@@ -1,6 +1,6 @@
 # Engine Runtime Guide
 
-This document is the durable reference for EliteFurretAI's battle-execution layer. The engine package owns battle-execution concerns; RL algorithm concerns live in `src/elitefurretai/rl/`.
+This document is the durable reference for EliteFurretAI's battle-execution layer. The engine package owns battle-execution concerns; RL algorithm concerns live in [`src/elitefurretai/rl/`](../rl/) (see [RL.md](../rl/RL.md)).
 
 ## Current Backend
 
@@ -41,33 +41,33 @@ The Showdown run still logged a large number of invalid websocket choices. Choos
 
 ## Engine Package Layout
 
-### `vgc_environment.py`
+### [`vgc_environment.py`](vgc_environment.py)
 
-Worker-side environment over the Showdown websocket backend. Workers call `VGCEnvironment.from_config(...)` once, then `run_battle_batch(n)` in a loop. Internally it wraps `_ShowdownBackend` + `WorkerOpponentFactory` + `RLTrajectoryPlayer`s.
+Worker-side environment over the Showdown websocket backend. Workers call `VGCEnvironment.from_config(...)` once, then `run_battle_batch(n)` in a loop. Internally it wraps `_ShowdownBackend` + [`WorkerOpponentFactory`](../rl/opponents.py) + [`RLTrajectoryPlayer`](../rl/rl_trajectory_player.py)s.
 
-### `showdown_server_manager.py`
+### [`showdown_server_manager.py`](showdown_server_manager.py)
 
 Owns local Showdown server lifecycle (`launch_showdown_servers`, `shutdown_showdown_servers`) and port allocation across workers. Also coordinates external vgc-bench runner processes when the curriculum uses them.
 
-### `analyze/`
+### [`analyze/`](analyze/)
 
 Engine-level diagnostic and benchmark scripts:
 
-- `showdown_benchmark.py` — websocket comparison harness used historically for backend comparison; still useful for sanity-checking Showdown throughput regressions
-- `showdown_embedder_profile.py` — profiles the embedder hot path on real Showdown trajectories
-- `showdown_invalid_choice_diagnostics.py` — diagnoses invalid-choice patterns (the dominant remaining Showdown failure mode)
+- [`showdown_benchmark.py`](analyze/showdown_benchmark.py) — websocket comparison harness used historically for backend comparison; still useful for sanity-checking Showdown throughput regressions
+- [`showdown_embedder_profile.py`](analyze/showdown_embedder_profile.py) — profiles the embedder hot path on real Showdown trajectories
+- [`showdown_invalid_choice_diagnostics.py`](analyze/showdown_invalid_choice_diagnostics.py) — diagnoses invalid-choice patterns (the dominant remaining Showdown failure mode)
 
 ## Ownership Guide
 
 Use this when deciding where work belongs.
 
-### Put work in `vgc_environment.py` (or `_ShowdownBackend`) when
+### Put work in [`vgc_environment.py`](vgc_environment.py) (or `_ShowdownBackend`) when
 
 - the worker-side battle loop needs to change
 - batching or task-management behavior is wrong
 - trajectory formatting at the env boundary is wrong
 
-### Put work in `showdown_server_manager.py` when
+### Put work in [`showdown_server_manager.py`](showdown_server_manager.py) when
 
 - server launch, shutdown, or port allocation is wrong
 - external vgc-bench process management is wrong
@@ -76,10 +76,10 @@ Use this when deciding where work belongs.
 
 - legality / masking logic is changing
 - policy or learner logic is changing
-- opponent-pool / curriculum / centralized-inference logic is changing (these live in `rl/opponents.py`, `rl/model_registry.py`, `rl/rl_trajectory_player.py`)
+- opponent-pool / curriculum / centralized-inference logic is changing (these live in [`rl/opponents.py`](../rl/opponents.py), [`rl/model_registry.py`](../rl/model_registry.py), [`rl/rl_trajectory_player.py`](../rl/rl_trajectory_player.py))
 
 ## Related Docs
 
-- `src/elitefurretai/rl/RL.md`
-- `planning/stage2/2026-04-13-11-20-showdown-benchmark-and-backend-comparison.md`
-- `planning/stage2/2026-04-13-14-00-training-speed-recommendations.md`
+- [`src/elitefurretai/rl/RL.md`](../rl/RL.md)
+- [`planning/stage2/2026-04-13-11-20-showdown-benchmark-and-backend-comparison.md`](../../../planning/stage2/2026-04-13-11-20-showdown-benchmark-and-backend-comparison.md)
+- [`planning/stage2/2026-04-13-14-00-training-speed-recommendations.md`](../../../planning/stage2/2026-04-13-14-00-training-speed-recommendations.md)

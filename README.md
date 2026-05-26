@@ -47,22 +47,17 @@ Ultimately, we think that Search-based will be the quickest way to get to peak h
 There is quite a lot of complexity in the above, and we encourage you to check out [the doc linked above](https://docs.google.com/document/d/14menCHw8z06KJWZ5F_K-MjgWVo_b7PESR7RlG-em4ic/edit#heading=h.p6dz1cv0mnpx) to learn more.
 
 ### What I've Done
-Currently, I've built a [supervised deep learning model](./src/elitefurretai/supervised/SUPERVISED.md) (`TransformerThreeHeadedModel`) that predicts a human's action. After an ablation study on featureset and model capacity, the **Stage II RL handoff** is `cool-bee-85-finetune_best.pt` — a ~26.7M-param model (~5× smaller than the original 125M baseline, `curious-darkness-77`) trained on the simpler RAW featureset and fine-tuned for value-head quality:
+Currently, I've built a [supervised deep learning model](./src/elitefurretai/supervised/SUPERVISED.md) ([`TransformerThreeHeadedModel`](./src/elitefurretai/supervised/model_archs.py)) that predicts a human's action. The current **Stage II RL handoff** is `rose-sun-108_best.pt` — a ~30.5M-param model trained on the RAW featureset with **active-slot positional features** that resolve which active Pokémon owns each [MDBO](./src/elitefurretai/etl/encoder.py) slot:
 
-*   **Overall Top-1/3/5 Action Accuracy**: 45% / 62% / 68%   (vs 125M baseline: 41% / 61% / 69%)
-*   **Move Top-3**: 53%   (vs 51%)
-*   **Switch Top-1**: 99%   (vs 99%)
-*   **BOTH Top-3** (joint two-Pokemon coordination): 64%   (vs 65%)
+*   **Overall Top-1/3/5 Action Accuracy**: **55% / 84% / 88%**
 *   **Top-1 Teampreview Accuracy**: 99.9%
-*   **Win Correlation**: 0.75   (vs 0.82)
-*   **Brier Score**: 0.16   (vs 0.13)
+*   **Brier Score on Advantage**: **0.185** (against true advantage score; see [SUPERVISED.md](./src/elitefurretai/supervised/SUPERVISED.md#current-state-and-findings))
 
-*Takeaway*: At ~5× fewer parameters and using a simpler featureset (which removes the `poke-env` observation dependency at RL inference time), the new handoff model **matches or beats the larger baseline on every action metric** while trading some value-head quality. The action policy is what matters for r-NaD warm-start exploration — the value head will keep improving during self-play. See [`planning/stage2/2026-05-01-bc-ablation-study.md`](./planning/stage2/2026-05-01-bc-ablation-study.md) for the ablation study that motivated this configuration.
 
 **Primary Learnings**:
 *   **Teampreview**: Teampreview is overfit because 80% of the time, given a matchup, top-elo players choose the same team. So there is little dataset diversity despite my attempts to heavily regularize. This allows for insane performance in test and validation.
-*   **Action**: Predicting the *exact* move a human makes is difficult due to playstyle variety and simultaneous decision-making. Models bias towards learning "easy" actions (switching) instead of harder actions like moves/targets. The BOTH action type (coordinating two Pokemon) at 65% Top-3 shows the model has learned meaningful joint action reasoning.
-*   **Advantage**: The distributional C51 value head outperforms scalar regression. Predicting advantage over raw win probability is better due to the stochasticity of Pokemon.
+*   **Action**: Predicting the *exact* move a human makes is difficult due to playstyle variety and simultaneous decision-making. Models bias towards learning "easy" actions (switching) instead of harder actions like move x targets x tera's.
+*   **Advantage**: The distributional C51 value head outperforms scalar regression. Predicting advantage over raw win probability is better due to the stochasticity of Pokemon; you want to have a model that understands the value of the game state, and not let it get noised by random chance..
 
 ### Where I'm now
 I'm in the beginning phases of RL -- for now, I'm taking the following approach:

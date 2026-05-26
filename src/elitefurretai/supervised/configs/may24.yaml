@@ -1,0 +1,122 @@
+# may24: 50-epoch retrain at the may23 bs x lr sweep winner.
+#
+# Picks up where sweep cell S5 (noble-firebrand-104) left off — bs=512
+# with sqrt-scaled lr=1.09e-4 was the apparent winner at 10 epochs in
+# the diagnostic-methodology comparison. This config runs the full
+# 50-epoch budget so we can head-to-head against cool-bee-85-finetune
+# (the current production checkpoint).
+#
+# Critical changes since may23:
+#   1. learning_rate 5.44e-5 -> 1.09e-4 (sweep finding)
+#   2. weight_decay 3.0e-4 -> 7.2e-5  (keeps lr*wd constant = 7.84e-9)
+#   3. dropout 0.25 -> 0.20  (cool-bee-85 value)
+#   4. teampreview_loss_weight 0.1 -> 1.0  (sweep cells used 1.0; the
+#      0.1 may23 value was a deliberate de-prioritization, but cool-bee
+#      used 1.0 and we don't have evidence it hurts. Stay consistent
+#      with the sweep that produced the winning cell.)
+#   5. teampreview_head_dropout 0.3 -> 0.15  (matches loss-weight bump)
+#
+# Two train.py changes also landed alongside (see planning/stage2/
+# 2026-05-24-*-evaluate-methodology-and-validation-bug-fixes.md):
+#   - evaluate() now buckets force-switch separately and uses masked
+#     logits for per-action-type Top-K. wandb metrics are now directly
+#     comparable to action_model_diagnostics.py output.
+#   - Post-training validation pass routed through _orig_mod so it
+#     doesn't crash on the bf16 dual_expand compile artifact.
+#
+# Plan: after this 50-epoch run completes, fine-tune for 15 more
+# epochs with cosine LR (matching cool-bee-85-finetune procedure) to
+# get the full 65-epoch comparison.
+
+# ===== Architecture - Backbone =====
+max_seq_len: 40
+grouped_encoder_hidden_dim: 256
+grouped_encoder_aggregated_dim: 2048
+pokemon_attention_heads: 8
+early_layers: [1024, 512, 512]
+
+# ===== Architecture - Transformer =====
+transformer_layers: 4
+transformer_heads: 8
+transformer_ff_dim: 2048
+transformer_dropout: 0.1
+use_decision_tokens: true
+use_causal_mask: true
+late_layers: [512, 512]
+
+# ===== Architecture - Teampreview Head =====
+teampreview_head_layers: [256, 128]
+teampreview_head_dropout: 0.15
+teampreview_attention_heads: 2
+
+# ===== Architecture - Turn Action Head =====
+turn_head_layers: [512, 256, 256]
+
+# ===== Distributional Value Head (C51) =====
+num_value_bins: 51
+value_min: -1.0
+value_max: 1.0
+value_head_layers: [512, 512, 256]
+value_label_smoothing: 0.0
+
+# ===== Architecture - Number Banks & Embeddings =====
+number_bank_hp_bins: 100
+number_bank_stat_bins: 600
+number_bank_power_bins: 250
+number_bank_embedding_dim: 16
+number_bank_damage_bins: 600
+number_bank_damage_embed_dim: 4
+number_bank_turn_bins: 40
+number_bank_turn_embed_dim: 16
+number_bank_rating_bins: 100
+number_bank_rating_embed_dim: 16
+ability_embed_dim: 16
+item_embed_dim: 16
+species_embed_dim: 32
+move_embed_dim: 16
+
+# ===== Training =====
+num_epochs: 50
+eval_every: 2
+batch_size: 512
+learning_rate: 1.09e-4
+optimizer: AdamW
+lr_schedule: ReduceLROnPlateau
+max_grad_norm: 1.0
+accumulation_steps: 1
+seed: 21
+
+dropout: 0.20
+weight_decay: 7.2e-5
+
+# ===== Loss Weights =====
+turn_loss_weight: 1.0
+move_loss_weight: 1.0
+switch_loss_weight: 1.0
+teampreview_loss_weight: 1.0
+value_to_trunk_grad_scale: 1.0
+win_loss_weight: 0.35
+turn_loss_type: topk
+train_topk_k: 2025
+entropy_weight: 0.0
+focal_alpha: 0.25
+focal_gamma: 2.0
+
+# ===== Save-best (now reads from corrected utils.py evaluate) =====
+save_best_metric: action_score
+
+# ===== Data =====
+embedder_feature_set: raw
+battle_format: gen9vgc2023regc
+keep_force_switch: false
+
+# ===== DataLoader =====
+num_workers: 4
+files_per_worker: 3
+prefetch_factor: 2
+worker_batch_size: 512
+persistent_workers: true
+
+# ===== Hardware =====
+device: cuda
+save_path: data/models/supervised/

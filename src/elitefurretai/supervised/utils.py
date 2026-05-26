@@ -375,15 +375,7 @@ def evaluate(
     for batch in _eval_iterator:
         if device != "cuda":
             batch = {k: v.to(device) for k, v in batch.items()}
-        # The training collate downcasts states to bf16 for H2D bandwidth
-        # (see battle_dataloader.py). Training tolerates this because the
-        # forward runs under autocast(bf16) / torch.compile. Eval runs in
-        # eager fp32 (model params are fp32), so promote states back to
-        # fp32 to avoid mixed-dtype index_put in _dual_expand and mixed
-        # dtype matmul in the rest of the encoder.
         states = batch["states"]
-        if states.dtype != torch.float32:
-            states = states.float()
         actions = batch["actions"]
         action_masks = batch["action_masks"] if "action_masks" in batch else None
         masks = batch["masks"] if "masks" in batch else None
@@ -612,37 +604,75 @@ def evaluate(
                             )
                             metrics[f"turn_top{k}_acc"] += turn_topk_correct
 
-                    # Track metrics by action type (MOVE, SWITCH, BOTH)
-                    for action_idx, action in enumerate(turn_actions):
-                        try:
-                            mdbo_order = MDBO.from_int(int(action.item()), MDBO.TURN)
-                            if mdbo_order is not None:
-                                message = mdbo_order.message.lower()
-                                if message.startswith("/choose "):
-                                    orders = message[8:].split(", ")
-                                    has_move = any("move" in order for order in orders)
-                                    has_switch = any("switch" in order for order in orders)
+                    # Detect force-switch turns from the state features and
+                    # bucket them separately. Matches the methodology of
+                    # action_model_diagnostics.py so wandb-logged MOVE/
+                    # SWITCH/BOTH numbers are directly comparable to the
+                    # diagnostic's per-type Top-K. Without this, force-
+                    # switch samples (which encode as switch-only actions
+                    # in MDBO) were inflating the SWITCH bucket.
+                    fs_indices = config.get("force_switch_indices", []) if config else []
+                    if fs_indices and valid_states is not None:
+                        # valid_states is (N, F) post-flatten; turn_mask
+                        # already selects non-teampreview rows from it.
+                        turn_states = valid_states[turn_mask]
+                        fs_per_sample = torch.zeros(
+                            turn_states.shape[0],
+                            dtype=torch.bool,
+                            device=turn_states.device,
+                        )
+                        for fs_idx in fs_indices:
+                            fs_per_sample = fs_per_sample | (turn_states[:, fs_idx] > 0.5)
+                    else:
+                        fs_per_sample = torch.zeros(
+                            turn_actions.shape[0],
+                            dtype=torch.bool,
+                            device=turn_actions.device,
+                        )
 
-                                    if has_move and has_switch:
-                                        action_type = "both"
-                                    elif has_switch:
-                                        action_type = "switch"
+                    # Initialize type metrics if needed (FORCE_SWITCH added)
+                    for prefix in ["move", "switch", "both", "force_switch"]:
+                        if f"{prefix}_steps" not in metrics:
+                            metrics[f"{prefix}_steps"] = 0
+                        for k in [1, 3, 5]:
+                            if f"{prefix}_top{k}_acc" not in metrics:
+                                metrics[f"{prefix}_top{k}_acc"] = 0.0
+
+                    # Track metrics by action type (MOVE / SWITCH / BOTH /
+                    # FORCE_SWITCH). Force-switch samples are classified
+                    # by the state's force_switch indicator, not by the
+                    # action's MDBO type.
+                    for action_idx, action in enumerate(turn_actions):
+                        if bool(fs_per_sample[action_idx].item()):
+                            action_type = "force_switch"
+                        else:
+                            try:
+                                mdbo_order = MDBO.from_int(int(action.item()), MDBO.TURN)
+                                if mdbo_order is not None:
+                                    message = mdbo_order.message.lower()
+                                    if message.startswith("/choose "):
+                                        orders = message[8:].split(", ")
+                                        has_move = any("move" in order for order in orders)
+                                        has_switch = any(
+                                            "switch" in order for order in orders
+                                        )
+                                        if has_move and has_switch:
+                                            action_type = "both"
+                                        elif has_switch:
+                                            action_type = "switch"
+                                        elif has_move:
+                                            action_type = "move"
+                                        else:
+                                            # No move and no switch (e.g.,
+                                            # pass+pass). Bucket as "other"
+                                            # via the move fallback below.
+                                            action_type = "move"
                                     else:
-                                        action_type = "move"
+                                        action_type = "move"  # Default fallback
                                 else:
                                     action_type = "move"  # Default fallback
-                            else:
+                            except Exception:
                                 action_type = "move"  # Default fallback
-                        except Exception:
-                            action_type = "move"  # Default fallback
-
-                        # Initialize type metrics if needed
-                        for prefix in ["move", "switch", "both"]:
-                            if f"{prefix}_steps" not in metrics:
-                                metrics[f"{prefix}_steps"] = 0
-                            for k in [1, 3, 5]:
-                                if f"{prefix}_top{k}_acc" not in metrics:
-                                    metrics[f"{prefix}_top{k}_acc"] = 0.0
 
                         # Update type-specific metrics
                         metrics[f"{action_type}_steps"] += 1
@@ -781,7 +811,7 @@ def evaluate(
             metrics["turn_top3_loss"] /= metrics["turn_steps"]
 
     # Normalize action-type specific metrics
-    for action_type in ["move", "switch", "both"]:
+    for action_type in ["move", "switch", "both", "force_switch"]:
         if metrics.get(f"{action_type}_steps", 0) > 0:
             for k in [1, 3, 5]:
                 if metrics.get(f"{action_type}_top{k}_acc", 0) > 0:

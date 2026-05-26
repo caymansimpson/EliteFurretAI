@@ -600,6 +600,39 @@ def test_transformer_model_forward(simple_embedder):
     assert win_dist_logits.shape == (4, 5, 51)
 
 
+def test_transformer_model_forward_accepts_bf16_input(simple_embedder):
+    """The dataloader collate emits bf16 states for H2D bandwidth. Eager
+    callers (analyze, evaluate, RL inference) run with fp32 weights and
+    would otherwise hit `mat1 and mat2 must have the same dtype` in addmm.
+    forward() must promote bf16 input to fp32 internally so all callers
+    see one contract. Regression for rose-sun-108 analyze crash.
+    """
+    model = TransformerThreeHeadedModel(
+        embedder=simple_embedder,
+        early_layers=[64, 32],
+        late_layers=[64, 32],
+        transformer_layers=2,
+        transformer_heads=4,
+        transformer_ff_dim=64,
+        dropout=0.0,
+        max_seq_len=40,
+    )
+    model.eval()
+
+    x_fp32 = torch.randn(4, 5, simple_embedder.embedding_size)
+    x_bf16 = x_fp32.to(torch.bfloat16)
+
+    with torch.no_grad():
+        turn_logits, tp_logits, win_values, win_dist_logits = model(x_bf16)
+
+    assert turn_logits.shape == (4, 5, 2025)
+    assert tp_logits.shape == (4, 5, 90)
+    assert win_values.shape == (4, 5)
+    assert win_dist_logits.shape == (4, 5, 51)
+    assert turn_logits.dtype == torch.float32
+    assert win_values.dtype == torch.float32
+
+
 def test_transformer_model_forward_with_hidden(simple_embedder):
     """TransformerThreeHeadedModel forward_with_hidden returns context."""
     model = TransformerThreeHeadedModel(

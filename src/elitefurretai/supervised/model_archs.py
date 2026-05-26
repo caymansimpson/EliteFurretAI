@@ -1209,6 +1209,13 @@ class TransformerThreeHeadedModel(torch.nn.Module):
         Returns:
             turn_action_logits, teampreview_logits, win_values, win_dist_logits
         """
+        # The training collate downcasts states to bf16 for H2D bandwidth
+        # (battle_dataloader.py). Eager callers (evaluate, analyze, RL
+        # inference) run with fp32 weights and reject mixed-dtype matmul.
+        # Promote at the entry so every caller — eager or autocast'd — sees
+        # the same contract. Under autocast(bf16) the next op will recast.
+        if x.dtype != torch.float32:
+            x = x.float()
         batch_size, seq_len, _ = x.shape
         encoded = self._encode_features(x)  # (B, S, H)
 

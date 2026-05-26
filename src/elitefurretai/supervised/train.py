@@ -808,8 +808,15 @@ def main(train_path, test_path, val_path, config={}, save_best=False):
     print(f"\nModel and config saved to {save_path}")
 
     print("\nEvaluating on Validation Dataset:")
+    # Route through the uncompiled module — `evaluate()` runs under
+    # no_grad without autocast, and the compiled artifact's bf16-coded
+    # extern_kernels.addmm crashes on the dataloader's bf16 states cast
+    # (see planning/stage2/2026-05-22-11-51-dual-expand-dtype-flex-fix.md).
+    # The in-loop eval already uses _orig_mod for the same reason; the
+    # post-training validation was previously the only path that didn't.
+    val_eval_model = getattr(model, "_orig_mod", model)
     metrics = evaluate(
-        model,
+        val_eval_model,
         val_loader,
         config["device"],
         has_teampreview_head=True,
