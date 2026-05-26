@@ -633,6 +633,37 @@ class CurriculumConfig:
 
 
 @dataclass
+class FoulplayEvalConfig:
+    """Inline-during-training eval against the external foul-play-doubles bot.
+
+    Disabled by default: the subprocess requires a separately installed
+    ``../venv-foulplay`` (with ``poke-engine-doubles``, a Rust extension)
+    and runs at ~750 ms / move × 8 cores, which saturates the machine
+    during eval. See planning/stage2/2026-05-25-23-37-foulplay-eval-scope-confirmed.md.
+
+    Multi-format from v1: the eval driver iterates over the active
+    ``CurriculumConfig.battle_formats`` and runs one self-contained
+    FoulPlay cycle per format. ``n_battles_per_format`` is per-format,
+    so total wall-clock per eval pass scales linearly with the number
+    of active formats.
+
+    ``foulplay_team_pool_paths`` is the directory FoulPlay samples its
+    teams from, per format. When ``None``, the eval driver falls back
+    to the curriculum's ``opponent_team_pool_paths[fmt]`` so most users
+    don't need to configure a separate FoulPlay-side pool.
+    """
+
+    enabled: bool = False
+    eval_every_n_updates: int = 50
+    n_battles_per_format: int = 100
+    search_time_ms: int = 750
+    parallelism: int = 4
+    python_executable: Optional[str] = None
+    foulplay_team_pool_paths: Optional[Dict[str, str]] = None
+    model_probabilistic: bool = False
+
+
+@dataclass
 class TrainingConfig:
     """Training loop, checkpointing, and logging settings.
 
@@ -699,6 +730,7 @@ class RNaDConfig:
     curriculum: CurriculumConfig = field(default_factory=CurriculumConfig)
     exploiter: ExploiterConfig = field(default_factory=ExploiterConfig)
     exploration: ExplorationConfig = field(default_factory=ExplorationConfig)
+    foulplay_eval: FoulplayEvalConfig = field(default_factory=FoulplayEvalConfig)
     hardware: HardwareConfig = field(default_factory=HardwareConfig)
     optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
     portfolio: PortfolioConfig = field(default_factory=PortfolioConfig)
@@ -783,6 +815,7 @@ class RNaDConfig:
             curriculum=_make_sub(CurriculumConfig, data.get("curriculum", {})),
             exploiter=_make_sub(ExploiterConfig, data.get("exploiter", {})),
             exploration=_make_sub(ExplorationConfig, data.get("exploration", {})),
+            foulplay_eval=_make_sub(FoulplayEvalConfig, data.get("foulplay_eval", {})),
             hardware=_make_sub(HardwareConfig, data.get("hardware", {})),
             optimizer=_make_sub(OptimizerConfig, data.get("optimizer", {})),
             portfolio=_make_sub(PortfolioConfig, data.get("portfolio", {})),
@@ -844,6 +877,36 @@ class RNaDConfig:
             assert os.path.exists(cur.external_vgcbench_team_file), (
                 f"external_vgcbench_team_file not found: {cur.external_vgcbench_team_file}"
             )
+
+        # FoulPlay eval: when enabled, the subprocess interpreter must
+        # exist and (if foulplay_team_pool_paths is explicitly set) the
+        # per-format pool directories must exist. When the pool dict is
+        # None, the eval driver falls back to opponent_team_pool_paths
+        # which is already validated above.
+        fp = self.foulplay_eval
+        if fp.enabled:
+            assert fp.python_executable, (
+                "foulplay_eval.python_executable must be set when "
+                "foulplay_eval.enabled is True"
+            )
+            assert os.path.exists(fp.python_executable), (
+                f"foulplay_eval.python_executable not found: "
+                f"{fp.python_executable}"
+            )
+            if fp.foulplay_team_pool_paths is not None:
+                expected = set(cur.battle_formats)
+                actual = set(fp.foulplay_team_pool_paths)
+                missing = expected - actual
+                extra = actual - expected
+                assert not missing and not extra, (
+                    f"foulplay_team_pool_paths keys must match "
+                    f"battle_formats exactly; missing={sorted(missing)} "
+                    f"extra={sorted(extra)}"
+                )
+                for fmt, path in fp.foulplay_team_pool_paths.items():
+                    assert os.path.exists(path), (
+                        f"foulplay_team_pool_paths[{fmt!r}] not found: {path}"
+                    )
 
 
 def get_default_config() -> RNaDConfig:
