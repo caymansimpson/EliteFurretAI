@@ -351,25 +351,6 @@ def test_update_team_distribution_disabled_returns_all_none(tmp_path):
     assert dist["gen9vgc2023regc"] is None
 
 
-def test_rl_trajectory_player_class_declares_pending_team_name():
-    """RLTrajectoryPlayer exposes _pending_team_name (scalar) and
-    current_team_names (per-battle dict) on instances after __init__.
-
-    Behavioral wiring (stamp on first request, evict on finish) is
-    covered in test_players.py.
-    """
-    from elitefurretai.rl.rl_trajectory_player import RLTrajectoryPlayer
-
-    # Bypass __init__ since Player would need a real ps_client; we just
-    # verify the attributes are populated after the relevant init block
-    # by replaying that block ourselves.
-    player = RLTrajectoryPlayer.__new__(RLTrajectoryPlayer)
-    player._pending_team_name = None
-    player.current_team_names = {}
-    assert player._pending_team_name is None
-    assert player.current_team_names == {}
-
-
 def _make_worker_factory(
     tmp_path,
     *,
