@@ -16,11 +16,12 @@ from elitefurretai.rl.opponents import OpponentPool
 
 
 def test_curriculum_config_has_team_axis_defaults():
-    """CurriculumConfig exposes three new team-axis fields with documented defaults."""
+    """CurriculumConfig exposes Change 7 team-axis defaults via the
+    nested `adaptive_team_axis` sub-dataclass (Phase 4 unification)."""
     cfg = CurriculumConfig()
-    assert cfg.team_axis_enabled is True
-    assert cfg.team_warmup_threshold == 20
-    assert cfg.team_per_team_floor == 0.005
+    assert cfg.adaptive_team_axis.enabled is True
+    assert cfg.adaptive_team_axis.min_samples == 20
+    assert cfg.adaptive_team_axis.per_key_floor == 0.005
 
 
 def _write_team_file(path: Path, name: str) -> None:

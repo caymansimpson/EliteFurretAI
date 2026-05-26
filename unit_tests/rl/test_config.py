@@ -830,5 +830,85 @@ def test_foulplay_eval_yaml_round_trip(tmp_path):
     }
 
 
+# =============================================================================
+# ADAPTIVE AXIS CONFIG TESTS (Phase 4)
+# =============================================================================
+
+
+def test_adaptive_axis_config_team_defaults():
+    """Team-axis default values reproduce the Change 7 settings: EWMA
+    half_life=50, pure asymmetric weakness with linear exponent."""
+    from elitefurretai.rl.config import AdaptiveAxisConfig
+
+    cfg = AdaptiveAxisConfig.team_axis_defaults()
+    assert cfg.enabled is True
+    assert cfg.half_life == 50.0
+    assert cfg.pfsp_mix == 0.0
+    assert cfg.weakness_mix == 1.0
+    assert cfg.weakness_exponent == 1.0
+    assert cfg.base_blend == 0.0
+    assert cfg.per_key_floor == 0.005
+    assert cfg.min_samples == 20  # team_warmup_threshold
+
+
+def test_adaptive_axis_config_agent_defaults():
+    """Agent-axis default values reproduce the existing update_curriculum
+    behavior: PFSP-weighted with weakness side, base-curriculum blended."""
+    from elitefurretai.rl.config import AdaptiveAxisConfig
+
+    cfg = AdaptiveAxisConfig.agent_axis_defaults()
+    assert cfg.enabled is True
+    assert cfg.half_life == 100.0
+    assert cfg.pfsp_mix == 0.70
+    assert cfg.weakness_mix == 0.30
+    assert cfg.weakness_exponent == 1.0
+    assert cfg.target_win_rate == 0.55
+    assert cfg.base_blend == 0.50
+    assert cfg.min_samples == 40
+    assert cfg.prior_alpha == 8.0
+    assert cfg.prior_beta == 8.0
+
+
+def test_curriculum_config_nests_both_axes():
+    from elitefurretai.rl.config import AdaptiveAxisConfig, CurriculumConfig
+
+    cfg = CurriculumConfig()
+    assert isinstance(cfg.adaptive_team_axis, AdaptiveAxisConfig)
+    assert isinstance(cfg.adaptive_agent_axis, AdaptiveAxisConfig)
+    # Distinct defaults for each axis
+    assert cfg.adaptive_team_axis.pfsp_mix == 0.0
+    assert cfg.adaptive_agent_axis.pfsp_mix == 0.70
+
+
+def test_curriculum_config_yaml_round_trip_with_nested_axes(tmp_path):
+    """Loading a YAML with nested adaptive_*_axis blocks reconstructs
+    the AdaptiveAxisConfig sub-dataclasses correctly."""
+    payload = {
+        "curriculum": {
+            "battle_formats": {"gen9vgc2024regg": 1.0},
+            "adaptive_team_axis": {
+                "enabled": True,
+                "half_life": 75.0,
+                "weakness_exponent": 2.0,
+                "per_key_floor": 0.01,
+            },
+            "adaptive_agent_axis": {
+                "enabled": False,
+                "min_samples": 60,
+                "base_blend": 0.25,
+            },
+        },
+    }
+    path = tmp_path / "test_cfg.yaml"
+    path.write_text(yaml.safe_dump(payload))
+    cfg = RNaDConfig.load(str(path))
+    assert cfg.curriculum.adaptive_team_axis.half_life == 75.0
+    assert cfg.curriculum.adaptive_team_axis.weakness_exponent == 2.0
+    assert cfg.curriculum.adaptive_team_axis.per_key_floor == 0.01
+    assert cfg.curriculum.adaptive_agent_axis.enabled is False
+    assert cfg.curriculum.adaptive_agent_axis.min_samples == 60
+    assert cfg.curriculum.adaptive_agent_axis.base_blend == 0.25
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

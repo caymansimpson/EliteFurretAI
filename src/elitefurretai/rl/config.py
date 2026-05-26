@@ -432,6 +432,89 @@ class HardwareConfig:
 
 
 @dataclass
+class AdaptiveAxisConfig:
+    """Adaptive-curriculum parameters shared by the team-axis and
+    agent-axis updates in `WorkerOpponentFactory`.
+
+    Both axes consume the same primitive
+    (`elitefurretai.rl.rl_utils.adaptive_distribution`); they differ
+    only in the parameter values chosen below. See `team_axis_defaults`
+    and `agent_axis_defaults` for the values that reproduce Change 7
+    (team) and the pre-unification `update_curriculum` (agent).
+
+    Fields:
+        enabled: Master switch for this axis. False = bypass entirely.
+        min_samples: Per-key minimum sample count before the score is
+            trusted (under-warm keys fall back to the base preference).
+        half_life: EWMA half-life in *recorded battles*; decay factor
+            per battle is `0.5 ** (1 / half_life)`.
+        prior_alpha, prior_beta: Beta pseudo-counts for win-rate
+            smoothing.
+        pfsp_mix: Weight on the PFSP component (peaks at wr=0.5).
+        weakness_mix: Weight on the asymmetric weakness component.
+        weakness_exponent: Shape of the weakness component (1.0 linear).
+        target_win_rate: Win rate above which weakness is zero.
+        base_blend: Mix factor with the base curriculum (0.0 = pure
+            adaptive, 1.0 = pure base).
+        per_key_floor: Uniform per-key minimum mass after the floor
+            pass. The agent-axis caller may override on a per-key basis
+            by constructing its own `floors` dict before calling
+            `adaptive_distribution` directly.
+    """
+
+    enabled: bool = True
+    min_samples: int = 40
+    half_life: float = 100.0
+    prior_alpha: float = 8.0
+    prior_beta: float = 8.0
+    pfsp_mix: float = 0.70
+    weakness_mix: float = 0.30
+    weakness_exponent: float = 1.0
+    target_win_rate: float = 0.55
+    base_blend: float = 0.50
+    per_key_floor: float = 0.0
+
+    @classmethod
+    def team_axis_defaults(cls) -> "AdaptiveAxisConfig":
+        """Defaults that reproduce Change 7 team-axis behavior."""
+        return cls(
+            enabled=True,
+            min_samples=20,
+            half_life=50.0,
+            prior_alpha=8.0,
+            prior_beta=8.0,
+            pfsp_mix=0.0,
+            weakness_mix=1.0,
+            weakness_exponent=1.0,
+            target_win_rate=1.0,  # (1 - wr) shape: weakness = 1 - wr
+            base_blend=0.0,
+            per_key_floor=0.005,
+        )
+
+    @classmethod
+    def agent_axis_defaults(cls) -> "AdaptiveAxisConfig":
+        """Defaults that reproduce the pre-unification update_curriculum.
+
+        Note: the per-key anchor floors (SELF_PLAY=0.20, BC_PLAYER=0.10,
+        GHOSTS=0.10) are NOT in this config — they are constructed
+        per-call by the caller using opponent availability. `per_key_floor`
+        stays 0 for agent-axis because the floors are heterogeneous."""
+        return cls(
+            enabled=True,
+            min_samples=40,
+            half_life=100.0,
+            prior_alpha=8.0,
+            prior_beta=8.0,
+            pfsp_mix=0.70,
+            weakness_mix=0.30,
+            weakness_exponent=1.0,
+            target_win_rate=0.55,
+            base_blend=0.50,
+            per_key_floor=0.0,
+        )
+
+
+@dataclass
 class CurriculumConfig:
     """Opponent sampling, team pools, BC models, and ghost/exploiter directories.
 
@@ -498,14 +581,6 @@ class CurriculumConfig:
             "random_baseline": 0.05,
         }
     )
-    # PFSP-style curriculum adaptation. When True, `update_curriculum` runs
-    # every `checkpoint_interval` updates and re-weights opponents based on
-    # recent win rates (blends PFSP — favour ~50/50 matchups for max learning
-    # signal — with weakness targeting — push more games toward opponents
-    # where main underperforms). Smoothed + sample-gated to avoid noise.
-    # See `WorkerOpponentFactory.update_curriculum` in `opponents.py` for
-    # the full algorithm. False = fixed `curriculum_weights` for the run.
-    adaptive_curriculum: bool = True
     # Exploiter and ghost model pool sizes (paths are derived from training.run_dir)
     max_exploiter_models: int = 10
     max_ghosts: int = 10
@@ -519,22 +594,15 @@ class CurriculumConfig:
     external_vgcbench_python_executable: Optional[str] = None
     external_vgcbench_team_file: str = "data/teams/gen9vgc2024regg/vgcbench.txt"
     vgc_bench_checkpoint_path: str = "data/models/vgc-bench-sb3-model.zip"
-    # ── Change 7: agent-team-axis adaptive curriculum ────────────────────
-    # Master switch. False = bypass entirely; workers ignore broadcast
-    # team_distribution_by_format and stay on uniform team sampling.
-    team_axis_enabled: bool = True
-    # Min battles per (format, team) before that format's biased
-    # distribution activates. Per-format gate; each format latches
-    # independently.
-    team_warmup_threshold: int = 20
-    # Min normalized weight any team can receive within a format's
-    # distribution after the floor pass + renormalization.
-    team_per_team_floor: float = 0.005
-    # Stand-in defaults for Changes 5 (half_life) and 4 (pfsp_exponent)
-    # — both of which will repurpose these fields when they land. Defined
-    # here so Change 7 can use config-driven values rather than literals.
-    half_life: float = 50.0
-    pfsp_exponent: float = 1.0
+    # Adaptive curriculum: two axes, same algorithm, different defaults.
+    # See `AdaptiveAxisConfig.{team,agent}_axis_defaults` and the shared
+    # `rl_utils.adaptive_distribution` primitive for the algorithm itself.
+    adaptive_team_axis: AdaptiveAxisConfig = field(
+        default_factory=AdaptiveAxisConfig.team_axis_defaults
+    )
+    adaptive_agent_axis: AdaptiveAxisConfig = field(
+        default_factory=AdaptiveAxisConfig.agent_axis_defaults
+    )
 
     def __post_init__(self) -> None:
         if not self.battle_formats:
@@ -809,10 +877,24 @@ class RNaDConfig:
     def from_dict(cls, data: Dict[str, Any]) -> "RNaDConfig":
         """Create a RNaDConfig from a dict (flat or nested). Extra keys are ignored."""
 
+        # CurriculumConfig has nested AdaptiveAxisConfig sub-dataclasses that
+        # `_make_sub` does not generically recurse into. Build them by hand
+        # so YAML blocks under `curriculum.adaptive_team_axis` /
+        # `curriculum.adaptive_agent_axis` round-trip into typed objects.
+        curriculum_data = dict(data.get("curriculum", {}))
+        if "adaptive_team_axis" in curriculum_data:
+            curriculum_data["adaptive_team_axis"] = _make_sub(
+                AdaptiveAxisConfig, curriculum_data["adaptive_team_axis"]
+            )
+        if "adaptive_agent_axis" in curriculum_data:
+            curriculum_data["adaptive_agent_axis"] = _make_sub(
+                AdaptiveAxisConfig, curriculum_data["adaptive_agent_axis"]
+            )
+
         return cls(
             algorithm=_make_sub(AlgorithmConfig, data.get("algorithm", {})),
             architecture=_make_sub(ArchitectureConfig, data.get("architecture", {})),
-            curriculum=_make_sub(CurriculumConfig, data.get("curriculum", {})),
+            curriculum=_make_sub(CurriculumConfig, curriculum_data),
             exploiter=_make_sub(ExploiterConfig, data.get("exploiter", {})),
             exploration=_make_sub(ExplorationConfig, data.get("exploration", {})),
             foulplay_eval=_make_sub(FoulplayEvalConfig, data.get("foulplay_eval", {})),
@@ -890,8 +972,7 @@ class RNaDConfig:
                 "foulplay_eval.enabled is True"
             )
             assert os.path.exists(fp.python_executable), (
-                f"foulplay_eval.python_executable not found: "
-                f"{fp.python_executable}"
+                f"foulplay_eval.python_executable not found: {fp.python_executable}"
             )
             if fp.foulplay_team_pool_paths is not None:
                 expected = set(cur.battle_formats)

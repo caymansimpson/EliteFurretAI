@@ -74,7 +74,8 @@ curriculum:
     simple_heuristic_baseline: 0.1
     vgc_bench_baseline: 0.0
     train_exploiter: 0.0  # off; bump to 0.20 to activate in-process exploiter co-training
-  adaptive_curriculum: false
+  adaptive_agent_axis:
+    enabled: false
   max_exploiter_models: 5
   max_ghosts: 5
   vgc_bench_checkpoint_path: data/models/vgc-bench-sb3-model.zip

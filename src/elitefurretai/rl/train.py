@@ -775,8 +775,7 @@ def main():
         config.hardware.num_servers, config.hardware.showdown_start_port
     )
     server_ports: List[int] = [
-        config.hardware.showdown_start_port + i
-        for i in range(config.hardware.num_servers)
+        config.hardware.showdown_start_port + i for i in range(config.hardware.num_servers)
     ]
 
     # Auto-launch external vgc-bench runners based on curriculum
@@ -837,11 +836,16 @@ def main():
         team_repo=team_repo,
         battle_formats=dict(config.curriculum.battle_formats),
         opponent_team_subdirectories=opponent_team_subdirectories,
-        team_axis_enabled=config.curriculum.team_axis_enabled,
-        team_warmup_threshold=config.curriculum.team_warmup_threshold,
-        team_per_team_floor=config.curriculum.team_per_team_floor,
-        half_life=config.curriculum.half_life,
-        pfsp_exponent=config.curriculum.pfsp_exponent,
+        # Phase 4 bridge: CurriculumConfig now exposes the nested
+        # `adaptive_team_axis: AdaptiveAxisConfig`. OpponentPool's
+        # constructor still takes the legacy flat kwargs (those are
+        # replaced in Phase 5.1). We unpack the sub-dataclass here so
+        # the call site stays correct until Phase 5 lands.
+        team_axis_enabled=config.curriculum.adaptive_team_axis.enabled,
+        team_warmup_threshold=config.curriculum.adaptive_team_axis.min_samples,
+        team_per_team_floor=config.curriculum.adaptive_team_axis.per_key_floor,
+        half_life=config.curriculum.adaptive_team_axis.half_life,
+        pfsp_exponent=config.curriculum.adaptive_team_axis.weakness_exponent,
     )
 
     # ── Initialize the exploiter co-training pipeline ──
@@ -1204,7 +1208,12 @@ def main():
                     # Recompute curriculum in the learner/main process only,
                     # if we want to update it. Algorithm to update the
                     # curriculum is TODO: define and describe
-                    if config.curriculum.adaptive_curriculum:
+                    # Phase 4 bridge: `adaptive_curriculum` (flat bool) is
+                    # subsumed by the nested agent-axis sub-dataclass.
+                    # Phase 5 replaces `update_curriculum`'s implementation
+                    # to consume the full AdaptiveAxisConfig; for now we
+                    # only gate on the enabled bit.
+                    if config.curriculum.adaptive_agent_axis.enabled:
                         opponent_pool.update_curriculum()
 
                     # Change 7: recompute per-format team distribution at
