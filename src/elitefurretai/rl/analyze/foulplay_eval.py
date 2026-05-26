@@ -76,8 +76,7 @@ class FoulplayEvalResult:
         ``battle_formats_weights`` are excluded from the average.
         """
         weights = {
-            fmt: self.battle_formats_weights.get(fmt, 0.0)
-            for fmt in self.per_format
+            fmt: self.battle_formats_weights.get(fmt, 0.0) for fmt in self.per_format
         }
         total_weight = sum(weights.values())
         if total_weight == 0:
@@ -323,9 +322,7 @@ def main() -> None:
         server_processes = launch_showdown_servers(args.num_servers, args.start_port)
 
     try:
-        server_urls = [
-            f"localhost:{args.start_port + i}" for i in range(args.num_servers)
-        ]
+        server_urls = [f"localhost:{args.start_port + i}" for i in range(args.num_servers)]
         run_tag = format(int(time.time() * 1000) % 65536, "04x")
 
         # CLI broadcasts a single agent-team-pool to every active format.

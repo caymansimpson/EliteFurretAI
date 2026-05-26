@@ -344,21 +344,19 @@ For the multi-format graduation check, see `src/elitefurretai/scripts/multi_form
 
 ### Team-Axis Curriculum
 
-The curriculum biases agent team selection per-format in addition to opponent sampling. `OpponentPool` tracks per-`(battle_format, team_name)` EWMA win rate using the same decay rule planned for the opponent-axis EWMA (Change 5, not yet landed). At each curriculum broadcast cadence, `update_team_distribution()` computes per-format `{team_name: weight}` distributions using asymmetric PFSP `(1 - wr) ** p` (reserving `p` for the opponent-axis curriculum from Change 4), with a per-team floor enforced via water-filling and a per-format warm-up gate.
+The curriculum biases agent team selection per-format in addition to opponent sampling. `OpponentPool` tracks per-`(battle_format, team_name)` EWMA win rate. At each curriculum broadcast cadence, `update_team_distribution()` computes per-format `{team_name: weight}` distributions by calling the shared `rl_utils.adaptive_distribution` primitive with the team-axis parameter preset; team-axis is configured to be pure asymmetric weakness (`pfsp_mix=0.0, weakness_mix=1.0, target_win_rate=1.0`), which collapses the score formula to `(1 - wr)`. The per-team floor is enforced via water-filling and the broadcast is gated by a per-format warm-up threshold.
 
 Workers receive the per-format distributions over the same broadcast mechanism that carries the opponent curriculum. `WorkerOpponentFactory.sample_team(fmt, biased=True)` draws a team from the broadcast distribution when one exists for `fmt`, or falls back to uniform `team_repo.sample_team_name(...)` during warm-up. `RLTrajectoryPlayer._pending_team_name` is set by the factory just before each battle starts; on the first `_handle_battle_request` for a given `battle_tag`, the pending value is copied into `current_team_names[battle_tag]`, and that per-battle entry is the actual recorded value that flows onto the trajectory dict (alongside `battle_format` read from `battle.format`) so the trainer can route the EWMA update back to the right cell.
 
 Bias scope: every training call site uses the biased distribution. Self-play, ghosts, exploiters, and baseline matchups all draw from the same per-format distribution. The `biased=False` opt-out exists for future eval-at-checkpoint paths that want the natural uniform team distribution.
 
-Config knobs (on `CurriculumConfig`):
+Config: `CurriculumConfig` carries an `adaptive_team_axis: AdaptiveAxisConfig` sub-dataclass and an `adaptive_agent_axis: AdaptiveAxisConfig` sub-dataclass. YAML configures these via `curriculum.adaptive_team_axis: {...}` and `curriculum.adaptive_agent_axis: {...}` blocks. The exhaustive field list and team-axis preset values live on `AdaptiveAxisConfig.team_axis_defaults()` in [`config.py`](config.py); the most operationally relevant fields are `enabled` (master switch — when False the broadcast emits `None` for every format and workers stay on uniform sampling), `min_samples` (per-`(format, team)` warm-up threshold before that format's distribution flips on, latched independently per format), `half_life` (EWMA decay in recorded battles), and `per_key_floor` (per-team minimum post-renormalization weight, enforced via water-filling).
 
-- `team_axis_enabled` — master switch. When False the broadcast emits `None` for every format and workers stay on uniform sampling.
-- `team_warmup_threshold` — minimum non-forfeit battles per `(format, team)` before that format's distribution flips on. Each format latches independently.
-- `team_per_team_floor` — minimum post-renormalization weight any team can receive. Enforced by water-filling rather than naive clamp-and-renormalize so the floor invariant is preserved through normalization.
-- `pfsp_exponent` — asymmetric PFSP shape, reserved for the opponent-axis curriculum (Change 4) which has not landed.
-- `half_life` — EWMA decay rate, reserved for the opponent-axis curriculum (Change 5) which has not landed.
+### Shared Adaptive Primitive
 
-Design spec: `planning/stage2/2026-05-24-12-30-change7-team-axis-curriculum-design.md`.
+Team-axis and agent-axis updates share an implementation via `rl_utils.adaptive_score` + `rl_utils.adaptive_distribution`. `AdaptiveAxisConfig.{team,agent}_axis_defaults` in [`config.py`](config.py) define the parameter values that distinguish the two axes — team-axis uses pure asymmetric weakness (`pfsp_mix=0.0, weakness_mix=1.0, target_win_rate=1.0`) while agent-axis blends PFSP and weakness `0.70/0.30` with `target_win_rate=0.55` and a 50/50 base-curriculum blend. Smoothing is EWMA with per-axis `half_life` (team=50, agent=100); the agent-axis previously used a sliding-window deque, which is preserved only for the Wandb metrics emitter.
+
+Design spec: `planning/stage2/2026-05-24-12-30-change7-team-axis-curriculum-design.md`. Unification spec: `planning/stage2/2026-05-26-08-00-curriculum-unification-and-team-fixes.md`.
 
 ### VGCBench: Fork-Safe External Opponent
 
@@ -727,7 +725,7 @@ Evaluation utilities, plotters, VGCBench external runner glue.
 ## 11. Future Directions
 
 1. **Adaptive Exploiter Allocation**: Dynamic adjustment of exploiter check interval based on win-rate stability.
-2. **Multi-Format Adaptive Curriculum**: Format weights are currently static. Dynamic re-weighting (à la `adaptive_curriculum`) based on per-format performance is a natural follow-up to the shipped multi-format infrastructure (see "Multi-Format Training" section under Curriculum).
+2. **Multi-Format Adaptive Curriculum**: Format weights are currently static. Dynamic re-weighting via a third `AdaptiveAxisConfig`-driven axis (keyed by `battle_format`) based on per-format performance is a natural follow-up to the shipped multi-format infrastructure (see "Multi-Format Training" section under Curriculum).
 3. **Team Generation**: Generate novel teams instead of sampling from a fixed pool.
 4. **Native Battle Engine**: Port Showdown to Python to eliminate WebSocket overhead.
 5. **Number Bank Tuning**: Optimize bin counts and embedding dimensions for production training.

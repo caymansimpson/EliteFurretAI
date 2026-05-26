@@ -102,9 +102,7 @@ class FoulPlayManager:
         intervening shutdown() — the manager is single-shot per cycle.
         """
         if self._processes:
-            raise RuntimeError(
-                "FoulPlayManager.launch() called twice without shutdown()"
-            )
+            raise RuntimeError("FoulPlayManager.launch() called twice without shutdown()")
 
         assert self._config.python_executable is not None, (
             "FoulplayEvalConfig.python_executable must be set when launching "
