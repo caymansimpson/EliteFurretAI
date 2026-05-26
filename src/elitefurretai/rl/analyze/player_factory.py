@@ -36,6 +36,7 @@ from poke_env.player import MaxBasePowerPlayer, Player, RandomPlayer
 from poke_env.player.baselines import SimpleHeuristicsPlayer
 from poke_env.ps_client import AccountConfiguration, ServerConfiguration
 
+from elitefurretai.agents.foulplay_manager import FoulPlayManager
 from elitefurretai.agents.max_damage_player import MaxDamagePlayer
 from elitefurretai.agents.simple_model_player import SimpleModelPlayer
 from elitefurretai.agents.vgcbench_manager import VGCBenchManager
@@ -52,9 +53,10 @@ _CANONICAL_BASELINES = (
     "random",
 )
 
-# vgc_bench is canonical but goes down the external path, not the
-# baseline factory. Kept separate so parser logic is clear.
-_EXTERNAL_BASELINES = ("vgc_bench",)
+# vgc_bench and foul_play go down the external path (subprocess in a
+# separate venv), not the in-process baseline factory. Kept separate
+# so parser logic is clear.
+_EXTERNAL_BASELINES = ("vgc_bench", "foul_play")
 
 _BASELINE_ALIASES = {
     "maxdamage": "max_damage",
@@ -63,6 +65,7 @@ _BASELINE_ALIASES = {
     "simpleheuristic": "simple_heuristic",
     "simpleheuristics": "simple_heuristic",
     "vgcbench": "vgc_bench",
+    "foulplay": "foul_play",
 }
 
 
@@ -74,6 +77,7 @@ _BASELINE_USER_TAG = {
     "max_base_power": "MBP",
     "simple_heuristic": "SHP",
     "vgc_bench": "VGB",
+    "foul_play": "FP",
     "random": "RND",
 }
 
@@ -141,6 +145,10 @@ def parse_player_specification(
     vgc_bench_checkpoint_path: str = "data/models/vgc-bench-sb3-model.zip",
     vgc_bench_team_file: str = "data/teams/gen9vgc2024regg/vgcbench.txt",
     vgc_bench_python_executable: str = "/home/cayman/Repositories/venv-vgcbench/bin/python",
+    foul_play_python_executable: str = "/home/cayman/Repositories/venv-foulplay/bin/python",
+    foul_play_team_pool_path: str = "data/teams/gen9vgc2024regg/constrained",
+    foul_play_search_time_ms: int = 750,
+    foul_play_parallelism: int = 4,
 ) -> PlayerSpecification:
     """Resolve ``raw`` into a ``PlayerSpecification``.
 
@@ -153,6 +161,12 @@ def parse_player_specification(
 
     The path check goes first because a model checkpoint named
     ``random.pt`` should resolve to a model, not the random baseline.
+
+    The ``foul_play_*`` kwargs supply the subprocess-config the
+    eval-side launcher needs for the FoulPlay path (search-time,
+    parallelism, venv interpreter, team pool). They have sensible
+    defaults so simple CLI use (``--player2 foul_play``) works without
+    extra flags.
     """
     if os.path.isfile(raw):
         return _model_specification(raw, device=device, battle_format=battle_format)
@@ -171,9 +185,13 @@ def parse_player_specification(
             raw,
             canonical,
             battle_format=battle_format,
-            checkpoint_path=vgc_bench_checkpoint_path,
-            team_file=vgc_bench_team_file,
-            python_executable=vgc_bench_python_executable,
+            vgc_bench_checkpoint_path=vgc_bench_checkpoint_path,
+            vgc_bench_team_file=vgc_bench_team_file,
+            vgc_bench_python_executable=vgc_bench_python_executable,
+            foul_play_python_executable=foul_play_python_executable,
+            foul_play_team_pool_path=foul_play_team_pool_path,
+            foul_play_search_time_ms=foul_play_search_time_ms,
+            foul_play_parallelism=foul_play_parallelism,
         )
 
     return _baseline_specification(raw, canonical, battle_format=battle_format)
@@ -209,25 +227,50 @@ def _external_specification(
     canonical: str,
     *,
     battle_format: str,
-    checkpoint_path: str,
-    team_file: str,
-    python_executable: str,
+    vgc_bench_checkpoint_path: str,
+    vgc_bench_team_file: str,
+    vgc_bench_python_executable: str,
+    foul_play_python_executable: str,
+    foul_play_team_pool_path: str,
+    foul_play_search_time_ms: int,
+    foul_play_parallelism: int,
 ) -> PlayerSpecification:
-    assert canonical == "vgc_bench", (
-        f"unreachable: unknown external baseline {canonical!r}"
-    )
-    return PlayerSpecification(
-        raw=raw,
-        kind="external",
-        name=canonical,
-        user_tag=_BASELINE_USER_TAG[canonical],
-        params={
-            "checkpoint_path": checkpoint_path,
-            "team_file": team_file,
-            "python_executable": python_executable,
-            "battle_format": battle_format,
-        },
-    )
+    """Build a ``kind="external"`` spec for one of the registered external baselines.
+
+    Each external baseline carries its own params shape — there's no
+    shared schema because their subprocess interfaces differ
+    (vgc_bench loads an SB3 checkpoint + plays one team; foul_play
+    runs a search bot at a configured time-budget + samples from a
+    team pool).
+    """
+    if canonical == "vgc_bench":
+        return PlayerSpecification(
+            raw=raw,
+            kind="external",
+            name=canonical,
+            user_tag=_BASELINE_USER_TAG[canonical],
+            params={
+                "checkpoint_path": vgc_bench_checkpoint_path,
+                "team_file": vgc_bench_team_file,
+                "python_executable": vgc_bench_python_executable,
+                "battle_format": battle_format,
+            },
+        )
+    if canonical == "foul_play":
+        return PlayerSpecification(
+            raw=raw,
+            kind="external",
+            name=canonical,
+            user_tag=_BASELINE_USER_TAG[canonical],
+            params={
+                "python_executable": foul_play_python_executable,
+                "team_pool_path": foul_play_team_pool_path,
+                "search_time_ms": foul_play_search_time_ms,
+                "parallelism": foul_play_parallelism,
+                "battle_format": battle_format,
+            },
+        )
+    raise AssertionError(f"unreachable: unknown external baseline {canonical!r}")
 
 
 def build_player(
@@ -290,23 +333,33 @@ def launch_external_player(
 ) -> RunningExternal:
     """Spawn the external opponent subprocess and return a handle.
 
-    Requires ``specification.kind == "external"``. Currently the only external
-    opponent is ``vgc_bench``; this dispatch grows when more arrive.
+    Requires ``specification.kind == "external"``. Dispatches by
+    ``specification.name`` to one of the registered external launchers
+    (currently ``vgc_bench`` and ``foul_play``).
     """
     if specification.kind != "external":
         raise ValueError(
             f"launch_external_player() requires kind='external', got {specification.kind!r}"
         )
-    if specification.name != "vgc_bench":
-        raise ValueError(
-            f"launch_external_player() does not handle external opponent {specification.name!r}"
+    if specification.name == "vgc_bench":
+        return _launch_vgc_bench_subprocess(
+            server_url=server_url,
+            battle_format=specification.params["battle_format"],
+            checkpoint_path=specification.params["checkpoint_path"],
+            team_file=specification.params["team_file"],
+            python_executable=specification.params["python_executable"],
         )
-    return _launch_vgc_bench_subprocess(
-        server_url=server_url,
-        battle_format=specification.params["battle_format"],
-        checkpoint_path=specification.params["checkpoint_path"],
-        team_file=specification.params["team_file"],
-        python_executable=specification.params["python_executable"],
+    if specification.name == "foul_play":
+        return _launch_foulplay_subprocess(
+            server_url=server_url,
+            battle_format=specification.params["battle_format"],
+            python_executable=specification.params["python_executable"],
+            team_pool_path=specification.params["team_pool_path"],
+            search_time_ms=specification.params["search_time_ms"],
+            parallelism=specification.params["parallelism"],
+        )
+    raise ValueError(
+        f"launch_external_player() does not handle external opponent {specification.name!r}"
     )
 
 
@@ -386,6 +439,111 @@ def _launch_vgc_bench_subprocess(
     # policy, and complete a websocket handshake. Anything less risks
     # the first /challenge landing before the user exists.
     time.sleep(VGCBenchManager.STARTUP_WAIT_S)
+
+    def shutdown() -> None:
+        if process.poll() is None:
+            try:
+                process.terminate()
+                process.wait(timeout=3)
+            except Exception:
+                try:
+                    process.kill()
+                    process.wait(timeout=2)
+                except Exception:
+                    pass
+        try:
+            log_handle.flush()
+            log_handle.close()
+        except Exception:
+            pass
+
+    return RunningExternal(username=username, shutdown=shutdown)
+
+
+def _launch_foulplay_subprocess(
+    *,
+    server_url: str,
+    battle_format: str,
+    python_executable: str,
+    team_pool_path: str,
+    search_time_ms: int,
+    parallelism: int,
+) -> RunningExternal:
+    """Spawn the foul-play-doubles subprocess and return a handle.
+
+    Single-shot CLI variant of ``FoulPlayManager.launch``: takes raw
+    parameters instead of a config object so the eval script doesn't
+    have to construct training config to use foul_play. The subprocess
+    args are kept identical to ``FoulPlayManager`` so any future fix to
+    ``_foulplay_subprocess.py`` applies uniformly.
+
+    Blocks for ``STARTUP_WAIT_S`` seconds before returning so the
+    subprocess has time to log into Showdown — without this, the first
+    challenge sent immediately after launch gets "user not found".
+
+    ``--n-challenges`` is set to a large constant here because the
+    eval-side cell loop controls the actual number of challenges issued
+    (matching the long-lived FoulPlay-as-baseline pattern). The
+    training-loop variant of FoulPlay eval is bounded by
+    ``FoulplayEvalConfig.n_battles_per_format`` and goes through
+    ``FoulPlayManager`` directly, not this helper.
+    """
+    if not os.path.exists(python_executable):
+        raise FileNotFoundError(f"foul-play venv python not found: {python_executable}")
+    if not os.path.isdir(team_pool_path):
+        raise FileNotFoundError(f"foul-play team pool not found: {team_pool_path}")
+
+    port = int(server_url.rsplit(":", 1)[1])
+    base_username = FoulPlayManager.USERNAMES[0]  # "FOULPLAY"
+    username = FoulPlayManager.derive_username(base_username, port)
+
+    log_dir = "data/logs/foulplay_runners_eval"
+    os.makedirs(log_dir, exist_ok=True)
+    sanitized = username.replace("/", "_")
+    log_path = os.path.join(log_dir, f"runner_{sanitized}_{port}.log")
+    log_handle = open(log_path, "a", encoding="utf-8")
+
+    command = [
+        python_executable,
+        FoulPlayManager.SUBPROCESS_SCRIPT,
+        "--username",
+        username,
+        "--server",
+        f"localhost:{port}",
+        "--battle-format",
+        battle_format,
+        "--n-challenges",
+        # Large constant — the cell loop decides how many to issue.
+        str(1_000_000),
+        "--team-list-dir",
+        team_pool_path,
+        "--search-time-ms",
+        str(search_time_ms),
+        "--parallelism",
+        str(parallelism),
+        "--wait-for-server-timeout",
+        str(FoulPlayManager.WAIT_FOR_SERVER_TIMEOUT_S),
+    ]
+    if FoulPlayManager.ACCEPT_OPEN_TEAM_SHEET:
+        command.append("--accept-open-team-sheet")
+
+    process = subprocess.Popen(
+        command,
+        stdout=log_handle,
+        stderr=log_handle,
+        start_new_session=True,
+        env={**os.environ, "PYTHONUNBUFFERED": "1"},
+    )
+    print(
+        f"✓ Launched eval foul-play runner '{username}' on localhost:{port} "
+        f"(PID: {process.pid}) log={log_path}"
+    )
+
+    # Wait for Showdown login. FoulPlay imports poke-engine-doubles
+    # (a Rust extension), poke_env 0.11, and completes a websocket
+    # handshake. STARTUP_WAIT_S mirrors VGCBench's 10 s; less and the
+    # first /challenge can hit a non-existent user.
+    time.sleep(FoulPlayManager.STARTUP_WAIT_S)
 
     def shutdown() -> None:
         if process.poll() is None:
