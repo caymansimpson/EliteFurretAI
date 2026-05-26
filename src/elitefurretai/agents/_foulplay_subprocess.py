@@ -188,9 +188,7 @@ async def _run(args: argparse.Namespace) -> None:
 
         try:
             await ps.accept_challenge(args.battle_format, team_export, None)
-            winner, _bo3_done = await pokemon_battle(
-                ps, args.battle_format, None, True
-            )
+            winner, _bo3_done = await pokemon_battle(ps, args.battle_format, None, True)
             print(
                 f"[foulplay-runner] battle {i + 1}/{args.n_challenges} "
                 f"team={file_name} winner={winner}",

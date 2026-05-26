@@ -190,9 +190,7 @@ def run(
     server_url = server_urls[0]
 
     for fmt in curriculum.battle_formats:
-        override = (
-            agent_team_paths.get(fmt) if agent_team_paths is not None else None
-        )
+        override = agent_team_paths.get(fmt) if agent_team_paths is not None else None
         agent_team_text = _resolve_agent_team_text(curriculum, fmt, override=override)
         foulplay_team_pool = _resolve_foulplay_team_pool(config, curriculum, fmt)
 
