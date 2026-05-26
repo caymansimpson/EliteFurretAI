@@ -93,6 +93,9 @@ def _make_player_for_popup_tests():
     player.hidden_states = {}
     player.trajectory_queue = None  # opponent-only mode (no trajectory ship)
     player.opponent_type = "self_play"
+    # Per-battle team-name dict used by _battle_finished_callback's eviction.
+    player._pending_team_name = None
+    player.current_team_names = {}
     # Centralized-inference attribute: tests bypass __init__ via __new__,
     # so we set it explicitly. None = legacy mode (no inference client).
     player.inference_client = None  # type: ignore[assignment]
@@ -318,3 +321,61 @@ async def test_recover_room_lost_battle_frees_lock_and_cancels_waiters():
             task_other.cancel()
         # Drain cancellations so pytest-asyncio doesn't complain.
         await asyncio.gather(task_a, task_b, task_other, return_exceptions=True)
+
+
+# ── Per-battle team-name plumbing ───────────────────────────────────────────
+# Guards against the latent randomize_all_teams race: if a previous batch's
+# finished-callback fires after the next batch flips the pending scalar, the
+# wrong team would be attributed. We now stamp the name into a per-tag dict
+# on the first request and pop on completion.
+
+
+def _make_player_with_pending_team(name):
+    """Construct a minimally-initialized RLTrajectoryPlayer bypassing the
+    Player base class (which needs a real ps_client). We only exercise the
+    team_name plumbing here."""
+    player = RLTrajectoryPlayer.__new__(RLTrajectoryPlayer)
+    player._pending_team_name = name
+    player.current_team_names = {}
+    player._discarded_battles = set()
+    player._room_lost_battles = set()
+    player._request_generation = {}
+    player.current_trajectories = {}
+    player.hidden_states = {}
+    player.inference_client = None
+    player.trajectory_queue = None
+    return player
+
+
+def test_pending_team_name_stamps_first_request_per_battle_tag():
+    player = _make_player_with_pending_team("constrained/38dessert")
+    player._stamp_pending_team_name("battle-tag-A")
+    assert player.current_team_names == {"battle-tag-A": "constrained/38dessert"}
+
+    # Second stamp for same tag is a no-op (defensive idempotence).
+    player._pending_team_name = "OTHER_TEAM_SHOULD_NOT_OVERWRITE"
+    player._stamp_pending_team_name("battle-tag-A")
+    assert player.current_team_names["battle-tag-A"] == "constrained/38dessert"
+
+
+def test_concurrent_battles_keep_distinct_team_names():
+    """Regression guard: if randomize_all_teams flips _pending_team_name
+    between battle starts, each battle keeps the team name pending at its
+    own first-request stamp moment (the actual bug we're fixing)."""
+    player = _make_player_with_pending_team("team-1")
+    player._stamp_pending_team_name("battle-A")
+    player._pending_team_name = "team-2"
+    player._stamp_pending_team_name("battle-B")
+    assert player.current_team_names == {"battle-A": "team-1", "battle-B": "team-2"}
+
+
+def test_battle_finished_evicts_team_name_entry():
+    """The per-battle dict must shrink on battle completion (prevents
+    unbounded growth across thousands of battles per worker). Popping a
+    never-stamped tag returns None instead of raising."""
+    player = _make_player_with_pending_team("team-1")
+    player._stamp_pending_team_name("battle-A")
+    name = player._pop_team_name("battle-A")
+    assert name == "team-1"
+    assert "battle-A" not in player.current_team_names
+    assert player._pop_team_name("never-stamped") is None

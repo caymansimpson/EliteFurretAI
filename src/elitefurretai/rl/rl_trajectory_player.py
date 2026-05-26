@@ -80,9 +80,6 @@ class RLTrajectoryPlayer(Player):
         becoming disabled, terastallization availability changing).
     """
 
-    # ── Change 7: stamped by WorkerOpponentFactory at battle setup ──────
-    current_team_name: Optional[str] = None
-
     def __init__(
         self,
         inference_client: InferenceClient,
@@ -120,6 +117,16 @@ class RLTrajectoryPlayer(Player):
         # those trajectories are shipped with forfeited=True and dropped from
         # opponent win-rate tracking.
         self._room_lost_battles: set[str] = set()
+
+        # Per-battle team-name tracking.
+        # _pending_team_name is set by WorkerOpponentFactory just before
+        # battle_against runs; current_team_names[battle_tag] is the
+        # immutable name stamped on the first _handle_battle_request for
+        # that tag. This avoids attributing the wrong team if
+        # randomize_all_teams flips the pending value while a previous
+        # battle's finished-callback is still in flight.
+        self._pending_team_name: Optional[str] = None
+        self.current_team_names: Dict[str, str] = {}
 
         super().__init__(accept_open_team_sheet=accept_open_team_sheet, **kwargs)
 
@@ -171,6 +178,17 @@ class RLTrajectoryPlayer(Player):
         self._reset_battle_hidden_state(battle_tag)
         return DefaultBattleOrder()
 
+    def _stamp_pending_team_name(self, battle_tag: str) -> None:
+        # Idempotent: a later randomize_all_teams must not retroactively
+        # change the recorded team for an in-flight battle.
+        if battle_tag in self.current_team_names:
+            return
+        if self._pending_team_name is not None:
+            self.current_team_names[battle_tag] = self._pending_team_name
+
+    def _pop_team_name(self, battle_tag: str) -> Optional[str]:
+        return self.current_team_names.pop(battle_tag, None)
+
     def teardown_runtime(self, timeout_s: float = 1.5) -> None:
         """Best-effort teardown of websocket listener state.
 
@@ -191,6 +209,8 @@ class RLTrajectoryPlayer(Player):
         # marked finished locally.
         if getattr(battle, "finished", False):
             return
+
+        self._stamp_pending_team_name(battle.battle_tag)
 
         request_generation = self._request_generation.get(battle.battle_tag, 0) + 1
         self._request_generation[battle.battle_tag] = request_generation
@@ -606,6 +626,7 @@ class RLTrajectoryPlayer(Player):
             self._discarded_battles.discard(battle.battle_tag)
             self.current_trajectories.pop(battle.battle_tag, None)
             self._reset_battle_hidden_state(battle.battle_tag)
+            self._pop_team_name(battle.battle_tag)
             return
 
         # If trajectory_queue is None this is an opponent-only player (we're
@@ -613,6 +634,7 @@ class RLTrajectoryPlayer(Player):
         if self.trajectory_queue is None:
             self.current_trajectories.pop(battle.battle_tag, None)
             self._reset_battle_hidden_state(battle.battle_tag)
+            self._pop_team_name(battle.battle_tag)
             return
 
         if battle.battle_tag in self.current_trajectories:
@@ -640,7 +662,7 @@ class RLTrajectoryPlayer(Player):
                     "won": battle.won,
                     "battle_length": len(filtered_traj),
                     "forfeited": forfeited,
-                    "team_name": self.current_team_name,
+                    "team_name": self._pop_team_name(battle.battle_tag),
                     "battle_format": battle.format,
                 }
             )

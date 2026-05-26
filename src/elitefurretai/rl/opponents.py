@@ -996,7 +996,7 @@ class WorkerOpponentFactory:
                 **main_kwargs,
                 **extra_player_kwargs,
             )
-            player.current_team_name = player_team_name
+            player._pending_team_name = player_team_name
             self.players.append(player)
 
             opp_team_string, opp_team_name = self.sample_team(fmt)
@@ -1014,7 +1014,7 @@ class WorkerOpponentFactory:
                 **main_kwargs,
                 **extra_player_kwargs,
             )
-            opponent.current_team_name = opp_team_name
+            opponent._pending_team_name = opp_team_name
             self.opponents.append(opponent)
 
         self.max_damage_opponents = self._make_baseline_pool(
@@ -1252,13 +1252,13 @@ class WorkerOpponentFactory:
             fmt = self.pair_formats[i]
             team_string, team_name = self.get_agent_team(fmt)
             player._team = ConstantTeambuilder(team_string)
-            player.current_team_name = team_name
+            player._pending_team_name = team_name
 
         for i, opponent in enumerate(self.opponents):
             fmt = self.pair_formats[i]
             team_string, team_name = self.sample_team(fmt)
             opponent._team = ConstantTeambuilder(team_string)
-            opponent.current_team_name = team_name
+            opponent._pending_team_name = team_name
 
         # Heuristic baselines below don't produce trajectories, so the
         # team name is discarded.
