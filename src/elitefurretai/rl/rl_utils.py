@@ -55,7 +55,7 @@ import logging
 import os
 import threading
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Hashable, List, Optional, Tuple, TypeVar
 
 import numpy as np
 import psutil
@@ -64,6 +64,8 @@ import torch
 from elitefurretai.etl.encoder import MDBO
 
 logger = logging.getLogger(__name__)
+
+K = TypeVar("K", bound=Hashable)
 
 
 def setup_logging(force: bool = False) -> None:
@@ -414,3 +416,110 @@ def collate_trajectories(trajectories, device, gamma, gae_lambda, max_seq_len=40
         "padding_mask": padding_mask.to(device, non_blocking=True),
         "masks": masks.to(device, non_blocking=True),
     }
+
+
+def adaptive_score(
+    wins: float,
+    n: float,
+    *,
+    prior_alpha: float,
+    prior_beta: float,
+    pfsp_mix: float,
+    weakness_mix: float,
+    weakness_exponent: float,
+    target_win_rate: float,
+) -> float:
+    """Blended PFSP + asymmetric weakness score from one (wins, n) pair.
+
+    PFSP component peaks at the smoothed win rate = 0.5 (most policy
+    gradient signal); weakness component grows as the smoothed win rate
+    falls below `target_win_rate`, raised to `weakness_exponent`. Both
+    components share a Beta(prior_alpha, prior_beta) smoothing of
+    `wins / n`. Returns a non-negative scalar; the caller normalizes.
+    """
+    wr = (wins + prior_alpha) / (n + prior_alpha + prior_beta)
+    pfsp = max(0.0, 1.0 - 2.0 * abs(wr - 0.5))
+    if target_win_rate > 0.0:
+        weakness_raw = max(0.0, (target_win_rate - wr) / target_win_rate)
+    else:
+        weakness_raw = 0.0
+    weakness = weakness_raw**weakness_exponent if weakness_raw > 0.0 else 0.0
+    return pfsp_mix * pfsp + weakness_mix * weakness
+
+
+def adaptive_distribution(
+    scores: Dict[K, float],
+    *,
+    base: Optional[Dict[K, float]] = None,
+    base_blend: float = 0.0,
+    floors: Optional[Dict[K, float]] = None,
+    epsilon: float = 1e-9,
+) -> Dict[K, float]:
+    """Normalize per-key scores into a distribution with optional base
+    blend and per-key floors (water-filling).
+
+    Algorithm:
+      1. If `base` and `base_blend > 0`, replace scores[k] with
+         base_blend*base[k] + (1-base_blend)*scores[k].
+      2. Normalize by sum. If sum <= epsilon, fall back to uniform.
+      3. If `floors` provided and sum(floors.values()) < 1.0, water-fill:
+         pin under-floor keys at floor[k], redistribute remaining mass
+         to unpinned keys by score share, iterate until stable.
+         If sum(floors) >= 1.0, fall back to uniform.
+    """
+    keys = list(scores.keys())
+    if not keys:
+        return {}
+
+    if base is not None and base_blend > 0.0:
+        mixed = {
+            k: (base_blend * base.get(k, 0.0)) + ((1.0 - base_blend) * scores.get(k, 0.0))
+            for k in keys
+        }
+    else:
+        mixed = dict(scores)
+
+    total = sum(mixed.values())
+    if total <= epsilon:
+        uniform = 1.0 / len(keys)
+        return {k: uniform for k in keys}
+    distribution: Dict[K, float] = {k: mixed[k] / total for k in keys}
+
+    if not floors:
+        return distribution
+
+    floor_sum = sum(floors.get(k, 0.0) for k in keys)
+    if floor_sum >= 1.0:
+        uniform = 1.0 / len(keys)
+        return {k: uniform for k in keys}
+
+    pinned: Dict[K, float] = {}
+    for _ in range(len(keys)):
+        remaining_mass = 1.0 - sum(pinned.values())
+        unpinned = [k for k in keys if k not in pinned]
+        unpinned_total = sum(mixed[k] for k in unpinned)
+        new_pin = False
+        for k in unpinned:
+            floor_k = floors.get(k, 0.0)
+            if unpinned_total <= 0.0:
+                share = remaining_mass / max(len(unpinned), 1)
+            else:
+                share = (mixed[k] / unpinned_total) * remaining_mass
+            if share < floor_k:
+                pinned[k] = floor_k
+                new_pin = True
+        if not new_pin:
+            break
+
+    out: Dict[K, float] = {}
+    remaining_mass = 1.0 - sum(pinned.values())
+    unpinned = [k for k in keys if k not in pinned]
+    unpinned_total = sum(mixed[k] for k in unpinned)
+    for k in keys:
+        if k in pinned:
+            out[k] = pinned[k]
+        elif unpinned_total <= 0.0:
+            out[k] = remaining_mass / max(len(unpinned), 1)
+        else:
+            out[k] = (mixed[k] / unpinned_total) * remaining_mass
+    return out
