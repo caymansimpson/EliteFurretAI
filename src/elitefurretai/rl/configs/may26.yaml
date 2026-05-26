@@ -1,0 +1,180 @@
+# may26.yaml — first multi-format run with FoulPlay eval enabled.
+#
+# Changes vs may25.yaml:
+#   1. battle_formats expanded to 3 (regc, regg, regh) at roughly equal
+#      weights. Per-format `agent_team_path` / `opponent_team_pool_path`
+#      in dict form because only regg has the `constrained/` curated
+#      subdir.
+#   2. vgc_bench_baseline weight set to 0. VGCBench v1 is single-format
+#      (bound to primary_format = regg here, weighted 0.33 → it'd only
+#      apply to ~1/3 of pairs and Showdown would |formaterror| the
+#      others). When multi-format VGCBench v2 lands, weight back up.
+#      Weight redistributed across self_play and ghosts.
+#   3. foulplay_eval.enabled = true with multi-format pool paths. At
+#      `n_battles_per_format=50` and 750 ms search across 3 formats,
+#      one eval pass is ~3 × 50 × 25 s ≈ 60 min wall-clock. The hook
+#      only fires inside the checkpoint block, so effective cadence is
+#      every `max(eval_every_n_updates, checkpoint_interval)` updates.
+#      Cadence here is 500 updates → ~5 eval passes per 5 GPU-hours.
+
+algorithm:
+  clip_range: 0.2
+  ent_coef: 0.005
+  ent_coef_end: 0.001
+  gae_lambda: 0.95
+  gamma: 1
+  max_grad_norm: 0.5
+  rnad_alpha: 0.3
+  ppo_epochs: 5
+  vf_coef: 0.5
+
+portfolio:
+  max_portfolio_size: 10
+  portfolio_add_interval: 50
+  portfolio_update_strategy: recent
+
+exploration:
+  temperature_start: 1.0
+  temperature_end: 0.5
+  exploration_anneal_steps: 10000
+  top_p: 0.95
+
+optimizer:
+  type: adamw
+  weight_decay: 0.0001
+  warmup_steps: 100
+  schedule: cosine
+  backbone_lr: 0.00001
+  backbone_weight_decay: 0.0001
+  heads_lr: 0.00003
+  heads_weight_decay: 0.0
+  lr: 0.00001
+
+value_head:
+  num_value_bins: 51
+  value_min: -1.0
+  value_max: 1.0
+  value_label_smoothing: 0.05
+
+architecture:
+  value_to_trunk_grad_scale: 0.15
+  transformer_layers: 4
+  transformer_heads: 8
+  transformer_ff_dim: 2048
+  transformer_dropout: 0.1
+  early_layers: [1024, 512, 512]
+  late_layers: [512, 512]
+  dropout: 0.2
+  early_attention_heads: 16
+  late_attention_heads: 32
+  grouped_encoder_hidden_dim: 256
+  grouped_encoder_aggregated_dim: 2048
+  pokemon_attention_heads: 8
+  teampreview_head_layers: [256, 128]
+  teampreview_head_dropout: 0.15
+  teampreview_attention_heads: 2
+  turn_head_layers: [512, 256, 256]
+  value_head_layers: [512, 512, 256]
+  max_seq_len: 40
+  number_bank_hp_bins: 100
+  number_bank_stat_bins: 600
+  number_bank_power_bins: 250
+  number_bank_embedding_dim: 16
+
+hardware:
+  batch_size: 32
+  batch_timeout: 0.005
+  device: cuda
+  max_battle_steps: 30
+  num_battles_per_pair: 48
+  max_concurrent_battles_per_player: 48
+  num_players: 16
+  num_servers: 4
+  num_workers: 4
+  showdown_start_port: 8000
+  compile_inference_model: default
+
+curriculum:
+  # 34/33/33 mix. regc is primary (highest weight) — VGCBench would
+  # have been bound to regc if its weight were >0.
+  battle_formats:
+    gen9vgc2023regc: 0.34
+    gen9vgc2024regg: 0.33
+    gen9vgc2024regh: 0.33
+  base_team_path: data/teams
+  # Per-format pool paths. Only regg has a `constrained/` subdir; regc
+  # and regh sample from a single curated subdir / the whole format
+  # directory respectively.
+  opponent_team_pool_path:
+    gen9vgc2023regc: straightforward   # 1 team in this subdir
+    gen9vgc2024regg: constrained       # 41 teams
+    gen9vgc2024regh: null              # null = sample from whole format dir (184 teams)
+  agent_team_path:
+    gen9vgc2023regc: straightforward
+    gen9vgc2024regg: constrained
+    gen9vgc2024regh: ""                # empty string = format root directory
+  bc_model_path: data/models/supervised/rose-sun-108_best.pt
+  # vgc_bench_baseline → 0 for multi-format (single-format-bound bot).
+  # Its 0.05 weight is split 0.03 → self_play, 0.02 → ghosts.
+  curriculum_weights:
+    self_play: 0.59
+    bc_player: 0.03
+    exploiters: 0
+    ghosts: 0.32
+    max_damage: 0.03
+    random_baseline: 0
+    max_base_power_baseline: 0
+    simple_heuristic_baseline: 0.03
+    vgc_bench_baseline: 0
+    train_exploiter: 0
+  adaptive_curriculum: false
+  max_exploiter_models: 5
+  max_ghosts: 5
+  vgc_bench_checkpoint_path: data/models/vgc-bench-sb3-model.zip
+  external_vgcbench_python_executable: /home/cayman/Repositories/venv-vgcbench/bin/python
+  external_vgcbench_team_file: data/teams/gen9vgc2024regg/vgcbench.txt
+
+training:
+  embedder_feature_set: raw
+  initialize_path: data/models/supervised/rose-sun-108_best.pt
+  resume_from: null
+  max_updates: 100000
+  save_dir: data/models/rl
+  train_batch_size: 128
+  checkpoint_interval: 100
+  log_interval: 1
+  use_wandb: true
+  wandb_project: elitefurretai-instruct
+  wandb_run_name: null
+  memory_watchdog_threshold_gb: 20.0
+
+exploiter:
+  batch_size: 64
+  graduation_threshold: 0.65
+  graduation_window: 1000
+  max_updates_per_generation: 5000
+  victim_refresh_interval: 1000
+  warmup_updates: 200
+  lr: 0.0001
+  ent_coef: 0.02
+
+foulplay_eval:
+  # ENABLED for this multi-format run. Wall-clock cost: at
+  # 750 ms search × ~30 turns × 50 battles × 3 formats ≈ 60 min
+  # per eval pass. Effective cadence is the LCM of checkpoint_interval
+  # (100) and eval_every_n_updates (500) — so a pass every 500 updates.
+  # See planning/stage2/2026-05-25-23-37-foulplay-eval-scope-confirmed.md.
+  enabled: true
+  eval_every_n_updates: 500
+  n_battles_per_format: 50
+  search_time_ms: 750
+  parallelism: 4
+  python_executable: /home/cayman/Repositories/venv-foulplay/bin/python
+  # Explicit per-format pools (required because regh's
+  # opponent_team_pool_path is null, which the auto-fallback can't
+  # use — _resolve_foulplay_team_pool raises if both are unset).
+  foulplay_team_pool_paths:
+    gen9vgc2023regc: data/teams/gen9vgc2023regc/straightforward
+    gen9vgc2024regg: data/teams/gen9vgc2024regg/constrained
+    gen9vgc2024regh: data/teams/gen9vgc2024regh
+  model_probabilistic: false
