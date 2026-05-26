@@ -109,6 +109,11 @@ def _ensure_team_pool_visible(foulplay_root: Path, team_list_dir: str) -> str:
 async def _run(args: argparse.Namespace) -> None:
     _wait_for_server(args.server, args.wait_for_server_timeout)
 
+    # Resolve --team-list-dir to absolute BEFORE chdir — once cwd
+    # moves to foul-play-doubles, relative paths from the parent
+    # process can't be recovered.
+    team_list_dir_abs = str(Path(args.team_list_dir).resolve())
+
     # Switch cwd into foul-play-doubles before importing it — FoulPlay
     # uses package-relative imports that assume cwd is the repo root.
     foulplay_root = _resolve_foulplay_root()
@@ -125,7 +130,7 @@ async def _run(args: argparse.Namespace) -> None:
     from teams import load_team  # type: ignore
 
     # Make the EFA team pool reachable from load_team() — see helper.
-    team_basename = _ensure_team_pool_visible(foulplay_root, args.team_list_dir)
+    team_basename = _ensure_team_pool_visible(foulplay_root, team_list_dir_abs)
 
     # Populate the singleton-style FoulPlayConfig before init_logging
     # and apply_mods read its fields.

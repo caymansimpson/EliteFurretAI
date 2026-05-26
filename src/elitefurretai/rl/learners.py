@@ -902,18 +902,30 @@ def load_model_from_checkpoint(
     device: str,
     embedder: Optional[Embedder] = None,
 ) -> Tuple[TransformerThreeHeadedModel, Embedder, Dict[str, Any]]:
-    """Load a model + embedder from a checkpoint file. Returns (model, embedder, config_dict)."""
+    """Load a model + embedder from a checkpoint file. Returns (model, embedder, config_dict).
+
+    Accepts both RL and supervised checkpoints. RL checkpoints serialize a
+    nested ``RNaDConfig`` (``config[curriculum][battle_formats]`` etc.);
+    supervised checkpoints serialize a flat dict where ``battle_format``
+    (singular) is a top-level string and ``embedder_feature_set`` is a
+    top-level key. We detect the shape and pull the embedder-construction
+    inputs from the right place.
+    """
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     config_dict = checkpoint["config"]
     state_dict = checkpoint["model_state_dict"]
 
     if embedder is None:
-        cfg = RNaDConfig.from_dict(config_dict)
-        embedder = Embedder(
-            gen=cfg.curriculum.gen,
-            feature_set=cfg.training.embedder_feature_set,
-            omniscient=False,
-        )
+        nested = isinstance(config_dict.get("curriculum"), dict)
+        if nested:
+            cfg = RNaDConfig.from_dict(config_dict)
+            gen = cfg.curriculum.gen
+            feature_set = cfg.training.embedder_feature_set
+        else:
+            battle_format = config_dict.get("battle_format", "gen9vgc2023regc")
+            gen = int(battle_format[3])
+            feature_set = config_dict.get("embedder_feature_set", "raw")
+        embedder = Embedder(gen=gen, feature_set=feature_set, omniscient=False)
 
     model = build_model_from_config(config_dict, embedder, device, state_dict)
     return model, embedder, config_dict
