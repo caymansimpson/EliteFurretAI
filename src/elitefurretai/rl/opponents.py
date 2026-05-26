@@ -355,6 +355,8 @@ class OpponentPool:
         won: bool,
         battle_length: int = 0,
         forfeited: bool = False,
+        battle_format: Optional[str] = None,
+        team_name: Optional[str] = None,
     ) -> None:
         win_value = 1.0 if won else 0.0
         self.win_rates[opponent_type].append(win_value)
@@ -366,6 +368,22 @@ class OpponentPool:
         self.total_battles_tracked += 1
         if forfeited:
             self.total_forfeits_tracked += 1
+
+        # ── Change 7: per-(format, team) EWMA update ─────────────────────
+        if (
+            self.team_axis_enabled
+            and battle_format is not None
+            and team_name is not None
+            and not forfeited
+            and battle_format in self.team_win_rates
+            and team_name in self.team_win_rates[battle_format]
+        ):
+            decay = 0.5 ** (1.0 / max(self._team_axis_half_life, 1e-9))
+            prev_wins, prev_n = self.team_win_rates[battle_format][team_name]
+            new_wins = prev_wins * decay + (1.0 if won else 0.0)
+            new_n = prev_n * decay + 1.0
+            self.team_win_rates[battle_format][team_name] = (new_wins, new_n)
+            self.team_sample_counts[battle_format][team_name] += 1
 
     def get_win_rate_stats(self, window: int = 100) -> Dict[str, float]:
         stats: Dict[str, float] = {}

@@ -127,3 +127,89 @@ def test_opponent_pool_initializes_per_format_team_state(tmp_path):
     # Warm flag starts False for every format.
     for fmt in pool.known_teams:
         assert pool._team_axis_warm.get(fmt, False) is False
+
+
+def test_record_battle_result_per_format_team_routes_correctly(tmp_path):
+    """Per-(format, team) EWMA updates route correctly; other cells untouched."""
+    pool = _make_opponent_pool(tmp_path, half_life=1e9)  # ~no decay
+
+    # 10 wins, 10 losses on (gen9vgc2024regg, alpha).
+    for _ in range(10):
+        pool.record_battle_result(
+            opponent_type="self_play",
+            won=True,
+            battle_length=10,
+            forfeited=False,
+            battle_format="gen9vgc2024regg",
+            team_name="alpha",
+        )
+    for _ in range(10):
+        pool.record_battle_result(
+            opponent_type="self_play",
+            won=False,
+            battle_length=10,
+            forfeited=False,
+            battle_format="gen9vgc2024regg",
+            team_name="alpha",
+        )
+
+    wins, n = pool.team_win_rates["gen9vgc2024regg"]["alpha"]
+    assert abs(n - 20.0) < 1e-6
+    assert abs(wins / n - 0.5) < 1e-6
+    assert pool.team_sample_counts["gen9vgc2024regg"]["alpha"] == 20
+
+    # Other (format, team) cells untouched.
+    assert pool.team_win_rates["gen9vgc2024regg"]["beta"] == (0.0, 0.0)
+    assert pool.team_win_rates["gen9vgc2023regc"]["alpha"] == (0.0, 0.0)
+    assert pool.team_sample_counts["gen9vgc2024regg"]["beta"] == 0
+    assert pool.team_sample_counts["gen9vgc2023regc"]["alpha"] == 0
+
+
+def test_record_battle_result_forfeit_skips_team_update(tmp_path):
+    """Forfeits do not update the per-team EWMA or the sample count."""
+    pool = _make_opponent_pool(tmp_path, half_life=1e9)
+
+    for _ in range(5):
+        pool.record_battle_result(
+            opponent_type="self_play",
+            won=True,
+            battle_length=10,
+            forfeited=False,
+            battle_format="gen9vgc2024regg",
+            team_name="alpha",
+        )
+    for _ in range(5):
+        pool.record_battle_result(
+            opponent_type="self_play",
+            won=False,
+            battle_length=10,
+            forfeited=True,
+            battle_format="gen9vgc2024regg",
+            team_name="alpha",
+        )
+
+    wins, n = pool.team_win_rates["gen9vgc2024regg"]["alpha"]
+    assert abs(n - 5.0) < 1e-6
+    assert abs(wins - 5.0) < 1e-6
+    assert pool.team_sample_counts["gen9vgc2024regg"]["alpha"] == 5
+
+
+def test_record_battle_result_no_team_args_is_noop_for_team_state(tmp_path):
+    """Calls without battle_format / team_name don't touch team state.
+
+    Preserves the existing record_battle_result contract for opponent-
+    type-only tracking paths that haven't migrated yet.
+    """
+    pool = _make_opponent_pool(tmp_path)
+
+    pool.record_battle_result(
+        opponent_type="self_play",
+        won=True,
+        battle_length=10,
+        forfeited=False,
+    )
+
+    for fmt, teams in pool.known_teams.items():
+        for t in teams:
+            assert pool.team_win_rates[fmt][t] == (0.0, 0.0)
+            assert pool.team_sample_counts[fmt][t] == 0
