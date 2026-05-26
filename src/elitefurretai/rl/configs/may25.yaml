@@ -1,0 +1,201 @@
+# may25.yaml — fork of may16 with two evaluation-driven knob changes informed
+# by MODEL_EVALUATION.md (balmy-cloud-70 step 10700 full eval).
+#
+# Changes vs may16.yaml:
+#   1. architecture.transformer_ff_dim: 1024 → 2048
+#      Adopt the conventional 4× ff_dim / d_model ratio at d_model=512.
+#      may16's 2× ratio left the per-layer FFN starved relative to attention
+#      capacity. Cheap (~+4M params); no cascade through hidden_size, so
+#      cool-bee-85-finetune BC partial-load is unaffected on the encoder /
+#      transformer / heads tensors that don't depend on ff_dim. The new ff
+#      weights are fresh-initialized on partial load (strict=False).
+#   2. value_head.value_label_smoothing: 0.0 → 0.05
+#      Targets MODEL_EVALUATION.md Priority 2 (ECE = 5.69%, value head
+#      systematically over-confident at predicted ≥ 0.3). Mixes a small
+#      uniform component into the twohot C51 target before cross-entropy:
+#          smoothed = (1 - ε) · twohot + ε / num_value_bins
+#      No new params; pure training-objective change. Implemented in
+#      learners.py `_compute_main_player_loss`.
+#
+# This file is otherwise byte-identical to may16.yaml.
+
+algorithm:
+  clip_range: 0.2
+  ent_coef: 0.005
+  ent_coef_end: 0.001
+  gae_lambda: 0.95
+  gamma: 1
+  max_grad_norm: 0.5
+  rnad_alpha: 0.3
+  ppo_epochs: 5
+  vf_coef: 0.5
+
+portfolio:
+  max_portfolio_size: 10
+  portfolio_add_interval: 50
+  portfolio_update_strategy: recent
+
+exploration:
+  temperature_start: 1.0
+  temperature_end: 0.5
+  exploration_anneal_steps: 10000
+  top_p: 0.95
+
+optimizer:
+  type: adamw
+  weight_decay: 0.0001
+  warmup_steps: 100
+  schedule: cosine
+  backbone_lr: 0.00001
+  backbone_weight_decay: 0.0001
+  heads_lr: 0.00003
+  heads_weight_decay: 0.0
+  lr: 0.00001
+
+value_head:
+  num_value_bins: 51
+  value_min: -1.0
+  value_max: 1.0
+  # 2026-05-22: mild label smoothing on the C51 twohot target to address
+  # the over-confidence in upper-half predicted bins surfaced in
+  # MODEL_EVALUATION.md (ECE = 5.69%). 0.05 = 5% of probability mass
+  # spread uniformly across the 51 bins, 95% on the original twohot.
+  value_label_smoothing: 0.05
+
+architecture:
+  # 2026-05-16: value-trunk grad-scale fix for trunk hijacking diagnosed in
+  # hopeful-wood-69 (5–21× gradient-dominance ratio across 959 updates).
+  # 0.15 = middle of recommended 0.1–0.2; tune downward if ratio still >2×.
+  # Forward-identity; affects backward only.
+  value_to_trunk_grad_scale: 0.15
+  # Trunk: matches cool-bee-85-finetune for clean BC partial-load.
+  transformer_layers: 4
+  transformer_heads: 8
+  # 2026-05-22: bumped 1024 → 2048 for conventional 4× ff_dim / d_model ratio.
+  # See file header for rationale.
+  transformer_ff_dim: 2048
+  transformer_dropout: 0.1
+  # Encoder
+  early_layers: [1024, 512, 512]
+  late_layers: [512, 512]
+  dropout: 0.2
+  early_attention_heads: 16
+  late_attention_heads: 32
+  grouped_encoder_hidden_dim: 256
+  grouped_encoder_aggregated_dim: 2048
+  pokemon_attention_heads: 8
+  # Decision heads — sizes match sep_arch (kept at [512, ...] / [256, ...]
+  # for BC partial-load compatibility; deepening to [768, ...] was reverted
+  # because strict=False can't span size mismatches on shared keys).
+  teampreview_head_layers: [256, 128]
+  teampreview_head_dropout: 0.15
+  teampreview_attention_heads: 2
+  turn_head_layers: [512, 256, 256]
+  # Deep value head: 3 ResidualBlocks between late_ff_stack output and
+  # the final Linear projection to num_value_bins. Gives the value head
+  # integrative depth so return-prediction work happens after the trunk
+  # rather than inside it. The legacy 2-layer win_head from BC won't
+  # strict-load and is fresh-initialized.
+  value_head_layers: [512, 512, 256]
+  max_seq_len: 40
+  # Number bank embeddings
+  number_bank_hp_bins: 100
+  number_bank_stat_bins: 600
+  number_bank_power_bins: 250
+  number_bank_embedding_dim: 16
+
+hardware:
+  batch_size: 32
+  batch_timeout: 0.005
+  device: cuda
+  max_battle_steps: 30
+  num_battles_per_pair: 48
+  max_concurrent_battles_per_player: 48
+  num_players: 16
+  num_servers: 4
+  num_workers: 4
+  showdown_start_port: 8000
+  compile_inference_model: default
+
+curriculum:
+  battle_formats:
+    gen9vgc2024regg: 1.0
+  base_team_path: data/teams
+  opponent_team_pool_path: constrained
+  agent_team_path: constrained
+  bc_model_path: data/models/supervised/rose-sun-108_best.pt
+  curriculum_weights:
+    self_play: 0.56
+    bc_player: 0.03
+    exploiters: 0
+    ghosts: 0.3
+    max_damage: 0.03
+    random_baseline: 0
+    max_base_power_baseline: 0
+    simple_heuristic_baseline: 0.03
+    vgc_bench_baseline: 0.05
+    train_exploiter: 0
+  adaptive_curriculum: false
+  max_exploiter_models: 5
+  max_ghosts: 5
+  vgc_bench_checkpoint_path: data/models/vgc-bench-sb3-model.zip
+  external_vgcbench_python_executable: /home/cayman/Repositories/venv-vgcbench/bin/python
+  external_vgcbench_team_file: data/teams/gen9vgc2024regg/vgcbench.txt
+
+training:
+  embedder_feature_set: raw
+  # BC partial-load: trunk/encoder/policy head load from cool-bee-85; the
+  # new value_ff_stack + reshaped win_head are fresh-initialized. Strict
+  # load is bypassed in train.py's initialize_path branch.
+  initialize_path: data/models/supervised/rose-sun-108_best.pt
+  # Fresh run — no resume. Per-run-dir behavior (train.py:1106-1149) means
+  # checkpoints will be written under data/models/rl/<wandb_run_name>/
+  # from step 0.
+  resume_from: null
+  max_updates: 100000
+  save_dir: data/models/rl
+  train_batch_size: 128
+  checkpoint_interval: 100
+  log_interval: 1
+  use_wandb: true
+  wandb_project: elitefurretai-instruct
+  wandb_run_name: null
+  # 2026-05-16: watchdog now measures combined *Pss* (proportional set
+  # size) instead of summed RSS — see train.py:_sum_process_tree_rss_bytes
+  # for why. Pss splits shared library pages across sharers, so the value
+  # equals physical RAM actually held. Empirical baseline from a may15-
+  # profile snapshot (4 showdown + 4 vgcbench + 4 workers + frozen
+  # subprocess + ~20 inductor compile workers): combined Pss = 14.2 GB.
+  # With vgcbench cut to 1 runner (showdown_server_manager.VGCBENCH_RUNNER_SERVER_INDEX),
+  # expected baseline drops to ~11 GB. 20 GB threshold gives ~9 GB headroom
+  # over baseline for transient compile peaks and ghost rotation.
+  memory_watchdog_threshold_gb: 20.0
+
+exploiter:
+  batch_size: 64
+  graduation_threshold: 0.65
+  graduation_window: 1000
+  max_updates_per_generation: 5000
+  victim_refresh_interval: 1000
+  warmup_updates: 200
+  lr: 0.0001
+  ent_coef: 0.02
+
+foulplay_eval:
+  # Disabled by default. Enable per-run to add a search-bot ground-truth
+  # eval signal against foul-play-doubles (top-100 search bot). Each
+  # eval pass pauses training for ~30–60 min at production cadence
+  # (n_battles_per_format=100, search_time_ms=750). FoulPlay's 8-core
+  # search saturates the machine so concurrent battles aren't viable.
+  # Setup: see RL.md "FoulPlay eval setup" section.
+  # Design: planning/stage2/2026-05-25-23-37-foulplay-eval-scope-confirmed.md.
+  enabled: false
+  eval_every_n_updates: 50
+  n_battles_per_format: 100
+  search_time_ms: 750
+  parallelism: 4
+  python_executable: /home/cayman/Repositories/venv-foulplay/bin/python
+  # When null, defaults to opponent_team_pool_paths[fmt] for each format.
+  # Override to give FoulPlay a separate eval team set.
+  foulplay_team_pool_paths: null
+  model_probabilistic: false

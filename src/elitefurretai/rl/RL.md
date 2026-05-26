@@ -385,6 +385,64 @@ python src/elitefurretai/agents/_vgcbench_subprocess.py \
 
 Usernames are class constants on `VGCBenchManager.USERNAMES` (`["VGCBENCH"]`).
 
+### FoulPlay: Periodic Ground-Truth Eval Opponent
+
+`foul-play-doubles` is a search-based bot (top-100 in human ladder play) we use as a ground-truth eval signal at checkpoint cadence — NOT as a curriculum opponent. The constraint: FoulPlay's search uses 8 cores at ~750 ms/move, which saturates the machine. Curriculum integration would serialize the entire training loop around its search; throughput math doesn't close. So FoulPlay sits in eval-only territory: every `eval_every_n_updates`, the trainer pauses, runs N battles per active format against FoulPlay, and logs win-rate to wandb.
+
+Like VGCBench, FoulPlay is isolated in its own venv (`../venv-foulplay/`) because it depends on `poke-engine-doubles` (a Rust extension) and an older `poke_env`. The same Showdown-as-protocol trick keeps the two Python worlds from colliding. From the trainer side, [`analyze/foulplay_eval.py`](analyze/foulplay_eval.py) iterates `CurriculumConfig.battle_formats` and runs one self-contained cycle per format via the existing `kind="external"` flow ([`launch_external_player`](analyze/player_factory.py) dispatches to `_launch_foulplay_subprocess`). Trajectory parquet + gzipped replays land in the same place as every other eval — so if FoulPlay BC or distillation ever becomes worth doing, the data is on disk for free.
+
+Design and scoping rationale: [`planning/stage2/2026-05-25-23-37-foulplay-eval-scope-confirmed.md`](../../../planning/stage2/2026-05-25-23-37-foulplay-eval-scope-confirmed.md). FoulPlay is currently an informational signal, not a Stage II graduation requirement.
+
+#### One-time setup
+
+```bash
+# 1. Rust toolchain (poke-engine-doubles builds via cargo on first install).
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source $HOME/.cargo/env
+
+# 2. Create the venv and install dependencies.
+python3 -m venv ../venv-foulplay
+../venv-foulplay/bin/pip install --upgrade pip
+git clone https://github.com/pmariglia/foul-play-doubles ../foul-play-doubles
+../venv-foulplay/bin/pip install -v -r ../foul-play-doubles/requirements.txt
+
+# 3. Make EFA's team pool visible to FoulPlay's load_team(). FoulPlay
+#    looks under foul-play-doubles/teams/<format>/. Symlink the EFA pool:
+mkdir -p ../foul-play-doubles/teams/gen9vgc2024regg
+ln -sft ../foul-play-doubles/teams/gen9vgc2024regg \
+    "$(pwd)/data/teams/gen9vgc2024regg/constrained/"*.txt
+
+# 4. Sanity check.
+../venv-foulplay/bin/python -c "import fp.run_battle, poke_engine; print('foulplay ok')"
+```
+
+#### Inline during training
+
+```yaml
+foulplay_eval:
+  enabled: true
+  eval_every_n_updates: 50
+  n_battles_per_format: 100
+  search_time_ms: 750
+  python_executable: /home/cayman/Repositories/venv-foulplay/bin/python
+  # foulplay_team_pool_paths: null → falls back to opponent_team_pool_paths[fmt].
+```
+
+Each eval pass pauses training for `n_battles_per_format * |active formats|` battles at full search (~30–60 min for 1 format, 100 battles). Per-format and weight-averaged `eval/foulplay/*` metrics land on wandb. Eval failures are caught and logged — they do not kill training.
+
+#### Manual eval (CLI)
+
+```bash
+source ../venv/bin/activate
+python -m elitefurretai.rl.analyze.foulplay_eval \
+    --checkpoint data/models/rl/<run>/main_model_step_500.pt \
+    --battle-formats gen9vgc2024regg:1.0 \
+    --n-battles-per-format 50 \
+    --python-executable /home/cayman/Repositories/venv-foulplay/bin/python \
+    --foulplay-team-pool data/teams/gen9vgc2024regg/constrained \
+    --launch-servers
+```
+
 ---
 
 ## 6. Model Architecture & Config
