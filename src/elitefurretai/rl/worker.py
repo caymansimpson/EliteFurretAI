@@ -298,7 +298,17 @@ def mp_worker_process(
                                     continue
                                 new_curriculum = payload.get("curriculum")
                                 if isinstance(new_curriculum, dict):
-                                    env.update_curriculum(new_curriculum)
+                                    # Change 7: forward team_distribution_by_format
+                                    # alongside curriculum so workers transition
+                                    # atomically. Key is absent on broadcasts that
+                                    # don't recompute team distribution; pass None
+                                    # in that case (factory retains existing state).
+                                    env.update_curriculum(
+                                        new_curriculum,
+                                        team_distribution_by_format=payload.get(
+                                            "team_distribution_by_format"
+                                        ),
+                                    )
                                 env.update_sampling(
                                     temperature=payload.get("temperature"),
                                     top_p=payload.get("top_p"),

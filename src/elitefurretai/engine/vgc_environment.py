@@ -96,9 +96,23 @@ class VGCEnvironment:
     def update_curriculum(
         self,
         curriculum: Dict[str, float],
+        team_distribution_by_format: Optional[
+            Dict[str, Optional[Dict[str, float]]]
+        ] = None,
     ) -> None:
-        """Update opponent sampling distribution."""
-        self._backend.update_curriculum(curriculum)
+        """Update opponent sampling distribution and (optionally) the
+        per-format team-axis distribution (Change 7).
+
+        team_distribution_by_format: per-format biased team-sampling
+            weights from the trainer broadcast. ``None`` means "no update
+            this tick" (existing factory state retained); a dict means
+            "apply these" — values may themselves be ``None`` for formats
+            still in warm-up, which the factory falls back to uniform for.
+        """
+        self._backend.update_curriculum(
+            curriculum,
+            team_distribution_by_format=team_distribution_by_format,
+        )
 
     def update_sampling(
         self, temperature: Optional[float], top_p: Optional[float]
@@ -295,8 +309,14 @@ class _ShowdownBackend:
     def update_curriculum(
         self,
         curriculum: Dict[str, float],
+        team_distribution_by_format: Optional[
+            Dict[str, Optional[Dict[str, float]]]
+        ] = None,
     ) -> None:
-        self._factory.update_curriculum(curriculum)
+        self._factory.update_curriculum(
+            curriculum,
+            team_distribution_by_format=team_distribution_by_format,
+        )
 
     def update_sampling(
         self, temperature: Optional[float], top_p: Optional[float]

@@ -504,3 +504,35 @@ def test_factory_stamps_current_team_name_via_sample_team(tmp_path):
     p = _MockPlayer()
     p.current_team_name = team_name
     assert p.current_team_name in {"alpha", "beta"}
+
+
+def test_train_passes_team_args_to_record_battle_result(tmp_path):
+    """train.py's trajectory-ingest loop passes battle_format and team_name to record_battle_result.
+
+    Indirect test: synthesize a trajectory dict with the new fields,
+    call OpponentPool.record_battle_result with the same kwargs the
+    train.py code path will pass, and verify the side effect lands.
+    This catches keyword typos and ensures the wiring stays in sync
+    if record_battle_result's signature evolves.
+    """
+    pool = _make_opponent_pool(tmp_path, half_life=1e9)
+
+    fake_traj = {
+        "steps": [],
+        "opponent_type": "self_play",
+        "won": True,
+        "battle_length": 7,
+        "forfeited": False,
+        "team_name": "alpha",
+        "battle_format": "gen9vgc2024regg",
+    }
+    # This is the call shape train.py uses (see Step 9.3 below).
+    pool.record_battle_result(
+        opponent_type=fake_traj["opponent_type"],
+        won=fake_traj["won"],
+        battle_length=fake_traj["battle_length"],
+        forfeited=fake_traj["forfeited"],
+        battle_format=fake_traj["battle_format"],
+        team_name=fake_traj["team_name"],
+    )
+    assert pool.team_sample_counts["gen9vgc2024regg"]["alpha"] == 1

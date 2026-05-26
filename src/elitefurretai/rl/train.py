@@ -77,7 +77,7 @@ from elitefurretai.engine.showdown_server_manager import (
     launch_showdown_servers,
     shutdown_showdown_servers,
 )
-from elitefurretai.etl import Embedder
+from elitefurretai.etl import Embedder, TeamRepo
 from elitefurretai.etl.system_utils import (
     configure_torch_multiprocessing,
     suppress_third_party_warnings,
@@ -461,6 +461,7 @@ def broadcast_weights_to_workers(
     control_queues: List[MPQueue],
     exploiter_state: ExploiterPipelineState,
     exploiter_pipeline_on: bool,
+    team_distribution_by_format: Optional[Dict[str, Optional[Dict[str, float]]]] = None,
 ) -> None:
     """Sync new weights into the inference services and broadcast a control payload.
 
@@ -532,6 +533,11 @@ def broadcast_weights_to_workers(
         "active_ghost_slots": sorted(opponent_pool.active_ghost_slots()),
         "active_exploiter_slots": sorted(opponent_pool.active_exploiter_slots()),
     }
+    # Change 7: bundle per-format biased team distribution alongside the
+    # curriculum so workers transition atomically. Absent when caller
+    # did not supply one (e.g. checkpoint paths that don't recompute).
+    if team_distribution_by_format is not None:
+        control_payload["team_distribution_by_format"] = team_distribution_by_format
     for i, q in enumerate(control_queues):
         try:
             # Keep-at-most-latest semantics prevents workers from replaying
@@ -739,6 +745,11 @@ def main():
             active_curriculum,
             resume_curriculum,
         )
+    # Trainer-side TeamRepo: OpponentPool enumerates known team names per
+    # format at init for the team-axis adaptive curriculum (Change 7).
+    # Workers construct their own TeamRepo in worker.py.
+    team_repo = TeamRepo(config.curriculum.base_team_path)
+    opponent_team_subdirectories = config.curriculum.resolved_opponent_team_pool_paths()
     opponent_pool = OpponentPool(
         bc_model_path=config.curriculum.bc_model_path,
         exploiter_models_dir=os.path.join(run_dir, "exploiters"),
@@ -746,6 +757,16 @@ def main():
         max_ghosts=config.curriculum.max_ghosts,
         max_exploiter_models=config.curriculum.max_exploiter_models,
         curriculum=active_curriculum,
+        team_repo=team_repo,
+        battle_formats=dict(config.curriculum.battle_formats),
+        opponent_team_subdirectories=opponent_team_subdirectories,
+        team_axis_enabled=config.curriculum.team_axis_enabled,
+        team_warmup_threshold=config.curriculum.team_warmup_threshold,
+        team_per_team_floor=config.curriculum.team_per_team_floor,
+        # Change 7 default; Changes 4 & 5 will replace with
+        # config.curriculum.{half_life,pfsp_exponent}.
+        half_life=50.0,
+        pfsp_exponent=1.0,
     )
 
     # ── Initialize the exploiter co-training pipeline ──
@@ -938,6 +959,10 @@ def main():
                     won=traj["won"],
                     battle_length=traj["battle_length"],
                     forfeited=traj["forfeited"],
+                    # Change 7: per-(format, team) EWMA. .get() is defensive
+                    # — trajectories from before Task 6 lack these keys.
+                    battle_format=traj.get("battle_format"),
+                    team_name=traj.get("team_name"),
                 )
 
                 # Route by opponent_type. The exploiter learner only consumes
@@ -1109,6 +1134,13 @@ def main():
                     if config.curriculum.adaptive_curriculum:
                         opponent_pool.update_curriculum()
 
+                    # Change 7: recompute per-format team distribution at
+                    # the same cadence so workers receive a consistent
+                    # (curriculum, team_distribution_by_format) snapshot.
+                    # Always called — disabled-path returns {fmt: None for
+                    # fmt in formats} which the worker forwards verbatim.
+                    team_distribution_by_format = opponent_pool.update_team_distribution()
+
                     # Broadcast all new model weights to workers
                     broadcast_weights_to_workers(
                         config=config,
@@ -1121,6 +1153,7 @@ def main():
                         control_queues=control_queues,
                         exploiter_state=exploiter_state,
                         exploiter_pipeline_on=exploiter_pipeline_on,
+                        team_distribution_by_format=team_distribution_by_format,
                     )
 
                 # ===== VICTIM REFRESH =====
