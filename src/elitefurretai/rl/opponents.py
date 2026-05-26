@@ -429,7 +429,7 @@ class OpponentPool:
 
         # ── Change 7: per-(format, team) EWMA update ─────────────────────
         if (
-            self.team_axis_enabled
+            self.adaptive_team_axis.enabled
             and battle_format is not None
             and team_name is not None
             and not forfeited
@@ -488,75 +488,51 @@ class OpponentPool:
 
         return metrics
 
-    # TODO: revisit
     def update_curriculum(self):
-        """Adapt curriculum weights from recent matchup performance.
+        """Adapt agent-axis curriculum weights using the shared
+        adaptive primitive (`rl_utils.adaptive_distribution`).
 
-        Hybrid strategy:
-        - PFSP score favors opponents near 50/50 win rate (high learning signal)
-        - Weakness score upweights hard opponents where main model underperforms
-        - Availability gating prevents sampling unsupported opponent types
-        - Anchor floors preserve self-play/BC/ghost exposure to reduce forgetting
-        - Bayesian smoothing + sample gating reduce noisy swings under high-variance battles
+        See `AdaptiveAxisConfig.agent_axis_defaults` for the parameter
+        choices that reproduce the pre-unification behavior. The only
+        substantive change from the legacy code path is that smoothing
+        now uses EWMA (configured by `half_life`) instead of a fixed
+        sliding window; for a stationary signal the long-run estimate
+        is unchanged.
         """
+        from elitefurretai.rl.rl_utils import adaptive_distribution, adaptive_score
 
-        # Refresh checkpoint-backed pools before scoring availability.
         self._load_exploiter_models()
         self._load_ghosts()
+
+        cfg = self.adaptive_agent_axis
+        if not cfg.enabled:
+            return
+
         base = self.curriculum.copy()
 
-        # Blend factor between PFSP (learn near decision boundary) and weakness targeting.
-        pfsp_mix = 0.70
-        weakness_mix = 0.30
-
-        # Weakness objective: push more games toward opponents where we underperform.
-        target_win_rate = 0.55
-
-        # Numerical floor to avoid exact zeros in intermediate score math.
-        epsilon = 1e-2
-
-        # Ignore tiny sample windows to avoid adapting to variance noise.
-        min_samples = 40
-
-        # Beta prior parameters for smoothed win-rate estimate.
-        # Equivalent pseudo-counts make small-n win rates less extreme.
-        prior_alpha = 8.0
-        prior_beta = 8.0
-
-        # Step 1: build per-opponent candidate learning scores.
-        candidate_scores: Dict[str, float] = {}
+        scores: Dict[str, float] = {}
         for opp_type, base_weight in base.items():
-            # Skip unsupported opponents (e.g., no ghost/exploiter checkpoints loaded).
             if not self._opponent_available(opp_type):
-                candidate_scores[opp_type] = 0.0
+                scores[opp_type] = 0.0
                 continue
-
-            samples = len(self.win_rate_tracking.get(opp_type, []))
-            # With insufficient data, retain prior curriculum preference.
-            if samples < min_samples:
-                candidate_scores[opp_type] = max(base_weight, epsilon)
+            wins, n = self.agent_win_rates.get(opp_type, (0.0, 0.0))
+            if n < cfg.min_samples:
+                scores[opp_type] = max(base_weight, 1e-2)
                 continue
-
-            # Step 1a: Bayesian-smoothed win rate (wins+alpha)/(n+alpha+beta).
-            recent_results = self.win_rate_tracking.get(opp_type, deque())
-            wins = float(sum(recent_results))
-            losses = float(samples) - wins
-            win_rate = (wins + prior_alpha) / (wins + losses + prior_alpha + prior_beta)
-
-            # Step 1b: PFSP favors ~50/50 opponents where policy gradients are most useful.
-            pfsp_score = max(0.0, 1.0 - (2.0 * abs(win_rate - 0.5)))
-
-            # Step 1c: Weakness score increases as win rate drops below target.
-            weakness_score = max(0.0, (target_win_rate - win_rate) / target_win_rate)
-            learning_value = (pfsp_mix * pfsp_score) + (weakness_mix * weakness_score)
-
-            # Step 1d: Mix adaptive signal with base curriculum for stability.
-            candidate_scores[opp_type] = max(
-                epsilon,
-                (0.50 * base_weight) + (0.50 * learning_value),
+            scores[opp_type] = max(
+                1e-2,
+                adaptive_score(
+                    wins=wins,
+                    n=n,
+                    prior_alpha=cfg.prior_alpha,
+                    prior_beta=cfg.prior_beta,
+                    pfsp_mix=cfg.pfsp_mix,
+                    weakness_mix=cfg.weakness_mix,
+                    weakness_exponent=cfg.weakness_exponent,
+                    target_win_rate=cfg.target_win_rate,
+                ),
             )
 
-        # Keep explicit anchor exposure to avoid forgetting and mode collapse.
         floors: Dict[str, float] = {}
         if self._opponent_available(OpponentPool.SELF_PLAY):
             floors[OpponentPool.SELF_PLAY] = 0.20
@@ -565,41 +541,17 @@ class OpponentPool:
         if self._opponent_available(OpponentPool.GHOSTS):
             floors[OpponentPool.GHOSTS] = 0.10
 
-        floor_sum = sum(floors.values())
-        if floor_sum > 0.95:
-            # Keep at least 5% free mass for adaptive allocation to non-anchor types.
-            scale = 0.95 / floor_sum
-            floors = {key: value * scale for key, value in floors.items()}
-            floor_sum = sum(floors.values())
+        scores = {k: v for k, v in scores.items() if self._opponent_available(k)}
+        if not scores:
+            self.curriculum = {OpponentPool.SELF_PLAY: 1.0}
+            return
 
-        # Step 2: distribute remaining mass by residual score above anchor floors.
-        remaining_mass = max(0.0, 1.0 - floor_sum)
-        residual_scores: Dict[str, float] = {}
-        for opp_type, score in candidate_scores.items():
-            if not self._opponent_available(opp_type):
-                continue
-            residual_scores[opp_type] = max(epsilon, score - floors.get(opp_type, 0.0))
-
-        residual_total = sum(residual_scores.values())
-        if residual_total <= 0:
-            # Degenerate case fallback: anchor-only curriculum (or pure self-play).
-            new_curriculum = {
-                opp_type: floors.get(opp_type, 0.0)
-                for opp_type in base
-                if self._opponent_available(opp_type)
-            }
-            if OpponentPool.SELF_PLAY not in new_curriculum:
-                new_curriculum[OpponentPool.SELF_PLAY] = 1.0
-        else:
-            new_curriculum = {}
-            for opp_type in base:
-                if not self._opponent_available(opp_type):
-                    continue
-                floor = floors.get(opp_type, 0.0)
-                residual = residual_scores.get(opp_type, 0.0) / residual_total
-                new_curriculum[opp_type] = floor + (remaining_mass * residual)
-
-            # Final normalization protects against drift from rounding and availability gating.
+        new_curriculum = adaptive_distribution(
+            scores,
+            base=base,
+            base_blend=cfg.base_blend,
+            floors=floors,
+        )
         self.curriculum = normalize_curriculum(new_curriculum)
 
     def update_team_distribution(
