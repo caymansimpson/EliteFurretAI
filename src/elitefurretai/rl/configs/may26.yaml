@@ -14,7 +14,7 @@ algorithm:
 
 portfolio:
   max_portfolio_size: 10
-  portfolio_add_interval: 200
+  portfolio_add_interval: 500
   portfolio_update_strategy: recent
 
 exploration:
@@ -110,7 +110,8 @@ curriculum:
     simple_heuristic_baseline: 0.03
     vgc_bench_baseline: 0.03
     train_exploiter: 0
-  adaptive_curriculum: true
+  adaptive_agent_axis:
+    enabled: true
   max_exploiter_models: 5
   max_ghosts: 5
   bc_model_path: data/models/supervised/rose-sun-108_best.pt
