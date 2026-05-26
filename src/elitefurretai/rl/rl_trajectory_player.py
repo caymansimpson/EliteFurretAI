@@ -80,6 +80,9 @@ class RLTrajectoryPlayer(Player):
         becoming disabled, terastallization availability changing).
     """
 
+    # ── Change 7: stamped by WorkerOpponentFactory at battle setup ──────
+    current_team_name: Optional[str] = None
+
     def __init__(
         self,
         inference_client: InferenceClient,
@@ -637,6 +640,8 @@ class RLTrajectoryPlayer(Player):
                     "won": battle.won,
                     "battle_length": len(filtered_traj),
                     "forfeited": forfeited,
+                    "team_name": self.current_team_name,
+                    "battle_format": battle.format,
                 }
             )
             self._reset_battle_hidden_state(battle.battle_tag)

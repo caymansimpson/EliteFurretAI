@@ -348,3 +348,21 @@ def test_update_team_distribution_disabled_returns_all_none(tmp_path):
     dist = pool.update_team_distribution()
     assert dist["gen9vgc2024regg"] is None
     assert dist["gen9vgc2023regc"] is None
+
+
+def test_rl_trajectory_player_class_declares_current_team_name():
+    """RLTrajectoryPlayer declares current_team_name at the class level (or via __init__).
+
+    We probe the source / class to assert the attribute is reachable
+    on instances. Behavioral wiring is covered in Task 8.
+    """
+    from elitefurretai.rl.rl_trajectory_player import RLTrajectoryPlayer
+
+    # Class-level attribute is the simplest declaration. The
+    # implementation in Task 6 sets it via class body default so that
+    # subclasses/instances see a None default until the factory
+    # writes a name.
+    assert getattr(RLTrajectoryPlayer, "current_team_name", "MISSING") is None, (
+        "RLTrajectoryPlayer.current_team_name must be declared as a "
+        "class-level attribute defaulting to None."
+    )
