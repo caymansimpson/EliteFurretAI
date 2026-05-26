@@ -110,22 +110,36 @@ def _resolve_foulplay_team_pool(
     return f"{curriculum.base_team_path}/{fmt}/{opp_pool}"
 
 
-def _resolve_agent_team_text(curriculum: CurriculumConfig, fmt: str) -> str:
+def _resolve_agent_team_text(
+    curriculum: CurriculumConfig,
+    fmt: str,
+    override: Optional[str] = None,
+) -> str:
     """Return the agent's team text for ``fmt`` — deterministic across passes.
 
     The eval uses a fixed agent team (decoupled from the Change 7 adaptive
-    sampler) so win-rate is comparable across checkpoints. Resolution:
+    sampler) so win-rate is comparable across checkpoints.
 
-    * ``resolved_agent_team_paths()[fmt]`` is a file → return its contents.
-    * It's a directory → read the first ``.txt`` file in sorted order.
-    * It's missing → ``FileNotFoundError``.
+    Resolution order:
+
+    1. ``override`` (file or directory path, taken verbatim — used by
+       the CLI which doesn't necessarily have a full CurriculumConfig).
+    2. ``curriculum.resolved_agent_team_paths()[fmt]`` — used by the
+       training-loop hook, where the curriculum is fully populated.
+
+    Whichever path is selected: file → return contents; directory →
+    return contents of the first ``.txt`` file in sorted order.
     """
-    paths = curriculum.resolved_agent_team_paths()
-    raw = paths.get(fmt)
+    if override is not None:
+        raw: Optional[str] = override
+    else:
+        paths = curriculum.resolved_agent_team_paths()
+        raw = paths.get(fmt)
     if raw is None:
         raise FileNotFoundError(
             f"No agent_team_path resolved for format {fmt!r}; FoulPlay eval "
-            f"requires a fixed agent team."
+            f"requires a fixed agent team. Set CurriculumConfig.agent_team_path "
+            f"or pass agent_team_paths to run()."
         )
     path = Path(raw)
     if path.is_file():
@@ -149,6 +163,7 @@ def run(
     server_urls: List[str],
     run_tag: str,
     collect_run_dir: Optional[str] = None,
+    agent_team_paths: Optional[Dict[str, str]] = None,
 ) -> FoulplayEvalResult:
     """Run one FoulPlay eval pass across every active battle format.
 
@@ -176,7 +191,10 @@ def run(
     server_url = server_urls[0]
 
     for fmt in curriculum.battle_formats:
-        agent_team_text = _resolve_agent_team_text(curriculum, fmt)
+        override = (
+            agent_team_paths.get(fmt) if agent_team_paths is not None else None
+        )
+        agent_team_text = _resolve_agent_team_text(curriculum, fmt, override=override)
         foulplay_team_pool = _resolve_foulplay_team_pool(config, curriculum, fmt)
 
         model_spec = parse_player_specification(
@@ -310,6 +328,13 @@ def main() -> None:
         ]
         run_tag = format(int(time.time() * 1000) % 65536, "04x")
 
+        # CLI broadcasts a single agent-team-pool to every active format.
+        # Defaults to --foulplay-team-pool if not given (sensible
+        # default — model and FoulPlay sample from the same pool, so
+        # win rate measures policy strength, not team-mismatch).
+        agent_pool = args.agent_team_pool or args.foulplay_team_pool
+        agent_team_paths = {fmt: agent_pool for fmt in battle_formats}
+
         result = run(
             checkpoint_path=args.checkpoint,
             config=config,
@@ -317,6 +342,7 @@ def main() -> None:
             device=args.device,
             server_urls=server_urls,
             run_tag=run_tag,
+            agent_team_paths=agent_team_paths,
         )
 
         print(

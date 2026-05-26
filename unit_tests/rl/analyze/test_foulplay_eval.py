@@ -180,6 +180,46 @@ def test_run_multi_format_iterates_once_per_format(tmp_path):
     assert result.overall_win_rate == pytest.approx(0.48)
 
 
+def test_run_uses_explicit_agent_team_paths_override(tmp_path):
+    """
+    agent_team_paths override is used verbatim when set — bypasses
+    curriculum.resolved_agent_team_paths(). Used by the CLI which
+    doesn't necessarily have agent_team_path wired into a
+    CurriculumConfig.
+    """
+    curriculum = _make_curriculum_single(tmp_path)
+    # Wipe out the curriculum's agent_team_path so we know the override
+    # is what's actually being read.
+    curriculum.agent_team_path = None
+    config = _make_config(tmp_path)
+    fake_ckpt = tmp_path / "model.pt"
+    fake_ckpt.write_bytes(b"placeholder")
+
+    # Override directory with a single team file.
+    override_dir = tmp_path / "explicit_agent_pool"
+    override_dir.mkdir()
+    (override_dir / "override_team.txt").write_text("override team body")
+
+    with patch(
+        "elitefurretai.rl.analyze.foulplay_eval.run_eval_parallel",
+        return_value=_stub_eval_result(p1_wins=10, p2_wins=10),
+    ) as mock_parallel:
+        run(
+            checkpoint_path=str(fake_ckpt),
+            config=config,
+            curriculum=curriculum,
+            device="cpu",
+            server_urls=["localhost:8000"],
+            run_tag="abcd",
+            agent_team_paths={"gen9vgc2024regg": str(override_dir)},
+        )
+
+    # The first cell's agent_team is the override team body.
+    _, kwargs = mock_parallel.call_args
+    cells = kwargs["cells"]
+    assert cells[0][0] == "override team body"
+
+
 def test_run_uses_explicit_foulplay_team_pool_paths_when_set(tmp_path):
     """
     When config.foulplay_team_pool_paths is set, the per-format
