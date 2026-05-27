@@ -281,10 +281,24 @@ class MDBO(BattleOrder):
                     if target_str in ["-1", "-2", "1", "2"]:
                         target = int(target_str)
 
+                # The gimmick offset decodes to the literal token "terastallize" in the
+                # internal mapping, but in the mega format that same offset means mega.
+                # They are mutually exclusive per format, so we pick based on the battle's
+                # mega legality for this slot. can_mega_evolve is absent in supervised
+                # replay / tera formats, in which case we emit terastallize as before.
+                is_gimmick = "terastallize" in order
+                can_mega = getattr(battle, "can_mega_evolve", None)
+                use_mega = bool(
+                    is_gimmick
+                    and can_mega is not None
+                    and i < len(can_mega)
+                    and can_mega[i]
+                )
                 orders.append(
                     SingleBattleOrder(
                         order=move,
-                        terastallize="terastallize" in order,
+                        terastallize=is_gimmick and not use_mega,
+                        mega=use_mega,
                         move_target=target,
                     )
                 )

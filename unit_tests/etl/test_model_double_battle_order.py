@@ -476,3 +476,54 @@ def test_mdbo_teampreview_space():
     # Ensure that the teampreview_space method of MDBO returns an integer
     assert isinstance(MDBO.teampreview_space(), int)
     assert MDBO.teampreview_space() > 0
+
+
+def test_to_double_battle_order_emits_mega_when_can_mega_evolve():
+    """In a mega format, a gimmick-offset action must emit mega=True (not terastallize)
+    for the slot whose can_mega_evolve flag is set; the other slot stays normal."""
+    # from_int(317, TURN) decodes slot0 -> "move 1 terastallize" (gimmick offset),
+    # slot1 -> "move 1" (no gimmick). 317 = 7 * 45 + 2.
+    mdbo = MDBO.from_int(317, MDBO.TURN)
+    assert mdbo.message == "/choose move 1 terastallize, move 1"
+
+    battle = DummyBattle()
+    battle.player_role = "p1"
+    battle.active_pokemon = [
+        type("DummyMon", (), {"moves": {"a": 1}})(),
+        type("DummyMon", (), {"moves": {"a": 1}})(),
+    ]
+    battle.team = {str(i): i for i in range(6)}
+    battle.available_moves = [
+        [type("DummyMove", (), {"id": "a"})()],
+        [type("DummyMove", (), {"id": "a"})()],
+    ]
+    # Mega format: slot 0 may mega-evolve this turn.
+    battle.can_mega_evolve = [True, False]
+
+    dbo = mdbo.to_double_battle_order(battle)  # type: ignore
+    assert dbo.first_order.mega is True
+    assert dbo.first_order.terastallize is False
+    assert dbo.second_order.mega is False
+    assert dbo.second_order.terastallize is False
+
+
+def test_to_double_battle_order_emits_tera_when_not_mega_format():
+    """When can_mega_evolve is unset (tera format / supervised replay), the gimmick
+    offset must keep emitting terastallize=True — existing behavior preserved."""
+    mdbo = MDBO.from_int(317, MDBO.TURN)  # slot0 gimmick offset, slot1 plain
+
+    battle = DummyBattle()  # __getattr__ returns None, so can_mega_evolve is None
+    battle.player_role = "p1"
+    battle.active_pokemon = [
+        type("DummyMon", (), {"moves": {"a": 1}})(),
+        type("DummyMon", (), {"moves": {"a": 1}})(),
+    ]
+    battle.team = {str(i): i for i in range(6)}
+    battle.available_moves = [
+        [type("DummyMove", (), {"id": "a"})()],
+        [type("DummyMove", (), {"id": "a"})()],
+    ]
+
+    dbo = mdbo.to_double_battle_order(battle)  # type: ignore
+    assert dbo.first_order.terastallize is True
+    assert dbo.first_order.mega is False
