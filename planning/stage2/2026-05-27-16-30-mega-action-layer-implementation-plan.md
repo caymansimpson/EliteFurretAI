@@ -282,9 +282,10 @@ Append to `unit_tests/etl/test_model_double_battle_order.py` (the file already i
 def test_to_double_battle_order_emits_mega_when_can_mega_evolve():
     """In a mega format, a gimmick-offset action must emit mega=True (not terastallize)
     for the slot whose can_mega_evolve flag is set; the other slot stays normal."""
-    # from_int(7, TURN) decodes slot0 -> "move 1 terastallize" (gimmick offset),
-    # slot1 -> "move 1" (no gimmick). 7 = 0 * 45 + 7.
-    mdbo = MDBO.from_int(7, MDBO.TURN)
+    # MDBO encodes a combined order as slot0 * 45 + slot1. Per-slot action 7 is
+    # "move 1 terastallize" (the gimmick offset) and action 2 is plain "move 1", so
+    # the combined int is 7 * 45 + 2 = 317.
+    mdbo = MDBO.from_int(317, MDBO.TURN)
     assert mdbo.message == "/choose move 1 terastallize, move 1"
 
     battle = DummyBattle()
@@ -311,7 +312,7 @@ def test_to_double_battle_order_emits_mega_when_can_mega_evolve():
 def test_to_double_battle_order_emits_tera_when_not_mega_format():
     """When can_mega_evolve is unset (tera format / supervised replay), the gimmick
     offset must keep emitting terastallize=True — existing behavior preserved."""
-    mdbo = MDBO.from_int(7, MDBO.TURN)  # slot0 gimmick offset, slot1 plain
+    mdbo = MDBO.from_int(317, MDBO.TURN)  # slot0 gimmick offset, slot1 plain
 
     battle = DummyBattle()  # __getattr__ returns None, so can_mega_evolve is None
     battle.player_role = "p1"

@@ -159,3 +159,8 @@ no-BC format natively.)
   rolling portfolio of self-snapshots (not a frozen BC policy), so it co-evolves with mega
   learning and needs no change. Corrects an earlier wrong assumption that the anchor was the
   BC policy.
+- 2026-05-27 16:45 — Plan 1 (action layer) shipped on branch `mega-format-support`
+  (commits c2f25cd → 64e6b98): the gimmick offset now represents mega as well as tera —
+  mask reads `canMegaEvo` (`masking.py`), encoder emits `mega` vs `terastallize` from
+  `battle.can_mega_evolve` (`encoder.py`). Integer action space, BC parsing, and policy head
+  unchanged. Next: Plan 2 (embedder mega-form features).
