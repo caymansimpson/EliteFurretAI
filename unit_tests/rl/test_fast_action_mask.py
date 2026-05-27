@@ -876,8 +876,9 @@ def test_mega_availability_enables_gimmick_offset():
     assert {8, 9}.issubset(slot_actions), "mega should enable the gimmick offset"
 
 
-def test_no_gimmick_offset_without_tera_or_mega():
-    """Without canTerastallize or canMegaEvo, the gimmick offset (+5) must be illegal."""
+def test_explicit_false_canmegaevo_does_not_enable_gimmick_offset():
+    """An explicit canMegaEvo: False (e.g. after mega already used) must NOT enable
+    the gimmick offset."""
     from unittest.mock import MagicMock
 
     battle = MagicMock(spec=DoubleBattle)
@@ -898,7 +899,56 @@ def test_no_gimmick_offset_without_tera_or_mega():
 
     request = {
         "active": [
-            {"moves": [{"target": "normal", "pp": 8, "disabled": False}], "trapped": False},
+            {
+                "moves": [{"target": "normal", "pp": 8, "disabled": False}],
+                "trapped": False,
+                "canMegaEvo": False,
+            },
+            {"moves": [], "trapped": False},
+        ],
+        "side": {
+            "pokemon": [
+                {"active": True, "condition": "100/100"},
+                {"active": True, "condition": "100/100"},
+                {"active": False, "condition": "100/100"},
+            ]
+        },
+    }
+
+    slot_actions = get_valid_slot_actions(battle, 0, request)
+    assert {3, 4}.issubset(slot_actions)
+    assert slot_actions.isdisjoint({8, 9}), (
+        "explicit canMegaEvo:False must not enable gimmick"
+    )
+
+
+def test_no_gimmick_offset_without_tera_or_mega():
+    """Regression: the gimmick offset stays illegal when neither the tera
+    (canTerastallize) nor the mega (canMegaEvo) flag is present in the request."""
+    from unittest.mock import MagicMock
+
+    battle = MagicMock(spec=DoubleBattle)
+    battle.force_switch = [False, False]
+    battle.trapped = [False, False]
+
+    ally_left = MagicMock()
+    ally_left.fainted = False
+    ally_right = MagicMock()
+    ally_right.fainted = False
+    opp_left = MagicMock()
+    opp_left.fainted = False
+    opp_right = MagicMock()
+    opp_right.fainted = False
+
+    battle.active_pokemon = [ally_left, ally_right]
+    battle.opponent_active_pokemon = [opp_left, opp_right]
+
+    request = {
+        "active": [
+            {
+                "moves": [{"target": "normal", "pp": 8, "disabled": False}],
+                "trapped": False,
+            },
             {"moves": [], "trapped": False},
         ],
         "side": {

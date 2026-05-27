@@ -15,7 +15,7 @@ The neural network is trained to output logits over a fixed 2025-dim action
 space (45 single-slot actions × 45 single-slot actions = 2025 pair actions).
 But in a real Pokemon battle, only a small fraction of those are legal — most
 moves can't target both opponents, you can't switch into a fainted Pokemon,
-both slots can't terastallize in the same turn, etc.
+both slots can't use their once-per-battle gimmick (tera/mega) in the same turn, etc.
 
 Without masking, the network would happily sample illegal moves, the Showdown
 server would reject them, and we'd get cascading errors and wasted battles.
@@ -58,7 +58,7 @@ Edge cases this code handles
 - Force-switch turns (a Pokemon fainted; we must switch in a replacement).
 - Tatsugiri / Dondozo "Commander" ability (one slot is forced to pass).
 - Trapped Pokemon (cannot switch out).
-- Tera lock (only one slot may terastallize per turn — pair-level constraint).
+- Gimmick lock (only one slot may use its once-per-battle gimmick — tera or mega — per turn).
 - Both slots switching to the same bench Pokemon (illegal — pair-level).
 """
 
@@ -211,7 +211,7 @@ def get_valid_targets(
 #   Each slot has 45 actions:
 #     Actions  0-39: move actions  (move_idx × 10 + target_offset + tera_offset)
 #       target offsets: 0=-2, 1=-1, 2=no_target, 3=+1, 4=+2
-#       tera offsets:   0=no tera, 5=tera
+#       gimmick offsets: 0=no gimmick, 5=gimmick (tera in tera formats, mega in regMA)
 #     Actions 40-43: switch actions (SWITCH_ACTION_BASE + 0-indexed bench slot)
 #     Action  44:    pass
 #
@@ -402,8 +402,9 @@ def slot_is_commanding(
 #
 # fast_get_action_mask() is the top-level entry point. It combines per-slot
 # legality into a 2025-dimensional binary mask over all (slot0_action,
-# slot1_action) pairs. Pair-level constraints (no double-tera, no switching
-# both slots to the same Pokemon) are applied after per-slot enumeration.
+# slot1_action) pairs. Pair-level constraints (both slots can't use their
+# once-per-battle gimmick (tera/mega), no switching both slots to the same
+# Pokemon) are applied after per-slot enumeration.
 #
 # The mask is indexed as: action_index = slot0_action * ACTIONS_PER_SLOT + slot1_action
 # ─────────────────────────────────────────────────────────────────────────────
@@ -500,14 +501,14 @@ def _mark_valid_action_pairs(
     request: Dict,
 ) -> None:
     """Mark valid action pairs, filtering out two pair-level constraints:
-    - Both slots cannot terastallize in the same turn.
+    - Both slots cannot use their once-per-battle gimmick (tera or mega) in the same turn.
     - Both slots cannot switch to the same bench Pokemon.
     """
 
-    def is_tera_action(action: int) -> bool:
+    def is_gimmick_action(action: int) -> bool:
         if action >= SWITCH_ACTION_BASE:
             return False
-        # Within each move group of 10, offsets 5-9 are tera variants
+        # Within each move group of 10, offsets 5-9 are gimmick variants (tera/mega)
         return (action % 10) >= 5
 
     def get_switch_target(action: int) -> Optional[int]:
@@ -516,11 +517,11 @@ def _mark_valid_action_pairs(
         return action - SWITCH_ACTION_BASE
 
     for a0 in slot0_actions:
-        a0_tera = is_tera_action(a0)
+        a0_gimmick = is_gimmick_action(a0)
         a0_switch_target = get_switch_target(a0)
 
         for a1 in slot1_actions:
-            if a0_tera and is_tera_action(a1):
+            if a0_gimmick and is_gimmick_action(a1):
                 continue
             if a0_switch_target is not None:
                 a1_switch_target = get_switch_target(a1)
