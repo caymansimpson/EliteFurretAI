@@ -831,5 +831,89 @@ def test_mask_generation_is_fast(vgc_json_anon):
     assert mask.sum() > 0
 
 
+def test_mega_availability_enables_gimmick_offset():
+    """A mega-format request (canMegaEvo) must make the gimmick offset (+5) legal,
+    exactly as canTerastallize does for tera formats."""
+    from unittest.mock import MagicMock
+
+    battle = MagicMock(spec=DoubleBattle)
+    battle.force_switch = [False, False]
+    battle.trapped = [False, False]
+
+    ally_left = MagicMock()
+    ally_left.fainted = False
+    ally_right = MagicMock()
+    ally_right.fainted = False
+    opp_left = MagicMock()
+    opp_left.fainted = False
+    opp_right = MagicMock()
+    opp_right.fainted = False
+
+    battle.active_pokemon = [ally_left, ally_right]
+    battle.opponent_active_pokemon = [opp_left, opp_right]
+
+    request = {
+        "active": [
+            {
+                "moves": [{"target": "normal", "pp": 8, "disabled": False}],
+                "trapped": False,
+                "canMegaEvo": True,
+            },
+            {"moves": [], "trapped": False},
+        ],
+        "side": {
+            "pokemon": [
+                {"active": True, "condition": "100/100"},
+                {"active": True, "condition": "100/100"},
+                {"active": False, "condition": "100/100"},
+            ]
+        },
+    }
+
+    slot_actions = get_valid_slot_actions(battle, 0, request)
+    # move 0 with each opponent target (offsets 3,4) plus their gimmick variants (+5)
+    assert {3, 4}.issubset(slot_actions)
+    assert {8, 9}.issubset(slot_actions), "mega should enable the gimmick offset"
+
+
+def test_no_gimmick_offset_without_tera_or_mega():
+    """Without canTerastallize or canMegaEvo, the gimmick offset (+5) must be illegal."""
+    from unittest.mock import MagicMock
+
+    battle = MagicMock(spec=DoubleBattle)
+    battle.force_switch = [False, False]
+    battle.trapped = [False, False]
+
+    ally_left = MagicMock()
+    ally_left.fainted = False
+    ally_right = MagicMock()
+    ally_right.fainted = False
+    opp_left = MagicMock()
+    opp_left.fainted = False
+    opp_right = MagicMock()
+    opp_right.fainted = False
+
+    battle.active_pokemon = [ally_left, ally_right]
+    battle.opponent_active_pokemon = [opp_left, opp_right]
+
+    request = {
+        "active": [
+            {"moves": [{"target": "normal", "pp": 8, "disabled": False}], "trapped": False},
+            {"moves": [], "trapped": False},
+        ],
+        "side": {
+            "pokemon": [
+                {"active": True, "condition": "100/100"},
+                {"active": True, "condition": "100/100"},
+                {"active": False, "condition": "100/100"},
+            ]
+        },
+    }
+
+    slot_actions = get_valid_slot_actions(battle, 0, request)
+    assert {3, 4}.issubset(slot_actions)
+    assert slot_actions.isdisjoint({8, 9}), "no gimmick offset when neither tera nor mega"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

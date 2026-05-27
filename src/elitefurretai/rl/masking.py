@@ -287,7 +287,13 @@ def get_valid_slot_actions(
         valid_actions.add(PASS_ACTION)
         return valid_actions
 
+    # The once-per-battle "gimmick" offset (+5) is shared across formats: tera in
+    # tera formats, mega in the mega format. They are mutually exclusive per format,
+    # so a single offset is unambiguous. Showdown signals availability via
+    # canTerastallize (tera type string) or canMegaEvo (bool).
     can_tera = active_info.get("canTerastallize") is not None
+    can_mega = bool(active_info.get("canMegaEvo", False))
+    can_gimmick = can_tera or can_mega
 
     # Enumerate legal move actions
     moves = active_info.get("moves", [])
@@ -303,7 +309,7 @@ def get_valid_slot_actions(
             target_offset = TARGET_TO_OFFSET.get(target, 2)
             base_action = move_idx * 10 + target_offset
             valid_actions.add(base_action)
-            if can_tera:
+            if can_gimmick:
                 valid_actions.add(base_action + 5)
 
     # Enumerate legal switch actions (only if not trapped)
