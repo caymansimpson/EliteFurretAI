@@ -527,3 +527,5 @@ def test_to_double_battle_order_emits_tera_when_not_mega_format():
     dbo = mdbo.to_double_battle_order(battle)  # type: ignore
     assert dbo.first_order.terastallize is True
     assert dbo.first_order.mega is False
+    assert dbo.second_order.terastallize is False
+    assert dbo.second_order.mega is False

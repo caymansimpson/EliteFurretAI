@@ -188,6 +188,9 @@ class MDBO(BattleOrder):
         )
         request_data = request if request is not None else battle.last_request
         orders: List[SingleBattleOrder] = []
+        # Per-slot mega legality is constant for this conversion. It is absent in
+        # supervised replay / tera formats, in which case we emit terastallize as before.
+        can_mega = getattr(battle, "can_mega_evolve", None)
         for i, order in enumerate(self.message.replace("/choose ", "").split(", ")):
             if order == "pass":
                 orders.append(PassBattleOrder())
@@ -284,10 +287,8 @@ class MDBO(BattleOrder):
                 # The gimmick offset decodes to the literal token "terastallize" in the
                 # internal mapping, but in the mega format that same offset means mega.
                 # They are mutually exclusive per format, so we pick based on the battle's
-                # mega legality for this slot. can_mega_evolve is absent in supervised
-                # replay / tera formats, in which case we emit terastallize as before.
+                # mega legality for this slot.
                 is_gimmick = "terastallize" in order
-                can_mega = getattr(battle, "can_mega_evolve", None)
                 use_mega = bool(
                     is_gimmick
                     and can_mega is not None
