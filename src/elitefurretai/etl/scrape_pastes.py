@@ -13,7 +13,7 @@ import re
 import sys
 import threading
 import time
-from collections import deque
+from collections import defaultdict, deque
 from queue import Queue
 from typing import Dict, List
 
@@ -163,16 +163,12 @@ def scrape_html_page():
 
 
 def main():
-    # Local filename that has regulation -> pokepaste link
+    # Local filename mapping full format name -> pokepaste link
+    # CSV format: header row, then `format,url` per row
+    # (e.g. `gen9vgc2026regi,https://pokepast.es/abc123`)
     file_to_pokepastes = sys.argv[1]
 
-    # CSV columns are letters of the regulation for VGC2024
-    links: Dict[str, List[str]] = {
-        "G": [],
-        "H": [],
-        "F": [],
-        "E": [],
-    }
+    links: Dict[str, List[str]] = defaultdict(list)
 
     print("Loading data from " + file_to_pokepastes + "...")
 
@@ -185,19 +181,23 @@ def main():
     with open(file_to_pokepastes, "r") as file:
         csv_reader = csv.reader(file, dialect="excel")
         for i, row in enumerate(csv_reader, 1):
-            if i > 1 and row[1] != "":
+            if i > 1 and len(row) >= 2 and row[0] != "" and row[1] != "":
                 links[row[0]].append(row[1])
                 total += 1
 
-        print(f"Success! Read {total} pokepastes!")
+        print(f"Success! Read {total} pokepastes across {len(links)} format(s)!")
+
+    # Make sure all output directories exist
+    for frmt in links:
+        os.makedirs(os.path.join("data/teams", frmt), exist_ok=True)
 
     # Tracking progress
     print(f"Now starting to crawl all {total} of them w/ {num_threads} threads...")
 
     # Go through every link and queue it
-    for key in links:
-        for link in links[key]:
-            queue.put((link, "gen9vgc2024reg" + key.lower()))
+    for frmt, urls in links.items():
+        for link in urls:
+            queue.put((link, frmt))
 
     # Start threads
     threads = []
