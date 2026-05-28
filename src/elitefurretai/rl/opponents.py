@@ -203,6 +203,17 @@ class OpponentPool:
         self.tracking_window = tracking_window
         self.curriculum = curriculum
 
+        # Master switch for the in-process exploiter pipeline. train.py only
+        # provisions the exploiter learner and its "exploiter"/"victim"
+        # inference clients when the configured train_exploiter weight is
+        # positive. Captured here from the original config because the
+        # adaptive update rewrites self.curriculum, which would otherwise
+        # erase the base-zero signal and let the agent axis leak weight onto
+        # a slot that has no learner behind it.
+        self._train_exploiter_enabled = (
+            curriculum.get(OpponentPool.TRAIN_EXPLOITER, 0.0) > 0
+        )
+
         total = sum(self.curriculum.values())
         if not np.isclose(total, 1.0):
             raise ValueError(f"Curriculum weights must sum to 1.0, got {total}")
@@ -309,6 +320,8 @@ class OpponentPool:
             return len(self.slot_for_exploiter_path) > 0
         if opponent_type == OpponentPool.GHOSTS:
             return len(self.slot_for_ghost_path) > 0
+        if opponent_type == OpponentPool.TRAIN_EXPLOITER:
+            return self._train_exploiter_enabled
         return True
 
     @staticmethod

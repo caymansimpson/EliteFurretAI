@@ -36,7 +36,7 @@ to read across multiple sub-configs.
 
 import math
 import os
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Dict, List, Optional, Union
 
 import yaml
@@ -782,6 +782,19 @@ def _make_sub(klass: Any, d: Dict[str, Any]) -> Any:
     return klass(**{k: v for k, v in d.items() if k in known})
 
 
+def _merge_sub(factory: Any, d: Dict[str, Any]) -> Any:
+    """Merge a partial-YAML dict onto an instance built by ``factory``.
+
+    Use this for nested dataclasses whose containing field uses
+    ``default_factory=<factory>`` to set non-trivial defaults that differ
+    from the dataclass-level field defaults. ``_make_sub`` would silently
+    drop those factory defaults when YAML supplies only a subset of fields.
+    """
+    base = factory()
+    known = {f for f in type(base).__dataclass_fields__}
+    return replace(base, **{k: v for k, v in d.items() if k in known})
+
+
 @dataclass
 class RNaDConfig:
     """Hierarchical configuration for RNaD training.
@@ -877,18 +890,21 @@ class RNaDConfig:
     def from_dict(cls, data: Dict[str, Any]) -> "RNaDConfig":
         """Create a RNaDConfig from a dict (flat or nested). Extra keys are ignored."""
 
-        # CurriculumConfig has nested AdaptiveAxisConfig sub-dataclasses that
-        # `_make_sub` does not generically recurse into. Build them by hand
-        # so YAML blocks under `curriculum.adaptive_team_axis` /
-        # `curriculum.adaptive_agent_axis` round-trip into typed objects.
+        # CurriculumConfig has nested AdaptiveAxisConfig sub-dataclasses
+        # whose defaults come from the team_axis_defaults() /
+        # agent_axis_defaults() factories — these differ from the
+        # dataclass-level field defaults. Merge partial YAML onto the
+        # right factory so unspecified fields keep the factory's values.
         curriculum_data = dict(data.get("curriculum", {}))
         if "adaptive_team_axis" in curriculum_data:
-            curriculum_data["adaptive_team_axis"] = _make_sub(
-                AdaptiveAxisConfig, curriculum_data["adaptive_team_axis"]
+            curriculum_data["adaptive_team_axis"] = _merge_sub(
+                AdaptiveAxisConfig.team_axis_defaults,
+                curriculum_data["adaptive_team_axis"],
             )
         if "adaptive_agent_axis" in curriculum_data:
-            curriculum_data["adaptive_agent_axis"] = _make_sub(
-                AdaptiveAxisConfig, curriculum_data["adaptive_agent_axis"]
+            curriculum_data["adaptive_agent_axis"] = _merge_sub(
+                AdaptiveAxisConfig.agent_axis_defaults,
+                curriculum_data["adaptive_agent_axis"],
             )
 
         return cls(
