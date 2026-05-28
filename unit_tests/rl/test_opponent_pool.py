@@ -196,3 +196,110 @@ def test_opponent_pool_tracks_active_exploiter_slots(tmp_path, temp_exploiters_d
     pool.add_exploiter(str(p4))
     assert pool.active_exploiter_slots() == {0, 1, 2}  # still full
     assert pool.slot_for_exploiter_path[str(p4)] == 0
+
+
+def test_train_exploiter_unavailable_when_disabled(temp_exploiters_dir, temp_ghosts_dir):
+    """train_exploiter is gated on its configured base weight: with the
+    pipeline off (weight 0 / absent), the slot is unavailable so the
+    adaptive agent axis never leaks weight onto a learner that doesn't
+    exist."""
+    pool = _make_pool(temp_exploiters_dir, temp_ghosts_dir)
+    assert pool._opponent_available(OpponentPool.TRAIN_EXPLOITER) is False
+
+
+def test_train_exploiter_available_when_enabled(temp_exploiters_dir, temp_ghosts_dir):
+    """A positive configured train_exploiter weight marks the slot
+    available, matching the pipeline train.py provisions in that case."""
+    curriculum = {
+        OpponentPool.SELF_PLAY: 0.6,
+        OpponentPool.GHOSTS: 0.2,
+        OpponentPool.TRAIN_EXPLOITER: 0.2,
+    }
+    pool = _make_pool(temp_exploiters_dir, temp_ghosts_dir, curriculum=curriculum)
+    assert pool._opponent_available(OpponentPool.TRAIN_EXPLOITER) is True
+
+
+def test_disabled_train_exploiter_stays_zero_after_adaptive_update(
+    temp_exploiters_dir, temp_ghosts_dir
+):
+    """The adaptive agent axis must not raise train_exploiter off zero when
+    the pipeline is disabled, even though the slot is a curriculum key."""
+    curriculum = {
+        OpponentPool.SELF_PLAY: 0.8,
+        OpponentPool.GHOSTS: 0.2,
+        OpponentPool.TRAIN_EXPLOITER: 0.0,
+    }
+    pool = _make_pool(temp_exploiters_dir, temp_ghosts_dir, curriculum=curriculum)
+
+    # Some real self_play history so the adaptive update has a non-trivial
+    # distribution to redistribute across the available slots.
+    for _ in range(50):
+        pool.record_battle_result(opponent_type=OpponentPool.SELF_PLAY, won=True)
+
+    pool.update_curriculum()
+
+    # train_exploiter is filtered out as unavailable rather than floored to
+    # 1e-2, so it carries no weight in the adapted curriculum.
+    assert pool.curriculum.get(OpponentPool.TRAIN_EXPLOITER, 0.0) == 0.0
+
+
+def test_apply_mega_megas_first_eligible_move_slot():
+    import types
+
+    from poke_env.battle import Move
+    from poke_env.player.battle_order import SingleBattleOrder
+
+    from elitefurretai.agents.max_damage_player import MaxDamagePlayer
+
+    o0 = SingleBattleOrder(order=Move("flamethrower", gen=9))
+    o1 = SingleBattleOrder(order=Move("surf", gen=9))
+    battle = types.SimpleNamespace(can_mega_evolve=[True, False])
+    MaxDamagePlayer._apply_mega([o0, o1], battle)
+    assert o0.mega is True
+    assert o1.mega is False  # slot 1 cannot mega
+
+
+def test_apply_mega_megas_at_most_one_slot():
+    import types
+
+    from poke_env.battle import Move
+    from poke_env.player.battle_order import SingleBattleOrder
+
+    from elitefurretai.agents.max_damage_player import MaxDamagePlayer
+
+    o0 = SingleBattleOrder(order=Move("flamethrower", gen=9))
+    o1 = SingleBattleOrder(order=Move("surf", gen=9))
+    battle = types.SimpleNamespace(can_mega_evolve=[True, True])
+    MaxDamagePlayer._apply_mega([o0, o1], battle)
+    assert o0.mega is True
+    assert o1.mega is False  # only the first eligible slot megas (one per turn)
+
+
+def test_apply_mega_skips_switch_orders():
+    import types
+
+    from poke_env.battle import Move, Pokemon
+    from poke_env.player.battle_order import SingleBattleOrder
+
+    from elitefurretai.agents.max_damage_player import MaxDamagePlayer
+
+    sw = SingleBattleOrder(order=Pokemon(gen=9, species="venusaur"))
+    mv = SingleBattleOrder(order=Move("flamethrower", gen=9))
+    battle = types.SimpleNamespace(can_mega_evolve=[True, True])
+    MaxDamagePlayer._apply_mega([sw, mv], battle)
+    assert sw.mega is False  # switch orders are not mega'd
+    assert mv.mega is True
+
+
+def test_apply_mega_noop_when_unavailable():
+    import types
+
+    from poke_env.battle import Move
+    from poke_env.player.battle_order import SingleBattleOrder
+
+    from elitefurretai.agents.max_damage_player import MaxDamagePlayer
+
+    o0 = SingleBattleOrder(order=Move("flamethrower", gen=9))
+    battle = types.SimpleNamespace(can_mega_evolve=[False, False])
+    MaxDamagePlayer._apply_mega([o0], battle)
+    assert o0.mega is False

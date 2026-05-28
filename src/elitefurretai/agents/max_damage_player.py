@@ -15,7 +15,7 @@ import math
 import random
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, cast
 
-from poke_env.battle import DoubleBattle, Pokemon
+from poke_env.battle import DoubleBattle, Move, Pokemon
 from poke_env.calc import calculate_damage
 from poke_env.data import GenData
 from poke_env.player import BattleOrder, DoubleBattleOrder, Player
@@ -274,6 +274,8 @@ class MaxDamagePlayer(Player):
             else:
                 slot_orders.append(DefaultBattleOrder())
 
+        self._apply_mega(slot_orders, battle)
+
         if len(slot_orders) == 2:
             return DoubleBattleOrder(
                 first_order=cast(SingleBattleOrder, slot_orders[0]),
@@ -502,3 +504,23 @@ class MaxDamagePlayer(Player):
     @staticmethod
     def _get_order_payload(order: BattleOrder):
         return getattr(order, "order", None)
+
+    @staticmethod
+    def _apply_mega(slot_orders: List[BattleOrder], battle) -> None:
+        """Mega-evolve at most one eligible move slot, in place.
+
+        Mega is strictly beneficial for a max-damage heuristic (the mega forme
+        has >= offensive stats), and only one slot may mega per turn, so we mega
+        the first slot that (a) can mega-evolve this turn and (b) is making a move
+        (not a switch/pass).
+        """
+        can_mega = getattr(battle, "can_mega_evolve", None) or [False, False]
+        for slot, order in enumerate(slot_orders):
+            if (
+                slot < len(can_mega)
+                and can_mega[slot]
+                and isinstance(order, SingleBattleOrder)
+                and isinstance(MaxDamagePlayer._get_order_payload(order), Move)
+            ):
+                order.mega = True
+                break
