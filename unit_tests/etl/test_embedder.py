@@ -615,3 +615,63 @@ def test_mega_stone_to_species_and_item_vocab():
     # Stones are present in the item id space (nonzero ids)
     assert ITEM_TO_ID.get("venusaurite", 0) > 0
     assert ITEM_TO_ID.get("charizarditex", 0) > 0
+
+
+def test_prospective_mega_form_features_own_mon():
+    from elitefurretai.etl.embedder import Embedder
+
+    embedder = Embedder()
+    dummy_battle = DoubleBattle("tag", "elitefurretai", None, gen=9)  # type: ignore
+    dummy_battle._format = f"gen{embedder.gen}default"
+    dummy_battle.player_role = "p1"
+
+    # Venusaur holding Venusaurite -> prospective Mega Venusaur:
+    # Grass/Poison, Thick Fat, base stats {hp80, atk100, def123, spa122, spd120, spe80}.
+    mon = Pokemon(gen=9, species="venusaur")
+    mon.item = "venusaurite"
+
+    emb = embedder.generate_pokemon_features(mon, dummy_battle)
+    assert emb["MEGA_STAT:def"] == 123.0
+    assert emb["MEGA_STAT:spa"] == 122.0
+    assert emb["MEGA_STAT:hp"] == 80.0
+    # Multi-hot typing: Grass AND Poison set, others 0
+    assert emb["MEGA_TYPE:GRASS"] == 1
+    assert emb["MEGA_TYPE:POISON"] == 1
+    assert emb["MEGA_TYPE:FIRE"] == 0
+    # mega ability resolves Thick Fat (a known ability => nonzero id)
+    assert emb["mega_ability_id"] == ABILITY_TO_ID["thickfat"]
+
+
+def test_no_prospective_mega_without_stone():
+    from elitefurretai.etl.embedder import Embedder
+
+    embedder = Embedder()
+    dummy_battle = DoubleBattle("tag", "elitefurretai", None, gen=9)  # type: ignore
+    dummy_battle._format = f"gen{embedder.gen}default"
+    dummy_battle.player_role = "p1"
+
+    mon = Pokemon(gen=9, species="venusaur")  # no item -> no recognized stone
+    emb = embedder.generate_pokemon_features(mon, dummy_battle)
+    assert emb["MEGA_STAT:def"] == -1
+    assert emb["MEGA_TYPE:GRASS"] == -1
+    assert emb["mega_ability_id"] == -1
+
+
+def test_prospective_mega_block_present_for_none_mon_and_opponent():
+    from elitefurretai.etl.embedder import Embedder
+
+    embedder = Embedder()
+    dummy_battle = DoubleBattle("tag", "elitefurretai", None, gen=9)  # type: ignore
+    dummy_battle._format = f"gen{embedder.gen}default"
+    dummy_battle.player_role = "p1"
+
+    # None mon: block present, all sentinel -1 (consistent fixed-length vector)
+    none_emb = embedder.generate_pokemon_features(None, dummy_battle)
+    assert none_emb["MEGA_STAT:def"] == -1
+    assert none_emb["MEGA_TYPE:GRASS"] == -1
+    assert none_emb["mega_ability_id"] == -1
+    # Opponent method also exposes the block
+    opp_none = embedder.generate_opponent_pokemon_features(None, dummy_battle)
+    assert "MEGA_STAT:def" in opp_none
+    assert "MEGA_TYPE:GRASS" in opp_none
+    assert "mega_ability_id" in opp_none

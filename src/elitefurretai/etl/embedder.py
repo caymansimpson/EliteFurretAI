@@ -89,6 +89,7 @@ class Embedder:
 
         # Track all relevant game elements for encoding
         self._knowledge["Pokemon"] = set(GenData.from_gen(self._gen).pokedex.keys())
+        self._pokedex = GenData.from_gen(self._gen).pokedex
         self._knowledge["Effect_VolatileStatus"] = TRACKED_EFFECTS
         self._knowledge["Item"] = TRACKED_ITEMS
         self._knowledge["Target"] = TRACKED_TARGET_TYPES
@@ -898,6 +899,23 @@ class Embedder:
 
         return emb
 
+    def _prospective_mega_entry(self, mon) -> Optional[dict]:
+        """The pokedex entry for the mega forme this mon could evolve into, or None.
+
+        Valid only when the mon holds a recognized Mega Stone whose forme's
+        baseSpecies matches the mon's (base) species. Visible before mega-evolving,
+        mirroring how TERA_TYPE exposes the prospective post-tera type.
+        """
+        if mon is None or not mon.item:
+            return None
+        species_key = MEGA_STONE_TO_SPECIES.get(to_id_str(mon.item))
+        if species_key is None:
+            return None
+        entry = self._pokedex.get(species_key)
+        if entry and to_id_str(str(entry.get("baseSpecies", ""))) == to_id_str(mon.species):
+            return entry
+        return None
+
     def generate_pokemon_features(
         self, mon: Optional[Pokemon], battle: DoubleBattle, prefix: str = ""
     ) -> Dict[str, float]:
@@ -978,6 +996,27 @@ class Embedder:
             emb[prefix + "TERA_TYPE:" + ptype.name] = (
                 int(ptype == mon.tera_type) if mon else -1
             )
+
+        # Prospective mega form (mirrors TERA_TYPE; visible before mega-evolving).
+        mega_entry = self._prospective_mega_entry(mon)
+        for stat in ["hp", "atk", "def", "spa", "spd", "spe"]:
+            emb[prefix + "MEGA_STAT:" + stat] = (
+                float(mega_entry["baseStats"][stat]) if mega_entry else -1
+            )
+        mega_types = (
+            {str(t).lower() for t in mega_entry.get("types", [])} if mega_entry else set()
+        )
+        for ptype in self._knowledge["PokemonType"]:
+            if ptype in [PokemonType.THREE_QUESTION_MARKS, PokemonType.STELLAR]:
+                continue
+            emb[prefix + "MEGA_TYPE:" + ptype.name] = (
+                int(ptype.name.lower() in mega_types) if mega_entry else -1
+            )
+        if mega_entry:
+            mega_ability = to_id_str(str(mega_entry.get("abilities", {}).get("0", "")))
+            emb[prefix + "mega_ability_id"] = self._ability_to_id.get(mega_ability, 0)
+        else:
+            emb[prefix + "mega_ability_id"] = -1
 
         # OHE which switch the pokemon is
         for i, m in enumerate(fill_with_none(list(battle.team.values()), 6)):
@@ -1159,6 +1198,27 @@ class Embedder:
                 val = int(ptype == mon.tera_type)
 
             emb[prefix + "TERA_TYPE:" + ptype.name] = val
+
+        # Prospective mega form (mirrors TERA_TYPE; visible before mega-evolving).
+        mega_entry = self._prospective_mega_entry(mon)
+        for stat in ["hp", "atk", "def", "spa", "spd", "spe"]:
+            emb[prefix + "MEGA_STAT:" + stat] = (
+                float(mega_entry["baseStats"][stat]) if mega_entry else -1
+            )
+        mega_types = (
+            {str(t).lower() for t in mega_entry.get("types", [])} if mega_entry else set()
+        )
+        for ptype in self._knowledge["PokemonType"]:
+            if ptype in [PokemonType.THREE_QUESTION_MARKS, PokemonType.STELLAR]:
+                continue
+            emb[prefix + "MEGA_TYPE:" + ptype.name] = (
+                int(ptype.name.lower() in mega_types) if mega_entry else -1
+            )
+        if mega_entry:
+            mega_ability = to_id_str(str(mega_entry.get("abilities", {}).get("0", "")))
+            emb[prefix + "mega_ability_id"] = self._ability_to_id.get(mega_ability, 0)
+        else:
+            emb[prefix + "mega_ability_id"] = -1
 
         # Generate features about this pokemon in the context of the battle
         emb[prefix + "sent"] = (

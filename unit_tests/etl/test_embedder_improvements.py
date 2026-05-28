@@ -1136,10 +1136,12 @@ class TestEmbedderIntegration:
         assert len(boost_keys) > 0, "Missing one-hot boost features"
 
         # Entity ID features
-        ability_id_keys = [k for k in emb if "ability_id" in k]
-        item_id_keys = [k for k in emb if "item_id" in k]
-        species_id_keys = [k for k in emb if "species_id" in k]
+        # Use ":ability_id" suffix to avoid matching mega_ability_id.
+        ability_id_keys = [k for k in emb if k.endswith(":ability_id")]
+        item_id_keys = [k for k in emb if k.endswith(":item_id")]
+        species_id_keys = [k for k in emb if k.endswith(":species_id")]
         move_id_keys = [k for k in emb if "move_id" in k]
+        # 6 player mons + 6 opp mons = 12
         assert len(ability_id_keys) == 12, (
             f"Expected 12 ability_id keys (6 player + 6 opp), got {len(ability_id_keys)}"
         )
