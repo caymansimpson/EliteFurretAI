@@ -22,6 +22,7 @@ from poke_env.teambuilder.constant_teambuilder import ConstantTeambuilder
 
 from elitefurretai.etl import Embedder
 from elitefurretai.etl.embedder import (
+    _ALL_TRACKED_ITEMS,
     ABILITY_TO_ID,
     BOOST_RANGE,
     FIELD_DURATIONS,
@@ -635,11 +636,11 @@ class TestEntityIDEmbeddings:
         assert "moody" in ABILITY_TO_ID
 
     def test_item_to_id_mapping(self):
-        """ITEM_TO_ID should map all tracked items to IDs starting at 1."""
-        assert len(ITEM_TO_ID) == len(TRACKED_ITEMS)
+        """ITEM_TO_ID should map all tracked items (including Mega Stones) to IDs starting at 1."""
+        assert len(ITEM_TO_ID) == len(_ALL_TRACKED_ITEMS)
         assert min(ITEM_TO_ID.values()) == 1
-        assert max(ITEM_TO_ID.values()) == len(TRACKED_ITEMS)
-        for item in TRACKED_ITEMS:
+        assert max(ITEM_TO_ID.values()) == len(_ALL_TRACKED_ITEMS)
+        for item in _ALL_TRACKED_ITEMS:
             assert item in ITEM_TO_ID
 
     def test_num_abilities_includes_unknown(self):
@@ -647,8 +648,8 @@ class TestEntityIDEmbeddings:
         assert NUM_ABILITIES == len(ABILITY_TO_ID) + 1
 
     def test_num_items_includes_unknown(self):
-        """NUM_ITEMS should be len(TRACKED_ITEMS) + 1 for the unknown token."""
-        assert NUM_ITEMS == len(TRACKED_ITEMS) + 1
+        """NUM_ITEMS should be len(_ALL_TRACKED_ITEMS) + 1 for the unknown token."""
+        assert NUM_ITEMS == len(_ALL_TRACKED_ITEMS) + 1
 
     def test_known_ability_id(self):
         """A tracked ability should have its correct ID."""
@@ -822,8 +823,8 @@ class TestEntityIDEmbeddings:
             assert ABILITY_TO_ID[ability] == i + 1
 
     def test_item_id_deterministic_ordering(self):
-        """ITEM_TO_ID should have deterministic ordering (sorted alphabetically)."""
-        sorted_items = sorted(TRACKED_ITEMS)
+        """ITEM_TO_ID should have deterministic ordering (sorted alphabetically) over the full item vocab."""
+        sorted_items = sorted(_ALL_TRACKED_ITEMS)
         for i, item in enumerate(sorted_items):
             assert ITEM_TO_ID[item] == i + 1
 

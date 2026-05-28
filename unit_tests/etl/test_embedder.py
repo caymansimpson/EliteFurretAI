@@ -597,3 +597,21 @@ def test_dry_run_battle_embedding(vgc_json_anon):
         decision_count += 1
 
     assert decision_count > 0, "Battle should have at least one decision point"
+
+
+def test_mega_stone_to_species_and_item_vocab():
+    from elitefurretai.etl.embedder import (
+        ITEM_TO_ID,
+        build_mega_stone_to_species,
+    )
+
+    mapping = build_mega_stone_to_species(9)
+    # Known stones map to their mega forme species keys
+    assert mapping["venusaurite"] == "venusaurmega"
+    assert mapping["charizarditex"] == "charizardmegax"
+    assert mapping["charizarditey"] == "charizardmegay"
+    # Rayquaza-Mega has no stone (requiredMove), so no rayquaza entry
+    assert all(v != "rayquazamega" for v in mapping.values())
+    # Stones are present in the item id space (nonzero ids)
+    assert ITEM_TO_ID.get("venusaurite", 0) > 0
+    assert ITEM_TO_ID.get("charizarditex", 0) > 0

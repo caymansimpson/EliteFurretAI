@@ -1768,9 +1768,24 @@ PROTECT_MOVES = {
 # Boost range for one-hot encoding: -6 to +6 inclusive = 13 bins
 BOOST_RANGE = list(range(-6, 7))
 
-# Entity ID mappings: 0 = unknown/unseen, 1-N = known entities
-# Sorted for deterministic ordering
-ITEM_TO_ID = {item: i + 1 for i, item in enumerate(sorted(TRACKED_ITEMS))}
+DEFAULT_GEN = 9
+
+
+def build_mega_stone_to_species(gen: int) -> Dict[str, str]:
+    """Map Mega Stone item id -> mega-forme species key, from the gen pokedex.
+
+    Derived from each mega forme's ``requiredItem`` field. The mega forme entry
+    also carries the prospective baseStats / types / abilities the embedder reads.
+    Rayquaza-Mega uses ``requiredMove`` (Dragon Ascent), so it has no stone here.
+    """
+    pokedex = GenData.from_gen(gen).pokedex
+    mapping: Dict[str, str] = {}
+    for species_key, entry in pokedex.items():
+        forme = str(entry.get("forme", ""))
+        required_item = entry.get("requiredItem")
+        if forme.startswith("Mega") and required_item:
+            mapping[to_id_str(str(required_item))] = species_key
+    return mapping
 
 
 def build_ability_to_id(gen: int) -> Dict[str, int]:
@@ -1809,13 +1824,18 @@ def build_move_to_id(gen: int) -> Dict[str, int]:
     return {m: i + 1 for i, m in enumerate(moves)}
 
 
-DEFAULT_GEN = 9
+# Entity ID mappings: 0 = unknown/unseen, 1-N = known entities
+# Sorted for deterministic ordering. Mega Stones are added from the pokedex.
+MEGA_STONE_TO_SPECIES = build_mega_stone_to_species(DEFAULT_GEN)
+_ALL_TRACKED_ITEMS = TRACKED_ITEMS | set(MEGA_STONE_TO_SPECIES.keys())
+ITEM_TO_ID = {item: i + 1 for i, item in enumerate(sorted(_ALL_TRACKED_ITEMS))}
+
 ABILITY_TO_ID = build_ability_to_id(DEFAULT_GEN)
 SPECIES_TO_ID = build_species_to_id(DEFAULT_GEN)
 MOVE_TO_ID = build_move_to_id(DEFAULT_GEN)
 
 # Vocabulary sizes (including the 0 = unknown token)
 NUM_ABILITIES = len(ABILITY_TO_ID) + 1  # +1 for unknown (index 0)
-NUM_ITEMS = len(TRACKED_ITEMS) + 1  # +1 for unknown (index 0)
+NUM_ITEMS = len(_ALL_TRACKED_ITEMS) + 1  # +1 for unknown (index 0)
 NUM_SPECIES = len(SPECIES_TO_ID) + 1  # +1 for unknown (index 0)
 NUM_MOVES = len(MOVE_TO_ID) + 1  # +1 for unknown (index 0)
