@@ -961,6 +961,9 @@ class Embedder:
         # emb[prefix + "level"] = mon.level if mon else -1
         emb[prefix + "weight"] = mon.weight if mon else -1
         emb[prefix + "is_terastallized"] = mon.is_terastallized if mon else -1
+        emb[prefix + "is_mega_evolved"] = (
+            int(mon.forme_change_ability is not None) if mon else -1
+        )
 
         # Add stats
         for stat in ["hp", "atk", "def", "spa", "spd", "spe"]:
@@ -1138,6 +1141,9 @@ class Embedder:
         # emb[prefix + "level"] = mon.level if mon else -1
         emb[prefix + "weight"] = mon.weight if mon else -1
         emb[prefix + "is_terastallized"] = int(mon.is_terastallized) if mon else -1
+        emb[prefix + "is_mega_evolved"] = (
+            int(mon.forme_change_ability is not None) if mon else -1
+        )
 
         # Add stats by calculating
         stats = ["hp", "atk", "def", "spa", "spd", "spe"]
@@ -1323,6 +1329,21 @@ class Embedder:
         emb["p1rating"] = battle.rating if battle.rating else -1
         emb["p2rating"] = battle.opponent_rating if battle.opponent_rating else -1
         emb["turn"] = battle.turn
+
+        # Per-slot gimmick availability and battle-level gimmick-spent flags
+        can_mega = battle.can_mega_evolve or [False, False]
+        can_tera = battle.can_tera or [False, False]
+        for slot in (0, 1):
+            emb["CAN_MEGA:" + str(slot)] = (
+                int(bool(can_mega[slot])) if slot < len(can_mega) else -1
+            )
+            emb["CAN_TERA:" + str(slot)] = (
+                int(bool(can_tera[slot])) if slot < len(can_tera) else -1
+            )
+        emb["OUR_GIMMICK_SPENT"] = int(battle.used_tera or battle.used_mega_evolve)
+        emb["OPP_GIMMICK_SPENT"] = int(
+            battle.opponent_used_tera or battle.opponent_used_mega_evolve
+        )
 
         return emb
 

@@ -675,3 +675,53 @@ def test_prospective_mega_block_present_for_none_mon_and_opponent():
     assert "MEGA_STAT:def" in opp_none
     assert "MEGA_TYPE:GRASS" in opp_none
     assert "mega_ability_id" in opp_none
+
+
+def test_is_mega_evolved_per_mon_flag():
+    from elitefurretai.etl.embedder import Embedder
+
+    embedder = Embedder()
+    dummy_battle = DoubleBattle("tag", "elitefurretai", None, gen=9)  # type: ignore
+    dummy_battle._format = f"gen{embedder.gen}default"
+    dummy_battle.player_role = "p1"
+
+    # Not mega-evolved
+    mon = Pokemon(gen=9, species="venusaur")
+    emb = embedder.generate_pokemon_features(mon, dummy_battle)
+    assert emb["is_mega_evolved"] == 0
+
+    # After mega-evolving, forme_change_ability is set -> flag is 1
+    mega_mon = Pokemon(gen=9, species="venusaur")
+    mega_mon.mega_evolve("venusaurite")
+    emb2 = embedder.generate_pokemon_features(mega_mon, dummy_battle)
+    assert emb2["is_mega_evolved"] == 1
+
+    # None mon -> sentinel
+    none_emb = embedder.generate_pokemon_features(None, dummy_battle)
+    assert none_emb["is_mega_evolved"] == -1
+    # opponent method exposes the flag too
+    assert "is_mega_evolved" in embedder.generate_opponent_pokemon_features(
+        None, dummy_battle
+    )
+
+
+def test_battle_features_gimmick_availability_and_spent():
+    from elitefurretai.etl.embedder import Embedder
+
+    embedder = Embedder()
+    battle = DoubleBattle("tag", "elitefurretai", None, gen=9)  # type: ignore
+    battle._format = f"gen{embedder.gen}default"
+    battle.player_role = "p1"
+    battle._can_mega_evolve = [True, False]
+    battle._can_tera = [False, False]
+    battle._used_mega_evolve = True
+    battle._used_tera = False
+    battle._opponent_used_mega_evolve = False
+    battle._opponent_used_tera = False
+
+    feats = embedder.generate_battle_features(battle)
+    assert feats["CAN_MEGA:0"] == 1
+    assert feats["CAN_MEGA:1"] == 0
+    assert feats["CAN_TERA:0"] == 0
+    assert feats["OUR_GIMMICK_SPENT"] == 1  # used_mega_evolve True
+    assert feats["OPP_GIMMICK_SPENT"] == 0
