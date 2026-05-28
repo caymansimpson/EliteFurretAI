@@ -421,6 +421,7 @@ class DummyBattle:
         self.active_pokemon = [None, None]
         self.team = {str(i): i for i in range(6)}
         self.available_moves: List[List[Any]] = [[], []]
+        self.can_mega_evolve: Union[List[bool], None] = None
 
     def __getattr__(self, name):
         return None
@@ -501,6 +502,7 @@ def test_to_double_battle_order_emits_mega_when_can_mega_evolve():
     battle.can_mega_evolve = [True, False]
 
     dbo = mdbo.to_double_battle_order(battle)  # type: ignore
+    assert isinstance(dbo, DoubleBattleOrder)
     assert dbo.first_order.mega is True
     assert dbo.first_order.terastallize is False
     assert dbo.second_order.mega is False
@@ -525,6 +527,7 @@ def test_to_double_battle_order_emits_tera_when_not_mega_format():
     ]
 
     dbo = mdbo.to_double_battle_order(battle)  # type: ignore
+    assert isinstance(dbo, DoubleBattleOrder)
     assert dbo.first_order.terastallize is True
     assert dbo.first_order.mega is False
     assert dbo.second_order.terastallize is False

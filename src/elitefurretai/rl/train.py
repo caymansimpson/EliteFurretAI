@@ -1136,7 +1136,9 @@ def main():
                     config.training.use_wandb
                     and updates % config.training.log_interval == 0
                 ):
-                    wandb.log({k: v for k, v in metrics.items() if k != "ppo_epochs_actual"})
+                    wandb.log(
+                        {k: v for k, v in metrics.items() if k != "ppo_epochs_actual"}
+                    )
 
                 # ===== ADD NEW REFERENCE TO PORTFOLIO =====
                 # The reference set is the "anchors" the KL penalty pulls the current
