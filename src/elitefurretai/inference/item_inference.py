@@ -444,15 +444,17 @@ class ItemInference:
         # Only check for the ident
         affected_by_entry_hazard = any(
             map(
-                lambda x: x[-1]
-                in {
-                    "psn",
-                    "tox",
-                    "[from] Spikes",
-                    "[from] Stealth Rock",
-                    "move: Sticky Web",
-                }
-                and standardize_pokemon_ident(x[2]) == ident,
+                lambda x: (
+                    x[-1]
+                    in {
+                        "psn",
+                        "tox",
+                        "[from] Spikes",
+                        "[from] Stealth Rock",
+                        "move: Sticky Web",
+                    }
+                    and standardize_pokemon_ident(x[2]) == ident
+                ),
                 events,
             )
         )
@@ -782,15 +784,19 @@ class ItemInference:
             # Flinch will only happen if we damage the pokemon
             damaged = any(
                 map(
-                    lambda j: events[j][1] == "-damage"
-                    and standardize_pokemon_ident(events[j][2]) == target,
+                    lambda j: (
+                        events[j][1] == "-damage"
+                        and standardize_pokemon_ident(events[j][2]) == target
+                    ),
                     range(i, end),
                 )
             )
             fainted = any(
                 map(
-                    lambda j: events[j][1] == "faint"
-                    and standardize_pokemon_ident(events[j][2]) == target,
+                    lambda j: (
+                        events[j][1] == "faint"
+                        and standardize_pokemon_ident(events[j][2]) == target
+                    ),
                     range(i, end),
                 )
             )
@@ -880,9 +886,11 @@ class ItemInference:
                 and not has_sandstorm_immunity(self._battle.opponent_active_pokemon)
                 and not any(
                     map(
-                        lambda x: self._battle.opponent_role is not None
-                        and x[1].startswith(self._battle.opponent_role)
-                        and x[-1] == "[from] Sandstorm",
+                        lambda x: (
+                            self._battle.opponent_role is not None
+                            and x[1].startswith(self._battle.opponent_role)
+                            and x[-1] == "[from] Sandstorm"
+                        ),
                         events,
                     )
                 )

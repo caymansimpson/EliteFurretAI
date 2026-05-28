@@ -779,7 +779,8 @@ def evaluate(
             metrics["switch_count"] += valid_switches.numel()
 
         # Update step count
-        steps += valid_states.size(0)
+        if valid_states is not None:
+            steps += valid_states.size(0)
         metrics["steps"] = steps
 
     # Normalize metrics

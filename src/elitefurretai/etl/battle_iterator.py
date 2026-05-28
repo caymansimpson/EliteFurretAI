@@ -410,8 +410,10 @@ class BattleIterator:
             elif (
                 any(
                     map(
-                        lambda x: (x[1] == "-activate" and x[3] == "move: Substitute")
-                        or (x[1] == "-end" and x[3] == "Substitute"),
+                        lambda x: (
+                            (x[1] == "-activate" and x[3] == "move: Substitute")
+                            or (x[1] == "-end" and x[3] == "Substitute")
+                        ),
                         next_logs,
                     )
                 )
@@ -424,9 +426,11 @@ class BattleIterator:
             elif (
                 any(
                     map(
-                        lambda x: x is not None
-                        and x[1] == "-block"
-                        and x[3] == "ability: Disguise",
+                        lambda x: (
+                            x is not None
+                            and x[1] == "-block"
+                            and x[3] == "ability: Disguise"
+                        ),
                         next_logs,
                     )
                 )
@@ -479,9 +483,11 @@ class BattleIterator:
             # that the Red Card is ejecting the Eject Pack mon
             elif any(
                 map(
-                    lambda x: len(x) > 4
-                    and x[3] == "Red Card"
-                    and split_message[2] == x[4].replace("[of] ", ""),
+                    lambda x: (
+                        len(x) > 4
+                        and x[3] == "Red Card"
+                        and split_message[2] == x[4].replace("[of] ", "")
+                    ),
                     next_logs,
                 )
             ):
@@ -517,8 +523,10 @@ class BattleIterator:
         # Looks to see if a mon is fainted from the team (or is about to faint due to perish)
         needs_replacement = any(
             map(
-                lambda x: x.startswith("|faint|" + perspective)
-                or (x.startswith("|-start|" + perspective) and x.endswith("|perish0")),
+                lambda x: (
+                    x.startswith("|faint|" + perspective)
+                    or (x.startswith("|-start|" + perspective) and x.endswith("|perish0"))
+                ),
                 logs,
             )
         ) or (
@@ -526,8 +534,10 @@ class BattleIterator:
             # revived one back in
             any(
                 map(
-                    lambda x: x.startswith("|-heal|" + perspective)
-                    and "|[from] move: Revival Blessing" in x,
+                    lambda x: (
+                        x.startswith("|-heal|" + perspective)
+                        and "|[from] move: Revival Blessing" in x
+                    ),
                     logs,
                 )
             )
@@ -565,8 +575,9 @@ class BattleIterator:
         actives_non_fainted = len(
             list(
                 filter(
-                    lambda x: x is not None
-                    and not (x.fainted or Effect.PERISH0 in x.effects),
+                    lambda x: (
+                        x is not None and not (x.fainted or Effect.PERISH0 in x.effects)
+                    ),
                     actives,
                 )
             )

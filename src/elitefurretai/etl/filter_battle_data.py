@@ -111,8 +111,10 @@ def is_valid_for_supervised_learning(bd: BattleData) -> bool:
     # Remove battles with Eject Pack proc after Moody boost (bad showdown logic)
     elif any(
         map(
-            lambda x: bd.logs[x].endswith("Eject Pack")
-            and bd.logs[max(0, x - 3)].endswith("|Moody|boost"),
+            lambda x: (
+                bd.logs[x].endswith("Eject Pack")
+                and bd.logs[max(0, x - 3)].endswith("|Moody|boost")
+            ),
             range(len(bd.logs)),
         )
     ):

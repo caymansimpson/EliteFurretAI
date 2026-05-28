@@ -65,12 +65,18 @@ exclude = [
     "data/battles",
     "data/database",
     "data/models",
+    "src/elitefurretai/engine/analyze",
     "src/elitefurretai/etl/analyze",
     "src/elitefurretai/inference/analyze",
     "src/elitefurretai/rl/analyze",
     "src/elitefurretai/supervised/analyze",
 ]
 pythonVersion = "3.12"
+# torch's PEP 561 stubs declare most public symbols (torch.zeros, torch.tensor,
+# torch.cat, ...) through nested re-export paths that pyright 1.1.409+ flags as
+# private under the default reportPrivateImportUsage rule. We use these
+# throughout, so the rule is pure noise.
+reportPrivateImportUsage = "none"
 
 [tool.pytest.ini_options]
 minversion = "6.0"
