@@ -159,3 +159,13 @@ the regMA graduation bar.
   feature block (multi-hot `MEGA_TYPE`); data currency via poke-env fork merge-from-upstream
   (not a bespoke checker); re-process + re-finetune BC with vocab-aware warm-start; tera:mega
   ratio as a tuned config knob. Open: ratio default, regMA graduation bar.
+- 2026-05-27 ~17:40 — Task A0 done. Investigation found gen9 **data was already current**
+  (pokedex diff empty; only a non-standard future-move tweak in gen9moves.json), so the merge
+  was not needed for data currency. At the user's direction we merged `upstream/master` anyway
+  (13 commits: bo3, battle-tracking fixes, perf) into the poke-env fork (`83682b5`, not pushed;
+  backup branch `pre-upstream-merge-backup-2026-05-27` at `f97d0f6`). One merge conflict in
+  `player.py` (upstream bo3 vs the EFAI battle-finished guard) resolved by nesting both. One
+  EFAI breakage: upstream #911 removed `Move.deduced_target`; fixed by switching the embedder's
+  `TARGET:` feature to `Move.target` (equivalent for all non-special moves) — committed to EFAI
+  `main` (`cc0e05e`). Full EFAI suite green. Mega vocab gap (Mega Stones) is unaffected and
+  remains Task A1.
