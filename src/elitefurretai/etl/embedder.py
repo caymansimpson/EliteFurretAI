@@ -912,7 +912,9 @@ class Embedder:
         if species_key is None:
             return None
         entry = self._pokedex.get(species_key)
-        if entry and to_id_str(str(entry.get("baseSpecies", ""))) == to_id_str(mon.species):
+        if entry and to_id_str(str(entry.get("baseSpecies", ""))) == to_id_str(
+            mon.species
+        ):
             return entry
         return None
 
