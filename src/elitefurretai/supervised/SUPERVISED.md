@@ -36,10 +36,20 @@ The model used for all supervised + RL training.
 - **Heads**:
   1. **Turn head** (2025 classes) — Cartesian product of legal move/target/switch/tera combinations for the two active Pokémon, flattened by `MDBO`.
   2. **Teampreview head** (90 classes) — $\binom{6}{2}\binom{4}{2}$ unordered lead/back picks.
-  3. **Win head** (distributional, C51) — 51 bins over [-1, 1]; expected value = `(softmax(logits) * support).sum(-1)`. Targets are two-hot encoded via `twohot_encode()`.
+  3. **Win head** (distributional, C51) — 51 bins over [-1, 1]; expected value = `(softmax(logits) * support).sum(-1)`. Targets are two-hot encoded via `twohot_encode()`. See [Win head target](#win-head-target--ensemble-advantage) for what the label actually is.
 - `forward()` returns `(turn_logits, tp_logits, win_values, win_dist_logits)`; `forward_with_hidden()` also returns the next context tensor.
 
 `NumberBankEncoder` swaps raw floats for learned embedding lookups on selected numeric features (HP% → 100 bins, stats → 600 bins, base power → 250 bins). Pattern-matched on `Embedder.feature_names` and applied inside `GroupedFeatureEncoder`; gated by `use_number_banks` (off by default). The Embedder output format is unchanged.
+
+### Win head target — ensemble advantage
+
+The win head does not regress to the binary battle outcome. Its per-turn label is a blended **ensemble advantage** in [-1, 1] computed by [`BattleDataset._compute_ensemble_advantage`](../etl/battle_dataset.py):
+
+1. **Position component** — [`evaluate_position_advantage(battle)`](../etl/evaluate_state.py) sums per-Pokémon HP / status / hazards / boost contributions on each side, adds speed-comparison bonuses, and normalizes the raw score by 500 into [-1, 1] (positive = favorable for the training perspective). The turn label uses `0.5 * pos[i] + 0.5 * mean(pos[i+1 : i+4])`, so it folds in a small amount of near-future position signal.
+2. **Outcome component** — `+1` if the player won the battle, `-1` otherwise.
+3. **Weighting** — for a battle of `n` turns, `outcome_weight = clip((i / (n-1))², 0.05, 0.95)` and `position_weight = 1 - outcome_weight`. Turn 0 is ~95% position / 5% outcome; the final turn is ~5% position / 95% outcome. The value head therefore sees a smooth, dense signal early in the battle and converges to the true outcome by the end. Single-turn battles fall back to pure outcome.
+
+Final per-turn label: `position_weight * (0.5 * pos[i] + 0.5 * mean(pos[i+1 : i+4])) + outcome_weight * final_outcome`. The C51 head's 51 logits over [-1, 1] are trained against this scalar via `twohot_encode()`. The "Win Correlation" row in the diagnostics table is Pearson correlation between the head's expected-value scalar `(softmax(logits) * support).sum(-1)` and the true battle outcome (per turn); "Brier Score" is against this ensemble advantage label.
 
 ## How to use it
 
