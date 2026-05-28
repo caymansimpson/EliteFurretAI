@@ -820,8 +820,10 @@ class Embedder:
         # for weather in self._knowledge["Weather"]:
         #     emb["WEATHER:" + weather.name] = int(move_weather == weather)
 
-        # OHE Targeting Types
-        deduced_target = move.deduced_target
+        # OHE Targeting Types. poke-env #911 removed Move.deduced_target as
+        # redundant; Move.target now folds in the request-target deduction
+        # (request target if present, else the move's entry target).
+        deduced_target = move.target
         for t in self._knowledge["Target"]:
             emb["TARGET:" + t.name] = int(deduced_target == t)
 
