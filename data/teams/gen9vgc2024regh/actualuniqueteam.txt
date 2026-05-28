@@ -1,0 +1,66 @@
+Zacian-Crowned @ Rusted Sword
+Ability: Intrepid Sword
+Level: 50
+Tera Type: Fairy
+EVs: 68 HP / 252 Atk / 4 Def / 20 SpD / 164 Spe
+Jolly Nature
+- Behemoth Blade
+- Play Rough
+- Sacred Sword
+- Protect
+
+Kyogre @ Mystic Water
+Ability: Drizzle
+Level: 50
+Tera Type: Grass
+EVs: 52 HP / 220 SpA / 236 Spe
+Modest Nature
+IVs: 0 Atk
+- Water Spout
+- Origin Pulse
+- Ice Beam
+- Protect
+
+Basculegion (M) @ Choice Band
+Ability: Swift Swim
+Level: 50
+Tera Type: Water
+EVs: 4 HP / 252 Atk / 252 Spe
+Adamant Nature
+- Wave Crash
+- Flip Turn
+- Last Respects
+- Aqua Jet
+
+Tsareena @ Wide Lens
+Ability: Queenly Majesty
+Level: 50
+Tera Type: Ice
+EVs: 116 HP / 132 Atk / 4 Def / 4 SpD / 252 Spe
+Adamant Nature
+- Triple Axel
+- Taunt
+- Power Whip
+- Protect
+
+Roaring Moon @ Booster Energy
+Ability: Protosynthesis
+Level: 50
+Tera Type: Flying
+EVs: 28 HP / 220 Atk / 4 Def / 4 SpD / 252 Spe
+Jolly Nature
+- Acrobatics
+- Tailwind
+- Knock Off
+- Protect
+
+Iron Treads @ Choice Band
+Ability: Quark Drive
+Level: 50
+Tera Type: Normal
+EVs: 36 HP / 252 Atk / 220 Spe
+Jolly Nature
+- Knock Off
+- Iron Head
+- High Horsepower
+- Ice Spinner

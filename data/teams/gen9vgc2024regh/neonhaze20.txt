@@ -1,0 +1,71 @@
+SubZero (Calyrex-Ice) @ Leftovers
+Ability: As One (Glastrier)
+Level: 50
+Tera Type: Water
+EVs: 252 HP / 44 Atk / 4 Def / 196 SpD / 12 Spe
+Adamant Nature
+- Glacial Lance
+- Leech Seed
+- Trick Room
+- Protect
+
+Miraidon @ Life Orb
+Ability: Hadron Engine
+Level: 50
+Tera Type: Electric
+EVs: 28 HP / 4 Def / 204 SpA / 20 SpD / 252 Spe
+Timid Nature
+IVs: 20 Atk
+- Volt Switch
+- Protect
+- Electro Drift
+- Draco Meteor
+
+Aquaranid (Araquanid) @ Electric Seed
+Ability: Water Bubble
+Level: 50
+Shiny: Yes
+Tera Type: Grass
+EVs: 252 HP / 92 Atk / 140 Def / 4 SpA / 20 SpD
+Sassy Nature
+IVs: 12 Spe
+- Liquidation
+- Wide Guard
+- Protect
+- Infestation
+
+AlohaGuy (Iron Hands) @ Assault Vest
+Ability: Quark Drive
+Level: 50
+Tera Type: Water
+EVs: 92 HP / 180 Atk / 12 Def / 220 SpD
+Brave Nature
+IVs: 0 Spe
+- Fake Out
+- Wild Charge
+- Low Kick
+- Drain Punch
+
+Astaroth (Grimmsnarl) @ Light Clay
+Ability: Prankster
+Level: 50
+Tera Type: Ghost
+EVs: 228 HP / 204 Def / 76 SpD
+Careful Nature
+IVs: 26 SpA
+- Spirit Break
+- Light Screen
+- Reflect
+- Thunder Wave
+
+Nah Man (Incineroar) @ Covert Cloak
+Ability: Intimidate
+Level: 50
+Tera Type: Grass
+EVs: 244 HP / 188 Def / 76 SpD
+Relaxed Nature
+IVs: 26 SpA / 25 Spe
+- Fake Out
+- Knock Off
+- Will-O-Wisp
+- Parting Shot
