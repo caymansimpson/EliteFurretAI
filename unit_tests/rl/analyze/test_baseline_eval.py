@@ -14,7 +14,9 @@ from elitefurretai.rl.analyze.baseline_eval import (
     _opponent_kwargs,
     _run_opponent_bucket,
     _split_battles_by_format,
+    build_eval_log_payload,
     compute_score,
+    run,
 )
 from elitefurretai.rl.analyze.evaluate import EvalResult
 from elitefurretai.rl.config import (
@@ -432,3 +434,128 @@ class TestRunOpponentBucket:
         assert result.win_rate == pytest.approx(0.74)
         assert result.n_battles == 100
         assert set(result.per_format.keys()) == {"gen9vgc2023regc", "gen9vgc2024regg"}
+
+
+# ============================================================================
+# Task 5 — baseline_eval.run driver
+# ============================================================================
+
+
+class TestRunDriver:
+    @patch("elitefurretai.rl.analyze.baseline_eval._run_opponent_bucket")
+    def test_weight_zero_bucket_is_skipped(self, mock_bucket):
+        eval_cfg = EvalConfig(enabled=True)  # foul_play weight=0.0 by default
+        mock_bucket.return_value = BucketRunResult(
+            win_rate=0.8, n_battles=100, per_format={}, wall_time_s=1.0
+        )
+        result = run(
+            eval_cfg=eval_cfg,
+            curriculum=_make_curriculum({"gen9vgc2023regc": 1.0}),
+            checkpoint_path="/tmp/m.pt",
+            server_urls=["localhost:8000"],
+            device="cpu",
+            run_tag="abcd",
+        )
+        # _run_opponent_bucket called exactly 4 times — foul_play skipped
+        assert mock_bucket.call_count == 4
+        called_opponents = {c.kwargs["opp_name"] for c in mock_bucket.call_args_list}
+        assert "foul_play" not in called_opponents
+        assert "foul_play" not in result.per_bucket
+        assert isinstance(result.score, float)
+
+    @patch("elitefurretai.rl.analyze.baseline_eval._run_opponent_bucket")
+    def test_score_uses_active_opponents_only(self, mock_bucket):
+        eval_cfg = EvalConfig(enabled=True)
+        # All four active opponents return 0.80 win_rate; only vgc_bench has target 0.60
+        # All four exceed their target (others 0.80 vs 0.80 = on target)
+        mock_bucket.return_value = BucketRunResult(
+            win_rate=0.80, n_battles=150, per_format={}, wall_time_s=1.0
+        )
+        result = run(
+            eval_cfg=eval_cfg,
+            curriculum=_make_curriculum({"gen9vgc2023regc": 1.0}),
+            checkpoint_path="/tmp/m.pt",
+            server_urls=["localhost:8000"],
+            device="cpu",
+            run_tag="abcd",
+        )
+        # SHP/MD/BC: 0.80 == 0.80 target → 0pp deficit, 0pp surplus
+        # vgc_bench: 0.80 vs 0.60 target → 20pp surplus, 0pp deficit
+        # score = surplus_alpha(=1.0) * 20pp = 20.0
+        assert result.score == pytest.approx(20.0)
+        assert result.breakdown["surplus_sum_pp"] == pytest.approx(20.0)
+        assert result.breakdown["deficit_l2_pp"] == 0.0
+
+
+# ============================================================================
+# Task 6 — build_eval_log_payload
+# ============================================================================
+
+
+def _mk_result(win_rates_per_fmt: Dict[str, Dict[str, float]]) -> MultiBucketEvalResult:
+    """Helper: per_bucket from a {opp: {fmt: win_rate}} map."""
+    per_bucket: Dict[str, BucketRunResult] = {}
+    for opp, fmts in win_rates_per_fmt.items():
+        per_format = {}
+        n_total = 0
+        for fmt, wr in fmts.items():
+            n = 100
+            per_format[fmt] = EvalResult(
+                label=opp,
+                player1_wins=int(wr * n),
+                player2_wins=n - int(wr * n),
+                ties=0,
+                battles_played=n,
+            )
+            n_total += n
+        per_bucket[opp] = BucketRunResult(
+            win_rate=sum(fmts.values()) / len(fmts),
+            n_battles=n_total,
+            per_format=per_format,
+            wall_time_s=1.0,
+        )
+    return MultiBucketEvalResult(
+        per_bucket=per_bucket,
+        score=-3.0,
+        breakdown={"deficit_l2_pp": 5.0, "surplus_sum_pp": 2.0},
+        wall_time_s=10.0,
+    )
+
+
+class TestBuildEvalLogPayload:
+    def test_top_level_keys(self):
+        cfg = EvalConfig(enabled=True)
+        r = _mk_result({"max_damage": {"gen9vgc2023regc": 0.8}})
+        p = build_eval_log_payload(r, update_step=200, eval_cfg=cfg)
+        assert p["eval/score"] == -3.0
+        assert p["eval/deficit_l2_pp"] == 5.0
+        assert p["eval/surplus_sum_pp"] == 2.0
+        assert p["eval/wall_time_s"] == 10.0
+        assert p["eval/update_step"] == 200
+
+    def test_per_opponent_win_rate(self):
+        cfg = EvalConfig(enabled=True)
+        r = _mk_result({"max_damage": {"gen9vgc2023regc": 0.8}})
+        p = build_eval_log_payload(r, update_step=0, eval_cfg=cfg)
+        assert p["eval/max_damage/win_rate"] == pytest.approx(0.8)
+
+    def test_per_format_opponent_weighted_mean(self):
+        cfg = EvalConfig(enabled=True)
+        cfg.opponents["max_damage"].weight = 2.0
+        cfg.opponents["bc_player"].weight = 1.0
+        r = _mk_result(
+            {
+                "max_damage": {"gen9vgc2023regc": 0.9},
+                "bc_player": {"gen9vgc2023regc": 0.6},
+            }
+        )
+        p = build_eval_log_payload(r, update_step=0, eval_cfg=cfg)
+        # (2 * 0.9 + 1 * 0.6) / 3 = 0.8
+        assert p["eval/gen9vgc2023regc/win_rate"] == pytest.approx(0.8)
+
+    def test_no_per_opponent_per_format_keys(self):
+        cfg = EvalConfig(enabled=True)
+        r = _mk_result({"max_damage": {"gen9vgc2023regc": 0.8, "gen9vgc2024regg": 0.7}})
+        p = build_eval_log_payload(r, update_step=0, eval_cfg=cfg)
+        assert "eval/max_damage/gen9vgc2023regc/win_rate" not in p
+        assert "eval/max_damage/gen9vgc2024regg/win_rate" not in p

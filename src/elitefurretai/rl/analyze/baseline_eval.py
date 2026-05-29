@@ -269,3 +269,91 @@ def _run_opponent_bucket(
         per_format=per_format,
         wall_time_s=time.time() - t0,
     )
+
+
+def run(
+    eval_cfg: EvalConfig,
+    curriculum: CurriculumConfig,
+    checkpoint_path: str,
+    server_urls: List[str],
+    device: str,
+    run_tag: str,
+) -> MultiBucketEvalResult:
+    """Run one full multi-bucket eval pass.
+
+    Iterates eval_cfg.opponents, skipping any with weight == 0.0 (no
+    player construction at all for those). For each active opponent,
+    dispatches to _run_opponent_bucket and aggregates the results.
+    compute_score is called over the active opponents to produce the
+    scalar W&B sweep metric.
+
+    Layer-1 cleanup is implicit: run_eval_parallel handles external
+    subprocess lifecycle internally.
+    """
+    t0 = time.time()
+    per_bucket: Dict[str, BucketRunResult] = {}
+    for opp_name, spec in eval_cfg.opponents.items():
+        if spec.weight == 0.0:
+            continue
+        per_bucket[opp_name] = _run_opponent_bucket(
+            opp_name=opp_name,
+            spec=spec,
+            eval_cfg=eval_cfg,
+            curriculum=curriculum,
+            checkpoint_path=checkpoint_path,
+            server_urls=server_urls,
+            device=device,
+            run_tag=run_tag,
+        )
+
+    win_rates = {k: r.win_rate for k, r in per_bucket.items()}
+    targets = {k: eval_cfg.opponents[k].target for k in per_bucket}
+    weights = {k: eval_cfg.opponents[k].weight for k in per_bucket}
+    score, breakdown = compute_score(win_rates, targets, weights, eval_cfg.surplus_alpha)
+    return MultiBucketEvalResult(
+        per_bucket=per_bucket,
+        score=score,
+        breakdown=breakdown,
+        wall_time_s=time.time() - t0,
+    )
+
+
+def build_eval_log_payload(
+    result: MultiBucketEvalResult,
+    update_step: int,
+    eval_cfg: EvalConfig,
+) -> Dict[str, Any]:
+    """Shape MultiBucketEvalResult for wandb.log.
+
+    Per-format value is the opponent-weight-weighted mean of per-(opp,
+    fmt) win rates across active opponents, restricted to opponents
+    that actually ran that format.
+    """
+    payload: Dict[str, Any] = {
+        "eval/score": result.score,
+        "eval/deficit_l2_pp": result.breakdown.get("deficit_l2_pp", 0.0),
+        "eval/surplus_sum_pp": result.breakdown.get("surplus_sum_pp", 0.0),
+        "eval/wall_time_s": result.wall_time_s,
+        "eval/update_step": update_step,
+    }
+    for opp, bucket in result.per_bucket.items():
+        payload[f"eval/{opp}/win_rate"] = bucket.win_rate
+
+    all_formats = set()
+    for bucket in result.per_bucket.values():
+        all_formats.update(bucket.per_format.keys())
+    for fmt in all_formats:
+        weighted_sum = 0.0
+        weight_total = 0.0
+        for opp, bucket in result.per_bucket.items():
+            if fmt not in bucket.per_format:
+                continue
+            w = eval_cfg.opponents[opp].weight
+            fmt_result = bucket.per_format[fmt]
+            n = max(fmt_result.battles_played, 1)
+            wr = fmt_result.player1_wins / n
+            weighted_sum += w * wr
+            weight_total += w
+        if weight_total > 0:
+            payload[f"eval/{fmt}/win_rate"] = weighted_sum / weight_total
+    return payload
