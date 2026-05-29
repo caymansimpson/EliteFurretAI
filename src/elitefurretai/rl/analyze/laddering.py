@@ -12,7 +12,7 @@ design rationale.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, Optional
+from typing import List, Literal, Optional
 
 
 @dataclass
@@ -32,3 +32,22 @@ class LadderRecord:
     gxe: Optional[float] = None
     replay_url: Optional[str] = None
     timestamp: Optional[str] = None
+
+
+def _parse_player_line(
+    split_message: List[str],
+) -> Optional[tuple[str, Optional[int]]]:
+    """Extract (username, rating) from a `|player|<slot>|<user>|<avatar>|<rating>` line.
+
+    Returns ``None`` for non-player messages. ``rating`` is ``None`` for
+    unrated battles or when the field is absent.
+    """
+    if not split_message or split_message[0] != "player":
+        return None
+    if len(split_message) < 3:
+        return None
+    username = split_message[2]
+    rating: Optional[int] = None
+    if len(split_message) >= 5 and split_message[4].strip():
+        rating = int(split_message[4])
+    return username, rating
