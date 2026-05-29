@@ -22,25 +22,31 @@ from elitefurretai.rl.analyze.laddering import (
 
 def test_parse_player_line_rated():
     """A |player| line for a rated battle yields username and integer rating."""
-    msg = ["player", "p2", "OpponentUser", "169", "1500"]
+    msg = ["", "player", "p2", "OpponentUser", "169", "1500"]
     assert _parse_player_line(msg) == ("OpponentUser", 1500)
 
 
 def test_parse_player_line_unrated():
     """An empty rating field yields None for the rating."""
-    msg = ["player", "p2", "OpponentUser", "169", ""]
+    msg = ["", "player", "p2", "OpponentUser", "169", ""]
     assert _parse_player_line(msg) == ("OpponentUser", None)
 
 
 def test_parse_player_line_missing_rating_field():
     """Older formats omit the rating field entirely."""
-    msg = ["player", "p2", "OpponentUser", "169"]
+    msg = ["", "player", "p2", "OpponentUser", "169"]
     assert _parse_player_line(msg) == ("OpponentUser", None)
 
 
 def test_parse_player_line_not_a_player_line():
     """Returns None when the message isn't a |player| message."""
-    assert _parse_player_line(["turn", "5"]) is None
+    assert _parse_player_line(["", "turn", "5"]) is None
+
+
+def test_parse_player_line_from_real_split():
+    """Build the fixture from an actual Showdown-style `|`-delimited message."""
+    raw: list[str] = list("|player|p2|OpponentUser|169|1500".split("|"))
+    assert _parse_player_line(raw) == ("OpponentUser", 1500)
 
 
 def test_parse_rating_change_typical():
@@ -93,7 +99,7 @@ def test_update_record_with_player_line_sets_opponent_and_pre_rating():
     record = LadderRecord(battle_tag="battle-x-1")
     _update_record(
         record,
-        ["player", "p2", "OpponentUser", "169", "1500"],
+        ["", "player", "p2", "OpponentUser", "169", "1500"],
         agent_role="p1",
     )
     assert record.opponent == "OpponentUser"
@@ -105,7 +111,7 @@ def test_update_record_ignores_own_player_line():
     record = LadderRecord(battle_tag="battle-x-1")
     _update_record(
         record,
-        ["player", "p1", "EliteFurret", "169", "1500"],
+        ["", "player", "p1", "EliteFurret", "169", "1500"],
         agent_role="p1",
     )
     assert record.opponent == ""
@@ -118,6 +124,7 @@ def test_update_record_with_raw_rating_change():
     _update_record(
         record,
         [
+            "",
             "raw",
             "<small>EliteFurret's rating: 1500 &rarr; <strong>1512</strong></small>",
         ],
@@ -130,7 +137,7 @@ def test_update_record_with_raw_rating_change():
 def test_update_record_with_raw_gxe():
     """A |raw| GXE line populates the gxe field."""
     record = LadderRecord(battle_tag="battle-x-1")
-    _update_record(record, ["raw", "<small>GXE: 54.3%</small>"], agent_role="p1")
+    _update_record(record, ["", "raw", "<small>GXE: 54.3%</small>"], agent_role="p1")
     assert record.gxe == 54.3
 
 
@@ -140,6 +147,7 @@ def test_update_record_with_raw_replay_url():
     _update_record(
         record,
         [
+            "",
             "raw",
             '<a class="ilink" '
             'href="https://replay.pokemonshowdown.com/gen9vgc2024regg-1">x</a>',

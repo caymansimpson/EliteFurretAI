@@ -51,17 +51,22 @@ def _parse_player_line(
 ) -> Optional[tuple[str, Optional[int]]]:
     """Extract (username, rating) from a `|player|<slot>|<user>|<avatar>|<rating>` line.
 
+    ``split_message`` is the result of splitting a Showdown protocol line on
+    ``"|"``.  Because the line starts with ``"|"``, ``split_message[0]`` is
+    always the empty string ``""``, the type tag sits at ``[1]``, and the
+    positional args begin at ``[2]``.
+
     Returns ``None`` for non-player messages. ``rating`` is ``None`` for
     unrated battles or when the field is absent.
     """
-    if not split_message or split_message[0] != "player":
+    if not split_message or split_message[1] != "player":
         return None
-    if len(split_message) < 3:
+    if len(split_message) < 4:
         return None
-    username = split_message[2]
+    username = split_message[3]
     rating: Optional[int] = None
-    if len(split_message) >= 5 and split_message[4].strip():
-        rating = int(split_message[4])
+    if len(split_message) >= 6 and split_message[5].strip():
+        rating = int(split_message[5])
     return username, rating
 
 
@@ -115,9 +120,9 @@ def _update_record(
     """
     if not split_message:
         return
-    tag = split_message[0]
+    tag = split_message[1]
     if tag == "player":
-        if len(split_message) < 3 or split_message[1] == agent_role:
+        if len(split_message) < 4 or split_message[2] == agent_role:
             return
         parsed = _parse_player_line(split_message)
         if parsed is None:
@@ -128,8 +133,8 @@ def _update_record(
         if rating is not None:
             record.pre_rating = rating
         return
-    if tag == "raw" and len(split_message) >= 2:
-        raw_html = split_message[1]
+    if tag == "raw" and len(split_message) >= 3:
+        raw_html = split_message[2]
         change = _parse_rating_change(raw_html)
         if change is not None:
             pre, post = change
@@ -201,6 +206,7 @@ class SimpleModelLadderPlayer(SimpleModelPlayer):
         super().__init__(*args, **kwargs)
         self._on_record = on_record
         self.ladder_records: Dict[str, LadderRecord] = {}
+        self._pending_replay_tasks: set[asyncio.Task[Any]] = set()
 
     def _get_or_create_record(self, battle_tag: str) -> LadderRecord:
         if battle_tag not in self.ladder_records:
@@ -227,21 +233,25 @@ class SimpleModelLadderPlayer(SimpleModelPlayer):
         super()._battle_finished_callback(battle)
         record = self._get_or_create_record(battle.battle_tag)
         _finalize_record(record, battle)
-        asyncio.create_task(
+        task = asyncio.create_task(
             self.ps_client.send_message("/savereplay", room=battle.battle_tag)
         )
+        self._pending_replay_tasks.add(task)
+        task.add_done_callback(self._pending_replay_tasks.discard)
         if self._on_record is not None:
             self._on_record(record)
 
 
 def _make_record_sink(
     output_path: Optional[Path],
-) -> Callable[[LadderRecord], None]:
-    """Return a callback that prints each record as a jsonl line.
+) -> tuple[Callable[[LadderRecord], None], Callable[[], None]]:
+    """Return ``(sink, close)`` — sink writes jsonl, close flushes the file handle.
 
     Always writes to stdout; if ``output_path`` is set, also appends
     to that file. The file is opened in append mode so partial runs
-    don't lose history.
+    don't lose history.  The caller must invoke ``close()`` (e.g. in a
+    ``finally`` block) to ensure the handle is flushed and released even
+    on SIGTERM.
     """
     file_handle = open(output_path, "a", encoding="utf-8") if output_path else None
 
@@ -252,7 +262,12 @@ def _make_record_sink(
             file_handle.write(line + "\n")
             file_handle.flush()
 
-    return sink
+    def close() -> None:
+        if file_handle is not None:
+            file_handle.flush()
+            file_handle.close()
+
+    return sink, close
 
 
 def _build_argparser() -> argparse.ArgumentParser:
@@ -308,6 +323,12 @@ def _build_argparser() -> argparse.ArgumentParser:
 
 async def _run_ladder(player: SimpleModelLadderPlayer, n_games: int) -> None:
     await player.ladder(n_games)
+    if player._pending_replay_tasks:
+        # Give post-final-battle /savereplay requests a chance to flush
+        # before the event loop closes.  This only ensures the send was
+        # delivered; the |raw| URL response may still arrive later, which
+        # is a known inherent race with the Showdown protocol.
+        await asyncio.gather(*player._pending_replay_tasks, return_exceptions=True)
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -319,7 +340,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     username, password = _load_credentials(args.credentials)
     team_text = args.team.read_text()
 
-    sink = _make_record_sink(args.output)
+    sink, close_sink = _make_record_sink(args.output)
     account = AccountConfiguration(username, password)
     player = SimpleModelLadderPlayer(
         model_path=str(args.checkpoint),
@@ -330,7 +351,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         server_configuration=ShowdownServerConfiguration,
         on_record=sink,
     )
-    asyncio.run(_run_ladder(player, args.n_games))
+    try:
+        asyncio.run(_run_ladder(player, args.n_games))
+    finally:
+        close_sink()
 
     final = list(player.ladder_records.values())
     won = sum(1 for r in final if r.outcome == "win")
