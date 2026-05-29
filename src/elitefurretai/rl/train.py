@@ -69,8 +69,8 @@ from multiprocessing.synchronize import Event as MPEvent
 from typing import Any, Dict, List, Optional, Tuple
 
 import torch
-
 import wandb
+
 from elitefurretai.agents.vgcbench_manager import VGCBenchManager
 from elitefurretai.engine.showdown_server_manager import (
     allocate_server_ports,
@@ -679,7 +679,7 @@ def _maybe_run_foulplay_eval(
     Exceptions are caught and logged: an eval crash must NOT kill the
     training run. See planning/stage2/2026-05-25-23-37-foulplay-eval-scope-confirmed.md.
     """
-    fp = config.eval
+    fp = config.foulplay_eval
     if not fp.enabled:
         return
     if updates == 0 or updates % fp.eval_every_n_updates != 0:

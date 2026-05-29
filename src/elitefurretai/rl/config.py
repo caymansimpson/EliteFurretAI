@@ -917,6 +917,26 @@ class RNaDConfig:
     def num_showdown_servers(self) -> int:
         return self.hardware.num_servers
 
+    @property
+    def foulplay_eval(self) -> FoulplayEvalConfig:
+        """Compatibility shim — synthesizes a FoulplayEvalConfig from the
+        unified EvalConfig so the legacy `_maybe_run_foulplay_eval` in
+        train.py keeps working until Task 7 rewrites it. Remove this
+        property in Task 7.
+        """
+        fp_spec = self.eval.opponents.get("foul_play")
+        weight = fp_spec.weight if fp_spec is not None else 0.0
+        return FoulplayEvalConfig(
+            enabled=self.eval.enabled and weight > 0,
+            eval_every_n_updates=self.eval.eval_every_n_updates,
+            n_battles_per_format=fp_spec.n_battles if fp_spec is not None else 40,
+            search_time_ms=self.eval.foulplay_search_time_ms,
+            parallelism=self.eval.foulplay_parallelism,
+            python_executable=self.eval.foulplay_python_executable,
+            foulplay_team_pool_paths=self.eval.foulplay_team_pool_paths,
+            model_probabilistic=self.eval.foulplay_model_probabilistic,
+        )
+
     # ── Annealing helpers ──────────────────────────────────────────────────────
 
     def temperature_at_step(self, step: int) -> float:
