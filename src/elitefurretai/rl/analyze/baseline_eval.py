@@ -9,7 +9,10 @@ FoulPlay subprocess is stable.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Dict, Tuple
+
+from elitefurretai.rl.analyze.evaluate import EvalResult
 
 
 def compute_score(
@@ -33,3 +36,42 @@ def compute_score(
     surplus_term = sum(weights[k] * surplus_pp[k] for k in weights)
     score = surplus_alpha * surplus_term - deficit_term
     return score, {"deficit_l2_pp": deficit_term, "surplus_sum_pp": surplus_term}
+
+
+@dataclass
+class BucketRunResult:
+    """Aggregated outcome for ONE opponent (one entry in
+    EvalConfig.opponents) after running its full eval cycle across all
+    curriculum.battle_formats.
+
+    Granularity: one BucketRunResult per active opponent per eval pass.
+
+    win_rate is the format-weighted mean of per-format win rates and is
+    the single number that feeds compute_score for this opponent.
+    per_format preserves the per-format breakdown so the wandb logger
+    can compute eval/<format>/win_rate cross-opponent aggregates.
+    """
+
+    win_rate: float
+    n_battles: int
+    per_format: Dict[str, EvalResult] = field(default_factory=dict)
+    wall_time_s: float = 0.0
+
+
+@dataclass
+class MultiBucketEvalResult:
+    """Outcome of ONE full multi-bucket eval pass.
+
+    Granularity: one MultiBucketEvalResult per call to baseline_eval.run,
+    i.e. one per checkpoint boundary during training or one per
+    standalone CLI invocation.
+
+    per_bucket has one entry per active (weight > 0) opponent.
+    Disabled opponents (weight == 0) do not appear here.
+    score is the scalar W&B sweep metric.
+    """
+
+    per_bucket: Dict[str, BucketRunResult] = field(default_factory=dict)
+    score: float = 0.0
+    breakdown: Dict[str, float] = field(default_factory=dict)
+    wall_time_s: float = 0.0

@@ -5,7 +5,12 @@ import math
 
 import pytest
 
-from elitefurretai.rl.analyze.baseline_eval import compute_score
+from elitefurretai.rl.analyze.baseline_eval import (
+    BucketRunResult,
+    MultiBucketEvalResult,
+    compute_score,
+)
+from elitefurretai.rl.analyze.evaluate import EvalResult
 
 
 def _targets_all(t: float):
@@ -110,3 +115,39 @@ class TestComputeScore:
         assert math.isfinite(score)
         assert math.isfinite(br["deficit_l2_pp"])
         assert math.isfinite(br["surplus_sum_pp"])
+
+
+class TestResultDataclasses:
+    def test_bucket_run_result_instantiation(self):
+        ev = EvalResult(
+            label="test", player1_wins=80, player2_wins=20, ties=0, battles_played=100
+        )
+        b = BucketRunResult(
+            win_rate=0.80,
+            n_battles=100,
+            per_format={"gen9vgc2023regc": ev},
+            wall_time_s=12.5,
+        )
+        assert b.win_rate == 0.80
+        assert b.n_battles == 100
+        assert "gen9vgc2023regc" in b.per_format
+        assert b.wall_time_s == 12.5
+
+    def test_multi_bucket_eval_result_instantiation(self):
+        ev = EvalResult(
+            label="test", player1_wins=80, player2_wins=20, ties=0, battles_played=100
+        )
+        bucket = BucketRunResult(
+            win_rate=0.80,
+            n_battles=100,
+            per_format={"gen9vgc2023regc": ev},
+            wall_time_s=1.0,
+        )
+        r = MultiBucketEvalResult(
+            per_bucket={"max_damage": bucket},
+            score=-5.0,
+            breakdown={"deficit_l2_pp": 5.0, "surplus_sum_pp": 0.0},
+            wall_time_s=2.0,
+        )
+        assert r.score == -5.0
+        assert r.per_bucket["max_damage"].win_rate == 0.80
