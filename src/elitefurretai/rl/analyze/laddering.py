@@ -11,6 +11,7 @@ design rationale.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import List, Literal, Optional
 
@@ -51,3 +52,26 @@ def _parse_player_line(
     if len(split_message) >= 5 and split_message[4].strip():
         rating = int(split_message[4])
     return username, rating
+
+
+_RATING_CHANGE_RE = re.compile(
+    r"rating:\s*(\d+)\s*&rarr;\s*<strong>\s*(\d+)\s*</strong>",
+    re.IGNORECASE,
+)
+_GXE_RE = re.compile(r"GXE[:\s]*([0-9]+(?:\.[0-9]+)?)\s*%", re.IGNORECASE)
+
+
+def _parse_rating_change(raw_html: str) -> Optional[tuple[int, int]]:
+    """Extract (pre_rating, post_rating) from a Showdown rating-change `|raw|` line."""
+    match = _RATING_CHANGE_RE.search(raw_html)
+    if match is None:
+        return None
+    return int(match.group(1)), int(match.group(2))
+
+
+def _parse_gxe(raw_html: str) -> Optional[float]:
+    """Extract a GXE percentage (e.g. 54.3) from a Showdown `|raw|` line."""
+    match = _GXE_RE.search(raw_html)
+    if match is None:
+        return None
+    return float(match.group(1))
