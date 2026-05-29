@@ -21,8 +21,8 @@ from poke_env.ps_client.server_configuration import (
 )
 from poke_env.teambuilder.teambuilder import Teambuilder
 
-from elitefurretai.inference.inference_utils import battle_to_str
-from elitefurretai.rl.players import MaxDamagePlayer
+from elitefurretai.agents import MaxDamagePlayer
+from elitefurretai.engine.battle_renderer import format_battle_log
 
 # =============================================================================
 # SERVER MANAGEMENT
@@ -195,7 +195,7 @@ class CustomPlayer(RandomPlayer):
     # Print the battle upon battle completion, and save the observations in a BattleData object to the Desktop
     def _battle_finished_callback(self, battle: AbstractBattle):
         if self.username == "elitefurretai":
-            print(battle_to_str(battle))
+            print(format_battle_log(battle))
 
 
 async def main():
@@ -234,14 +234,13 @@ async def main():
 
         p1 = CustomPlayer(
             AccountConfiguration("elitefurretai", None),
-            battle_format="gen9vgc2025regi",
+            battle_format="gen9vgc2026regi",
             team=pokepaste,
             server_configuration=LocalhostServerConfiguration,
         )
 
         p2 = MaxDamagePlayer(
-            battle_format="gen9vgc2025regi",
-            debug=True,
+            battle_format="gen9vgc2026regi",
             team=pokepaste,
             server_configuration=LocalhostServerConfiguration,
             account_configuration=AccountConfiguration("maxdamage", None),
