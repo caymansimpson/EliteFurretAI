@@ -677,29 +677,26 @@ def test_resolved_opponent_team_pool_paths_none_maps_every_format_to_none():
 # =============================================================================
 
 
-def test_default_foulplay_eval_config_disabled():
+def test_default_eval_config_disabled():
     """
-    FoulplayEvalConfig defaults to disabled.
+    EvalConfig defaults to disabled.
 
-    Eval against FoulPlay is opt-in because it requires a separately
-    installed venv (`../venv-foulplay`) and saturates the machine
-    during search. Default-on would either crash a fresh checkout or
-    silently slow training.
+    Inline eval is opt-in; default-on would either crash a fresh
+    checkout (missing venvs / executables) or slow training unexpectedly.
     """
     config = get_default_config()
-    assert config.foulplay_eval.enabled is False
-    assert config.foulplay_eval.eval_every_n_updates == 50
-    assert config.foulplay_eval.n_battles_per_format == 100
-    assert config.foulplay_eval.search_time_ms == 750
-    assert config.foulplay_eval.parallelism == 4
-    assert config.foulplay_eval.python_executable is None
-    assert config.foulplay_eval.foulplay_team_pool_paths is None
-    assert config.foulplay_eval.model_probabilistic is False
+    assert config.eval.enabled is False
+    assert config.eval.eval_every_n_updates == 500
+    assert config.eval.pause_training is True
+    assert config.eval.surplus_alpha == 1.0
+    assert config.eval.opponents["foul_play"].weight == 0.0
+    assert config.eval.foulplay_team_pool_paths is None
+    assert config.eval.foulplay_model_probabilistic is False
 
 
-def _foulplay_test_config(tmp_path) -> RNaDConfig:
+def _eval_test_config(tmp_path) -> RNaDConfig:
     """Build a config with all prerequisites for verify() satisfied except
-    foulplay-specific fields. Tests then mutate only the foulplay slice."""
+    eval-specific fields. Tests then mutate only the eval slice."""
     base_team_path = tmp_path / "teams"
     base_team_path.mkdir()
     fmt_dir = base_team_path / "gen9vgc2024regg"
@@ -716,116 +713,66 @@ def _foulplay_test_config(tmp_path) -> RNaDConfig:
     config.curriculum.bc_model_path = None
     # Existing vgcbench validator fires when the baseline has positive weight.
     config.curriculum.curriculum_weights = {"vgc_bench_baseline": 0.0}
+    # Zero out all opponent weights so only the one under test triggers.
+    for spec in config.eval.opponents.values():
+        spec.weight = 0.0
     return config
 
 
-def test_foulplay_eval_verify_requires_python_executable_when_enabled(tmp_path):
-    """
-    Verify() rejects an enabled FoulPlay eval without python_executable.
+def test_foulplay_eval_verify_requires_existing_foulplay_executable(tmp_path):
+    """Verify() rejects an enabled FoulPlay opponent with a non-existent executable."""
+    config = _eval_test_config(tmp_path)
+    config.eval.enabled = True
+    config.eval.opponents["foul_play"].weight = 1.0
+    config.eval.foulplay_python_executable = str(tmp_path / "does_not_exist")
 
-    The subprocess lives in its own venv; without the interpreter path
-    we cannot launch it. Fail loudly at config-load time rather than at
-    first checkpoint-eval boundary, mid-training.
-    """
-    config = _foulplay_test_config(tmp_path)
-    config.foulplay_eval.enabled = True
-    config.foulplay_eval.python_executable = None
-
-    with pytest.raises(AssertionError, match="python_executable"):
+    with pytest.raises(ValueError, match="foulplay_python_executable"):
         config.verify()
 
 
-def test_foulplay_eval_verify_requires_existing_python_executable(tmp_path):
-    """A non-existent python_executable path is rejected when enabled."""
-    config = _foulplay_test_config(tmp_path)
-    config.foulplay_eval.enabled = True
-    config.foulplay_eval.python_executable = str(tmp_path / "does_not_exist")
+def test_foulplay_eval_verify_foulplay_disabled_when_weight_zero(tmp_path):
+    """When foul_play weight is 0, foulplay_python_executable is not checked."""
+    config = _eval_test_config(tmp_path)
+    config.eval.enabled = True
+    config.eval.opponents["foul_play"].weight = 0.0
+    config.eval.foulplay_python_executable = str(tmp_path / "does_not_exist")
 
-    with pytest.raises(AssertionError, match="python_executable"):
-        config.verify()
-
-
-def test_foulplay_eval_verify_checks_per_format_team_pools(tmp_path):
-    """
-    When foulplay_team_pool_paths is set, every active format must
-    point at a directory that exists. Missing or extra keys are
-    treated the same way CurriculumConfig.__post_init__ treats the
-    parallel dict-form fields.
-    """
-    config = _foulplay_test_config(tmp_path)
-    # Switch to two formats so we can probe per-format validation.
-    base_team_path = tmp_path / "teams"
-    (base_team_path / "gen9vgc2024regh").mkdir()
-    (base_team_path / "gen9vgc2024regh" / "agent").mkdir()
-    (base_team_path / "gen9vgc2024regh" / "agent" / "team.txt").write_text("placeholder")
-    config.curriculum.battle_formats = {
-        "gen9vgc2024regg": 0.7,
-        "gen9vgc2024regh": 0.3,
-    }
-
-    fake_py = tmp_path / "python"
-    fake_py.write_text("")
-    pool_g = tmp_path / "regg_pool"
-    pool_g.mkdir()
-    config.foulplay_eval.enabled = True
-    config.foulplay_eval.python_executable = str(fake_py)
-    # regh's pool is missing on disk — should be rejected.
-    config.foulplay_eval.foulplay_team_pool_paths = {
-        "gen9vgc2024regg": str(pool_g),
-        "gen9vgc2024regh": str(tmp_path / "regh_pool_missing"),
-    }
-
-    with pytest.raises(AssertionError, match="foulplay_team_pool"):
-        config.verify()
-
-
-def test_foulplay_eval_verify_falls_back_to_opponent_pool_when_unset(tmp_path):
-    """
-    foulplay_team_pool_paths=None means: use opponent_team_pool_paths
-    per format. Verify() should not require foulplay-specific paths
-    when None is set — it should pass through the existing
-    opponent-pool validation.
-    """
-    config = _foulplay_test_config(tmp_path)
-    # Set up opponent pool so the existing validator is happy.
-    fmt_dir = tmp_path / "teams" / "gen9vgc2024regg"
-    pool_subdir = fmt_dir / "constrained"
-    pool_subdir.mkdir()
-    (pool_subdir / "team.txt").write_text("placeholder")
-    config.curriculum.opponent_team_pool_path = "constrained"
-
-    fake_py = tmp_path / "python"
-    fake_py.write_text("")
-    config.foulplay_eval.enabled = True
-    config.foulplay_eval.python_executable = str(fake_py)
-    config.foulplay_eval.foulplay_team_pool_paths = None
-
-    # Should not raise.
+    # Should not raise — weight=0 means FoulPlay is inactive.
     config.verify()
 
 
-def test_foulplay_eval_yaml_round_trip(tmp_path):
-    """
-    FoulplayEvalConfig survives a save/load cycle through YAML.
+def test_vgcbench_eval_verify_requires_existing_executable(tmp_path):
+    """Verify() rejects an enabled vgc_bench opponent with a non-existent executable."""
+    config = _eval_test_config(tmp_path)
+    config.eval.enabled = True
+    config.eval.opponents["vgc_bench"].weight = 1.0
+    config.eval.vgcbench_python_executable = str(tmp_path / "does_not_exist")
 
-    This guards against the from_dict path silently dropping the
-    foulplay_eval sub-config when load_partial_yaml-style users only
-    set some keys.
+    with pytest.raises(ValueError, match="vgcbench_python_executable"):
+        config.verify()
+
+
+def test_eval_yaml_round_trip(tmp_path):
+    """
+    EvalConfig survives a save/load cycle through YAML.
+
+    Guards against from_dict silently dropping the eval sub-config
+    when partial YAML only sets some keys.
     """
     config = get_default_config()
-    config.foulplay_eval.enabled = True
-    config.foulplay_eval.n_battles_per_format = 25
-    config.foulplay_eval.python_executable = "/tmp/python-foulplay"
-    config.foulplay_eval.foulplay_team_pool_paths = {"gen9vgc2023regc": "/tmp/teams"}
+    config.eval.enabled = True
+    config.eval.eval_every_n_updates = 250
+    config.eval.foulplay_python_executable = "/tmp/python-foulplay"
+    config.eval.foulplay_team_pool_paths = {"gen9vgc2023regc": "/tmp/teams"}
 
     path = tmp_path / "config.yaml"
     config.save(str(path))
     loaded = RNaDConfig.load(str(path))
 
-    assert loaded.foulplay_eval.enabled is True
-    assert loaded.foulplay_eval.n_battles_per_format == 25
-    assert loaded.foulplay_eval.python_executable == "/tmp/python-foulplay"
-    assert loaded.foulplay_eval.foulplay_team_pool_paths == {
+    assert loaded.eval.enabled is True
+    assert loaded.eval.eval_every_n_updates == 250
+    assert loaded.eval.foulplay_python_executable == "/tmp/python-foulplay"
+    assert loaded.eval.foulplay_team_pool_paths == {
         "gen9vgc2023regc": "/tmp/teams"
     }
 

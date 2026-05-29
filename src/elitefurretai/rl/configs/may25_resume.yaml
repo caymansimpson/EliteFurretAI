@@ -183,21 +183,5 @@ exploiter:
   lr: 0.0001
   ent_coef: 0.02
 
-foulplay_eval:
-  # Disabled by default. Enable per-run to add a search-bot ground-truth
-  # eval signal against foul-play-doubles (top-100 search bot). Each
-  # eval pass pauses training for ~30–60 min at production cadence
-  # (n_battles_per_format=100, search_time_ms=750). FoulPlay's 8-core
-  # search saturates the machine so concurrent battles aren't viable.
-  # Setup: see RL.md "FoulPlay eval setup" section.
-  # Design: planning/stage2/2026-05-25-23-37-foulplay-eval-scope-confirmed.md.
+eval:
   enabled: false
-  eval_every_n_updates: 50
-  n_battles_per_format: 100
-  search_time_ms: 750
-  parallelism: 4
-  python_executable: /home/cayman/Repositories/venv-foulplay/bin/python
-  # When null, defaults to opponent_team_pool_paths[fmt] for each format.
-  # Override to give FoulPlay a separate eval team set.
-  foulplay_team_pool_paths: null
-  model_probabilistic: false

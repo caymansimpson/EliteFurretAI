@@ -732,6 +732,64 @@ class FoulplayEvalConfig:
 
 
 @dataclass
+class OpponentEvalSpec:
+    """Per-opponent eval config. Lives in EvalConfig.opponents keyed by
+    canonical opponent name. Fields apply across all curriculum formats:
+    n_battles is split per-format using curriculum.battle_formats weights.
+    """
+
+    target: float
+    weight: float
+    n_battles: int
+
+
+@dataclass
+class EvalConfig:
+    """Inline-during-training multi-bucket eval (replaces FoulplayEvalConfig).
+
+    Drives a generic eval pass against every opponent in `opponents` whose
+    weight > 0. The pass runs at checkpoint cadence (every
+    `eval_every_n_updates`), pauses training, and emits a scalar
+    `eval/score` metric for W&B sweeps. See
+    planning/stage2/2026-05-29-21-00-rl-wandb-sweep-eval-design.md.
+
+    FoulPlay is one opponent in this dict. Its default weight is 0.0
+    until the subprocess is stable; flipping the weight in YAML is the
+    only thing needed to enable it.
+    """
+
+    enabled: bool = False
+    eval_every_n_updates: int = 500
+    pause_training: bool = True
+    surplus_alpha: float = 1.0
+
+    opponents: Dict[str, OpponentEvalSpec] = field(
+        default_factory=lambda: {
+            "simple_heuristic_baseline": OpponentEvalSpec(
+                target=0.80, weight=1.0, n_battles=150
+            ),
+            "max_damage": OpponentEvalSpec(target=0.80, weight=1.0, n_battles=150),
+            "vgc_bench": OpponentEvalSpec(target=0.60, weight=1.0, n_battles=100),
+            "bc_player": OpponentEvalSpec(target=0.80, weight=1.0, n_battles=150),
+            "foul_play": OpponentEvalSpec(target=0.50, weight=0.0, n_battles=40),
+        }
+    )
+
+    # Opponent-specific runtime knobs (read only when the corresponding
+    # opponent's weight > 0). Naming follows the `<opp>_*` convention
+    # used by player_factory for cross-venv subprocess kwargs.
+    vgcbench_checkpoint_path: str = "data/models/vgc-bench-sb3-model.zip"
+    vgcbench_team_file: str = "data/teams/gen9vgc2024regg/vgcbench.txt"
+    vgcbench_python_executable: str = "/home/cayman/Repositories/venv-vgcbench/bin/python"
+
+    foulplay_search_time_ms: int = 750
+    foulplay_python_executable: str = "/home/cayman/Repositories/venv-foulplay/bin/python"
+    foulplay_team_pool_paths: Optional[Dict[str, str]] = None
+    foulplay_parallelism: int = 8
+    foulplay_model_probabilistic: bool = False
+
+
+@dataclass
 class TrainingConfig:
     """Training loop, checkpointing, and logging settings.
 
@@ -795,6 +853,29 @@ def _merge_sub(factory: Any, d: Dict[str, Any]) -> Any:
     return replace(base, **{k: v for k, v in d.items() if k in known})
 
 
+def _make_eval_sub(data: dict) -> "EvalConfig":
+    """Construct EvalConfig from YAML dict, merging the opponents map
+    with EvalConfig defaults so partial YAML overrides work.
+    """
+    defaults = EvalConfig()
+    data = dict(data)
+    opponents_override = data.pop("opponents", {})
+    merged_opponents = dict(defaults.opponents)
+    for name, opp_data in opponents_override.items():
+        existing = merged_opponents.get(
+            name, OpponentEvalSpec(target=0.5, weight=0.0, n_battles=0)
+        )
+        merged_opponents[name] = OpponentEvalSpec(
+            target=opp_data.get("target", existing.target),
+            weight=opp_data.get("weight", existing.weight),
+            n_battles=opp_data.get("n_battles", existing.n_battles),
+        )
+    known = {f for f in EvalConfig.__dataclass_fields__}
+    return EvalConfig(
+        opponents=merged_opponents, **{k: v for k, v in data.items() if k in known}
+    )
+
+
 @dataclass
 class RNaDConfig:
     """Hierarchical configuration for RNaD training.
@@ -811,7 +892,7 @@ class RNaDConfig:
     curriculum: CurriculumConfig = field(default_factory=CurriculumConfig)
     exploiter: ExploiterConfig = field(default_factory=ExploiterConfig)
     exploration: ExplorationConfig = field(default_factory=ExplorationConfig)
-    foulplay_eval: FoulplayEvalConfig = field(default_factory=FoulplayEvalConfig)
+    eval: EvalConfig = field(default_factory=EvalConfig)
     hardware: HardwareConfig = field(default_factory=HardwareConfig)
     optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
     portfolio: PortfolioConfig = field(default_factory=PortfolioConfig)
@@ -887,6 +968,10 @@ class RNaDConfig:
         return cls.from_dict(data)
 
     @classmethod
+    def from_yaml(cls, filepath: str) -> "RNaDConfig":
+        return cls.load(filepath)
+
+    @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "RNaDConfig":
         """Create a RNaDConfig from a dict (flat or nested). Extra keys are ignored."""
 
@@ -913,7 +998,7 @@ class RNaDConfig:
             curriculum=_make_sub(CurriculumConfig, curriculum_data),
             exploiter=_make_sub(ExploiterConfig, data.get("exploiter", {})),
             exploration=_make_sub(ExplorationConfig, data.get("exploration", {})),
-            foulplay_eval=_make_sub(FoulplayEvalConfig, data.get("foulplay_eval", {})),
+            eval=_make_eval_sub(data.get("eval", {})),
             hardware=_make_sub(HardwareConfig, data.get("hardware", {})),
             optimizer=_make_sub(OptimizerConfig, data.get("optimizer", {})),
             portfolio=_make_sub(PortfolioConfig, data.get("portfolio", {})),
@@ -976,33 +1061,26 @@ class RNaDConfig:
                 f"external_vgcbench_team_file not found: {cur.external_vgcbench_team_file}"
             )
 
-        # FoulPlay eval: when enabled, the subprocess interpreter must
-        # exist and (if foulplay_team_pool_paths is explicitly set) the
-        # per-format pool directories must exist. When the pool dict is
-        # None, the eval driver falls back to opponent_team_pool_paths
-        # which is already validated above.
-        fp = self.foulplay_eval
-        if fp.enabled:
-            assert fp.python_executable, (
-                "foulplay_eval.python_executable must be set when "
-                "foulplay_eval.enabled is True"
-            )
-            assert os.path.exists(fp.python_executable), (
-                f"foulplay_eval.python_executable not found: {fp.python_executable}"
-            )
-            if fp.foulplay_team_pool_paths is not None:
-                expected = set(cur.battle_formats)
-                actual = set(fp.foulplay_team_pool_paths)
-                missing = expected - actual
-                extra = actual - expected
-                assert not missing and not extra, (
-                    f"foulplay_team_pool_paths keys must match "
-                    f"battle_formats exactly; missing={sorted(missing)} "
-                    f"extra={sorted(extra)}"
-                )
-                for fmt, path in fp.foulplay_team_pool_paths.items():
-                    assert os.path.exists(path), (
-                        f"foulplay_team_pool_paths[{fmt!r}] not found: {path}"
+        ev = self.eval
+        if ev.enabled:
+            fp_spec = ev.opponents.get("foul_play")
+            if fp_spec is not None and fp_spec.weight > 0:
+                if not ev.foulplay_python_executable:
+                    raise ValueError(
+                        "eval.foulplay_python_executable must be set when "
+                        "eval.opponents['foul_play'].weight > 0"
+                    )
+                if not os.path.exists(ev.foulplay_python_executable):
+                    raise ValueError(
+                        f"eval.foulplay_python_executable not found: "
+                        f"{ev.foulplay_python_executable}"
+                    )
+            vgc_spec = ev.opponents.get("vgc_bench")
+            if vgc_spec is not None and vgc_spec.weight > 0:
+                if not os.path.exists(ev.vgcbench_python_executable):
+                    raise ValueError(
+                        f"eval.vgcbench_python_executable not found: "
+                        f"{ev.vgcbench_python_executable}"
                     )
 
 
