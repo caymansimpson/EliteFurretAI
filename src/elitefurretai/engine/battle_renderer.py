@@ -134,3 +134,188 @@ def format_events(events: Sequence[Sequence[str]]) -> str:
     if not events:
         return "  (no events yet)"
     return "\n".join("  " + "|".join(e) for e in events)
+
+
+_ACTION_REFERENCE = """\
+================================================================================
+ACTION REFERENCE  (printed once at battle start)
+================================================================================
+
+Target codes (Showdown convention):
+   1,  2   = opp slot 1, opp slot 2
+  -1, -2   = your slot 1, your slot 2  (for ally-target moves; omit for self-target)
+
+Action grammar: comma-separated, slot 1 then slot 2.
+
+  Move:     "<move_name|number> [<target>] [tera|mega]"
+            e.g.  "astralbarrage 1 tera, surgingstrikes 1"
+            e.g.  "protect, helpinghand -1"   (Slot 1 protects; Slot 2 buffs Slot 1)
+
+  Switch:   use species name
+            e.g.  "incineroar, surgingstrikes 1"
+
+  Pass:     "pass"      (when a slot has no legal action)
+  Forfeit:  "quit"
+
+Notes:
+  - No target needed for self-target / spread moves (protect, nasty plot, eq, etc.)
+  - During a force switch you'll be prompted with only the slot(s) that must switch.
+"""
+
+
+def format_action_reference() -> str:
+    """The action grammar / target-code reference, printed once at battle start."""
+    return _ACTION_REFERENCE
+
+
+def format_teampreview(battle: DoubleBattle) -> str:
+    """Render the teampreview banner + both teams.
+
+    Own team shows item + ability + tera type (we know all of these).
+    Opponent team shows only species (everything else is hidden info pre-battle).
+    No HP bars — at teampreview everyone is at full HP.
+    """
+    fmt = getattr(battle, "_format", "") or ""
+    lines = [
+        "=" * 80,
+        f"TEAM PREVIEW — {fmt}",
+        "=" * 80,
+        "",
+        "Your team:",
+    ]
+    for i, mon in enumerate(battle.teampreview_team, 1):
+        item = mon.item if mon.item and mon.item != "unknown_item" else "?"
+        ability = mon.ability or "?"
+        tera = mon.tera_type.name.lower() if mon.tera_type is not None else "?"
+        lines.append(
+            f"  {i}. {mon.species} @ {item}   | Ability: {ability}   | Tera: {tera}"
+        )
+    lines.append("")
+    lines.append("Opponent's team:")
+    for i, mon in enumerate(battle.teampreview_opponent_team, 1):
+        lines.append(f"  {i}. {mon.species}")
+    return "\n".join(lines)
+
+
+def _own_slot_target(slot_idx: int) -> str:
+    """Target code for one of *our* slots — used for ally-target moves."""
+    return "-1" if slot_idx == 0 else "-2"
+
+
+def _opp_slot_target(slot_idx: int) -> str:
+    """Target code for one of the *opponent's* slots — used for attacking."""
+    return "1" if slot_idx == 0 else "2"
+
+
+def _tera_status_for_slot(battle: DoubleBattle, slot_idx: int) -> Optional[str]:
+    """When the slot's mon is not tera'd, decide what to show in its tera line."""
+    try:
+        if battle.can_tera[slot_idx]:
+            return "available"
+    except (IndexError, AttributeError):
+        return None
+    return None
+
+
+def _format_active_section(battle: DoubleBattle) -> str:
+    own = battle.active_pokemon
+    opp = battle.opponent_active_pokemon
+
+    lines = ["--- ACTIVE POKEMON ---", "Your side:"]
+    for i, mon in enumerate(own):
+        label = f"Slot {i + 1} ({_own_slot_target(i)})"
+        if mon is None:
+            lines.append(f"  {label}: (fainted)")
+        else:
+            rendered = format_pokemon_line(
+                mon,
+                is_opponent=False,
+                tera_status=_tera_status_for_slot(battle, i),
+            )
+            head, _, rest = rendered.partition("\n")
+            lines.append(f"  {label}: {head}")
+            if rest:
+                lines.append(f"             {rest.strip()}")
+    lines.append("")
+    lines.append("Opp side:")
+    for i, mon in enumerate(opp):
+        label = f"Slot {i + 1} ({_opp_slot_target(i)})"
+        if mon is None:
+            lines.append(f"  {label}: (fainted)")
+        else:
+            rendered = format_pokemon_line(mon, is_opponent=True)
+            head, _, rest = rendered.partition("\n")
+            lines.append(f"  {label}:  {head}")
+            if rest:
+                lines.append(f"              {rest.strip()}")
+    return "\n".join(lines)
+
+
+def _format_options_section(battle: DoubleBattle) -> str:
+    own = battle.active_pokemon
+    lines = ["--- YOUR OPTIONS ---"]
+    for i, mon in enumerate(own):
+        if mon is None:
+            lines.append(f"Slot {i + 1}: (fainted — must switch)")
+            continue
+        moves_line = format_moves_oneline(battle.available_moves[i], assume_max_pp=False)
+        lines.append(f"Slot {i + 1} {mon.species} moves:")
+        lines.append(f"   {moves_line}")
+    return "\n".join(lines)
+
+
+def _format_bench_section(battle: DoubleBattle) -> str:
+    # Slot 0's available_switches is representative of the bench;
+    # both slots share the same bench.
+    try:
+        switches = list(battle.available_switches[0])
+    except (IndexError, AttributeError):
+        switches = []
+    if not switches:
+        return "Bench: (none)"
+    lines = ["Bench:"]
+    for mon in switches:
+        rendered = format_pokemon_line(mon, is_opponent=False)
+        head, _, rest = rendered.partition("\n")
+        lines.append(f"  {head}")
+        if rest:
+            lines.append(f"    {rest.strip()}")
+    return "\n".join(lines)
+
+
+def _format_last_turn_section(battle: DoubleBattle) -> str:
+    lines = ["--- LAST TURN ---"]
+    prior_turn = battle.turn - 1
+    prior_obs = battle.observations.get(prior_turn) if prior_turn >= 1 else None
+    if prior_obs is None:
+        lines.append("  (battle just started)")
+    else:
+        lines.append(format_events(prior_obs.events))
+    return "\n".join(lines)
+
+
+def format_battle_state(battle: DoubleBattle) -> str:
+    """Render a per-turn snapshot of battle state for the human CLI.
+
+    Includes last turn's raw events, field state, both sides' active mons
+    with Showdown-convention target codes, the player's move options per
+    slot, and the player's bench.
+    """
+    fmt = getattr(battle, "_format", "") or ""
+    sections = [
+        "=" * 80,
+        f"Turn {battle.turn} — {fmt}",
+        "=" * 80,
+        "",
+        _format_last_turn_section(battle),
+        "",
+        "--- FIELD ---",
+        format_field(battle),
+        "",
+        _format_active_section(battle),
+        "",
+        _format_options_section(battle),
+        "",
+        _format_bench_section(battle),
+    ]
+    return "\n".join(sections)

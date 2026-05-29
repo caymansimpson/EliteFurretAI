@@ -252,6 +252,176 @@ class TestFormatEvents:
         out = format_events(events)
         assert "|move|p2a: Calyrex|Astral Barrage|p1a: Miraidon" in out
 
+
+# ─────────────────────────────────────────────────────────────────────
+# format_action_reference
+# ─────────────────────────────────────────────────────────────────────
+
+
+class TestFormatActionReference:
+    def test_contains_banner_and_target_codes(self):
+        from elitefurretai.engine.battle_renderer import format_action_reference
+
+        out = format_action_reference()
+        assert "ACTION REFERENCE" in out
+        assert "1,  2" in out or "1, 2" in out
+        assert "-1, -2" in out
+        assert "comma-separated" in out
+        assert "tera" in out
+
+
+# ─────────────────────────────────────────────────────────────────────
+# format_teampreview
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _miraidon_preview() -> Pokemon:
+    return Pokemon(gen=9, species="miraidon")
+
+
+def _flutter_mane_preview() -> Pokemon:
+    return Pokemon(gen=9, species="fluttermane")
+
+
+class TestFormatTeampreview:
+    def test_contains_banner_and_format(self):
+        from elitefurretai.engine.battle_renderer import format_teampreview
+
+        battle = _empty_battle()
+        battle._teampreview_team = [_calyrex_shadow()]
+        battle._teampreview_opponent_team = [_miraidon_preview()]
+        out = format_teampreview(battle)
+        assert "TEAM PREVIEW" in out
+        assert "gen9vgc2025regg" in out
+
+    def test_lists_own_team_with_ability_item_tera(self):
+        from elitefurretai.engine.battle_renderer import format_teampreview
+
+        battle = _empty_battle()
+        mon = _calyrex_shadow()
+        battle._teampreview_team = [mon]
+        out = format_teampreview(battle)
+        assert "calyrexshadow" in out
+        assert "lifeorb" in out
+        assert "asonespectrier" in out
+        assert "Tera: ghost" in out
+
+    def test_lists_opp_team_by_species_only(self):
+        from elitefurretai.engine.battle_renderer import format_teampreview
+
+        battle = _empty_battle()
+        battle._teampreview_opponent_team = [
+            _miraidon_preview(),
+            _flutter_mane_preview(),
+        ]
+        out = format_teampreview(battle)
+        assert "miraidon" in out
+        assert "fluttermane" in out
+
+    def test_no_hp_bars_in_teampreview(self):
+        from elitefurretai.engine.battle_renderer import format_teampreview
+
+        battle = _empty_battle()
+        battle._teampreview_team = [_calyrex_shadow()]
+        out = format_teampreview(battle)
+        # The U+2588 full-block char is the HP-bar char; teampreview shouldn't use it
+        assert "█" not in out
+
+
+# ─────────────────────────────────────────────────────────────────────
+# format_battle_state
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _populated_battle() -> DoubleBattle:
+    """A battle with 2 active mons per side and a 2-mon bench."""
+    battle = _empty_battle()
+    battle._turn = 1
+
+    own_a = _calyrex_shadow()
+    own_a._active = True
+    own_b = _calyrex_shadow()
+    own_b._species = "urshifurapidstrike"
+    own_b._active = True
+    bench_a = _calyrex_shadow()
+    bench_a._species = "incineroar"
+    bench_b = _calyrex_shadow()
+    bench_b._species = "rillaboom"
+    battle._team = {
+        "p1: Calyrex": own_a,
+        "p1: Urshifu": own_b,
+        "p1: Incineroar": bench_a,
+        "p1: Rillaboom": bench_b,
+    }
+    battle._active_pokemon = {"p1a": own_a, "p1b": own_b}
+
+    opp_a = _miraidon_preview()
+    opp_a._active = True
+    opp_a._current_hp = 100
+    opp_a._max_hp = 100
+    opp_b = _flutter_mane_preview()
+    opp_b._active = True
+    opp_b._current_hp = 100
+    opp_b._max_hp = 100
+    battle._opponent_team = {"p2: Miraidon": opp_a, "p2: Flutter Mane": opp_b}
+    battle._opponent_active_pokemon = {"p2a": opp_a, "p2b": opp_b}
+
+    battle._available_moves = [list(own_a.moves.values()), list(own_b.moves.values())]
+    battle._available_switches = [[bench_a, bench_b], [bench_a, bench_b]]
+    battle._can_tera = [True, True]
+    return battle
+
+
+class TestFormatBattleState:
+    def test_contains_top_level_sections(self):
+        from elitefurretai.engine.battle_renderer import format_battle_state
+
+        battle = _populated_battle()
+        out = format_battle_state(battle)
+        assert "Turn 1" in out
+        assert "FIELD" in out
+        assert "ACTIVE POKEMON" in out
+        assert "YOUR OPTIONS" in out
+        assert "Bench" in out
+
+    def test_own_slots_carry_negative_target_codes(self):
+        from elitefurretai.engine.battle_renderer import format_battle_state
+
+        battle = _populated_battle()
+        out = format_battle_state(battle)
+        assert "Slot 1 (-1)" in out
+        assert "Slot 2 (-2)" in out
+
+    def test_opp_slots_carry_positive_target_codes(self):
+        from elitefurretai.engine.battle_renderer import format_battle_state
+
+        battle = _populated_battle()
+        out = format_battle_state(battle)
+        assert "Slot 1 (1)" in out
+        assert "Slot 2 (2)" in out
+
+    def test_options_lists_moves_per_slot(self):
+        from elitefurretai.engine.battle_renderer import format_battle_state
+
+        battle = _populated_battle()
+        out = format_battle_state(battle)
+        assert "(1) astralbarrage" in out
+
+    def test_bench_lists_switchable_mons(self):
+        from elitefurretai.engine.battle_renderer import format_battle_state
+
+        battle = _populated_battle()
+        out = format_battle_state(battle)
+        assert "incineroar" in out
+        assert "rillaboom" in out
+
+    def test_last_turn_section_when_no_prior_observation(self):
+        from elitefurretai.engine.battle_renderer import format_battle_state
+
+        battle = _populated_battle()
+        out = format_battle_state(battle)
+        assert "LAST TURN" in out
+
     def test_multiple_events_each_on_own_line(self):
         from elitefurretai.engine.battle_renderer import format_events
 
