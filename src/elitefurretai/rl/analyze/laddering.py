@@ -11,12 +11,15 @@ design rationale.
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 import re
 from dataclasses import dataclass
-from typing import List, Literal, Optional
+from typing import Any, Callable, Dict, List, Literal, Optional
 
 from poke_env.battle import AbstractBattle
+
+from elitefurretai.agents.simple_model_player import SimpleModelPlayer
 
 
 @dataclass
@@ -147,3 +150,59 @@ def _finalize_record(record: LadderRecord, battle: AbstractBattle) -> None:
     record.timestamp = datetime.datetime.now(datetime.timezone.utc).strftime(
         "%Y-%m-%dT%H:%M:%SZ"
     )
+
+
+class SimpleModelLadderPlayer(SimpleModelPlayer):
+    """SimpleModelPlayer extension that records ladder-specific signals.
+
+    Captures opponent username, pre/post rating, GXE, and the public replay
+    URL for each finished battle and dispatches a finalized ``LadderRecord``
+    to ``on_record`` when each battle ends.
+
+    Parsing helpers (``_parse_*``, ``_update_record``, ``_finalize_record``)
+    are pure module-level functions so they're testable without a live
+    Showdown connection; the async hooks below only orchestrate calls
+    into those helpers.
+    """
+
+    def __init__(
+        self,
+        *args: Any,
+        on_record: Optional[Callable[[LadderRecord], None]] = None,
+        **kwargs: Any,
+    ) -> None:
+        kwargs.setdefault("probabilistic", False)
+        super().__init__(*args, **kwargs)
+        self._on_record = on_record
+        self.ladder_records: Dict[str, LadderRecord] = {}
+
+    def _get_or_create_record(self, battle_tag: str) -> LadderRecord:
+        if battle_tag not in self.ladder_records:
+            self.ladder_records[battle_tag] = LadderRecord(battle_tag=battle_tag)
+        return self.ladder_records[battle_tag]
+
+    async def _handle_battle_message(self, split_messages: List[List[str]]) -> None:
+        await super()._handle_battle_message(split_messages)
+
+        if not split_messages or not split_messages[0]:
+            return
+        battle_tag = split_messages[0][0].lstrip(">")
+        if not battle_tag.startswith("battle-"):
+            return
+        battle = self._battles.get(battle_tag)
+        # super()._handle_battle_message above runs parse_message on the
+        # |player| line first, so player_role is set by the time we read it.
+        agent_role = battle.player_role if battle and battle.player_role else "p1"
+        record = self._get_or_create_record(battle_tag)
+        for split_message in split_messages[1:]:
+            _update_record(record, split_message, agent_role=agent_role)
+
+    def _battle_finished_callback(self, battle: AbstractBattle) -> None:
+        super()._battle_finished_callback(battle)
+        record = self._get_or_create_record(battle.battle_tag)
+        _finalize_record(record, battle)
+        asyncio.create_task(
+            self.ps_client.send_message("/savereplay", room=battle.battle_tag)
+        )
+        if self._on_record is not None:
+            self._on_record(record)
