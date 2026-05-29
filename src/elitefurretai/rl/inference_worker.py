@@ -43,7 +43,7 @@ from typing import Dict, List, Optional, Tuple, Union
 import numpy as np
 from torch import multiprocessing as torch_mp
 
-from elitefurretai.rl.inference_ipc import (
+from elitefurretai.rl.inference_service import (
     EvictRequest,
     InferenceRequest,
     InferenceResponse,

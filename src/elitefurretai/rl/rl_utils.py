@@ -36,7 +36,7 @@ start_memory_watchdog
 is_cuda_device
     Predicate over a torch device string. Replaces three inline
     ``startswith("cuda")`` checks across learners.py and
-    inference_subprocess.py.
+    inference_service.py.
 
 timestamp_iso
     ISO-format wall-clock timestamp for checkpoint metadata. Replaces

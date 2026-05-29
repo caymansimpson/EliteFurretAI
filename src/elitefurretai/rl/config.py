@@ -271,7 +271,7 @@ class ExplorationConfig:
     - top_p: nucleus-sampling cutoff applied AFTER temperature. Restricts
       sampling to the smallest set of actions whose cumulative probability
       exceeds top_p. 1.0 disables nucleus filtering; 0.95 is the standard
-      "drop the long tail" setting. Used in `inference_trainer.softmax_with_top_p`.
+      "drop the long tail" setting. Used in `inference_service.softmax_with_top_p`.
     """
 
     exploration_anneal_steps: int = 50000

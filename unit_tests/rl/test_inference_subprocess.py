@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Unit tests for inference_subprocess — Plan C step 1 infrastructure.
+"""Unit tests for the subprocess host in inference_service — Plan C step 1 infrastructure.
 
 These tests are standalone (no registry integration yet) and cover:
   1. spawn + serve a single request through one service
@@ -27,8 +27,9 @@ import torch
 from torch import multiprocessing as torch_mp
 
 from elitefurretai.etl.embedder import Embedder
-from elitefurretai.rl.inference_ipc import InferenceRequest, InferenceResponse
-from elitefurretai.rl.inference_subprocess import (
+from elitefurretai.rl.inference_service import (
+    InferenceRequest,
+    InferenceResponse,
     InferenceSubprocessHandle,
     ServiceSpecification,
     SubprocessSpecification,

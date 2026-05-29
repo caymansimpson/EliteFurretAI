@@ -294,7 +294,7 @@ def test_registry_mixed_process_groups(small_agent_factory):
     start_all() builds both backends; a request to each comes back."""
     import copy as _copy
 
-    from elitefurretai.rl.inference_ipc import InferenceRequest
+    from elitefurretai.rl.inference_service import InferenceRequest
 
     make, embedder = small_agent_factory
     registry = ModelRegistry(num_workers=1, batch_size=4, batch_timeout=0.005)
@@ -341,7 +341,7 @@ def test_registry_subprocess_sync_weights(small_agent_factory):
     """
     import copy
 
-    from elitefurretai.rl.inference_ipc import InferenceRequest
+    from elitefurretai.rl.inference_service import InferenceRequest
 
     make, embedder = small_agent_factory
     registry = ModelRegistry(num_workers=1, batch_size=4, batch_timeout=0.005)

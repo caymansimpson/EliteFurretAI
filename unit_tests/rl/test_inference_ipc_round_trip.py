@@ -24,7 +24,7 @@ import numpy as np
 import pytest
 from torch import multiprocessing as torch_mp
 
-from elitefurretai.rl.inference_trainer import (
+from elitefurretai.rl.inference_service import (
     InferenceService,
     echo_batch_handler,
 )
@@ -136,7 +136,7 @@ def test_evict_request_round_trip():
     doesn't implement evict."""
     import threading
 
-    from elitefurretai.rl.inference_ipc import InferenceResponse
+    from elitefurretai.rl.inference_service import InferenceResponse
 
     evict_calls: list[tuple[int, str, str]] = []
     evict_event = threading.Event()

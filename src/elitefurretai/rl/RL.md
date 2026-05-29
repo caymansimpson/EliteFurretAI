@@ -155,7 +155,7 @@ The **learner** drains `mp_traj_queue`, accumulates trajectories into training b
 - **One model copy per name.** `ModelRegistry` registers `main` (always), as well as `bc`, `exploiter`, and `victim` when the curriculum calls for them, plus ghost and exploiter-snapshot slot pools.
 - **Weight sync.** When the trainer calls `registry.sync_weights(name, state_dict)`, the registry routes the update either to the in-process model (in-place `load_state_dict`) or to the right subprocess via that group's control queue, depending on where the service is hosted.
 - **Subprocess backend (Plan C).** Passing `process_group` to `register()` places a service in a subprocess group instead of the trainer process, giving it its own Python interpreter (which gets it out from under the trainer's GIL) and its own CUDA context.
-- **torch.compile.** Compiled forward calls are serialized by a process-wide `_COMPILE_LOCK` in `inference_trainer.py`, because dynamo's trace state is global across instances of the same class and per-model locks turned out not to be enough to prevent cross-instance races.
+- **torch.compile.** Compiled forward calls are serialized by a process-wide `_COMPILE_LOCK` in `inference_service.py`, because dynamo's trace state is global across instances of the same class and per-model locks turned out not to be enough to prevent cross-instance races.
 
 ### Hot-Swap (Multi-Model Curriculum)
 
@@ -515,7 +515,7 @@ Enabling number banks changes input dimensions and requires a fresh training run
 | WSL2 DataLoader OOM | `pin_memory=False` (always) |
 | Loss → NaN | Increase `gradient_clip` or disable mixed precision |
 | Showdown timeouts | Reduce concurrent battles per server; add more servers |
-| `torch.compile` cross-instance race | `_COMPILE_LOCK` in `inference_trainer.py` serializes all compiled forwards (dynamo trace state is global across instances of the same class — per-model locks were insufficient) |
+| `torch.compile` cross-instance race | `_COMPILE_LOCK` in `inference_service.py` serializes all compiled forwards (dynamo trace state is global across instances of the same class — per-model locks were insufficient) |
 | Memory ceiling on full curriculum + VGCBench | Memory watchdog at 22 GB in `sep_arch.yaml`; bump if adding Plan C groups |
 | `Player.battles` dict leak (long-running eval) | One Python process per opponent type; let process exit reset the leak (see `feedback_poke_env_battles_leak`) |
 
@@ -696,21 +696,13 @@ Exploiter pipeline: `ExploiterPipelineState`, `train_exploiter_weight`, `build_e
 
 Trainer-side `ModelRegistry`: registers `main` (always), `bc` / `exploiter` / `victim` (conditional), and ghost / exploiter-snapshot slot pools. Supports two backends per registration: in-process `InferenceService` thread, or subprocess group (Plan C — pass `process_group="<name>"`). Lifecycle: `register(...)` per service → `start_all()` once → `queues_for_workers()` to get the bundle for worker spawn → `sync_weights(name, sd)` at broadcast cadence → `stop_all()` on shutdown.
 
-### `inference_trainer.py`
+### `inference_service.py`
 
-Trainer-side: `InferenceService` (daemon thread, drains request queue, batches up to `batch_size` or `batch_timeout`, calls handler once, dispatches per-request responses) + `RealModelBatchHandler` (model-forward path, owns `hidden_states` keyed by `(worker_id, player_id, battle_tag)`, exposes `evict(...)`) + `echo_batch_handler` for plumbing tests. The process-wide `_COMPILE_LOCK` serializes compiled forwards.
-
-### `inference_subprocess.py`
-
-Plan C subprocess host. `run_subprocess(specification: SubprocessSpecification)` is the `mp.Process` entrypoint — each subprocess hosts one or more `InferenceService`s, drains a `control_queue` for `SyncWeightsMsg` / `ShutdownMsg`, and serves traffic on per-service request/response queues. `InferenceSubprocessHandle` wraps the spawned process for the trainer's `ModelRegistry`.
+Trainer-side: wire-format dataclasses (`InferenceRequest`, `InferenceResponse`, `EvictRequest`) + `InferenceService` (daemon thread, drains request queue, batches up to `batch_size` or `batch_timeout`, calls handler once, dispatches per-request responses) + `RealModelBatchHandler` (model-forward path, owns `hidden_states` keyed by `(worker_id, player_id, battle_tag)`, exposes `evict(...)`) + `echo_batch_handler` for plumbing tests + Plan C subprocess host (`run_subprocess(specification: SubprocessSpecification)` is the `mp.Process` entrypoint; `InferenceSubprocessHandle` wraps the spawned process for the trainer's `ModelRegistry`). The process-wide `_COMPILE_LOCK` serializes compiled forwards.
 
 ### `inference_worker.py`
 
 Worker-side: `InferenceClient` (submits `InferenceRequest`, awaits response via per-request asyncio future) + `WorkerInferenceClients` (per-worker bundle keyed by model name; counterpart to `ModelRegistry`).
-
-### `inference_ipc.py`
-
-Wire protocol dataclasses: `InferenceRequest`, `InferenceResponse`, `EvictRequest`.
 
 ### `launch_servers.py`
 

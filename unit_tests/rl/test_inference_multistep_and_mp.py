@@ -28,8 +28,8 @@ import torch
 from torch import multiprocessing as torch_mp
 
 from elitefurretai.etl.embedder import Embedder
-from elitefurretai.rl.inference_ipc import InferenceRequest
-from elitefurretai.rl.inference_trainer import (
+from elitefurretai.rl.inference_service import (
+    InferenceRequest,
     InferenceService,
     RealModelBatchHandler,
     echo_batch_handler,

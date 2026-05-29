@@ -17,8 +17,7 @@ import pytest
 import torch
 
 from elitefurretai.etl.embedder import Embedder
-from elitefurretai.rl.inference_ipc import InferenceRequest
-from elitefurretai.rl.inference_trainer import RealModelBatchHandler
+from elitefurretai.rl.inference_service import InferenceRequest, RealModelBatchHandler
 from elitefurretai.rl.rnad_model import RNaDModel
 from elitefurretai.supervised.model_archs import TransformerThreeHeadedModel
 
@@ -201,7 +200,7 @@ def test_handler_through_ipc_layer(small_transformer_agent):
 
     from torch import multiprocessing as torch_mp
 
-    from elitefurretai.rl.inference_trainer import InferenceService
+    from elitefurretai.rl.inference_service import InferenceService
     from elitefurretai.rl.inference_worker import InferenceClient
 
     agent, embedder = small_transformer_agent

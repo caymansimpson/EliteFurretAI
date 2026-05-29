@@ -69,13 +69,14 @@ from typing import Any, Dict, List, Optional, Tuple, cast
 import torch
 from torch import multiprocessing as torch_mp
 
-from elitefurretai.rl.inference_ipc import InferenceResponse
-from elitefurretai.rl.inference_subprocess import (
+from elitefurretai.rl.inference_service import (
+    InferenceResponse,
+    InferenceService,
     InferenceSubprocessHandle,
+    RealModelBatchHandler,
     ServiceSpecification,
     SubprocessSpecification,
 )
-from elitefurretai.rl.inference_trainer import InferenceService, RealModelBatchHandler
 from elitefurretai.rl.rnad_model import RNaDModel
 
 logger = logging.getLogger(__name__)
