@@ -1,0 +1,44 @@
+# ===========================================================================
+# initial_rl_baselines.yaml — first RL hyperparameter sweep targeting
+# Stage II graduation thresholds (80% vs SHP/MaxDamage/BC, 60% vs VGCBench).
+#
+# See planning/stage2/2026-05-29-21-00-rl-wandb-sweep-eval-design.md and
+# planning/stage2/2026-05-29-21-30-rl-wandb-sweep-eval-implementation-plan.md.
+#
+# The sweep parameter list below is intentionally minimal. Expand it
+# (gradient clip, batch sizes, target update rate, etc.) before
+# launching at scale.
+# ===========================================================================
+
+base_config: "src/elitefurretai/rl/configs/may26.yaml"
+
+# Applied to every sweep run before sweep_params. Turn eval on, point
+# wandb at the sweep project, and lock the surplus_alpha that the score
+# function uses.
+eval_overrides:
+  training.wandb_project: "elitefurretai-rnad-sweep"
+  eval.enabled: true
+  eval.eval_every_n_updates: 500
+  eval.surplus_alpha: 1.0
+  # FoulPlay shipped off until its subprocess is stable; flip to 1.0
+  # here when ready.
+  eval.opponents.foul_play.weight: 0.0
+
+sweep:
+  method: bayes
+  metric:
+    name: "eval/score"
+    goal: maximize
+  early_terminate:
+    type: hyperband
+    min_iter: 3
+    eta: 2
+  parameters:
+    learner.learning_rate:
+      min: 1.0e-5
+      max: 1.0e-3
+      distribution: log_uniform_values
+    learner.eta:
+      values: [0.0, 0.001, 0.01, 0.1]
+    learner.entropy_weight:
+      values: [0.0, 0.001, 0.01, 0.05]
