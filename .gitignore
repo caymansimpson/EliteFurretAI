@@ -26,3 +26,4 @@ train.log
 train.pid
 *.log
 *.pid
+.showdown-credentials.config
