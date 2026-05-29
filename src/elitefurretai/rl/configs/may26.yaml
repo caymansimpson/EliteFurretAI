@@ -136,17 +136,5 @@ exploiter:
   lr: 0.0001
   ent_coef: 0.02
 
-foulplay_eval:
+eval:
   enabled: false
-  eval_every_n_updates: 500
-  n_battles_per_format: 50
-  search_time_ms: 750
-  parallelism: 6
-  python_executable: /home/cayman/Repositories/venv-foulplay/bin/python
-  # Explicit per-format pools (required because regi's
-  # opponent_team_pool_path is null, which the auto-fallback can't
-  # use — _resolve_foulplay_team_pool raises if both are unset).
-  foulplay_team_pool_paths:
-    gen9vgc2024regg: data/teams/gen9vgc2024regg/constrained
-    # gen9vgc2026regi: data/teams/gen9vgc2026regi
-  model_probabilistic: false
