@@ -2,6 +2,8 @@
 """Unit tests for baseline_eval (compute_score, dispatch, payload, cleanup)."""
 
 import math
+from typing import Dict
+from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
@@ -9,10 +11,18 @@ import yaml
 from elitefurretai.rl.analyze.baseline_eval import (
     BucketRunResult,
     MultiBucketEvalResult,
+    _opponent_kwargs,
+    _run_opponent_bucket,
+    _split_battles_by_format,
     compute_score,
 )
 from elitefurretai.rl.analyze.evaluate import EvalResult
-from elitefurretai.rl.config import EvalConfig, OpponentEvalSpec, RNaDConfig
+from elitefurretai.rl.config import (
+    CurriculumConfig,
+    EvalConfig,
+    OpponentEvalSpec,
+    RNaDConfig,
+)
 
 
 def _targets_all(t: float):
@@ -220,3 +230,205 @@ class TestResultDataclasses:
         )
         assert r.score == -5.0
         assert r.per_bucket["max_damage"].win_rate == 0.80
+
+
+# ============================================================================
+# Task 4 — _run_opponent_bucket dispatch
+# ============================================================================
+
+
+class TestOpponentKwargs:
+    def test_vgc_bench_kwargs(self):
+        cfg = EvalConfig()
+        k = _opponent_kwargs("vgc_bench", cfg)
+        assert k["vgc_bench_checkpoint_path"] == cfg.vgcbench_checkpoint_path
+        assert k["vgc_bench_team_file"] == cfg.vgcbench_team_file
+        assert k["vgc_bench_python_executable"] == cfg.vgcbench_python_executable
+        assert "foul_play_python_executable" not in k
+
+    def test_foul_play_kwargs(self):
+        cfg = EvalConfig()
+        k = _opponent_kwargs("foul_play", cfg)
+        assert k["foul_play_python_executable"] == cfg.foulplay_python_executable
+        assert k["foul_play_search_time_ms"] == cfg.foulplay_search_time_ms
+        assert k["foul_play_parallelism"] == cfg.foulplay_parallelism
+        assert "vgc_bench_checkpoint_path" not in k
+
+    def test_inprocess_baseline_empty_kwargs(self):
+        cfg = EvalConfig()
+        assert _opponent_kwargs("max_damage", cfg) == {}
+        assert _opponent_kwargs("simple_heuristic_baseline", cfg) == {}
+        assert _opponent_kwargs("bc_player", cfg) == {}
+
+
+class TestSplitBattlesByFormat:
+    def test_single_format(self):
+        assert _split_battles_by_format(100, {"a": 1.0}) == {"a": 100}
+
+    def test_two_formats_even_weight(self):
+        assert _split_battles_by_format(100, {"a": 1.0, "b": 1.0}) == {"a": 50, "b": 50}
+
+    def test_two_formats_unequal_weight_sums_to_total(self):
+        result = _split_battles_by_format(100, {"a": 0.6, "b": 0.4})
+        assert sum(result.values()) == 100
+        assert result["a"] == 60
+        assert result["b"] == 40
+
+    def test_largest_remainder_preserves_total(self):
+        # 7 battles across 3 formats with equal weight: floors=[2,2,2], remainder=1
+        result = _split_battles_by_format(7, {"a": 1.0, "b": 1.0, "c": 1.0})
+        assert sum(result.values()) == 7
+        assert sorted(result.values()) == [2, 2, 3]
+
+    def test_zero_total(self):
+        assert _split_battles_by_format(0, {"a": 1.0}) == {"a": 0}
+
+    def test_empty_formats(self):
+        assert _split_battles_by_format(100, {}) == {}
+
+
+def _make_curriculum(formats: Dict[str, float]):
+    cur = MagicMock(spec=CurriculumConfig)
+    cur.battle_formats = formats
+    return cur
+
+
+class TestRunOpponentBucket:
+    @patch("elitefurretai.rl.analyze.baseline_eval._resolve_opponent_team_text")
+    @patch("elitefurretai.rl.analyze.baseline_eval._resolve_agent_team_text")
+    @patch("elitefurretai.rl.analyze.baseline_eval.run_eval_parallel")
+    @patch("elitefurretai.rl.analyze.baseline_eval.parse_player_specification")
+    def test_vgc_bench_receives_vgcbench_kwargs(
+        self, mock_parse, mock_run, mock_agent_team, mock_opp_team
+    ):
+        mock_parse.return_value = MagicMock()
+        mock_agent_team.return_value = "AGENT_TEAM"
+        mock_opp_team.return_value = ""
+        mock_run.return_value = EvalResult(
+            label="vgc_bench", player1_wins=60, player2_wins=40, ties=0, battles_played=100
+        )
+        eval_cfg = EvalConfig()
+        spec = eval_cfg.opponents["vgc_bench"]
+        result = _run_opponent_bucket(
+            opp_name="vgc_bench",
+            spec=spec,
+            eval_cfg=eval_cfg,
+            curriculum=_make_curriculum({"gen9vgc2023regc": 1.0}),
+            checkpoint_path="/tmp/model.pt",
+            server_urls=["localhost:8000"],
+            device="cpu",
+            run_tag="abcd",
+        )
+        # parse_player_specification called twice: once for model, once for vgc_bench opp
+        assert mock_parse.call_count == 2
+        vgc_call_kwargs = mock_parse.call_args_list[1].kwargs
+        assert (
+            vgc_call_kwargs["vgc_bench_checkpoint_path"]
+            == eval_cfg.vgcbench_checkpoint_path
+        )
+        assert "foul_play_python_executable" not in vgc_call_kwargs
+        assert result.win_rate == pytest.approx(0.60)
+
+    @patch("elitefurretai.rl.analyze.baseline_eval._foulplay_team_pool_for_fmt")
+    @patch("elitefurretai.rl.analyze.baseline_eval._resolve_opponent_team_text")
+    @patch("elitefurretai.rl.analyze.baseline_eval._resolve_agent_team_text")
+    @patch("elitefurretai.rl.analyze.baseline_eval.run_eval_parallel")
+    @patch("elitefurretai.rl.analyze.baseline_eval.parse_player_specification")
+    def test_foul_play_receives_foulplay_kwargs(
+        self, mock_parse, mock_run, mock_agent_team, mock_opp_team, mock_fp_pool
+    ):
+        mock_parse.return_value = MagicMock()
+        mock_agent_team.return_value = "AGENT_TEAM"
+        mock_opp_team.return_value = ""
+        mock_fp_pool.return_value = "/data/teams/x"
+        mock_run.return_value = EvalResult(
+            label="foul_play", player1_wins=20, player2_wins=20, ties=0, battles_played=40
+        )
+        eval_cfg = EvalConfig()
+        spec = eval_cfg.opponents["foul_play"]
+        _run_opponent_bucket(
+            opp_name="foul_play",
+            spec=spec,
+            eval_cfg=eval_cfg,
+            curriculum=_make_curriculum({"gen9vgc2023regc": 1.0}),
+            checkpoint_path="/tmp/model.pt",
+            server_urls=["localhost:8000"],
+            device="cpu",
+            run_tag="abcd",
+        )
+        fp_call_kwargs = mock_parse.call_args_list[1].kwargs
+        assert (
+            fp_call_kwargs["foul_play_python_executable"]
+            == eval_cfg.foulplay_python_executable
+        )
+        assert fp_call_kwargs["foul_play_team_pool_path"] == "/data/teams/x"
+        assert "vgc_bench_checkpoint_path" not in fp_call_kwargs
+
+    @patch("elitefurretai.rl.analyze.baseline_eval._resolve_opponent_team_text")
+    @patch("elitefurretai.rl.analyze.baseline_eval._resolve_agent_team_text")
+    @patch("elitefurretai.rl.analyze.baseline_eval.run_eval_parallel")
+    @patch("elitefurretai.rl.analyze.baseline_eval.parse_player_specification")
+    def test_inprocess_baseline_no_external_kwargs(
+        self, mock_parse, mock_run, mock_agent_team, mock_opp_team
+    ):
+        mock_parse.return_value = MagicMock()
+        mock_agent_team.return_value = "AGENT_TEAM"
+        mock_opp_team.return_value = "OPP_TEAM"
+        mock_run.return_value = EvalResult(
+            label="max_damage",
+            player1_wins=120,
+            player2_wins=30,
+            ties=0,
+            battles_played=150,
+        )
+        eval_cfg = EvalConfig()
+        spec = eval_cfg.opponents["max_damage"]
+        _run_opponent_bucket(
+            opp_name="max_damage",
+            spec=spec,
+            eval_cfg=eval_cfg,
+            curriculum=_make_curriculum({"gen9vgc2023regc": 1.0}),
+            checkpoint_path="/tmp/model.pt",
+            server_urls=["localhost:8000"],
+            device="cpu",
+            run_tag="abcd",
+        )
+        md_call_kwargs = mock_parse.call_args_list[1].kwargs
+        assert "vgc_bench_checkpoint_path" not in md_call_kwargs
+        assert "foul_play_python_executable" not in md_call_kwargs
+
+    @patch("elitefurretai.rl.analyze.baseline_eval._resolve_opponent_team_text")
+    @patch("elitefurretai.rl.analyze.baseline_eval._resolve_agent_team_text")
+    @patch("elitefurretai.rl.analyze.baseline_eval.run_eval_parallel")
+    @patch("elitefurretai.rl.analyze.baseline_eval.parse_player_specification")
+    def test_two_formats_aggregates_with_format_weights(
+        self, mock_parse, mock_run, mock_agent_team, mock_opp_team
+    ):
+        mock_parse.return_value = MagicMock()
+        mock_agent_team.return_value = "AGENT_TEAM"
+        mock_opp_team.return_value = "OPP_TEAM"
+        # Format A: 90% win rate (54/60) ; Format B: 50% win rate (20/40)
+        # Weighted by 0.6/0.4 → aggregate = (0.6*0.9 + 0.4*0.5)/1.0 = 0.74
+        mock_run.side_effect = [
+            EvalResult(
+                label="md", player1_wins=54, player2_wins=6, ties=0, battles_played=60
+            ),
+            EvalResult(
+                label="md", player1_wins=20, player2_wins=20, ties=0, battles_played=40
+            ),
+        ]
+        eval_cfg = EvalConfig()
+        spec = OpponentEvalSpec(target=0.5, weight=1.0, n_battles=100)
+        result = _run_opponent_bucket(
+            opp_name="max_damage",
+            spec=spec,
+            eval_cfg=eval_cfg,
+            curriculum=_make_curriculum({"gen9vgc2023regc": 0.6, "gen9vgc2024regg": 0.4}),
+            checkpoint_path="/tmp/model.pt",
+            server_urls=["localhost:8000"],
+            device="cpu",
+            run_tag="abcd",
+        )
+        assert result.win_rate == pytest.approx(0.74)
+        assert result.n_battles == 100
+        assert set(result.per_format.keys()) == {"gen9vgc2023regc", "gen9vgc2024regg"}
