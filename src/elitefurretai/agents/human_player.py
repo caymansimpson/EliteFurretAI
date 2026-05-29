@@ -1,4 +1,4 @@
-"""Human player that accepts input via CLI for interactive battles."""
+"""Human player that accepts input via CLI for interactive doubles battles."""
 
 from typing import List, Optional
 
@@ -18,8 +18,8 @@ class HumanPlayer(Player):
     """
     A player implementation that accepts human input via command-line interface.
 
-    Supports both single and double battles, including team preview, dynamax,
-    terastallization, and all standard battle actions.
+    Doubles-only: supports team preview, terastallization, switches, and
+    standard double-battle actions.
     """
 
     def choose_move(self, battle: AbstractBattle) -> BattleOrder:
@@ -27,11 +27,13 @@ class HumanPlayer(Player):
         Display battle state and prompt user for their action.
 
         Args:
-            battle: The current battle state
+            battle: The current battle state (must be a DoubleBattle)
 
         Returns:
             BattleOrder representing the user's chosen action
         """
+        assert isinstance(battle, DoubleBattle), "HumanPlayer only supports doubles"
+
         print("\n" + "=" * 80)
         print(f"Turn {battle.turn}")
         print("=" * 80)
@@ -41,12 +43,9 @@ class HumanPlayer(Player):
         if battle.teampreview:
             return self._handle_team_preview(battle)
 
-        if isinstance(battle, DoubleBattle):
-            return self._handle_doubles_turn(battle)
-        else:
-            return self._handle_singles_turn(battle)
+        return self._handle_doubles_turn(battle)
 
-    def _display_battle_state(self, battle: AbstractBattle) -> None:
+    def _display_battle_state(self, battle: DoubleBattle) -> None:
         """Display the current state of the battle."""
         if battle.teampreview:
             print("\n=== TEAM PREVIEW ===")
@@ -55,49 +54,27 @@ class HumanPlayer(Player):
                 print(f"  {i}. {self._format_pokemon(pokemon)}")
             return
 
-        # Display active Pokemon
         print("\n=== ACTIVE POKEMON ===")
-        if isinstance(battle, DoubleBattle):
-            print("\nYour active Pokemon:")
-            for i, pokemon in enumerate(battle.active_pokemon):
-                if pokemon:
-                    print(
-                        f"  Slot {i + 1}: {self._format_pokemon(pokemon, detailed=True)}"
-                    )
-                else:
-                    print(f"  Slot {i + 1}: (fainted)")
+        print("\nYour active Pokemon:")
+        for i, pokemon in enumerate(battle.active_pokemon):
+            if pokemon:
+                print(f"  Slot {i + 1}: {self._format_pokemon(pokemon, detailed=True)}")
+            else:
+                print(f"  Slot {i + 1}: (fainted)")
 
-            print("\nOpponent's active Pokemon:")
-            for i, pokemon in enumerate(battle.opponent_active_pokemon):
-                if pokemon:
-                    print(
-                        f"  Slot {i + 1}: {self._format_pokemon(pokemon, detailed=True, opponent=True)}"
-                    )
-                else:
-                    print(f"  Slot {i + 1}: (fainted)")
-        else:
-            active = battle.active_pokemon
-            opp_active = battle.opponent_active_pokemon
-            if isinstance(active, Pokemon):
-                print(f"\nYour Pokemon: {self._format_pokemon(active, detailed=True)}")
-            if isinstance(opp_active, Pokemon):
+        print("\nOpponent's active Pokemon:")
+        for i, pokemon in enumerate(battle.opponent_active_pokemon):
+            if pokemon:
                 print(
-                    f"\nOpponent's Pokemon: {self._format_pokemon(opp_active, detailed=True, opponent=True)}"
+                    f"  Slot {i + 1}: {self._format_pokemon(pokemon, detailed=True, opponent=True)}"
                 )
-
-        # Display available Pokemon on bench (singles only; doubles handles
-        # its per-slot switch lists in _handle_doubles_turn)
-        if not isinstance(battle, DoubleBattle):
-            available_switches: List[Pokemon] = list(battle.available_switches)
-            if available_switches:
-                print("\n=== AVAILABLE SWITCHES ===")
-                for i, pokemon in enumerate(available_switches, 1):
-                    print(f"  {i}. {self._format_pokemon(pokemon)}")
+            else:
+                print(f"  Slot {i + 1}: (fainted)")
 
     def _format_pokemon(
         self,
         pokemon: Optional[Pokemon],
-        detailed: bool = False,
+        detailed: bool = True,
         opponent: bool = False,
     ) -> str:
         """Format a Pokemon's information for display."""
@@ -143,7 +120,7 @@ class HumanPlayer(Player):
         empty = width - filled
         return f"[{'█' * filled}{'░' * empty}]"
 
-    def _handle_team_preview(self, battle: AbstractBattle) -> BattleOrder:
+    def _handle_team_preview(self, battle: DoubleBattle) -> BattleOrder:
         """Handle team preview selection.
 
         Returns a SingleBattleOrder whose message is the showdown-protocol
@@ -151,16 +128,10 @@ class HumanPlayer(Player):
         ``_selected_in_teampreview`` attribute (required by poke-env).
         """
         team_size = len(battle.team)
-        max_team_size = 4 if isinstance(battle, DoubleBattle) else team_size
+        max_team_size = 4
 
-        if isinstance(battle, DoubleBattle):
-            print(
-                f"\nSelect {max_team_size} Pokemon for your team (you have {team_size})."
-            )
-            print("Enter numbers separated by spaces (e.g., '1 2 3 4'):")
-        else:
-            print("\nOrder your team by entering numbers separated by spaces.")
-            print("The first Pokemon will be sent out first.")
+        print(f"\nSelect {max_team_size} Pokemon for your team (you have {team_size}).")
+        print("Enter numbers separated by spaces (e.g., '1 2 3 4'):")
 
         while True:
             try:
@@ -179,12 +150,7 @@ class HumanPlayer(Player):
                     continue
 
                 if len(selections) != max_team_size:
-                    msg = (
-                        f"Error: Must select exactly {max_team_size} Pokemon"
-                        if isinstance(battle, DoubleBattle)
-                        else f"Error: Must order all {team_size} Pokemon"
-                    )
-                    print(msg)
+                    print(f"Error: Must select exactly {max_team_size} Pokemon")
                     continue
 
                 team_list = list(battle.team.values())
@@ -193,72 +159,6 @@ class HumanPlayer(Player):
 
                 indices = "".join(str(i + 1) for i in selections)
                 return SingleBattleOrder(order=f"/team {indices}")
-
-            except (ValueError, IndexError) as e:
-                print(f"Invalid input: {e}. Please try again.")
-
-    def _handle_singles_turn(self, battle: AbstractBattle) -> BattleOrder:
-        """Handle a turn in singles battle."""
-        print("\n=== YOUR OPTIONS ===")
-
-        # Display available moves
-        available_moves = battle.available_moves
-        print("\nMoves:")
-        for i, move in enumerate(available_moves, 1):
-            print(f"  {i}. {self._format_move(move)}")
-
-        # Display available switches
-        available_switches = battle.available_switches
-        if available_switches:
-            print("\nSwitches:")
-            for i, pokemon in enumerate(available_switches, 1):
-                print(f"  s{i}. Switch to {self._format_pokemon(pokemon)}")
-
-        # Special options
-        print("\nSpecial:")
-        if battle.can_dynamax:
-            print("  Add 'd' to dynamax (e.g., '1d' to use move 1 with dynamax)")
-        if battle.can_tera:
-            print("  Add 't' to terastallize (e.g., '1t' to use move 1 with tera)")
-        print("  Type 'quit' to forfeit")
-
-        while True:
-            try:
-                user_input = input("\nYour action: ").strip().lower()
-
-                if user_input == "quit":
-                    return ForfeitBattleOrder()
-
-                # Parse input
-                dynamax = "d" in user_input
-                tera = "t" in user_input
-                base_input = user_input.replace("d", "").replace("t", "")
-
-                # Check for switch
-                if base_input.startswith("s"):
-                    switch_num = int(base_input[1:]) - 1
-                    if 0 <= switch_num < len(available_switches):
-                        return SingleBattleOrder(order=available_switches[switch_num])
-                    else:
-                        print(
-                            f"Invalid switch number. Must be between 1 and {len(available_switches)}"
-                        )
-                        continue
-
-                # Otherwise it's a move
-                move_num = int(base_input) - 1
-                if 0 <= move_num < len(available_moves):
-                    move = available_moves[move_num]
-                    return SingleBattleOrder(
-                        order=move,
-                        dynamax=dynamax and battle.can_dynamax,
-                        terastallize=tera and battle.can_tera,
-                    )
-                else:
-                    print(
-                        f"Invalid move number. Must be between 1 and {len(available_moves)}"
-                    )
-                    continue
 
             except (ValueError, IndexError) as e:
                 print(f"Invalid input: {e}. Please try again.")
