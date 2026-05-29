@@ -363,3 +363,13 @@ Each task ends with a commit. Frequent commits per [CLAUDE.md](../../CLAUDE.md) 
 ## Updates
 
 <!-- Populated during implementation. Format: YYYY-MM-DD hh:mm — <sha> — <one-line summary> -->
+
+- 2026-05-29 12:30 — 498fdf7 — Drop Singles support from HumanPlayer (prep work, separate from this plan but landed first to clear the file).
+- 2026-05-29 12:35 — 3c2d9f3 — Task 1: scaffold `engine/battle_renderer.py` leaf primitives (`format_pokemon_line`, `format_field`, `format_moves_oneline`, `format_events`) + 20 unit tests.
+- 2026-05-29 12:45 — fd1a876 — Task 2: composite views (`format_action_reference`, `format_teampreview`, `format_battle_state`) with Showdown-native target codes; +11 unit tests.
+- 2026-05-29 12:55 — dec08d3 — Task 3: port `observation_to_str`/`battle_to_str` from `inference_utils` to `engine.battle_renderer` as `format_observation` / `format_battle_log` (the legacy versions were broken since the upstream Observation simplification).
+- 2026-05-29 13:00 — 0df77c1 — Task 4: cut over six importers; delete legacy functions; add lazy `__getattr__` for `VGCEnvironment` in `engine/__init__.py` to avoid `inference -> engine -> rl -> etl -> inference` circular import.
+- 2026-05-29 13:15 — debe9b2 — Task 5: action grammar parser (`_human_action_parser.parse_action`) with 13 unit tests covering moves with target/tera/mega, switches, pass, quit, force-switch padding, and error cases.
+- 2026-05-29 13:25 — 98ba9cd — Task 6: rewrite `HumanPlayer` as a thin shell over `battle_renderer` + `parse_action`; drop ~190 lines of inline formatting and parser logic.
+- 2026-05-29 13:30 — 40c8cb7 — Task 7: update `engine/ENGINE.md` with `battle_renderer` ownership and the lazy-import rationale.
+- Final state: 762 passing tests (+13 from baseline), ruff/pyright clean. Task 7's planning-doc reorg test note (no new HumanPlayer-loop tests because `input()` isn't unit-testable) verified — existing `unit_tests/rl/test_play_human_vs_model.py` still passes.
