@@ -88,3 +88,45 @@ def _parse_replay_url(raw_html: str) -> Optional[str]:
     if match is None:
         return None
     return match.group(0)
+
+
+def _update_record(
+    record: LadderRecord,
+    split_message: List[str],
+    *,
+    agent_role: str,
+) -> None:
+    """Merge a single Showdown split message into ``record`` in place.
+
+    ``agent_role`` is the agent's own slot (e.g. ``"p1"``) — used to skip
+    the agent's own ``|player|`` line so ``opponent`` / ``pre_rating``
+    track the other player only. Unknown messages are ignored.
+    """
+    if not split_message:
+        return
+    tag = split_message[0]
+    if tag == "player":
+        if len(split_message) < 3 or split_message[1] == agent_role:
+            return
+        parsed = _parse_player_line(split_message)
+        if parsed is None:
+            return
+        username, rating = parsed
+        if username:
+            record.opponent = username
+        if rating is not None:
+            record.pre_rating = rating
+        return
+    if tag == "raw" and len(split_message) >= 2:
+        raw_html = split_message[1]
+        change = _parse_rating_change(raw_html)
+        if change is not None:
+            pre, post = change
+            record.pre_rating = pre
+            record.post_rating = post
+        gxe = _parse_gxe(raw_html)
+        if gxe is not None:
+            record.gxe = gxe
+        replay = _parse_replay_url(raw_html)
+        if replay is not None:
+            record.replay_url = replay

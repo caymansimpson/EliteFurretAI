@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 from elitefurretai.rl.analyze.laddering import (
+    LadderRecord,
     _parse_gxe,
     _parse_player_line,
     _parse_rating_change,
     _parse_replay_url,
+    _update_record,
 )
 
 
@@ -77,3 +79,64 @@ def test_parse_replay_url_present():
 
 def test_parse_replay_url_absent():
     assert _parse_replay_url("<p>nothing</p>") is None
+
+
+def test_update_record_with_player_line_sets_opponent_and_pre_rating():
+    """A |player| line for the opponent's slot populates opponent + pre_rating."""
+    record = LadderRecord(battle_tag="battle-x-1")
+    _update_record(
+        record,
+        ["player", "p2", "OpponentUser", "169", "1500"],
+        agent_role="p1",
+    )
+    assert record.opponent == "OpponentUser"
+    assert record.pre_rating == 1500
+
+
+def test_update_record_ignores_own_player_line():
+    """The agent's own |player| line shouldn't overwrite opponent/pre_rating."""
+    record = LadderRecord(battle_tag="battle-x-1")
+    _update_record(
+        record,
+        ["player", "p1", "EliteFurret", "169", "1500"],
+        agent_role="p1",
+    )
+    assert record.opponent == ""
+    assert record.pre_rating is None
+
+
+def test_update_record_with_raw_rating_change():
+    """A |raw| rating-change line populates pre_rating + post_rating."""
+    record = LadderRecord(battle_tag="battle-x-1")
+    _update_record(
+        record,
+        [
+            "raw",
+            "<small>EliteFurret's rating: 1500 &rarr; <strong>1512</strong></small>",
+        ],
+        agent_role="p1",
+    )
+    assert record.pre_rating == 1500
+    assert record.post_rating == 1512
+
+
+def test_update_record_with_raw_gxe():
+    """A |raw| GXE line populates the gxe field."""
+    record = LadderRecord(battle_tag="battle-x-1")
+    _update_record(record, ["raw", "<small>GXE: 54.3%</small>"], agent_role="p1")
+    assert record.gxe == 54.3
+
+
+def test_update_record_with_raw_replay_url():
+    """A |raw| replay-link line populates replay_url."""
+    record = LadderRecord(battle_tag="battle-x-1")
+    _update_record(
+        record,
+        [
+            "raw",
+            '<a class="ilink" '
+            'href="https://replay.pokemonshowdown.com/gen9vgc2024regg-1">x</a>',
+        ],
+        agent_role="p1",
+    )
+    assert record.replay_url == "https://replay.pokemonshowdown.com/gen9vgc2024regg-1"
