@@ -96,8 +96,16 @@ Replaces `FoulplayEvalConfig` in [config.py](../../src/elitefurretai/rl/config.p
 ```python
 @dataclass
 class OpponentEvalSpec:
-    target: float        # in [0,1]
-    weight: float        # 0.0 disables the bucket entirely
+    """Per-opponent eval config. Lives in EvalConfig.opponents keyed by
+    canonical opponent name (e.g. "vgc_bench", "bc_player"). The three
+    fields apply across ALL curriculum formats: n_battles is the total
+    budget for this opponent that the bucket runner splits across
+    curriculum.battle_formats using the curriculum's format weights;
+    target and weight feed compute_score on the per-opponent aggregated
+    win rate.
+    """
+    target: float        # in [0,1]; per-opponent win-rate floor
+    weight: float        # 0.0 disables the bucket entirely (no player constructed)
     n_battles: int       # total across all curriculum formats
 
 @dataclass
@@ -141,25 +149,38 @@ already abstracts that distinction.
 
 ```python
 @dataclass
-class EvalBucket:
-    name: str
-    target: float
-    weight: float
-    n_battles: int
-
-@dataclass
 class BucketRunResult:
-    win_rate: float
-    n_battles: int
-    per_format: Dict[str, EvalResult]
+    """Aggregated outcome for ONE opponent (one entry in EvalConfig.opponents)
+    after running its full eval cycle across all curriculum.battle_formats.
+    Granularity: one BucketRunResult per active opponent per eval pass.
+
+    win_rate is the format-weighted mean of per-format win rates and is
+    the single number that feeds compute_score for this opponent.
+    per_format preserves the per-format breakdown so the wandb logger
+    can compute eval/<format>/win_rate cross-opponent aggregates.
+    """
+    win_rate: float                          # weighted mean across formats; [0,1]
+    n_battles: int                           # total played across formats
+    per_format: Dict[str, EvalResult]        # one EvalResult per curriculum format
     wall_time_s: float
 
 @dataclass
 class MultiBucketEvalResult:
-    per_bucket: Dict[str, BucketRunResult]
-    score: float
-    breakdown: Dict[str, float]
-    wall_time_s: float
+    """Outcome of ONE full multi-bucket eval pass. Granularity: one
+    MultiBucketEvalResult per call to baseline_eval.run, i.e. one per
+    checkpoint boundary during training, or one per standalone CLI
+    invocation.
+
+    per_bucket has one entry per active (weight > 0) opponent.
+    Disabled opponents (weight == 0) do not appear here.
+    score is the scalar W&B sweep metric (compute_score output).
+    breakdown carries the deficit_l2_pp and surplus_sum_pp components
+    for diagnostic logging.
+    """
+    per_bucket: Dict[str, BucketRunResult]   # keyed by opponent canonical name
+    score: float                             # the wandb sweep metric (maximize)
+    breakdown: Dict[str, float]              # {"deficit_l2_pp": ..., "surplus_sum_pp": ...}
+    wall_time_s: float                       # full pass including all buckets
 
 def run(eval_cfg, curriculum, checkpoint_path, server_urls, device, run_tag) -> MultiBucketEvalResult:
     results = {}
@@ -294,25 +315,55 @@ Sweep-sampled values override `eval_overrides` on key collision.
 
 ### 8. Standalone CLI
 
-`baseline_eval.py` exposes `main()` for manual checkpoint evaluation,
-mirroring the existing
-[foulplay_eval.main](../../src/elitefurretai/rl/analyze/foulplay_eval.py#L599)
-scaffolding it replaces:
+`baseline_eval.py` exposes `main()` for manual checkpoint evaluation. It
+takes a single `--config` flag pointing to a full RNaDConfig YAML — the
+same format training uses. The CLI reads only `config.curriculum`,
+`config.eval`, and `config.hardware.device` and ignores the rest, so the
+same YAML files can drive training and offline eval.
+
+Standalone runs do not push to W&B. Results are written to a JSON file
+specified by `--output`. This keeps the CLI a clean offline tool with no
+auth or network dependencies, and the resulting JSON can be loaded into
+notebooks or diffed across checkpoints.
 
 ```bash
 python -m elitefurretai.rl.analyze.baseline_eval \
     --checkpoint data/models/.../checkpoint.pt \
-    --eval-config path/to/eval_config.yaml \
-    --curriculum-config path/to/curriculum.yaml \
-    --num-servers 4 \
-    [--wandb-project foo --wandb-run-name bar]
+    --config src/elitefurretai/rl/configs/may26.yaml \
+    --output eval_results/checkpoint_X_eval.json \
+    --num-servers 4
 ```
 
 The CLI launches its own Showdown servers, calls `baseline_eval.run`,
-shuts down servers in `finally`, and prints results. Optional `--wandb-*`
-flags log to W&B for record-keeping. The CLI and the training-loop
-integration share the same `run(...)` core, so all real work happens in
-one place.
+writes the JSON output, shuts down servers in `finally`, and exits. The
+CLI and the training-loop integration share the same `run(...)` core, so
+all real work happens in one place.
+
+**Output JSON schema:**
+
+```json
+{
+  "checkpoint_path": "data/models/.../checkpoint.pt",
+  "config_path": "src/elitefurretai/rl/configs/may26.yaml",
+  "run_tag": "1a2b",
+  "timestamp_utc": "2026-05-29T21:00:00Z",
+  "score": -42.0,
+  "breakdown": {"deficit_l2_pp": 50.0, "surplus_sum_pp": 8.0},
+  "wall_time_s": 612.4,
+  "per_opponent": {
+    "simple_heuristic_baseline": {
+      "win_rate": 0.78, "n_battles": 150, "wall_time_s": 145.2,
+      "per_format": {"gen9vgc2023regc": {"win_rate": 0.78, "n_battles": 150}}
+    },
+    "max_damage": {...},
+    "vgc_bench": {...},
+    "bc_player": {...}
+  },
+  "per_format": {
+    "gen9vgc2023regc": {"win_rate": 0.74}
+  }
+}
+```
 
 ### 9. Files removed
 
