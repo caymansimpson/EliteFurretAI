@@ -192,4 +192,9 @@ instead of crashing the whole session. Down-stream analysis filters by
 
 ## Updates
 
-(none)
+- 2026-05-29: Implementation landed on branch `feat/laddering` across
+  commits `38c6af0..90c4f0c` (nine TDD commits). All 23 parser/helper
+  unit tests passing under `unit_tests/rl/analyze/test_laddering.py`;
+  `python -m elitefurretai.rl.analyze.laddering --help` parses cleanly.
+  Live-ladder smoke test still pending — needs a registered Showdown
+  account and a sample `--n-games 2` run against `sim3.psim.us`.
