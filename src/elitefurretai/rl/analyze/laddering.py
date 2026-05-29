@@ -11,9 +11,12 @@ design rationale.
 
 from __future__ import annotations
 
+import datetime
 import re
 from dataclasses import dataclass
 from typing import List, Literal, Optional
+
+from poke_env.battle import AbstractBattle
 
 
 @dataclass
@@ -130,3 +133,17 @@ def _update_record(
         replay = _parse_replay_url(raw_html)
         if replay is not None:
             record.replay_url = replay
+
+
+def _finalize_record(record: LadderRecord, battle: AbstractBattle) -> None:
+    """Populate outcome, final_turn, and timestamp from a finished battle."""
+    if battle.won:
+        record.outcome = "win"
+    elif battle.lost:
+        record.outcome = "loss"
+    else:
+        record.outcome = "tie"
+    record.final_turn = int(battle.turn)
+    record.timestamp = datetime.datetime.now(datetime.timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )

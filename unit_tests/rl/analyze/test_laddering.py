@@ -3,8 +3,11 @@
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 from elitefurretai.rl.analyze.laddering import (
     LadderRecord,
+    _finalize_record,
     _parse_gxe,
     _parse_player_line,
     _parse_rating_change,
@@ -140,3 +143,32 @@ def test_update_record_with_raw_replay_url():
         agent_role="p1",
     )
     assert record.replay_url == "https://replay.pokemonshowdown.com/gen9vgc2024regg-1"
+
+
+class _FakeBattle:
+    def __init__(self, won, lost, turn, battle_tag):
+        self.won = won
+        self.lost = lost
+        self.turn = turn
+        self.battle_tag = battle_tag
+
+
+def test_finalize_record_win():
+    record = LadderRecord(battle_tag="battle-x-1")
+    _finalize_record(record, cast(Any, _FakeBattle(True, False, 18, "battle-x-1")))
+    assert record.outcome == "win"
+    assert record.final_turn == 18
+    assert record.timestamp is not None
+
+
+def test_finalize_record_loss():
+    record = LadderRecord(battle_tag="battle-x-1")
+    _finalize_record(record, cast(Any, _FakeBattle(False, True, 25, "battle-x-1")))
+    assert record.outcome == "loss"
+    assert record.final_turn == 25
+
+
+def test_finalize_record_tie():
+    record = LadderRecord(battle_tag="battle-x-1")
+    _finalize_record(record, cast(Any, _FakeBattle(False, False, 60, "battle-x-1")))
+    assert record.outcome == "tie"
