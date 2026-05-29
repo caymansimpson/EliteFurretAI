@@ -162,44 +162,52 @@ class BattleIterator:
 
     # Continues going until we find the next input for our perspective
     def next_input(self) -> Optional[str]:
-        while (
-            self._index < len(self.bd.logs)
-            and not self._is_turn()
-            and not self._is_pivot_trigger()
-            and not self._is_teampreview()
-            and not self._is_preturn_switch()
-            and not self._is_revival_blessing()
-        ):
-            self.next()
+        # poke-env's parse_message can raise KeyError when an identifier in a
+        # protocol event ([of] ..., target_str for Pressure, etc.) resolves to a
+        # nickname whose derived "species" is not in the pokedex. This is a
+        # poke-env bug class affecting many call sites; trapping it here ends
+        # the battle's iteration cleanly so the rest of the dataset proceeds.
+        try:
+            while (
+                self._index < len(self.bd.logs)
+                and not self._is_turn()
+                and not self._is_pivot_trigger()
+                and not self._is_teampreview()
+                and not self._is_preturn_switch()
+                and not self._is_revival_blessing()
+            ):
+                self.next()
 
-        while self._index < len(self.bd.logs) and not (
-            self.log == "|" or self._is_preturn_switch()
-        ):
-            self.next()
+            while self._index < len(self.bd.logs) and not (
+                self.log == "|" or self._is_preturn_switch()
+            ):
+                self.next()
 
-        if self._index < len(self.bd.logs) and self._is_preturn_switch():
-            self.next()
+            if self._index < len(self.bd.logs) and self._is_preturn_switch():
+                self.next()
 
-        # Last input can be None if we havent iterated through the battle. It can also be
-        # another opponent's input if they have a pivot. If this is the case, we need to go again
-        # until we fine the input of the player (self._perspective) we're looking for
-        if self.last_input is not None and not self.last_input.startswith(
-            ">" + self._perspective
-        ):
-            if self._input_nums[0] >= len(self.bd.input_logs) or self._battle.finished:
+            # Last input can be None if we havent iterated through the battle. It can also be
+            # another opponent's input if they have a pivot. If this is the case, we need to go again
+            # until we fine the input of the player (self._perspective) we're looking for
+            if self.last_input is not None and not self.last_input.startswith(
+                ">" + self._perspective
+            ):
+                if self._input_nums[0] >= len(self.bd.input_logs) or self._battle.finished:
+                    return None
+                else:
+                    return self.next_input()
+
+            # We have the next input
+            elif self.last_input is not None and self._index < len(self.bd.logs):
+                return self.last_input
+
+            # We're at the end of the battle
+            elif self._index == len(self.bd.logs):
                 return None
+
             else:
-                return self.next_input()
-
-        # We have the next input
-        elif self.last_input is not None and self._index < len(self.bd.logs):
-            return self.last_input
-
-        # We're at the end of the battle
-        elif self._index == len(self.bd.logs):
-            return None
-
-        else:
+                return None
+        except KeyError:
             return None
 
     def finish(self):
