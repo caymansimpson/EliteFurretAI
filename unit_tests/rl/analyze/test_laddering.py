@@ -7,6 +7,7 @@ from elitefurretai.rl.analyze.laddering import (
     _parse_gxe,
     _parse_player_line,
     _parse_rating_change,
+    _parse_replay_url,
 )
 
 
@@ -60,3 +61,19 @@ def test_parse_gxe_present():
 
 def test_parse_gxe_absent():
     assert _parse_gxe("<p>nothing relevant</p>") is None
+
+
+def test_parse_replay_url_present():
+    html = (
+        '<a class="ilink" '
+        'href="https://replay.pokemonshowdown.com/gen9vgc2024regg-2189123456">'
+        "Open replay</a>"
+    )
+    assert (
+        _parse_replay_url(html)
+        == "https://replay.pokemonshowdown.com/gen9vgc2024regg-2189123456"
+    )
+
+
+def test_parse_replay_url_absent():
+    assert _parse_replay_url("<p>nothing</p>") is None

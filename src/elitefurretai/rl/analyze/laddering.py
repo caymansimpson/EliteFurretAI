@@ -75,3 +75,16 @@ def _parse_gxe(raw_html: str) -> Optional[float]:
     if match is None:
         return None
     return float(match.group(1))
+
+
+_REPLAY_URL_RE = re.compile(
+    r"https://replay\.pokemonshowdown\.com/[A-Za-z0-9_\-]+",
+)
+
+
+def _parse_replay_url(raw_html: str) -> Optional[str]:
+    """Extract the Showdown replay URL from a `|raw|` line, if present."""
+    match = _REPLAY_URL_RE.search(raw_html)
+    if match is None:
+        return None
+    return match.group(0)
