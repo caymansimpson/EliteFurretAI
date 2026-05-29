@@ -748,7 +748,7 @@ def main():
         default="",
         help=(
             "Comma-separated logger names to elevate to DEBUG for this run "
-            "(e.g. 'elitefurretai.rl.inference_trainer' to see [batch-fill] "
+            "(e.g. 'elitefurretai.rl.inference_service' to see [batch-fill] "
             "lines that were dropped to DEBUG in commit f7fd34d)."
         ),
     )
