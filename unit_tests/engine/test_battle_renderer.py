@@ -422,6 +422,84 @@ class TestFormatBattleState:
         out = format_battle_state(battle)
         assert "LAST TURN" in out
 
+
+# ─────────────────────────────────────────────────────────────────────
+# format_observation
+# ─────────────────────────────────────────────────────────────────────
+
+
+class TestFormatObservation:
+    def test_empty_observation_renders_no_events_marker(self):
+        from poke_env.battle import Observation
+
+        from elitefurretai.engine.battle_renderer import format_observation
+
+        out = format_observation(Observation())
+        assert "(no events yet)" in out
+
+    def test_observation_with_events(self):
+        from poke_env.battle import Observation
+
+        from elitefurretai.engine.battle_renderer import format_observation
+
+        obs = Observation(
+            events=[
+                ["", "move", "p2a: Calyrex", "Astral Barrage", "p1a: Miraidon"],
+                ["", "faint", "p1a: Miraidon"],
+            ]
+        )
+        out = format_observation(obs)
+        assert "Astral Barrage" in out
+        assert "faint" in out
+
+
+# ─────────────────────────────────────────────────────────────────────
+# format_battle_log
+# ─────────────────────────────────────────────────────────────────────
+
+
+class TestFormatBattleLog:
+    def test_header_contains_battle_tag_and_usernames(self):
+        from elitefurretai.engine.battle_renderer import format_battle_log
+
+        battle = _empty_battle()
+        battle._player_username = "me"
+        battle._opponent_username = "you"
+        out = format_battle_log(battle)
+        assert "tag" in out
+        assert "me" in out
+        assert "you" in out
+
+    def test_teampreview_teams_listed(self):
+        from elitefurretai.engine.battle_renderer import format_battle_log
+
+        battle = _empty_battle()
+        battle._player_username = "me"
+        battle._opponent_username = "you"
+        battle._teampreview_team = [_calyrex_shadow()]
+        battle._teampreview_opponent_team = [_miraidon_preview()]
+        out = format_battle_log(battle)
+        assert "Calyrex" in out
+        assert "Miraidon" in out
+
+    def test_observations_rendered_per_turn(self):
+        from poke_env.battle import Observation
+
+        from elitefurretai.engine.battle_renderer import format_battle_log
+
+        battle = _empty_battle()
+        battle._player_username = "me"
+        battle._opponent_username = "you"
+        battle._observations = {
+            1: Observation(events=[["", "move", "p2a: Calyrex", "Astral Barrage"]]),
+            2: Observation(events=[["", "faint", "p1a: Miraidon"]]),
+        }
+        out = format_battle_log(battle)
+        assert "Turn #1" in out
+        assert "Turn #2" in out
+        assert "Astral Barrage" in out
+        assert "faint" in out
+
     def test_multiple_events_each_on_own_line(self):
         from elitefurretai.engine.battle_renderer import format_events
 

@@ -14,8 +14,10 @@ from typing import Optional, Sequence
 from poke_env.battle import (
     DoubleBattle,
     Move,
+    Observation,
     Pokemon,
 )
+from poke_env.player.player import Player
 
 
 def format_pokemon_line(
@@ -319,3 +321,76 @@ def format_battle_state(battle: DoubleBattle) -> str:
         _format_bench_section(battle),
     ]
     return "\n".join(sections)
+
+
+def format_observation(obs: Observation) -> str:
+    """Render one Observation. The current poke-env Observation only carries
+    raw protocol events, so this is just a thin wrapper around format_events.
+
+    (The legacy version in inference_utils accessed per-mon and field data on
+    Observation; those attributes were removed upstream and the old function
+    is broken — see planning/stage2/2026-05-29-12-10-human-player-cli-and-battle-renderer.md.)
+    """
+    return format_events(obs.events)
+
+
+def _format_teampreview_team_block(header: str, team: Sequence[Pokemon]) -> str:
+    """Render one side's teampreview team for the battle-log dump."""
+    lines = [f"{header}: ["]
+    for mon in team:
+        speed = mon.stats.get("spe") if mon.stats else None
+        lines.append(f"\t{mon.name} => [Speed: {speed} // Item: {mon.item}]")
+    lines.append("]")
+    return "\n".join(lines)
+
+
+def format_battle_log(battle: DoubleBattle, opp: Optional[Player] = None) -> str:
+    """Whole-battle debug dump: header + both teampreview teams + every
+    turn's events. Optionally enrich the opponent's teampreview team with
+    poke-env state from the given opponent Player (used by fuzz harnesses
+    that have both sides' Player instances in process).
+    """
+    header = f"============= Battle [{battle.battle_tag}] =============\n"
+    header += (
+        f"The battle is between {battle.player_username} and "
+        f"{battle.opponent_username} from {battle.player_username}'s perspective.\n"
+    )
+
+    own_team = battle.teampreview_team
+    own_role = battle.player_role
+    own_enriched = []
+    for mon in own_team:
+        ident = mon.identifier(own_role) if own_role else None
+        own_enriched.append(battle.team.get(ident, mon) if ident else mon)
+
+    opp_team = battle.teampreview_opponent_team
+    opp_team_dict = battle.opponent_team
+    if opp is not None:
+        opp_team = opp.battles[battle.battle_tag].teampreview_team
+        opp_team_dict = opp.battles[battle.battle_tag].team
+    opp_role = battle.opponent_role
+    opp_enriched = []
+    for mon in opp_team:
+        ident = mon.identifier(opp_role) if opp_role else None
+        opp_enriched.append(opp_team_dict.get(ident, mon) if ident else mon)
+
+    body = [
+        header,
+        _format_teampreview_team_block("P1 Teampreview Team (omniscient)", own_enriched),
+        _format_teampreview_team_block(
+            "P2 Teampreview Team (not omniscient)", opp_enriched
+        ),
+    ]
+
+    last_obs: Optional[Observation] = None
+    for turn, obs in battle.observations.items():
+        body.append(f"\nTurn #{turn}:")
+        body.append(format_observation(obs))
+        last_obs = obs
+
+    current = battle._current_observation
+    if last_obs is not None and current.events != last_obs.events:
+        body.append(f"\nCurrent Observation; Turn #{battle.turn}:")
+        body.append(format_observation(current))
+
+    return "\n".join(body)
