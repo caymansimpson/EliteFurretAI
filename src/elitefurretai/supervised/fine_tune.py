@@ -175,9 +175,28 @@ def load_model_and_config(model_path: str, device: str):
         for k, v in raw_state_dict.items()
     }
 
+    # Drop shape-mismatched keys before load. strict=False handles missing /
+    # unexpected KEYS but raises on SHAPE mismatch on matched keys; this lets
+    # resized layers (input_proj after the embedder featureset changed; item
+    # embedding after Mega Stones were added to the item vocab) get random init
+    # instead of a load-time error, while everything else loads normally.
+    model_state = model.state_dict()
+    filtered_state = {
+        k: v
+        for k, v in state_dict.items()
+        if k in model_state and v.shape == model_state[k].shape
+    }
+    dropped = sorted(
+        k for k in state_dict if k in model_state and k not in filtered_state
+    )
+    if dropped:
+        print(
+            f"Warning: Dropped {len(dropped)} shape-mismatched keys (will use random init): {dropped}"
+        )
+
     # strict=False so older checkpoints missing newly-added keys (e.g. distributional
     # head buffers) get random init for those tensors only.
-    missing, unexpected = model.load_state_dict(state_dict, strict=False)
+    missing, unexpected = model.load_state_dict(filtered_state, strict=False)
     if missing:
         print(f"Warning: Missing keys (will use random init): {missing}")
     if unexpected:
