@@ -11,15 +11,18 @@ design rationale.
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import datetime
 import json
 import re
-from dataclasses import dataclass
+import sys
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Literal, Optional
 
 from poke_env.battle import AbstractBattle
+from poke_env.ps_client import AccountConfiguration, ShowdownServerConfiguration
 
 from elitefurretai.agents.simple_model_player import SimpleModelPlayer
 
@@ -229,3 +232,122 @@ class SimpleModelLadderPlayer(SimpleModelPlayer):
         )
         if self._on_record is not None:
             self._on_record(record)
+
+
+def _make_record_sink(
+    output_path: Optional[Path],
+) -> Callable[[LadderRecord], None]:
+    """Return a callback that prints each record as a jsonl line.
+
+    Always writes to stdout; if ``output_path`` is set, also appends
+    to that file. The file is opened in append mode so partial runs
+    don't lose history.
+    """
+    file_handle = open(output_path, "a", encoding="utf-8") if output_path else None
+
+    def sink(record: LadderRecord) -> None:
+        line = json.dumps(asdict(record))
+        print(line, flush=True)
+        if file_handle is not None:
+            file_handle.write(line + "\n")
+            file_handle.flush()
+
+    return sink
+
+
+def _build_argparser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="laddering",
+        description=(
+            "Play N rated battles on the official Showdown ladder with a "
+            "given checkpoint, format, and team."
+        ),
+    )
+    parser.add_argument(
+        "--checkpoint",
+        required=True,
+        type=Path,
+        help="Path to the RL checkpoint (.pt).",
+    )
+    parser.add_argument(
+        "--battle-format",
+        required=True,
+        help="Showdown battle format (e.g. gen9vgc2024regg).",
+    )
+    parser.add_argument(
+        "--team",
+        required=True,
+        type=Path,
+        help="Path to the team file (Showdown export format).",
+    )
+    parser.add_argument(
+        "--credentials",
+        required=True,
+        type=Path,
+        help='JSON file containing {"username": ..., "password": ...}.',
+    )
+    parser.add_argument(
+        "--n-games",
+        type=int,
+        default=1,
+        help="Number of rated battles to play (default: 1).",
+    )
+    parser.add_argument(
+        "--device",
+        default="cuda",
+        help="Torch device for inference (default: cuda).",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help="Optional jsonl file to append per-battle records to.",
+    )
+    return parser
+
+
+async def _run_ladder(player: SimpleModelLadderPlayer, n_games: int) -> None:
+    await player.ladder(n_games)
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    args = _build_argparser().parse_args(argv)
+    if not args.checkpoint.exists():
+        raise FileNotFoundError(f"checkpoint not found: {args.checkpoint}")
+    if not args.team.exists():
+        raise FileNotFoundError(f"team file not found: {args.team}")
+    username, password = _load_credentials(args.credentials)
+    team_text = args.team.read_text()
+
+    sink = _make_record_sink(args.output)
+    account = AccountConfiguration(username, password)
+    player = SimpleModelLadderPlayer(
+        model_path=str(args.checkpoint),
+        device=args.device,
+        battle_format=args.battle_format,
+        team=team_text,
+        account_configuration=account,
+        server_configuration=ShowdownServerConfiguration,
+        on_record=sink,
+    )
+    asyncio.run(_run_ladder(player, args.n_games))
+
+    final = list(player.ladder_records.values())
+    won = sum(1 for r in final if r.outcome == "win")
+    lost = sum(1 for r in final if r.outcome == "loss")
+    tied = sum(1 for r in final if r.outcome == "tie")
+    last_rating = next(
+        (r.post_rating for r in reversed(final) if r.post_rating is not None),
+        None,
+    )
+    last_gxe = next((r.gxe for r in reversed(final) if r.gxe is not None), None)
+    print(
+        f"=== ladder run done: {won}W-{lost}L-{tied}T, "
+        f"final_rating={last_rating}, final_gxe={last_gxe}",
+        file=sys.stderr,
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
