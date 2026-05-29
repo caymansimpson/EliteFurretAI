@@ -18,8 +18,8 @@ from poke_env.battle import DoubleBattle
 from poke_env.ps_client import AccountConfiguration, ServerConfiguration
 
 from elitefurretai.agents.simple_model_player import SimpleModelPlayer
+from elitefurretai.engine.battle_renderer import format_battle_log
 from elitefurretai.etl.encoder import MDBO
-from elitefurretai.inference.inference_utils import battle_to_str
 
 
 class VerboseModelPlayer(SimpleModelPlayer):
@@ -94,7 +94,7 @@ class VerboseModelPlayer(SimpleModelPlayer):
 
         if self.print_summary:
             print("\nBattle summary:")
-            print(battle_to_str(battle))
+            print(format_battle_log(battle))
 
     def _on_action_selected(
         self,

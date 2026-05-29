@@ -22,7 +22,6 @@ from poke_env.battle import (
     Status,
     Weather,
 )
-from poke_env.player.player import Player
 
 
 # Converts showdown message into dict key for self._mons
@@ -746,74 +745,6 @@ def get_segments(events: List[List[str]], start=0) -> Dict[str, List[List[str]]]
         segments["init"] = init
 
     return segments
-
-
-def observation_to_str(obs):
-    message = ""
-    message += f"\n\tMy Active Mon:  [{', '.join(map(lambda x: x.species if x else 'None', obs.active_pokemon)) if obs.active_pokemon else ''}]"
-    message += f"\n\tOpp Active Mon: [{', '.join(map(lambda x: x.species if x else 'None', obs.opponent_active_pokemon)) if obs.opponent_active_pokemon else ''}]"
-    message += f"\n\tWeather: [{', '.join(map(lambda x: x.name, obs.weather))}]"
-    message += f"\n\tFields: [{', '.join(map(lambda x: x.name, obs.fields))}]"
-    message += f"\n\tMy Side Conditions:  [{', '.join(map(lambda x: x.name, obs.side_conditions))}]"
-    message += f"\n\tOpp Side Conditions: [{', '.join(map(lambda x: x.name, obs.opponent_side_conditions))}]"
-
-    message += "\n\tMy Team:"
-    for ident, mon in obs.team.items():
-        message += f"\n\t\t{ident} => [Speed: {mon.stats['spe']}], [Item: {mon.item}], [Speed Boost: {mon.boosts['spe']}], [Effects: {list(map(lambda x: x.name, mon.effects))}], [Status: {mon.status.name if mon.status else 'None'}]"
-
-    message += "\n\tOpp Team:"
-    for ident, mon in obs.opponent_team.items():
-        message += f"\n\t\t{ident} => [Speed: {mon.stats['spe']}], [Item: {mon.item}], [Speed Boost: {mon.boosts['spe']}], [Effects: {list(map(lambda x: x.name, mon.effects))}], [Status: {mon.status.name if mon.status else 'None'}]"
-
-    message += "\n\n\tEvents:"
-    if len(obs.events) == 0:
-        message += "\n\t\t(No events yet! You are at the beginning of this turn.)"
-    else:
-        for event in obs.events:
-            message += f"\n\t\t{event}"
-
-    return message
-
-
-def battle_to_str(battle, opp: Optional[Player] = None) -> str:
-    message = f"============= Battle [{battle.battle_tag}] =============\n"
-    message += f"The battle is between {battle.player_username} and {battle.opponent_username} from {battle.player_username}'s perspective.\n"
-
-    message += "P1 Teampreview Team (omniscient): ["
-    for mon in battle.teampreview_team:
-        ident = mon.identifier(battle.player_role)
-        mon = battle.team.get(ident, mon)
-        message += f"\n\t{mon.name} => "
-        message += "[Speed: " + str(mon.stats["spe"])
-        message += f" // Item: {mon.item}]"
-    message += "]\n"
-
-    opp_teampreview_team = battle.teampreview_opponent_team
-    opp_team = battle.opponent_team
-    if opp is not None:
-        opp_teampreview_team = opp.battles[battle.battle_tag].teampreview_team
-        opp_team = opp.battles[battle.battle_tag].team
-
-    message += "P2 Teampreview Team (not omniscient): ["
-    for mon in opp_teampreview_team:
-        ident = mon.identifier(battle.opponent_role)
-        mon = opp_team.get(ident, mon)
-        message += f"\n\t{mon.name} => "
-        message += "[Speed: " + str(mon.stats["spe"])
-        message += f" // Item: {mon.item}]"
-    message += "]\n"
-
-    last_obs = None
-    for turn, obs in battle.observations.items():
-        message += f"\n\nTurn #{turn}:"
-        message += observation_to_str(obs)
-        last_obs = obs
-
-    if last_obs is not None and battle._current_observation.events != last_obs.events:
-        message += f"\n\nCurrent Observation; Turn #{battle.turn}:"
-        message += observation_to_str(battle._current_observation)
-
-    return message
 
 
 DISCERNABLE_ITEMS = set(

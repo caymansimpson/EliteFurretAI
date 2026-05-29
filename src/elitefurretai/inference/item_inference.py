@@ -23,9 +23,9 @@ from poke_env.battle import (
 from poke_env.data.gen_data import GenData
 from poke_env.data.normalize import to_id_str
 
+from elitefurretai.engine.battle_renderer import format_battle_log
 from elitefurretai.inference.battle_inference import BattleInference
 from elitefurretai.inference.inference_utils import (
-    battle_to_str,
     copy_bare_battle,
     get_segments,
     has_flinch_immunity,
@@ -346,7 +346,7 @@ class ItemInference:
     # the battle state after the switch
     def _check_opponent_switch(self, events: List[List[str]]):
         if self._battle.opponent_role is None or self._battle.player_role is None:
-            print(battle_to_str(self._battle))
+            print(format_battle_log(self._battle))
             raise ValueError(
                 "Cannot check opponent switches without roles",
             )
@@ -354,7 +354,7 @@ class ItemInference:
         if events[0][1] not in ["switch", "drag"] or not events[0][2].startswith(
             self._battle.opponent_role
         ):
-            print(battle_to_str(self._battle))
+            print(format_battle_log(self._battle))
             raise ValueError(
                 f"Expected switch event of opponent mon, but got {events[0]} instead",
             )
@@ -589,12 +589,12 @@ class ItemInference:
     # I have not tested it with this yet
     def _check_covert_cloak(self, events: List[List[str]], i: int):
         if self._battle.opponent_role is None or self._battle.player_role is None:
-            print(battle_to_str(self._battle))
+            print(format_battle_log(self._battle))
             raise ValueError(
                 "Cannot check for covert cloak without roles",
             )
         elif events[i][1] != "move":
-            print(battle_to_str(self._battle))
+            print(format_battle_log(self._battle))
             raise ValueError(
                 f"Checking for Covert Cloak {events[i]}, but the first event is not a move"
                 + "and this is not expected behavior",
@@ -615,7 +615,7 @@ class ItemInference:
             or move.secondary[0].get("chance", 0) != 100
             or target not in self._battle.opponent_team
         ):
-            print(battle_to_str(self._battle))
+            print(format_battle_log(self._battle))
             raise ValueError(
                 f"Checking for Covert Cloak {events[i]}, but the event shouldn't trigger checking",
                 events,
@@ -830,7 +830,7 @@ class ItemInference:
     # Goes through residuals and looks for mons who should be hit by sandstorm, but aren't
     def _check_residuals_for_safety_goggles(self, events: List[List[str]]):
         if self._battle.opponent_role is None:
-            print(battle_to_str(self._battle))
+            print(format_battle_log(self._battle))
             raise ValueError(
                 "Cannot check for SafetyGoggles without an opponent role", self._battle
             )

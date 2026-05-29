@@ -22,9 +22,9 @@ from poke_env.ps_client.server_configuration import (
 )
 from poke_env.teambuilder.teambuilder import Teambuilder
 
+from elitefurretai.engine.battle_renderer import format_battle_log
 from elitefurretai.etl.team_repo import TeamRepo
 from elitefurretai.inference.battle_inference import BattleInference
-from elitefurretai.inference.inference_utils import battle_to_str
 from elitefurretai.inference.item_inference import ItemInference
 from elitefurretai.inference.speed_inference import SpeedInference
 
@@ -112,7 +112,7 @@ def check_ground_truth(p1, p2, battle_tag):
             msg += "\n\n======================================================================\n=========================== ERROR FOUND :( ===========================\n======================================================================\n"
             msg += "Error Type: (error_speed_item) Erroneously found item that the mon didn't have, due to incorrect Speed Calculations\n"
             msg += f"{mon_in_battle.name} was found to have {flags['item']} when it actually had {mon.item}\n\n"
-            msg += battle_to_str(p2.battles[battle_tag], p1)
+            msg += format_battle_log(p2.battles[battle_tag], p1)
             counts["error_speed_item"] = counts.get("speed_item", 0) + 1
 
         elif flags["item"] not in [
@@ -124,7 +124,7 @@ def check_ground_truth(p1, p2, battle_tag):
             msg += "\n\n======================================================================\n=========================== ERROR FOUND :( ===========================\n======================================================================\n"
             msg += "Error Type (error_item): Erroneously found item that the mon didn't have\n"
             msg += f"{mon_in_battle.name} was found to have {flags['item']} when it actually had {mon.item}\n\n"
-            msg += battle_to_str(p2.battles[battle_tag], p1)
+            msg += format_battle_log(p2.battles[battle_tag], p1)
             counts["error_item"] = counts.get("error_item", 0) + 1
 
         elif (
@@ -137,7 +137,7 @@ def check_ground_truth(p1, p2, battle_tag):
             msg += "\n\n======================================================================\n=========================== ERROR FOUND :( ===========================\n======================================================================\n"
             msg += "Error Type (error_can_be_choice): Erroneously found a mon can't have a choice item when they do\n"
             msg += f"{mon_in_battle.name} was found not to have choice, but has the item '{mon.item}'\n\n"
-            msg += battle_to_str(p2.battles[battle_tag], p1)
+            msg += format_battle_log(p2.battles[battle_tag], p1)
             counts["error_can_be_choice"] = counts.get("error_can_be_choice", 0) + 1
 
         elif flags["has_status_move"] and not any(
@@ -146,7 +146,7 @@ def check_ground_truth(p1, p2, battle_tag):
             msg += "\n\n======================================================================\n=========================== ERROR FOUND :( ===========================\n======================================================================\n"
             msg += "Error Type (error_has_status_move): Erroneously found a mon can't be assault vest (e.g. they used a status move) when they could be\n"
             msg += f"{mon_in_battle.name} has the moves: [{', '.join(map(lambda x: x.id, mon.moves.values()))}]\n\n"
-            msg += battle_to_str(p2.battles[battle_tag], p1)
+            msg += format_battle_log(p2.battles[battle_tag], p1)
             counts["error_has_status_move"] = counts.get("error_has_status_move", 0) + 1
 
         elif (
@@ -160,7 +160,7 @@ def check_ground_truth(p1, p2, battle_tag):
             msg += "\n\n======================================================================\n=========================== ERROR FOUND :( ===========================\n======================================================================\n"
             msg += "Error Type (error_speed): Found an erroneous speed.\n"
             msg += f"{mon_in_battle.name} has a {mon_in_battle.stats['spe']} Speed stat, but we've bounded it between {flags['spe'][0]} and {flags['spe'][1]}\n\n"
-            msg += battle_to_str(p2.battles[battle_tag], p1)
+            msg += format_battle_log(p2.battles[battle_tag], p1)
             counts["error_speed"] = counts.get("error_speed", 0) + 1
 
     return msg, counts

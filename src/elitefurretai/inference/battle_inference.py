@@ -8,7 +8,7 @@ from poke_env.battle import AbstractBattle, Battle, DoubleBattle, Pokemon
 from poke_env.data.gen_data import GenData
 from poke_env.stats import compute_raw_stats
 
-from elitefurretai.inference.inference_utils import battle_to_str
+from elitefurretai.engine.battle_renderer import format_battle_log
 
 _FLAGS: Dict[str, Any] = {
     "has_status_move": False,  # Assault Vest Flag
@@ -110,14 +110,14 @@ class BattleInference:
         """
         # Check if Battle is valid
         if self._battle.opponent_role is None:
-            print(battle_to_str(self._battle))
+            print(format_battle_log(self._battle))
             raise ValueError(
                 f"Battle {self._battle.battle_tag} must be initialized before inference; we have no opponent role"
             )
 
         # Check if mon_ident is valid
         if mon_ident not in self._battle.opponent_team:
-            print(battle_to_str(self._battle))
+            print(format_battle_log(self._battle))
             raise KeyError(
                 f"Can't find {mon_ident} indentifier in self._battle.opponent_teams. Keys: {list(self._battle.opponent_team.keys())}"
             )
@@ -130,7 +130,7 @@ class BattleInference:
 
         # If flag is invalid, we create an error
         if flag not in self._opponent_mons[mon_ident]:
-            print(battle_to_str(self._battle))
+            print(format_battle_log(self._battle))
             raise KeyError(
                 f"We don't have {flag} in BattleInference. We have {str(list(self._opponent_mons[mon_ident].keys()))}"
             )
@@ -142,13 +142,13 @@ class BattleInference:
         Sets the flag to the given value. If we haven't seen the mon yet, we create a new entry
         """
         if self._battle.opponent_role is None:
-            print(battle_to_str(self._battle))
+            print(format_battle_log(self._battle))
             raise ValueError(
                 f"Battle {self._battle.battle_tag} must be initialized before inference; we have no opponent role"
             )
 
         if mon_ident not in self._battle.opponent_team:
-            print(battle_to_str(self._battle))
+            print(format_battle_log(self._battle))
             raise KeyError(
                 f"Can't find {mon_ident} indentifier in self._battle.opponent_teams. Keys: {list(self._battle.opponent_team.keys())}"
             )
@@ -161,7 +161,7 @@ class BattleInference:
 
         # Check to see if the flag is valid
         if flag not in self._opponent_mons[mon_ident]:
-            print(battle_to_str(self._battle))
+            print(format_battle_log(self._battle))
             raise KeyError(
                 f"Can't find {flag} in BattleInference. Keys: {list(self._opponent_mons[mon_ident].keys())}"
             )
@@ -178,7 +178,7 @@ class BattleInference:
         ):
             self._opponent_mons[mon_ident][flag] = val
         else:
-            print(battle_to_str(self._battle))
+            print(format_battle_log(self._battle))
             raise ValueError(
                 f"Can't set {flag} to {val} in BattleInference. val is {type(val)} and flag is {type(self._opponent_mons[mon_ident][flag])}, which are incompatible"
             )

@@ -12,6 +12,7 @@ No I/O here; nothing in this module calls ``print`` or ``input``.
 from typing import Optional, Sequence
 
 from poke_env.battle import (
+    AbstractBattle,
     DoubleBattle,
     Move,
     Observation,
@@ -344,7 +345,7 @@ def _format_teampreview_team_block(header: str, team: Sequence[Pokemon]) -> str:
     return "\n".join(lines)
 
 
-def format_battle_log(battle: DoubleBattle, opp: Optional[Player] = None) -> str:
+def format_battle_log(battle: AbstractBattle, opp: Optional[Player] = None) -> str:
     """Whole-battle debug dump: header + both teampreview teams + every
     turn's events. Optionally enrich the opponent's teampreview team with
     poke-env state from the given opponent Player (used by fuzz harnesses
