@@ -49,6 +49,12 @@ Worker-side environment over the Showdown websocket backend. Workers call `VGCEn
 
 Owns local Showdown server lifecycle (`launch_showdown_servers`, `shutdown_showdown_servers`) and port allocation across workers. Also coordinates external vgc-bench runner processes when the curriculum uses them.
 
+### [`battle_renderer.py`](battle_renderer.py)
+
+Pure functions that render `DoubleBattle` / `Observation` / `Pokemon` / `Move` into human-readable strings. Used by [`HumanPlayer`](../agents/human_player.py) for the interactive CLI (state snapshots, action reference, teampreview) and by the inference debug paths (`format_observation`, `format_battle_log` — successors to the broken `observation_to_str` / `battle_to_str` once in `inference/inference_utils.py`).
+
+The module imports nothing from `inference/` or `rl/` and does no I/O. To preserve that boundary `engine/__init__.py` loads `VGCEnvironment` lazily via `__getattr__`, so importing `engine.battle_renderer` from `inference/` doesn't pull in the RL training stack.
+
 ### [`analyze/`](analyze/)
 
 Engine-level diagnostic and benchmark scripts:
@@ -60,6 +66,11 @@ Engine-level diagnostic and benchmark scripts:
 ## Ownership Guide
 
 Use this when deciding where work belongs.
+
+### Put work in [`battle_renderer.py`](battle_renderer.py) when
+
+- you need to render any battle structure as a string for a human reader or a debug log
+- the rendering rules diverge between the human CLI and the inference debug dumps (split the leaf primitive vs. the composite view, not the file)
 
 ### Put work in [`vgc_environment.py`](vgc_environment.py) (or `_ShowdownBackend`) when
 
