@@ -51,6 +51,7 @@ Key design notes for new readers
 """
 
 import argparse
+import atexit
 import copy
 import gc
 import logging
@@ -108,6 +109,33 @@ from elitefurretai.rl.worker import mp_worker_process
 from elitefurretai.supervised import format_time
 
 logger = logging.getLogger(__name__)
+
+
+def _orphan_cleanup_sweep(run_id: str) -> None:
+    """Layer-2 fallback: kill showdown / vgcbench / foulplay subprocesses
+    whose command line still mentions this run's run_id. Idempotent;
+    shutdown_showdown_servers and per-eval cleanup run first, so this
+    only catches strays.
+    """
+    if shutil.which("pgrep") is None:
+        logger.warning("pgrep not available; skipping orphan cleanup sweep")
+        return
+    for pat in (f"showdown.*{run_id}", f"vgcbench.*{run_id}", f"foulplay.*{run_id}"):
+        try:
+            out = subprocess.run(["pgrep", "-af", pat], capture_output=True, text=True)
+            for line in out.stdout.strip().splitlines():
+                pid_str = line.split(None, 1)[0]
+                try:
+                    pid = int(pid_str)
+                except ValueError:
+                    continue
+                logger.warning("Orphan cleanup: SIGTERM pid=%d (matched %r)", pid, pat)
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+        except Exception:
+            logger.exception("Orphan cleanup sweep failed for pattern %r", pat)
 
 
 def generate_shutdown_signal():
@@ -760,6 +788,10 @@ def main():
     server_processes: List[subprocess.Popen] = launch_showdown_servers(
         config.hardware.num_servers, config.hardware.showdown_start_port
     )
+    # atexit catches hard-exit paths that bypass the finally block. The
+    # explicit shutdown_showdown_servers call in finally is idempotent,
+    # so registering here is belt-and-suspenders.
+    atexit.register(shutdown_showdown_servers, server_processes)
     server_ports: List[int] = [
         config.hardware.showdown_start_port + i for i in range(config.hardware.num_servers)
     ]
@@ -1333,6 +1365,12 @@ def main():
             vgcbench_manager.shutdown()
         if server_processes:
             shutdown_showdown_servers(server_processes)
+
+        # Final pgrep sweep for any showdown/vgcbench/foulplay subprocess
+        # that survived per-process shutdown. Tagged by run_id embedded in
+        # usernames or process args. Keeps Showdown port conflicts from
+        # leaking into the next run (e.g. when this is a sweep agent).
+        _orphan_cleanup_sweep(run_id)
 
 
 if __name__ == "__main__":
