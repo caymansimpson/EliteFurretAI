@@ -13,8 +13,10 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import json
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Literal, Optional
 
 from poke_env.battle import AbstractBattle
@@ -150,6 +152,27 @@ def _finalize_record(record: LadderRecord, battle: AbstractBattle) -> None:
     record.timestamp = datetime.datetime.now(datetime.timezone.utc).strftime(
         "%Y-%m-%dT%H:%M:%SZ"
     )
+
+
+def _load_credentials(path: Path) -> tuple[str, str]:
+    """Read ``{"username": ..., "password": ...}`` from ``path``.
+
+    Raises ``FileNotFoundError`` if the path doesn't exist,
+    ``json.JSONDecodeError`` for malformed JSON, and ``ValueError`` if
+    either required key is missing or empty.
+    """
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(f"credentials file not found: {path}")
+    data = json.loads(path.read_text())
+    username = data.get("username")
+    password = data.get("password")
+    if not username or not password:
+        raise ValueError(
+            f"credentials file {path} must contain non-empty 'username' "
+            f"and 'password' keys"
+        )
+    return str(username), str(password)
 
 
 class SimpleModelLadderPlayer(SimpleModelPlayer):

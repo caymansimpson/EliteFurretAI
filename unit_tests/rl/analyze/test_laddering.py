@@ -3,11 +3,15 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any, cast
+
+import pytest
 
 from elitefurretai.rl.analyze.laddering import (
     LadderRecord,
     _finalize_record,
+    _load_credentials,
     _parse_gxe,
     _parse_player_line,
     _parse_rating_change,
@@ -172,3 +176,29 @@ def test_finalize_record_tie():
     record = LadderRecord(battle_tag="battle-x-1")
     _finalize_record(record, cast(Any, _FakeBattle(False, False, 60, "battle-x-1")))
     assert record.outcome == "tie"
+
+
+def test_load_credentials_valid(tmp_path):
+    p = tmp_path / "creds.json"
+    p.write_text(json.dumps({"username": "u", "password": "pw"}))
+    assert _load_credentials(p) == ("u", "pw")
+
+
+def test_load_credentials_missing_file(tmp_path):
+    missing = tmp_path / "nope.json"
+    with pytest.raises(FileNotFoundError):
+        _load_credentials(missing)
+
+
+def test_load_credentials_missing_keys(tmp_path):
+    p = tmp_path / "creds.json"
+    p.write_text(json.dumps({"username": "u"}))  # no password
+    with pytest.raises(ValueError):
+        _load_credentials(p)
+
+
+def test_load_credentials_malformed_json(tmp_path):
+    p = tmp_path / "creds.json"
+    p.write_text("{not json")
+    with pytest.raises(json.JSONDecodeError):
+        _load_credentials(p)
