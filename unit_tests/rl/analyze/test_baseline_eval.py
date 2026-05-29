@@ -559,3 +559,55 @@ class TestBuildEvalLogPayload:
         p = build_eval_log_payload(r, update_step=0, eval_cfg=cfg)
         assert "eval/max_damage/gen9vgc2023regc/win_rate" not in p
         assert "eval/max_damage/gen9vgc2024regg/win_rate" not in p
+
+
+# ============================================================================
+# Task 9 — standalone CLI output serialization
+# ============================================================================
+
+
+class TestStandaloneCLIOutput:
+    def test_serialize_result_to_dict(self):
+        import json
+
+        from elitefurretai.rl.analyze.baseline_eval import _serialize_result_to_dict
+
+        ev = EvalResult(
+            label="md",
+            player1_wins=80,
+            player2_wins=20,
+            ties=0,
+            battles_played=100,
+        )
+        bucket = BucketRunResult(
+            win_rate=0.80,
+            n_battles=100,
+            per_format={"gen9vgc2023regc": ev},
+            wall_time_s=1.0,
+        )
+        result = MultiBucketEvalResult(
+            per_bucket={"max_damage": bucket},
+            score=-5.0,
+            breakdown={"deficit_l2_pp": 5.0, "surplus_sum_pp": 0.0},
+            wall_time_s=2.0,
+        )
+        d = _serialize_result_to_dict(
+            result=result,
+            checkpoint_path="/tmp/m.pt",
+            config_path="/tmp/cfg.yaml",
+            run_tag="abcd",
+        )
+        assert d["checkpoint_path"] == "/tmp/m.pt"
+        assert d["config_path"] == "/tmp/cfg.yaml"
+        assert d["run_tag"] == "abcd"
+        assert "timestamp_utc" in d
+        assert d["score"] == -5.0
+        assert d["breakdown"]["deficit_l2_pp"] == 5.0
+        assert d["per_opponent"]["max_damage"]["win_rate"] == 0.80
+        assert d["per_opponent"]["max_damage"]["n_battles"] == 100
+        assert (
+            d["per_opponent"]["max_damage"]["per_format"]["gen9vgc2023regc"]["win_rate"]
+            == 0.80
+        )
+        # Must be JSON-serializable
+        json.dumps(d)

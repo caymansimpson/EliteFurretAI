@@ -9,6 +9,7 @@ FoulPlay subprocess is stable.
 
 from __future__ import annotations
 
+import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -357,3 +358,119 @@ def build_eval_log_payload(
         if weight_total > 0:
             payload[f"eval/{fmt}/win_rate"] = weighted_sum / weight_total
     return payload
+
+
+def _serialize_result_to_dict(
+    result: MultiBucketEvalResult,
+    checkpoint_path: str,
+    config_path: str,
+    run_tag: str,
+) -> Dict[str, Any]:
+    """JSON-safe dict for the standalone CLI's --output file. Schema
+    documented in planning/stage2/2026-05-29-21-00-rl-wandb-sweep-eval-design.md
+    Section 8.
+    """
+    from datetime import datetime, timezone
+
+    per_opponent: Dict[str, Any] = {}
+    for opp, bucket in result.per_bucket.items():
+        per_format_out = {}
+        for fmt, ev in bucket.per_format.items():
+            n = max(ev.battles_played, 1)
+            per_format_out[fmt] = {
+                "win_rate": ev.player1_wins / n,
+                "n_battles": ev.battles_played,
+            }
+        per_opponent[opp] = {
+            "win_rate": bucket.win_rate,
+            "n_battles": bucket.n_battles,
+            "wall_time_s": bucket.wall_time_s,
+            "per_format": per_format_out,
+        }
+
+    return {
+        "checkpoint_path": checkpoint_path,
+        "config_path": config_path,
+        "run_tag": run_tag,
+        "timestamp_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "score": result.score,
+        "breakdown": dict(result.breakdown),
+        "wall_time_s": result.wall_time_s,
+        "per_opponent": per_opponent,
+    }
+
+
+def main() -> None:
+    """Standalone CLI for ad-hoc multi-bucket eval.
+
+    Takes a full RNaDConfig YAML (same format training uses); reads only
+    config.curriculum, config.eval, and config.hardware.device. Writes
+    a JSON result file to --output. No wandb.
+    """
+    import argparse
+    import json
+    import logging as _logging
+
+    from elitefurretai.engine.showdown_server_manager import (
+        launch_showdown_servers,
+        shutdown_showdown_servers,
+    )
+    from elitefurretai.rl.config import RNaDConfig
+
+    parser = argparse.ArgumentParser(
+        description="Standalone multi-bucket eval against configured baselines."
+    )
+    parser.add_argument("--checkpoint", required=True, help="Path to checkpoint .pt")
+    parser.add_argument("--config", required=True, help="Path to full RNaDConfig YAML")
+    parser.add_argument("--output", required=True, help="Path to write JSON result file")
+    parser.add_argument("--num-servers", type=int, default=4)
+    parser.add_argument("--server-port-start", type=int, default=8000)
+    parser.add_argument(
+        "--log-level",
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+    )
+    args = parser.parse_args()
+
+    _logging.basicConfig(
+        level=args.log_level,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+
+    config = RNaDConfig.from_yaml(args.config)
+    run_tag = format(int(time.time() * 1000) & 0xFFFF, "04x")
+
+    server_processes = launch_showdown_servers(args.num_servers, args.server_port_start)
+    server_urls = [
+        f"localhost:{args.server_port_start + i}" for i in range(args.num_servers)
+    ]
+    try:
+        result = run(
+            eval_cfg=config.eval,
+            curriculum=config.curriculum,
+            checkpoint_path=args.checkpoint,
+            server_urls=server_urls,
+            device=config.hardware.device,
+            run_tag=run_tag,
+        )
+        out_dict = _serialize_result_to_dict(
+            result=result,
+            checkpoint_path=args.checkpoint,
+            config_path=args.config,
+            run_tag=run_tag,
+        )
+        out_dir = os.path.dirname(os.path.abspath(args.output))
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
+        with open(args.output, "w") as f:
+            json.dump(out_dict, f, indent=2)
+        print(f"Wrote {args.output}")
+        print(f"score={result.score:.2f}  wall_time_s={result.wall_time_s:.1f}")
+        for opp, bucket in result.per_bucket.items():
+            print(f"  {opp}: win_rate={bucket.win_rate:.3f}  n={bucket.n_battles}")
+    finally:
+        shutdown_showdown_servers(server_processes)
+
+
+if __name__ == "__main__":
+    main()
