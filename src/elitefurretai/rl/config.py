@@ -753,6 +753,11 @@ class EvalConfig:
     eval_every_n_updates: int = 500
     pause_training: bool = True
     surplus_alpha: float = 1.0
+    # Open Team Sheets for the eval pass. When True, both the model under
+    # eval and every opponent (including the vgc_bench runner) accept the
+    # soft-OTS prompt. Independent of the training-side flag so you can eval
+    # open while training closed. False = closed (default).
+    open_team_sheets: bool = False
 
     # Plan B trajectory capture. When set, run_eval_parallel writes
     # battles.parquet / turns.parquet shards under this directory plus

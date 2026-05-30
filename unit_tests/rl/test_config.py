@@ -865,5 +865,13 @@ def test_open_team_sheets_defaults_false_and_loads_from_dict():
     assert RNaDConfig.from_dict(cfg.to_dict()).open_team_sheets is True
 
 
+def test_eval_open_team_sheets_defaults_false_and_loads_from_dict():
+    from elitefurretai.rl.config import RNaDConfig
+
+    assert RNaDConfig().eval.open_team_sheets is False
+    cfg = RNaDConfig.from_dict({"eval": {"open_team_sheets": True}})
+    assert cfg.eval.open_team_sheets is True
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
