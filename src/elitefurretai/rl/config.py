@@ -903,6 +903,14 @@ class RNaDConfig:
     training: TrainingConfig = field(default_factory=TrainingConfig)
     value_head: ValueHeadConfig = field(default_factory=ValueHeadConfig)
 
+    # Run-wide Open Team Sheets setting. When True, every agent built for
+    # this run (main + opponents + baselines + the vgc_bench runner) accepts
+    # the soft-OTS prompt in formats that offer it (e.g. gen9vgc2024regg), so
+    # both sides reveal sheets at team preview. False = closed (default;
+    # preserves prior behavior). Must be uniform across a run — a mismatched
+    # accept/deny handshake drops the battle. Forced/non-OTS formats ignore it.
+    open_team_sheets: bool = False
+
     # ── Computed properties (delegate to sub-configs) ──────────────────────────
 
     @property
@@ -1008,6 +1016,7 @@ class RNaDConfig:
             portfolio=_make_sub(PortfolioConfig, data.get("portfolio", {})),
             training=_make_sub(TrainingConfig, data.get("training", {})),
             value_head=_make_sub(ValueHeadConfig, data.get("value_head", {})),
+            open_team_sheets=bool(data.get("open_team_sheets", False)),
         )
 
     def __str__(self) -> str:

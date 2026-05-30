@@ -772,9 +772,7 @@ def test_eval_yaml_round_trip(tmp_path):
     assert loaded.eval.enabled is True
     assert loaded.eval.eval_every_n_updates == 250
     assert loaded.eval.foulplay_python_executable == "/tmp/python-foulplay"
-    assert loaded.eval.foulplay_team_pool_paths == {
-        "gen9vgc2023regc": "/tmp/teams"
-    }
+    assert loaded.eval.foulplay_team_pool_paths == {"gen9vgc2023regc": "/tmp/teams"}
 
 
 # =============================================================================
@@ -855,6 +853,16 @@ def test_curriculum_config_yaml_round_trip_with_nested_axes(tmp_path):
     assert cfg.curriculum.adaptive_agent_axis.enabled is False
     assert cfg.curriculum.adaptive_agent_axis.min_samples == 60
     assert cfg.curriculum.adaptive_agent_axis.base_blend == 0.25
+
+
+def test_open_team_sheets_defaults_false_and_loads_from_dict():
+    from elitefurretai.rl.config import RNaDConfig
+
+    assert RNaDConfig().open_team_sheets is False
+    cfg = RNaDConfig.from_dict({"open_team_sheets": True})
+    assert cfg.open_team_sheets is True
+    # round-trips through to_dict/from_dict
+    assert RNaDConfig.from_dict(cfg.to_dict()).open_team_sheets is True
 
 
 if __name__ == "__main__":
