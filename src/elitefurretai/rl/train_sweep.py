@@ -7,7 +7,7 @@ reattaches to the sweep's wandb run. Subprocess isolation guarantees
 that DataLoader workers, Showdown servers, and external eval
 subprocesses from one run cannot leak into the next.
 
-Three-layer cleanup contract: layer 1 (per-eval, in baseline_eval),
+Three-layer cleanup contract: layer 1 (per-eval, in evaluate_model),
 layer 2 (per-train-process, in train.main), layer 3 (per-sweep-agent,
 here). See planning/stage2/2026-05-29-21-00-rl-wandb-sweep-eval-design.md.
 """

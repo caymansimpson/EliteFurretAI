@@ -43,12 +43,15 @@ async def main():
 
 async def battle_against_custom_team():
     """Example of playing against a specific team."""
+    from pathlib import Path
+
     from poke_env.player import MaxBasePowerPlayer
 
-    # You can specify a custom team from a file
+    # You can specify a custom team by passing its packed/pokepaste text
+    team_text = Path("data/teams/gen9vgc2023regc/easy/basic.txt").read_text()
     human = HumanPlayer(
         battle_format="gen9vgc2023regc",
-        team="data/teams/sample_team.txt",  # Optional: specify your team
+        team=team_text,
     )
 
     # Battle against a stronger opponent

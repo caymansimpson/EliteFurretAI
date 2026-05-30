@@ -83,7 +83,7 @@ from elitefurretai.etl.system_utils import (
     configure_torch_multiprocessing,
     suppress_third_party_warnings,
 )
-from elitefurretai.rl.analyze import baseline_eval
+from elitefurretai.rl.analyze import evaluate_model
 from elitefurretai.rl.config import RNaDConfig
 from elitefurretai.rl.exploiters import (
     ExploiterPipelineState,
@@ -700,7 +700,7 @@ def _maybe_run_eval(
     """Inline multi-bucket eval at checkpoint boundary; logs to wandb.
 
     Routes every active opponent (including foul_play when its weight
-    > 0) through baseline_eval.run. Training is paused during the
+    > 0) through evaluate_model.run. Training is paused during the
     eval; external opponents' subprocess lifecycle is handled by
     run_eval_parallel internally.
 
@@ -725,7 +725,7 @@ def _maybe_run_eval(
     run_tag = format((updates * 1664525 + 1013904223) % 65536, "04x")
 
     try:
-        result = baseline_eval.run(
+        result = evaluate_model.run(
             eval_cfg=eval_cfg,
             curriculum=config.curriculum,
             checkpoint_path=checkpoint_path,
@@ -747,7 +747,7 @@ def _maybe_run_eval(
     )
 
     if config.training.use_wandb:
-        payload = baseline_eval.build_eval_log_payload(
+        payload = evaluate_model.build_eval_log_payload(
             result, update_step=updates, eval_cfg=eval_cfg
         )
         wandb.log(payload)

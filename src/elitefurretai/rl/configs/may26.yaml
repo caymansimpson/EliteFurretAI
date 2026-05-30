@@ -108,8 +108,8 @@ curriculum:
   max_exploiter_models: 5
   max_ghosts: 5
   bc_model_path: data/models/supervised/rose-sun-108_best.pt
-  vgc_bench_checkpoint_path: data/models/vgc-bench-sb3-model.zip
-  external_vgcbench_python_executable: /home/cayman/Repositories/venv-vgcbench/bin/python
+  vgc_bench_checkpoint_path: data/models/vgc-bench-bcsp-reg_all-seed1-98304000.zip
+  external_vgcbench_python_executable: /home/cayman/Repositories/venv-vgcbench-bcsp/bin/python
   external_vgcbench_team_file: data/teams/gen9vgc2024regg/vgcbench.txt
 
 training:

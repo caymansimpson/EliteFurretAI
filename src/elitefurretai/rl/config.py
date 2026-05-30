@@ -593,7 +593,9 @@ class CurriculumConfig:
     # vgc_bench_baseline a positive weight.
     external_vgcbench_python_executable: Optional[str] = None
     external_vgcbench_team_file: str = "data/teams/gen9vgc2024regg/vgcbench.txt"
-    vgc_bench_checkpoint_path: str = "data/models/vgc-bench-sb3-model.zip"
+    vgc_bench_checkpoint_path: str = (
+        "data/models/vgc-bench-bcsp-reg_all-seed1-98304000.zip"
+    )
     # Adaptive curriculum: two axes, same algorithm, different defaults.
     # See `AdaptiveAxisConfig.{team,agent}_axis_defaults` and the shared
     # `rl_utils.adaptive_distribution` primitive for the algorithm itself.
@@ -778,9 +780,11 @@ class EvalConfig:
     # Opponent-specific runtime knobs (read only when the corresponding
     # opponent's weight > 0). Naming follows the `<opp>_*` convention
     # used by player_factory for cross-venv subprocess kwargs.
-    vgcbench_checkpoint_path: str = "data/models/vgc-bench-sb3-model.zip"
+    vgcbench_checkpoint_path: str = "data/models/vgc-bench-bcsp-reg_all-seed1-98304000.zip"
     vgcbench_team_file: str = "data/teams/gen9vgc2024regg/vgcbench.txt"
-    vgcbench_python_executable: str = "/home/cayman/Repositories/venv-vgcbench/bin/python"
+    vgcbench_python_executable: str = (
+        "/home/cayman/Repositories/venv-vgcbench-bcsp/bin/python"
+    )
 
     foulplay_search_time_ms: int = 750
     foulplay_python_executable: str = "/home/cayman/Repositories/venv-foulplay/bin/python"

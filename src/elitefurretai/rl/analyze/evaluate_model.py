@@ -72,7 +72,7 @@ class BucketRunResult:
 class MultiBucketEvalResult:
     """Outcome of ONE full multi-bucket eval pass.
 
-    Granularity: one MultiBucketEvalResult per call to baseline_eval.run,
+    Granularity: one MultiBucketEvalResult per call to evaluate_model.run,
     i.e. one per checkpoint boundary during training or one per
     standalone CLI invocation.
 

@@ -129,8 +129,8 @@ curriculum:
   max_ghosts: 5
   # UPDATE to the new mega-aware BC checkpoint produced by Task A5:
   bc_model_path: data/models/supervised/MEGA_BC_CHECKPOINT_best.pt
-  vgc_bench_checkpoint_path: data/models/vgc-bench-sb3-model.zip
-  external_vgcbench_python_executable: /home/cayman/Repositories/venv-vgcbench/bin/python
+  vgc_bench_checkpoint_path: data/models/vgc-bench-bcsp-reg_all-seed1-98304000.zip
+  external_vgcbench_python_executable: /home/cayman/Repositories/venv-vgcbench-bcsp/bin/python
   external_vgcbench_team_file: data/teams/gen9vgc2024regg/vgcbench.txt
 
 training:

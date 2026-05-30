@@ -24,7 +24,7 @@ from sklearn.metrics import (
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader
 
-from elitefurretai.etl import BattleDataset
+from elitefurretai.etl import BattleDataset, Embedder
 from elitefurretai.supervised.utils import format_time
 
 
@@ -73,8 +73,10 @@ def main():
         eval_files = files[int(total_battles / 2) : int(total_battles / 2) + eval_size]
         files = files[: int(total_battles / 2)]
 
-    # Generate data using BattleDataset and DataLoader for batching
-    dataset = BattleDataset(files)
+    # Generate data using BattleDataset and DataLoader for batching.
+    # BattleDataset now requires an embedder so each step is vectorized at load time.
+    embedder = Embedder(gen=9, feature_set="raw", omniscient=True)
+    dataset = BattleDataset(files, embedder=embedder)
     data_loader = DataLoader(
         dataset, batch_size=batch_size, num_workers=min(os.cpu_count() or 1, 4)
     )
@@ -154,7 +156,7 @@ def main():
     # Evaluate on a separate evaluation set of new battles
     print(f"Now going to evaluate model on eval set of {eval_size} entirely new battles!")
     eval_data_loader = DataLoader(
-        BattleDataset(eval_files),
+        BattleDataset(eval_files, embedder=embedder),
         batch_size=batch_size,
         num_workers=min(os.cpu_count() or 1, 4),
     )

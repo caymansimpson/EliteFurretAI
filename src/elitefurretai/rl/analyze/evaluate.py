@@ -664,7 +664,7 @@ def main() -> None:
     parser.add_argument(
         "--vgc-bench-checkpoint-path",
         type=str,
-        default="data/models/vgc-bench-sb3-model.zip",
+        default="data/models/vgc-bench-bcsp-reg_all-seed1-98304000.zip",
     )
     parser.add_argument("--output", type=str, default=None)
     parser.add_argument(

@@ -1,4 +1,20 @@
 # -*- coding: utf-8 -*-
+"""Example: turning BattleData files into per-step training tensors.
+
+Two illustrative entry points:
+
+* ``one_file_example`` — walks a single BattleData JSON turn by turn, runs the
+  Embedder on each state, and prints the chosen action.
+* ``list_of_files`` — wraps a list of files in ``BattleDataset`` and iterates
+  via a PyTorch ``DataLoader``, the shape used by the supervised trainers in
+  ``src/elitefurretai/supervised``.
+
+Run directly to exercise both against a small bundled fixture::
+
+    python examples/input_training.py
+"""
+
+import glob
 import os
 import time
 
@@ -21,9 +37,9 @@ def one_file_example(filename):
             bd = BattleData.from_showdown_json(orjson.loads(f.read()))
 
         iter = BattleIterator(bd, perspective=perspective)
-        assert iter.battle.format is not None
 
-        embedder = Embedder(format=iter.battle.format, feature_set="full", omniscient=True)
+        # Embedder is gen-keyed; battle.gen exposes the int (e.g. 9).
+        embedder = Embedder(gen=iter.battle.gen, feature_set="raw", omniscient=True)
 
         while iter.next_input() and not iter.battle.finished:
             # Get the last input command found by the iterator
@@ -35,7 +51,7 @@ def one_file_example(filename):
             if request is not None:
                 iter.battle.parse_request(request)
 
-            features = embedder.featurize_double_battle(iter.battle)  # type: ignore
+            features = embedder.embed_to_vector(iter.battle)  # type: ignore
             order = iter.last_order()
 
             print(
@@ -49,7 +65,9 @@ def one_file_example(filename):
 
 # This function takes a list of filepaths and generates training data in batches from them
 def list_of_files(files):
-    dataset = BattleDataset(files)
+    # BattleDataset now requires an embedder so each step is vectorized at load time.
+    embedder = Embedder(gen=9, feature_set="raw", omniscient=True)
+    dataset = BattleDataset(files, embedder=embedder)
     dataloader = DataLoader(
         dataset,
         batch_size=64,
@@ -58,9 +76,10 @@ def list_of_files(files):
     start, num_batches = time.time(), 0
 
     # Iterate through batches of battles with data_loader
-    for states, actions, action_masks, wins, masks in dataloader:
-        # Do training things
-        pass
+    for batch in dataloader:
+        # batch is a dict with keys: states, actions, action_masks, wins,
+        # move_orders, kos, switches, masks. See BattleDataset.__getitem__.
+        _ = batch["states"]
 
         # Print progress
         now = time.time()
@@ -79,4 +98,16 @@ def list_of_files(files):
         print("\033[2K\r" + processed + left, end="")
         num_batches += 1
 
-    print("Done with training loop!")
+    print("\nDone with training loop!")
+
+
+if __name__ == "__main__":
+    fixture_dir = "data/fixture/gen9vgc2023regc_logs"
+    files = sorted(glob.glob(os.path.join(fixture_dir, "*.json")))
+    assert files, f"No fixtures found in {fixture_dir}"
+
+    print(f"--- one_file_example on {files[0]} ---")
+    one_file_example(files[0])
+
+    print(f"\n--- list_of_files on {len(files)} fixture(s) ---")
+    list_of_files(files)

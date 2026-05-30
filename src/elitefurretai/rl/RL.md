@@ -371,12 +371,12 @@ This costs around 5.5 GB of RAM per external runner and adds a measurable throug
 Manual invocation (debugging):
 
 ```bash
-source ../venv-vgcbench/bin/activate
+source ../venv-vgcbench-bcsp/bin/activate
 python src/elitefurretai/agents/_vgcbench_subprocess.py \
     --username VGCBENCHX \
     --server localhost:8000 \
     --battle-format gen9vgc2024regg \
-    --checkpoint-path data/models/vgc-bench-sb3-model.zip \
+    --checkpoint-path data/models/vgc-bench-bcsp-reg_all-seed1-98304000.zip \
     --team-file data/teams/gen9vgc2024regg/vgcbench.txt \
     --n-challenges 100
 ```

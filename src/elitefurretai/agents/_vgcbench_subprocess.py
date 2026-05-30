@@ -6,13 +6,14 @@ The leading underscore in the filename signals "internal".
 
 Why this exists as a separate script
 ------------------------------------
-vgc-bench was written against ``poke_env 0.11.x`` while EFA runs
-``poke_env 0.15.x``. To isolate the version gap, the trainer spawns this
-script in vgc-bench's own venv (``../venv-vgcbench/`` by convention,
-configured via ``curriculum.external_vgcbench_python_executable``). The
-subprocess logs into a Showdown server, loads a SB3 PPO checkpoint via
-vgc-bench's ``PolicyPlayer``, and sits in ``accept_challenges`` accepting
-battles from EFA workers.
+vgc-bench depends on the cameronangliss/poke-env fork (pinned to commit
+``b3956ae58``, a 0.15.0 build whose VGC enums yield a 764-wide observation),
+which cannot coexist with EFA's own poke-env in one interpreter. To isolate
+them, the trainer spawns this script in vgc-bench's own venv
+(``../venv-vgcbench-bcsp/`` by convention, configured via
+``curriculum.external_vgcbench_python_executable``). The subprocess logs into a
+Showdown server, loads a SB3 PPO checkpoint via vgc-bench's ``PolicyPlayer``,
+and sits in ``accept_challenges`` accepting battles from EFA workers.
 
 How it plugs into training
 --------------------------

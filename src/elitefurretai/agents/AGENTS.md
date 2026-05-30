@@ -17,7 +17,7 @@ It is **not** for classes that subclass `poke_env.player.Player` for training-pl
 | [`human_player.py`](human_player.py) | `HumanPlayer` | Terminal-driven manual control. Used by `rl/analyze/play_human_vs_model.py` so a human can battle a trained checkpoint locally. |
 | [`vgcbench_manager.py`](vgcbench_manager.py) | `VGCBenchManager` | Launches and supervises the external vgc-bench subprocess. EFA challenges by Showdown username. Also exports `_create_vgc_bench_player`, `_temporary_cwd`, `_resolve_vgc_bench_root` for in-process construction under a venv whose poke_env vintage matches vgc-bench's. |
 | [`foulplay_manager.py`](foulplay_manager.py) | `FoulPlayManager` | Same shape as `VGCBenchManager`, for the foul-play-doubles search bot. **Currently broken** — see the FoulPlayManager section below and [planning/stage2/2026-05-28-06-30-foulplay-ots-investigation.md](../../../planning/stage2/2026-05-28-06-30-foulplay-ots-investigation.md). |
-| [`_vgcbench_subprocess.py`](_vgcbench_subprocess.py) | — (script) | Subprocess entry point launched by `VGCBenchManager` under `../venv-vgcbench/bin/python`. Not user-invokable; the leading underscore is the signal. |
+| [`_vgcbench_subprocess.py`](_vgcbench_subprocess.py) | — (script) | Subprocess entry point launched by `VGCBenchManager` under `../venv-vgcbench-bcsp/bin/python`. Not user-invokable; the leading underscore is the signal. |
 | [`_foulplay_subprocess.py`](_foulplay_subprocess.py) | — (script) | Same shape, for foul-play. Broken alongside `FoulPlayManager`. |
 
 ## How to use each agent
@@ -115,7 +115,7 @@ manager.shutdown()             # SIGTERM, close log files
 ```
 
 Gotchas:
-- Requires `../venv-vgcbench/` to exist with vgc-bench installed (configured via `config.curriculum.external_vgcbench_python_executable`).
+- Requires `../venv-vgcbench-bcsp/` to exist with vgc-bench installed against the cameronangliss/poke-env fork @ `b3956ae58` (configured via `config.curriculum.external_vgcbench_python_executable`). See planning/stage2/2026-05-29-22-00-vgcbench-latest-checkpoint-migration.md.
 - Subprocess logs go to `data/logs/vgcbench_runners/runner_*.log` — first place to check if challenges aren't being accepted.
 - `WAIT_FOR_SERVER_TIMEOUT_S=180.0` and `STARTUP_WAIT_S=10.0` are the timing parameters; the trainer waits up to `STARTUP_WAIT_S` for the subprocess to log in before issuing the first challenge.
 

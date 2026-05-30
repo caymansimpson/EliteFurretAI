@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Unit tests for baseline_eval (compute_score, dispatch, payload, cleanup)."""
+"""Unit tests for evaluate_model (compute_score, dispatch, payload, cleanup)."""
 
 import math
 from typing import Dict
@@ -8,7 +8,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 import yaml
 
-from elitefurretai.rl.analyze.baseline_eval import (
+from elitefurretai.rl.analyze.evaluate import EvalResult
+from elitefurretai.rl.analyze.evaluate_model import (
     BucketRunResult,
     MultiBucketEvalResult,
     _opponent_kwargs,
@@ -18,7 +19,6 @@ from elitefurretai.rl.analyze.baseline_eval import (
     compute_score,
     run,
 )
-from elitefurretai.rl.analyze.evaluate import EvalResult
 from elitefurretai.rl.config import (
     CurriculumConfig,
     EvalConfig,
@@ -296,10 +296,10 @@ def _make_curriculum(formats: Dict[str, float]):
 
 
 class TestRunOpponentBucket:
-    @patch("elitefurretai.rl.analyze.baseline_eval._resolve_opponent_team_text")
-    @patch("elitefurretai.rl.analyze.baseline_eval._resolve_agent_team_text")
-    @patch("elitefurretai.rl.analyze.baseline_eval.run_eval_parallel")
-    @patch("elitefurretai.rl.analyze.baseline_eval.parse_player_specification")
+    @patch("elitefurretai.rl.analyze.evaluate_model._resolve_opponent_team_text")
+    @patch("elitefurretai.rl.analyze.evaluate_model._resolve_agent_team_text")
+    @patch("elitefurretai.rl.analyze.evaluate_model.run_eval_parallel")
+    @patch("elitefurretai.rl.analyze.evaluate_model.parse_player_specification")
     def test_vgc_bench_receives_vgcbench_kwargs(
         self, mock_parse, mock_run, mock_agent_team, mock_opp_team
     ):
@@ -331,11 +331,11 @@ class TestRunOpponentBucket:
         assert "foul_play_python_executable" not in vgc_call_kwargs
         assert result.win_rate == pytest.approx(0.60)
 
-    @patch("elitefurretai.rl.analyze.baseline_eval._foulplay_team_pool_for_fmt")
-    @patch("elitefurretai.rl.analyze.baseline_eval._resolve_opponent_team_text")
-    @patch("elitefurretai.rl.analyze.baseline_eval._resolve_agent_team_text")
-    @patch("elitefurretai.rl.analyze.baseline_eval.run_eval_parallel")
-    @patch("elitefurretai.rl.analyze.baseline_eval.parse_player_specification")
+    @patch("elitefurretai.rl.analyze.evaluate_model._foulplay_team_pool_for_fmt")
+    @patch("elitefurretai.rl.analyze.evaluate_model._resolve_opponent_team_text")
+    @patch("elitefurretai.rl.analyze.evaluate_model._resolve_agent_team_text")
+    @patch("elitefurretai.rl.analyze.evaluate_model.run_eval_parallel")
+    @patch("elitefurretai.rl.analyze.evaluate_model.parse_player_specification")
     def test_foul_play_receives_foulplay_kwargs(
         self, mock_parse, mock_run, mock_agent_team, mock_opp_team, mock_fp_pool
     ):
@@ -366,10 +366,10 @@ class TestRunOpponentBucket:
         assert fp_call_kwargs["foul_play_team_pool_path"] == "/data/teams/x"
         assert "vgc_bench_checkpoint_path" not in fp_call_kwargs
 
-    @patch("elitefurretai.rl.analyze.baseline_eval._resolve_opponent_team_text")
-    @patch("elitefurretai.rl.analyze.baseline_eval._resolve_agent_team_text")
-    @patch("elitefurretai.rl.analyze.baseline_eval.run_eval_parallel")
-    @patch("elitefurretai.rl.analyze.baseline_eval.parse_player_specification")
+    @patch("elitefurretai.rl.analyze.evaluate_model._resolve_opponent_team_text")
+    @patch("elitefurretai.rl.analyze.evaluate_model._resolve_agent_team_text")
+    @patch("elitefurretai.rl.analyze.evaluate_model.run_eval_parallel")
+    @patch("elitefurretai.rl.analyze.evaluate_model.parse_player_specification")
     def test_inprocess_baseline_no_external_kwargs(
         self, mock_parse, mock_run, mock_agent_team, mock_opp_team
     ):
@@ -399,10 +399,10 @@ class TestRunOpponentBucket:
         assert "vgc_bench_checkpoint_path" not in md_call_kwargs
         assert "foul_play_python_executable" not in md_call_kwargs
 
-    @patch("elitefurretai.rl.analyze.baseline_eval._resolve_opponent_team_text")
-    @patch("elitefurretai.rl.analyze.baseline_eval._resolve_agent_team_text")
-    @patch("elitefurretai.rl.analyze.baseline_eval.run_eval_parallel")
-    @patch("elitefurretai.rl.analyze.baseline_eval.parse_player_specification")
+    @patch("elitefurretai.rl.analyze.evaluate_model._resolve_opponent_team_text")
+    @patch("elitefurretai.rl.analyze.evaluate_model._resolve_agent_team_text")
+    @patch("elitefurretai.rl.analyze.evaluate_model.run_eval_parallel")
+    @patch("elitefurretai.rl.analyze.evaluate_model.parse_player_specification")
     def test_two_formats_aggregates_with_format_weights(
         self, mock_parse, mock_run, mock_agent_team, mock_opp_team
     ):
@@ -437,12 +437,12 @@ class TestRunOpponentBucket:
 
 
 # ============================================================================
-# Task 5 — baseline_eval.run driver
+# Task 5 — evaluate_model.run driver
 # ============================================================================
 
 
 class TestRunDriver:
-    @patch("elitefurretai.rl.analyze.baseline_eval._run_opponent_bucket")
+    @patch("elitefurretai.rl.analyze.evaluate_model._run_opponent_bucket")
     def test_weight_zero_bucket_is_skipped(self, mock_bucket):
         eval_cfg = EvalConfig(enabled=True)  # foul_play weight=0.0 by default
         mock_bucket.return_value = BucketRunResult(
@@ -463,7 +463,7 @@ class TestRunDriver:
         assert "foul_play" not in result.per_bucket
         assert isinstance(result.score, float)
 
-    @patch("elitefurretai.rl.analyze.baseline_eval._run_opponent_bucket")
+    @patch("elitefurretai.rl.analyze.evaluate_model._run_opponent_bucket")
     def test_score_uses_active_opponents_only(self, mock_bucket):
         eval_cfg = EvalConfig(enabled=True)
         # All four active opponents return 0.80 win_rate; only vgc_bench has target 0.60
@@ -570,7 +570,7 @@ class TestStandaloneCLIOutput:
     def test_serialize_result_to_dict(self):
         import json
 
-        from elitefurretai.rl.analyze.baseline_eval import _serialize_result_to_dict
+        from elitefurretai.rl.analyze.evaluate_model import _serialize_result_to_dict
 
         ev = EvalResult(
             label="md",

@@ -13,9 +13,10 @@ Three player kinds are supported:
   ``max_base_power``, ``simple_heuristic``, ``random``). ``build_player``
   returns a fresh instance per worker.
 * ``"external"`` — vgc-bench, which can't run inline because its SB3
-  policy requires a different poke-env vintage.
-  ``launch_external_player`` spawns a subprocess in the
-  ``../venv-vgcbench`` venv and exposes a username for the in-process
+  policy needs the cameronangliss/poke-env fork (a 0.15.0 build whose VGC
+  enums yield a 764-wide observation) that can't share an interpreter with
+  EFA's own poke-env. ``launch_external_player`` spawns a subprocess in the
+  ``../venv-vgcbench-bcsp`` venv and exposes a username for the in-process
   side to challenge. The worker handles this asymmetry — see
   ``_run_worker`` in ``evaluate.py``.
 
@@ -142,9 +143,9 @@ def parse_player_specification(
     *,
     device: str,
     battle_format: str,
-    vgc_bench_checkpoint_path: str = "data/models/vgc-bench-sb3-model.zip",
+    vgc_bench_checkpoint_path: str = "data/models/vgc-bench-bcsp-reg_all-seed1-98304000.zip",
     vgc_bench_team_file: str = "data/teams/gen9vgc2024regg/vgcbench.txt",
-    vgc_bench_python_executable: str = "/home/cayman/Repositories/venv-vgcbench/bin/python",
+    vgc_bench_python_executable: str = "/home/cayman/Repositories/venv-vgcbench-bcsp/bin/python",
     foul_play_python_executable: str = "/home/cayman/Repositories/venv-foulplay/bin/python",
     foul_play_team_pool_path: str = "data/teams/gen9vgc2024regg/constrained",
     foul_play_search_time_ms: int = 750,

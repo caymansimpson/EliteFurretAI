@@ -1,13 +1,15 @@
 """VGCBenchManager — subprocess lifecycle for the external vgc-bench bot.
 
-vgc-bench requires poke_env 0.11.x while EFA runs poke_env 0.15.x, so it
-runs as a subprocess in its own venv (``../venv-vgcbench/``). This module
-owns the EFA-side subprocess lifecycle. The subprocess entry point lives
-at ``agents/_vgcbench_subprocess.py``. EFA-side code interacts with
-vgc-bench only by Showdown username.
+vgc-bench depends on the cameronangliss/poke-env fork (pinned to commit
+``b3956ae58``, reporting version 0.15.0) whose VGC enums produce a 764-wide
+observation, while EFA runs its own poke-env 0.15.0. The two cannot coexist in
+one interpreter, so vgc-bench runs as a subprocess in its own venv
+(``../venv-vgcbench-bcsp/``). This module owns the EFA-side subprocess
+lifecycle. The subprocess entry point lives at ``agents/_vgcbench_subprocess.py``.
+EFA-side code interacts with vgc-bench only by Showdown username.
 
-Also exports three in-process helpers used by the eval CLI when running
-under a venv whose poke_env vintage matches vgc-bench's
+Also exports three in-process helpers used by the eval CLI when running under a
+venv whose poke-env produces the same observation width the checkpoint expects
 (``_create_vgc_bench_player``, ``_temporary_cwd``, ``_resolve_vgc_bench_root``).
 These are NOT safe to call from EFA's training process; see the comment
 above ``_create_vgc_bench_player``.
@@ -19,7 +21,6 @@ directory reorganization (see planning/stage2/2026-05-19-09-30-agents-directory-
 from __future__ import annotations
 
 import importlib
-import importlib.metadata
 import importlib.util
 import logging
 import os
@@ -45,19 +46,24 @@ from elitefurretai.rl.config import RNaDConfig
 
 logger = logging.getLogger(__name__)
 
-# vgc-bench was trained against poke_env 0.11.x; calling
-# `_create_vgc_bench_player` from a venv with a different major.minor
-# silently produces an embedder of the wrong width (e.g. 756 vs 754)
-# and SB3.PPO.load fails on state_dict size mismatch. We check at call
-# time rather than module-import time so the rest of the file (notably
-# VGCBenchManager) remains importable from EFA's main venv.
-_VGC_BENCH_REQUIRED_POKE_ENV_PREFIX = "0.11."
+# `_create_vgc_bench_player` builds the embedder from whatever poke-env is
+# installed in the *calling* interpreter. If that poke-env's enum/dex widths
+# don't match the checkpoint the embedder feeds a wrong-width observation and
+# SB3.PPO.load (or the first forward pass) fails on a state_dict size mismatch
+# — e.g. "copying a param with shape [256, 764] ... current model [256, 762]".
+# A poke-env *version string* no longer discriminates: EFA's main venv and the
+# vgc-bench poke-env fork both report 0.15.0 yet produce different widths. So
+# we validate the actual invariant at call time — the runtime per-Pokemon
+# observation width must equal the checkpoint's `pokemon_proj` input — instead
+# of guessing from a version number.
 
-# `_create_vgc_bench_player` is the legacy in-process fallback used by
-# `analyze/player_factory.py` for evaluation matchups where head-to-head play
-# inside a single process is convenient. It is *only* safe to call from a
-# Python interpreter whose poke_env matches what vgc-bench expects; running it
-# from EFA's training venv will silently produce a broken PolicyPlayer.
+# `_create_vgc_bench_player` is the legacy in-process fallback for evaluation
+# matchups where head-to-head play inside a single process is convenient. It is
+# *only* safe to call from a Python interpreter whose poke-env produces the same
+# observation width the checkpoint was trained with (currently the
+# cameronangliss/poke-env fork installed in `../venv-vgcbench-bcsp`); calling it
+# from EFA's training venv produces a broken PolicyPlayer. The training path
+# (`VGCBenchManager` → subprocess) sidesteps this by running under that venv.
 
 # Cached vgc-bench policies keyed by (checkpoint_path, device).
 # Loading a stable_baselines3 PPO checkpoint is slow (hundreds of ms); cache
@@ -90,29 +96,33 @@ def _create_vgc_bench_player(
     server_config: ServerConfiguration,
     team: str,
     battle_format: str = "gen9vgc2024regg",
-    checkpoint_path: str = "data/models/vgc-bench-sb3-model.zip",
+    checkpoint_path: str = "data/models/vgc-bench-bcsp-reg_all-seed1-98304000.zip",
     accept_open_team_sheet: bool = True,
 ) -> Player:
     """Construct an in-process vgc-bench PolicyPlayer.
 
-    **Only callable from a venv whose poke-env vintage matches what
-    vgc-bench expects** (currently 0.11.x). From EFA's main venv use
-    ``VGCBenchManager`` to launch the subprocess flow instead — this
-    function will refuse to run from a mismatched venv with an
-    actionable error.
+    **Only callable from a venv whose poke-env produces the same
+    observation width the checkpoint was trained with** (currently the
+    cameronangliss/poke-env fork in ``../venv-vgcbench-bcsp``). From EFA's
+    main venv use ``VGCBenchManager`` to launch the subprocess flow
+    instead — this function will refuse to run on a width mismatch with
+    an actionable error.
 
     Fails fast in two cases the in-process flow could otherwise hit:
 
-    1. Poke-env version mismatch (the common failure when called from
-       EFA's main venv) — surfaced before SB3 even tries to load, since
-       the resulting state_dict size error is opaque ("size mismatch
-       for features_extractor.pokemon_proj.weight: copying a param with
-       shape torch.Size([256, 754]) from checkpoint, the shape in
-       current model is torch.Size([256, 756])").
+    1. Observation-width mismatch (the common failure when called from a
+       venv whose poke-env differs from the one the checkpoint was trained
+       against) — surfaced before the first forward pass, since the
+       resulting state_dict size error is opaque ("size mismatch for
+       features_extractor.pokemon_proj.weight: copying a param with shape
+       torch.Size([256, 764]) ... current model torch.Size([256, 762])").
+       Checked after load by comparing the runtime per-Pokemon width
+       (``utils.chunk_obs_len`` + embeddings) to the checkpoint's
+       ``pokemon_proj`` input.
     2. Missing checkpoint file — checked before ``_temporary_cwd``
        because SB3's PPO.load doubles the ``.zip`` suffix when its
        fallback search fires, producing a confusing
-       ``vgc-bench-sb3-model.zip.zip`` error.
+       ``...98304000.zip.zip`` error.
 
     The checkpoint path is also resolved to absolute *before* entering
     ``_temporary_cwd(vgc_bench_root)`` — SB3 treats the path as
@@ -120,20 +130,6 @@ def _create_vgc_bench_player(
     plus a chdir into ``vgc_bench_root`` gives the ``.zip.zip``
     failure even when the file exists.
     """
-    runtime_version = importlib.metadata.version("poke-env")
-    if not runtime_version.startswith(_VGC_BENCH_REQUIRED_POKE_ENV_PREFIX):
-        raise RuntimeError(
-            f"_create_vgc_bench_player requires poke-env "
-            f"{_VGC_BENCH_REQUIRED_POKE_ENV_PREFIX}x but the runtime has "
-            f"poke-env {runtime_version}. Loading the SB3 checkpoint in "
-            f"this venv would fail with a cryptic state_dict size "
-            f"mismatch because the embedder dimensions changed between "
-            f"poke-env versions. From EFA's main venv, use "
-            f"`VGCBenchManager` to launch a subprocess under "
-            f"`../venv-vgcbench/bin/python` instead "
-            f"(see analyze/player_factory.py for the wiring)."
-        )
-
     if not os.path.exists(checkpoint_path):
         raise FileNotFoundError(f"vgc-bench checkpoint not found: {checkpoint_path}")
 
@@ -157,6 +153,27 @@ def _create_vgc_bench_player(
             policy = ppo_cls.load(checkpoint_abspath, device=device).policy
             _VGC_BENCH_POLICY_CACHE[cache_key] = policy
 
+        # Validate the real invariant: the per-Pokemon observation width this
+        # interpreter's poke-env produces must equal what the checkpoint expects.
+        # A version string can't catch this — EFA's main venv and the vgc-bench
+        # poke-env fork both report 0.15.0 but yield different widths.
+        utils_module = importlib.import_module("vgc_bench.src.utils")
+        feature_extractor = policy.features_extractor
+        runtime_width = utils_module.chunk_obs_len + 6 * (feature_extractor.embed_len - 1)
+        checkpoint_width = feature_extractor.pokemon_proj.in_features
+        if runtime_width != checkpoint_width:
+            raise RuntimeError(
+                f"vgc-bench observation-width mismatch: this interpreter's "
+                f"poke-env produces a {runtime_width}-wide per-Pokemon "
+                f"observation but checkpoint {checkpoint_path!r} expects "
+                f"{checkpoint_width}. The installed poke-env does not match the "
+                f"one this checkpoint was trained against. Run from the venv "
+                f"whose cameronangliss/poke-env fork yields {checkpoint_width} "
+                f"(currently ../venv-vgcbench-bcsp), or from EFA's main venv use "
+                f"`VGCBenchManager` to launch the subprocess flow instead "
+                f"(see analyze/player_factory.py for the wiring)."
+            )
+
     player = policy_player_cls(
         policy=policy,
         battle_format=battle_format,
@@ -171,11 +188,13 @@ def _create_vgc_bench_player(
 class VGCBenchManager:
     """Launcher and proxy for external vgc-bench bots.
 
-    vgc-bench requires poke_env 0.11.x; EFA runs poke_env 0.15.x. To
-    isolate the version gap, vgc-bench is launched as a subprocess in
-    its own venv. This manager owns that subprocess lifecycle. EFA-side
-    code only interacts with vgc-bench by Showdown username — workers
-    `/challenge` `manager.usernames[i]` like any other opponent.
+    vgc-bench needs the cameronangliss/poke-env fork (a 0.15.0 build whose
+    VGC enums yield a 764-wide observation), which can't share an interpreter
+    with EFA's own poke-env. To isolate them, vgc-bench is launched as a
+    subprocess in its own venv (``../venv-vgcbench-bcsp``). This manager owns
+    that subprocess lifecycle. EFA-side code only interacts with vgc-bench by
+    Showdown username — workers `/challenge` `manager.usernames[i]` like any
+    other opponent.
 
     Usage
     -----
