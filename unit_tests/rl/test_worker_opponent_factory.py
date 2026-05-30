@@ -356,6 +356,36 @@ def test_create_agents_assigns_pair_formats_via_apportionment(monkeypatch):
     assert sorted(constructed_formats) == ["gen9vgc2024regg"] * 4 + ["gen9vgc2024regh"] * 4
 
 
+def test_open_team_sheets_threads_to_agents_and_baselines(monkeypatch):
+    """create_agents must pass accept_open_team_sheet=<factory.open_team_sheets>
+    to both the RLTrajectoryPlayer pair and every heuristic baseline."""
+    import queue
+    from typing import cast
+    from elitefurretai.rl.opponents import OpponentPool, WorkerOpponentFactory
+
+    recorded: list[bool] = []
+
+    class _StubPlayer:
+        def __init__(self, *, battle_format, accept_open_team_sheet=False, **kwargs):
+            self.battle_format = battle_format
+            recorded.append(accept_open_team_sheet)
+
+    monkeypatch.setattr("elitefurretai.rl.opponents.RLTrajectoryPlayer", _StubPlayer)
+    monkeypatch.setattr("elitefurretai.rl.opponents.MaxDamagePlayer", _StubPlayer)
+
+    factory = _make_factory(
+        curriculum={OpponentPool.SELF_PLAY: 0.5, OpponentPool.MAX_DAMAGE: 0.5},
+        battle_formats={"gen9vgc2024regg": 1.0},
+        worker_inference_clients=_clients_with("main"),
+    )
+    factory.open_team_sheets = True
+
+    factory.create_agents(num_pairs=2, local_traj_queue=cast(queue.Queue, queue.Queue()))
+
+    assert recorded, "no players were constructed"
+    assert all(recorded), f"some players got accept_open_team_sheet=False: {recorded}"
+
+
 def test_randomize_all_teams_uses_pair_format_per_slot(monkeypatch):
     """randomize_all_teams resamples each slot using self.pair_formats[i].
 

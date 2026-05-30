@@ -665,6 +665,7 @@ class WorkerOpponentFactory:
         external_vgcbench_usernames: Optional[List[str]] = None,
         agent_team_paths: Optional[Dict[str, str]] = None,
         max_concurrent_battles_per_player: Optional[int] = None,
+        open_team_sheets: bool = False,
     ):
         self.team_repo = team_repo
         self.battle_formats = dict(battle_formats)
@@ -680,6 +681,7 @@ class WorkerOpponentFactory:
         self.worker_id = worker_id
         self.run_id = run_id
         self.max_battle_steps = max_battle_steps
+        self.open_team_sheets = open_team_sheets
 
         # Per-format agent team strings. Keys match self.battle_formats; each
         # value is the list of team strings loaded from disk for that format
@@ -864,6 +866,7 @@ class WorkerOpponentFactory:
                 ),
                 server_configuration=self.server_config,
                 team=self.sample_team(fmt)[0],
+                accept_open_team_sheet=self.open_team_sheets,
             )
             for i, fmt in enumerate(pair_formats)
         ]
@@ -889,7 +892,9 @@ class WorkerOpponentFactory:
         """
         # Conditionally pass `max_concurrent_battles` so when the config
         # leaves it None we don't override poke-env's default of 1.
-        extra_player_kwargs: Dict[str, Any] = {}
+        extra_player_kwargs: Dict[str, Any] = {
+            "accept_open_team_sheet": self.open_team_sheets,
+        }
         if self.max_concurrent_battles_per_player is not None:
             extra_player_kwargs["max_concurrent_battles"] = (
                 self.max_concurrent_battles_per_player
