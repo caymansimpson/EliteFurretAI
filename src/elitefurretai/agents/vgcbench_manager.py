@@ -1,7 +1,8 @@
 """VGCBenchManager — subprocess lifecycle for the external vgc-bench bot.
 
 vgc-bench depends on the cameronangliss/poke-env fork (pinned to commit
-``b3956ae58``, reporting version 0.15.0) whose VGC enums produce a 764-wide
+the ``@vgc-bench`` branch tip, currently ``e9b61cdf``, reporting version
+0.15.0) whose VGC enums produce a 764-wide
 observation, while EFA runs its own poke-env 0.15.0. The two cannot coexist in
 one interpreter, so vgc-bench runs as a subprocess in its own venv
 (``../venv-vgcbench-bcsp/``). This module owns the EFA-side subprocess
@@ -347,7 +348,7 @@ class VGCBenchManager:
                 "--wait-for-server-timeout",
                 str(self.WAIT_FOR_SERVER_TIMEOUT_S),
             ]
-            if self.ACCEPT_OPEN_TEAM_SHEET:
+            if self._config.open_team_sheets:
                 command.append("--accept-open-team-sheet")
 
             process = subprocess.Popen(
