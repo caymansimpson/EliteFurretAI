@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Tests for ``eval_analysis`` Q1/Q2/Q3 win-rate functions + CI helper.
+"""Tests for ``matchup_analysis`` Q1/Q2/Q3 win-rate functions + CI helper.
 
 Each test builds a synthetic ``battles`` DataFrame with a known
 distribution and asserts the aggregation produces the expected
@@ -16,7 +16,7 @@ import math
 import pandas as pd
 import pytest
 
-from elitefurretai.rl.analyze.eval_analysis import (
+from elitefurretai.rl.analyze.matchup_analysis import (
     compute_ensemble_advantage,
     graduation_summary,
     q1_agent_team_win_rate,

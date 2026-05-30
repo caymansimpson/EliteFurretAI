@@ -1,6 +1,6 @@
 # RL Training System
 
-Current-state reference for EliteFurretAI's reinforcement learning training system. Historical narrative (optimization journey, pre-merge architectures, ablation runs) lives in `planning/stage2/`.
+Current-state reference for EliteFurretAI's reinforcement learning training system. Historical narrative lives in `planning/stage2/`.
 
 ## Table of Contents
 
@@ -20,7 +20,7 @@ Current-state reference for EliteFurretAI's reinforcement learning training syst
 
 ## 1. Overview
 
-EliteFurretAI's RL trainer builds off of a behavior-cloned `TransformerThreeHeadedModel` against itself and a curated opponent pool using **Regularized Nash Dynamics (RNaD)**. The system is built around two constraints:
+EliteFurretAI's RL trainer builds off of a behavior-cloned `TransformerThreeHeadedModel` against itself and a curated opponent pool (dynamic arena-style play) using **Regularized Nash Dynamics (RNaD)**. The system is built around two constraints:
 
 - **Pokémon Showdown is single-threaded Node.js** where one server pegs one CPU core. Thus, maximizing throughput requires several Showdown servers on different ports.
 - **Python's GIL forces a tradeoff between battle-stepping and inference inside a single process,** forcing us to do multiprocessing instead of multithreading.

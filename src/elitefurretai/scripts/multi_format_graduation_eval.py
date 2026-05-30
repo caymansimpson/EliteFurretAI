@@ -27,7 +27,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from elitefurretai.rl.analyze.eval_analysis import graduation_summary
+from elitefurretai.rl.analyze.matchup_analysis import graduation_summary
 from elitefurretai.rl.config import RNaDConfig
 
 
