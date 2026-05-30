@@ -233,11 +233,6 @@ class VGCBenchManager:
     LOG_DIR: ClassVar[str] = "data/logs/vgcbench_runners"
     LOG_TO_FILES: ClassVar[bool] = True
 
-    # accept_open_team_sheet must match the main agent's
-    # RLTrajectoryPlayer (currently False); a mismatched handshake
-    # drops battles.
-    ACCEPT_OPEN_TEAM_SHEET: ClassVar[bool] = False
-
     # Seconds a worker waits after env.setup() before sending its first
     # challenge, giving the subprocess time to log in.
     STARTUP_WAIT_S: ClassVar[float] = 10.0

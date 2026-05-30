@@ -103,6 +103,7 @@ def _build_model_player(
     account: AccountConfiguration,
     server_config: ServerConfiguration,
     collector: Optional[TrajectoryCollector],
+    accept_open_team_sheet: bool = False,
 ) -> Any:
     """Build a model player, optionally wired with a TrajectoryCollector.
 
@@ -124,7 +125,7 @@ def _build_model_player(
             account_configuration=account,
             server_configuration=server_config,
             team=team_str,
-            accept_open_team_sheet=False,
+            accept_open_team_sheet=accept_open_team_sheet,
             collector=collector,
         )
     return build_player(
@@ -132,7 +133,7 @@ def _build_model_player(
         team=team_str,
         account_configuration=account,
         server_configuration=server_config,
-        accept_open_team_sheet=False,
+        accept_open_team_sheet=accept_open_team_sheet,
     )
 
 
@@ -160,6 +161,7 @@ def _run_worker(
     collect_run_dir: Optional[str] = None,
     eval_run_id: Optional[str] = None,
     replay_sample_rate: float = 1.0,
+    open_team_sheets: bool = False,
 ) -> EvalResult:
     """One worker iterates through its assigned (agent_team, opp_team) cells.
 
@@ -273,21 +275,29 @@ def _run_worker(
 
         try:
             if p2.kind == "external":
-                external_handle = launch_external_player(p2, server_url)
+                external_handle = launch_external_player(
+                    p2, server_url, open_team_sheets=open_team_sheets
+                )
                 player1 = _build_player(
-                    p1, first_agent_team, p1_account, server_config, collector
+                    p1, first_agent_team, p1_account, server_config, collector,
+                    accept_open_team_sheet=open_team_sheets,
                 )
             elif p1.kind == "external":
-                external_handle = launch_external_player(p1, server_url)
+                external_handle = launch_external_player(
+                    p1, server_url, open_team_sheets=open_team_sheets
+                )
                 player2 = _build_player(
-                    p2, first_opp_team, p2_account, server_config, collector
+                    p2, first_opp_team, p2_account, server_config, collector,
+                    accept_open_team_sheet=open_team_sheets,
                 )
             else:
                 player1 = _build_player(
-                    p1, first_agent_team, p1_account, server_config, collector
+                    p1, first_agent_team, p1_account, server_config, collector,
+                    accept_open_team_sheet=open_team_sheets,
                 )
                 player2 = _build_player(
-                    p2, first_opp_team, p2_account, server_config, None
+                    p2, first_opp_team, p2_account, server_config, None,
+                    accept_open_team_sheet=open_team_sheets,
                 )
 
             for cell_idx, (agent_team, opp_team) in enumerate(cells):
@@ -403,10 +413,13 @@ def _build_player(
     account: AccountConfiguration,
     server_config: ServerConfiguration,
     collector: Optional[TrajectoryCollector],
+    accept_open_team_sheet: bool = False,
 ) -> Any:
     """Dispatch player construction: ``RecordingModelPlayer`` if recording
     is on for a model specification, otherwise the specification's standard factory."""
-    return _build_model_player(specification, team_str, account, server_config, collector)
+    return _build_model_player(
+        specification, team_str, account, server_config, collector, accept_open_team_sheet
+    )
 
 
 def _battle_format_from_specification(specification: PlayerSpecification) -> str:
@@ -431,6 +444,7 @@ def run_eval_parallel(
     eval_run_id: Optional[str] = None,
     replay_sample_rate: float = 1.0,
     executor: str = "process",
+    open_team_sheets: bool = False,
 ) -> EvalResult:
     """Fan out a list of (agent_team, opp_team) cells across workers.
 
@@ -504,6 +518,7 @@ def run_eval_parallel(
                     collect_run_dir=collect_run_dir,
                     eval_run_id=eval_run_id,
                     replay_sample_rate=replay_sample_rate,
+                    open_team_sheets=open_team_sheets,
                 )
             )
 
@@ -1112,7 +1127,10 @@ def build_player(
 
 
 def launch_external_player(
-    specification: PlayerSpecification, server_url: str
+    specification: PlayerSpecification,
+    server_url: str,
+    *,
+    open_team_sheets: bool = False,
 ) -> RunningExternal:
     """Spawn the external opponent subprocess and return a handle.
 
@@ -1131,6 +1149,7 @@ def launch_external_player(
             checkpoint_path=specification.params["checkpoint_path"],
             team_file=specification.params["team_file"],
             python_executable=specification.params["python_executable"],
+            open_team_sheets=open_team_sheets,
         )
     if specification.name == "foul_play":
         return _launch_foulplay_subprocess(
@@ -1153,6 +1172,7 @@ def _launch_vgc_bench_subprocess(
     checkpoint_path: str,
     team_file: str,
     python_executable: str,
+    open_team_sheets: bool = False,
 ) -> RunningExternal:
     """Spawn the vgc-bench subprocess and return a handle.
 
@@ -1202,7 +1222,7 @@ def _launch_vgc_bench_subprocess(
         "--wait-for-server-timeout",
         str(VGCBenchManager.WAIT_FOR_SERVER_TIMEOUT_S),
     ]
-    if VGCBenchManager.ACCEPT_OPEN_TEAM_SHEET:
+    if open_team_sheets:
         command.append("--accept-open-team-sheet")
 
     process = subprocess.Popen(

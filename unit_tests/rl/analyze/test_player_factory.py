@@ -184,6 +184,37 @@ def test_parse_foul_play_overrides_propagate_to_params(tmp_path):
     assert specification.params["parallelism"] == 2
 
 
+def test_launch_vgc_bench_subprocess_open_team_sheets_flag(monkeypatch):
+    import elitefurretai.rl.analyze.analysis_utils as au
+
+    captured = {}
+
+    class _FakePopen:
+        def __init__(self, command, **kwargs):
+            captured["command"] = command
+            self.pid = 1
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(au.subprocess, "Popen", _FakePopen)
+    monkeypatch.setattr(au.time, "sleep", lambda *_a, **_k: None)
+    monkeypatch.setattr(au.os.path, "exists", lambda _p: True)
+    monkeypatch.setattr(au.os, "makedirs", lambda *_a, **_k: None)
+
+    common = dict(
+        server_url="localhost:8000",
+        battle_format="gen9vgc2024regg",
+        checkpoint_path="data/models/vgc-bench-bcsp-reg_all-seed1-98304000.zip",
+        team_file="data/teams/gen9vgc2024regg/vgcbench.txt",
+        python_executable="/usr/bin/python",
+    )
+    au._launch_vgc_bench_subprocess(**common, open_team_sheets=True)
+    assert "--accept-open-team-sheet" in captured["command"]
+    au._launch_vgc_bench_subprocess(**common, open_team_sheets=False)
+    assert "--accept-open-team-sheet" not in captured["command"]
+
+
 def test_launch_external_player_dispatches_foul_play(tmp_path):
     """
     launch_external_player routes a foul_play spec to the foul_play
