@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import yaml
 
-from elitefurretai.rl.analyze.evaluate import EvalResult
+from elitefurretai.rl.analyze.analysis_utils import EvalResult
 from elitefurretai.rl.analyze.evaluate_model import (
     BucketRunResult,
     MultiBucketEvalResult,

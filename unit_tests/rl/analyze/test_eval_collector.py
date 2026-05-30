@@ -16,8 +16,8 @@ import os
 
 import numpy as np
 
-from elitefurretai.rl.analyze.eval_collector import TrajectoryCollector
-from elitefurretai.rl.analyze.eval_schema import (
+from elitefurretai.rl.analyze.analysis_utils import (
+    TrajectoryCollector,
     read_battles,
     read_turns,
 )

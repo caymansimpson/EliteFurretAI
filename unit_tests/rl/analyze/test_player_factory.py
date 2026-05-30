@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from elitefurretai.rl.analyze.player_factory import (
+from elitefurretai.rl.analyze.analysis_utils import (
     PlayerSpecification,
     canonicalize_baseline,
     parse_player_specification,
@@ -193,7 +193,7 @@ def test_launch_external_player_dispatches_foul_play(tmp_path):
     """
     from unittest.mock import MagicMock, patch
 
-    from elitefurretai.rl.analyze.player_factory import launch_external_player
+    from elitefurretai.rl.analyze.analysis_utils import launch_external_player
 
     fake_py = tmp_path / "python"
     fake_py.write_text("")
@@ -208,8 +208,8 @@ def test_launch_external_player_dispatches_foul_play(tmp_path):
     )
 
     with (
-        patch("elitefurretai.rl.analyze.player_factory.subprocess.Popen") as mock_popen,
-        patch("elitefurretai.rl.analyze.player_factory.time.sleep"),
+        patch("elitefurretai.rl.analyze.analysis_utils.subprocess.Popen") as mock_popen,
+        patch("elitefurretai.rl.analyze.analysis_utils.time.sleep"),
     ):
         mock_popen.return_value = MagicMock(pid=99999, poll=lambda: None)
         handle = launch_external_player(spec, "localhost:8000")

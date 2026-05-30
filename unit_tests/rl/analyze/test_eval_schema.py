@@ -14,7 +14,7 @@ import os
 
 import pandas as pd
 
-from elitefurretai.rl.analyze.eval_schema import (
+from elitefurretai.rl.analyze.analysis_utils import (
     BattleRecord,
     EvalRunManifest,
     ScheduleEntry,

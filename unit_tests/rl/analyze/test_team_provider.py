@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from elitefurretai.rl.analyze.team_provider import parse_team_specification
+from elitefurretai.rl.analyze.analysis_utils import parse_team_specification
 
 _SAMPLE_MON = """\
 Calyrex-Shadow @ Life Orb

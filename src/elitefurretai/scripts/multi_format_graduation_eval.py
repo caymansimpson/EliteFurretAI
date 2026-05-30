@@ -94,7 +94,7 @@ def main() -> None:
                 [
                     sys.executable,
                     "-m",
-                    "elitefurretai.rl.analyze.evaluate",
+                    "elitefurretai.rl.analyze.analysis_utils",
                     "--player1",
                     args.checkpoint,
                     "--player2",

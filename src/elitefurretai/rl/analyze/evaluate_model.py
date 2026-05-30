@@ -15,8 +15,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-from elitefurretai.rl.analyze.evaluate import EvalResult, run_eval_parallel
-from elitefurretai.rl.analyze.player_factory import parse_player_specification
+from elitefurretai.rl.analyze.analysis_utils import (
+    EvalResult,
+    parse_player_specification,
+    run_eval_parallel,
+)
 from elitefurretai.rl.config import CurriculumConfig, EvalConfig, OpponentEvalSpec
 
 # Opponent canonical names whose construction goes through the external

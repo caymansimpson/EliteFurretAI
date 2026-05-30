@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Offline analysis CLI for Plan B trajectory collection runs.
 
-Reads parquet shards produced by ``evaluate.py --collect-trajectories``
+Reads parquet shards produced by ``analysis_utils.py --collect-trajectories``
 and computes the answers to Q1–Q9 from
 ``planning/stage2/2026-05-17-...-plan-b-model-analysis.md``.
 
@@ -39,7 +39,7 @@ from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
-from elitefurretai.rl.analyze.eval_schema import read_battles, read_turns
+from elitefurretai.rl.analyze.analysis_utils import read_battles, read_turns
 
 # ─── Statistics helpers ──────────────────────────────────────────────
 
