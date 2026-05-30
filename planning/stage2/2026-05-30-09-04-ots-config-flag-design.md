@@ -156,4 +156,47 @@ context reads that one value, guaranteeing both sides of every battle match.
 
 ## Updates
 
-_(none yet)_
+### 2026-05-30 — implemented (T1–T6) + validated
+
+Branch `feat/open-team-sheets-config`. T1–T6 landed (config fields + `from_dict`,
+`WorkerOpponentFactory` threading, `vgc_environment` wiring, `VGCBenchManager`
+training gate, eval-driver threading through `run_eval_parallel` → `_run_worker`
+→ `build_player`/`launch_external_player` → `_launch_vgc_bench_subprocess`; dead
+`VGCBenchManager.ACCEPT_OPEN_TEAM_SHEET` ClassVar removed). All quality gates
+green (117 tests across the touched suites, ruff clean).
+
+**T7 deferred**: `evaluate_model.py` (the in-training eval driver that would
+forward `EvalConfig.open_team_sheets` into `run_eval_parallel`) had uncommitted
+working-tree edits during this work; left untouched to avoid clobbering. One
+remaining change: add `open_team_sheets=eval_cfg.open_team_sheets` at its
+`run_eval_parallel(...)` call once that refactor is committed. The standalone
+player-vs-player CLI was also removed from `analysis_utils.py` during the
+refactor; whatever entrypoint replaces it should expose `--open-team-sheets`.
+
+**Finding 1 — vgc_bench is OTS-incompatible.** Running the `reg_all` vgc_bench
+checkpoint with OTS=on crashes its policy:
+`RuntimeError: shape '[1, 12, -1]' is invalid for input of size 8670`. Revealing
+sheets changes vgc-bench's observation width (8670 ≠ the 6936 = 12×578 the policy
+expects), so its forward pass fails and battles never complete. The EFA flag is
+correct (the runner command gains `--accept-open-team-sheet` and the in-process
+side accepts — verified) — it's vgc-bench that can't consume OTS observations.
+**Implication:** do not enable `open_team_sheets` while vgc_bench is in the
+training curriculum or an eval bucket (with this checkpoint); EFA's own agents +
+heuristic baselines are unaffected.
+
+**Finding 2 — keep `run_tag` short.** Driving the eval with a long `run_tag`
+pushed Showdown usernames past the 18-char cap; the truncation desynced the
+challenge handshake (a flood of "room does not exist" PMs, battles never
+completing). The original CLI used a 4-hex tag; the replacement CLI must keep
+`run_tag` short. (Not an OTS bug — a latent eval-harness constraint surfaced
+while validating.)
+
+**Validation results** — vgc_bench (98.3M reg_all) vs heuristic baselines,
+**closed sheets** (OTS=on impossible per Finding 1), constrained Reg G team pool,
+3 battles × 41 teams = 123 each:
+
+| Opponent | vgc_bench W–L | vgc_bench WR |
+|---|---|---|
+| max_damage | 101–22 | **82.11%** |
+| max_base_power | 100–23 | **81.30%** |
+| simple_heuristic | 90–33 | **73.17%** |
