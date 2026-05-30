@@ -137,4 +137,16 @@ exploiter:
   ent_coef: 0.02
 
 eval:
-  enabled: false
+  enabled: true
+  eval_every_n_updates: 500
+  surplus_alpha: 1.0
+  workers: 4
+  # Trajectory capture off by default; set to a directory to write
+  # battles.parquet / turns.parquet shards for matchup_analysis.
+  collect_trajectories: null
+  opponents:
+    simple_heuristic_baseline: {target: 0.80, weight: 1.0, n_battles: 150}
+    max_damage:                {target: 0.80, weight: 1.0, n_battles: 150}
+    bc_player:                 {target: 0.80, weight: 1.0, n_battles: 150}
+    vgc_bench:                 {target: 0.60, weight: 1.0, n_battles: 100}
+    foul_play:                 {target: 0.50, weight: 0.0, n_battles: 40}

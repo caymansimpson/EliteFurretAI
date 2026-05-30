@@ -12,6 +12,7 @@ from elitefurretai.rl.analyze.analysis_utils import EvalResult
 from elitefurretai.rl.analyze.evaluate_model import (
     BucketRunResult,
     MultiBucketEvalResult,
+    _build_cells_for_bucket,
     _opponent_kwargs,
     _run_opponent_bucket,
     _split_battles_by_format,
@@ -611,3 +612,130 @@ class TestStandaloneCLIOutput:
         )
         # Must be JSON-serializable
         json.dumps(d)
+
+
+# ============================================================================
+# Phase 3c — team-override + cell_iteration field semantics
+# ============================================================================
+
+
+class TestBuildCellsForBucket:
+    def test_defaults_use_curriculum_resolved(self, monkeypatch):
+        monkeypatch.setattr(
+            "elitefurretai.rl.analyze.evaluate_model._resolve_agent_team_text",
+            lambda c, f: "AGENT",
+        )
+        monkeypatch.setattr(
+            "elitefurretai.rl.analyze.evaluate_model._resolve_opponent_team_text",
+            lambda o, c, f: "OPP",
+        )
+        spec = OpponentEvalSpec(target=0.5, weight=1.0, n_battles=10)
+        cells = _build_cells_for_bucket(
+            spec,
+            "max_damage",
+            _make_curriculum({"gen9vgc2023regc": 1.0}),
+            "gen9vgc2023regc",
+        )
+        assert cells == [("AGENT", "OPP")]
+
+    def test_external_opponent_gets_empty_opp_team(self, monkeypatch):
+        monkeypatch.setattr(
+            "elitefurretai.rl.analyze.evaluate_model._resolve_agent_team_text",
+            lambda c, f: "AGENT",
+        )
+        spec = OpponentEvalSpec(target=0.5, weight=1.0, n_battles=10)
+        cells = _build_cells_for_bucket(
+            spec,
+            "vgc_bench",
+            _make_curriculum({"gen9vgc2023regc": 1.0}),
+            "gen9vgc2023regc",
+        )
+        assert cells == [("AGENT", "")]
+
+    def test_team_path_file_override(self, tmp_path):
+        agent_file = tmp_path / "a.txt"
+        agent_file.write_text("AGENT_OVERRIDE")
+        opp_file = tmp_path / "o.txt"
+        opp_file.write_text("OPP_OVERRIDE")
+        spec = OpponentEvalSpec(
+            target=0.5,
+            weight=1.0,
+            n_battles=10,
+            agent_team_path=str(agent_file),
+            opp_team_path=str(opp_file),
+        )
+        cells = _build_cells_for_bucket(
+            spec,
+            "max_damage",
+            _make_curriculum({"gen9vgc2023regc": 1.0}),
+            "gen9vgc2023regc",
+        )
+        assert cells == [("AGENT_OVERRIDE", "OPP_OVERRIDE")]
+
+    def test_two_dirs_yields_cartesian(self, tmp_path):
+        agent_dir = tmp_path / "agents"
+        agent_dir.mkdir()
+        (agent_dir / "a1.txt").write_text("AGENT_1")
+        (agent_dir / "a2.txt").write_text("AGENT_2")
+        opp_dir = tmp_path / "opps"
+        opp_dir.mkdir()
+        (opp_dir / "o1.txt").write_text("OPP_1")
+        (opp_dir / "o2.txt").write_text("OPP_2")
+        (opp_dir / "o3.txt").write_text("OPP_3")
+        spec = OpponentEvalSpec(
+            target=0.5,
+            weight=1.0,
+            n_battles=10,
+            agent_team_path=str(agent_dir),
+            opp_team_path=str(opp_dir),
+        )
+        cells = _build_cells_for_bucket(
+            spec,
+            "max_damage",
+            _make_curriculum({"gen9vgc2023regc": 1.0}),
+            "gen9vgc2023regc",
+        )
+        # 2 agent teams x 3 opp teams = 6 cells (sorted by filename)
+        assert len(cells) == 6
+        assert set(a for a, _ in cells) == {"AGENT_1", "AGENT_2"}
+        assert set(o for _, o in cells) == {"OPP_1", "OPP_2", "OPP_3"}
+
+    def test_dir_against_file_yields_one_per_dir_team(self, tmp_path):
+        agent_dir = tmp_path / "agents"
+        agent_dir.mkdir()
+        (agent_dir / "a1.txt").write_text("AGENT_1")
+        (agent_dir / "a2.txt").write_text("AGENT_2")
+        opp_file = tmp_path / "o.txt"
+        opp_file.write_text("OPP_ONLY")
+        spec = OpponentEvalSpec(
+            target=0.5,
+            weight=1.0,
+            n_battles=10,
+            agent_team_path=str(agent_dir),
+            opp_team_path=str(opp_file),
+        )
+        cells = _build_cells_for_bucket(
+            spec,
+            "max_damage",
+            _make_curriculum({"gen9vgc2023regc": 1.0}),
+            "gen9vgc2023regc",
+        )
+        # 2 agent teams × 1 opp team = 2 cells
+        assert cells == [("AGENT_1", "OPP_ONLY"), ("AGENT_2", "OPP_ONLY")]
+
+    def test_empty_dir_raises(self, tmp_path):
+        empty_dir = tmp_path / "empty"
+        empty_dir.mkdir()
+        spec = OpponentEvalSpec(
+            target=0.5,
+            weight=1.0,
+            n_battles=10,
+            agent_team_path=str(empty_dir),
+        )
+        with pytest.raises(FileNotFoundError, match="No .txt files"):
+            _build_cells_for_bucket(
+                spec,
+                "max_damage",
+                _make_curriculum({"gen9vgc2023regc": 1.0}),
+                "gen9vgc2023regc",
+            )

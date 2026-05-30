@@ -1,0 +1,44 @@
+# example_eval.yaml — standalone evaluate_model.py CLI config.
+#
+# Mostly defaults; runs the four configured baselines (SHP, MaxDamage,
+# BCPlayer, VGCBench) against a checkpoint on two formats:
+#   - gen9vgc2024regg (regg)
+#   - gen9championsvgc2026regma (championsma)
+# Agent uses the 'setup' team pool on each format.
+#
+# Run:
+#   python -m elitefurretai.rl.analyze.evaluate_model \
+#       --checkpoint <path/to/checkpoint.pt> \
+#       --config src/elitefurretai/rl/configs/example_eval.yaml \
+#       --output /tmp/example_eval.json \
+#       --num-servers 4
+
+# Curriculum drives format selection + team paths. evaluate_model reads
+# only the eval, curriculum, and hardware.device sections; all other
+# RNaDConfig sections fall back to defaults.
+curriculum:
+  battle_formats:
+    gen9vgc2024regg: 0.5
+    gen9championsvgc2026regma: 0.5
+  base_team_path: data/teams
+  agent_team_path:
+    gen9vgc2024regg: setup
+    gen9championsvgc2026regma: setup
+  opponent_team_pool_path:
+    gen9vgc2024regg: null
+    gen9championsvgc2026regma: null
+
+hardware:
+  device: cuda
+
+eval:
+  enabled: true
+  surplus_alpha: 1.0
+  workers: 4
+  collect_trajectories: null   # set to e.g. /tmp/eval_run/ to capture parquet for matchup_analysis
+  opponents:
+    simple_heuristic_baseline: {target: 0.80, weight: 1.0, n_battles: 80}
+    max_damage:                {target: 0.80, weight: 1.0, n_battles: 80}
+    bc_player:                 {target: 0.80, weight: 1.0, n_battles: 80}
+    vgc_bench:                 {target: 0.60, weight: 1.0, n_battles: 80}
+    foul_play:                 {target: 0.50, weight: 0.0, n_battles: 40}

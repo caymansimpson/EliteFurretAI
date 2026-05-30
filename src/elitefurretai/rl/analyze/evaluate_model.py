@@ -1,11 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Multi-bucket eval driver, scoring, log payload, and standalone CLI.
-
-Replaces the FoulPlay-specific driver in foulplay_eval.py with a generic
-driver that handles every opponent in EvalConfig.opponents identically.
-FoulPlay becomes one bucket; its weight defaults to 0.0 until the
-FoulPlay subprocess is stable.
-"""
+"""Multi-bucket eval driver, scoring, log payload, and standalone CLI."""
 
 from __future__ import annotations
 
@@ -90,11 +84,11 @@ class MultiBucketEvalResult:
     wall_time_s: float = 0.0
 
 
+# TODO: is this right? to have default teams
 def _resolve_agent_team_text(curriculum: CurriculumConfig, fmt: str) -> str:
     """Return the agent's team text for ``fmt`` — deterministic across passes.
 
-    Ported from foulplay_eval._resolve_agent_team_text. Eval uses a fixed
-    agent team so win-rate is comparable across checkpoints.
+    Eval uses a fixed agent team so win-rate is comparable across checkpoints.
     """
     paths = curriculum.resolved_agent_team_paths()
     raw = paths.get(fmt)
@@ -116,6 +110,7 @@ def _resolve_agent_team_text(curriculum: CurriculumConfig, fmt: str) -> str:
     raise FileNotFoundError(f"Path is neither file nor directory: {path}")
 
 
+# TODO: is this right? to have default teams
 def _resolve_opponent_team_text(
     opp_name: str, curriculum: CurriculumConfig, fmt: str
 ) -> str:
@@ -140,6 +135,7 @@ def _resolve_opponent_team_text(
     return teams[0].read_text()
 
 
+# TODO: is this necessary?
 def _foulplay_team_pool_for_fmt(
     eval_cfg: EvalConfig, curriculum: CurriculumConfig, fmt: str
 ) -> str:
@@ -178,6 +174,7 @@ def _opponent_kwargs(opp_name: str, eval_cfg: EvalConfig) -> Dict[str, Any]:
     return {}
 
 
+# TODO: isnt there a function for this in rl_utils?
 def _split_battles_by_format(
     n_total: int, format_weights: Dict[str, float]
 ) -> Dict[str, int]:
@@ -198,6 +195,51 @@ def _split_battles_by_format(
     return floors
 
 
+def _read_team_path(path: str) -> List[str]:
+    """Read a team source. File → single team text; directory → every
+    .txt file under it (sorted by name).
+    """
+    p = Path(path)
+    if p.is_file():
+        return [p.read_text()]
+    if p.is_dir():
+        team_files = sorted(p.glob("*.txt"))
+        if not team_files:
+            raise FileNotFoundError(f"No .txt files in {path}")
+        return [tf.read_text() for tf in team_files]
+    raise FileNotFoundError(f"Path is neither file nor directory: {path}")
+
+
+def _build_cells_for_bucket(
+    spec: OpponentEvalSpec,
+    opp_name: str,
+    curriculum: CurriculumConfig,
+    fmt: str,
+) -> List[Tuple[str, str]]:
+    """Resolve teams into (agent_team_text, opp_team_text) cells.
+
+    Honors spec.agent_team_path / spec.opp_team_path overrides; falls
+    back to curriculum-resolved teams otherwise. Path-type drives
+    iteration: file → single team; directory → every .txt under it.
+    External opponents always get empty opp_team_text since their
+    subprocess picks its own team. With both overrides set to
+    directories the cells are the Cartesian product (N_agent × N_opp).
+    """
+    if spec.agent_team_path is not None:
+        agent_teams = _read_team_path(spec.agent_team_path)
+    else:
+        agent_teams = [_resolve_agent_team_text(curriculum, fmt)]
+
+    if opp_name in _EXTERNAL_OPPONENTS:
+        opp_teams: List[str] = [""]
+    elif spec.opp_team_path is not None:
+        opp_teams = _read_team_path(spec.opp_team_path)
+    else:
+        opp_teams = [_resolve_opponent_team_text(opp_name, curriculum, fmt)]
+
+    return [(a, o) for a in agent_teams for o in opp_teams]
+
+
 def _run_opponent_bucket(
     opp_name: str,
     spec: OpponentEvalSpec,
@@ -210,7 +252,6 @@ def _run_opponent_bucket(
 ) -> BucketRunResult:
     """Run one opponent across all curriculum formats.
 
-    Mirrors foulplay_eval._run_worker but parametrized by opponent name.
     Subprocess lifecycle for external opponents is handled internally by
     run_eval_parallel, so no explicit RunningExternal tracking is needed
     at this level (layer-1 cleanup is therefore implicit).
@@ -225,9 +266,6 @@ def _run_opponent_bucket(
         if n_for_fmt <= 0:
             continue
 
-        agent_team_text = _resolve_agent_team_text(curriculum, fmt)
-        opp_team_text = _resolve_opponent_team_text(opp_name, curriculum, fmt)
-
         kwargs = _opponent_kwargs(opp_name, eval_cfg)
         if opp_name == "foul_play":
             kwargs["foul_play_team_pool_path"] = _foulplay_team_pool_for_fmt(
@@ -241,15 +279,17 @@ def _run_opponent_bucket(
             opp_name, device=device, battle_format=fmt, **kwargs
         )
 
-        cells = [(agent_team_text, opp_team_text)]
+        cells = _build_cells_for_bucket(spec, opp_name, curriculum, fmt)
         fmt_result = run_eval_parallel(
             p1=model_spec,
             p2=opp_spec,
             cells=cells,
             battles_per_cell=n_for_fmt,
             server_urls=server_urls,
-            workers=1,
+            workers=eval_cfg.workers,
             run_tag=run_tag,
+            collect_run_dir=eval_cfg.collect_trajectories,
+            replay_sample_rate=eval_cfg.replay_sample_rate,
         )
         per_format[fmt] = fmt_result
 
@@ -403,6 +443,7 @@ def _serialize_result_to_dict(
     }
 
 
+# TODO: fix lazy loading
 def main() -> None:
     """Standalone CLI for ad-hoc multi-bucket eval.
 
@@ -424,7 +465,7 @@ def main() -> None:
         description="Standalone multi-bucket eval against configured baselines."
     )
     parser.add_argument("--checkpoint", required=True, help="Path to checkpoint .pt")
-    parser.add_argument("--config", required=True, help="Path to full RNaDConfig YAML")
+    parser.add_argument("--config", required=True, help="Path to full Config YAML")
     parser.add_argument("--output", required=True, help="Path to write JSON result file")
     parser.add_argument("--num-servers", type=int, default=4)
     parser.add_argument("--server-port-start", type=int, default=8000)

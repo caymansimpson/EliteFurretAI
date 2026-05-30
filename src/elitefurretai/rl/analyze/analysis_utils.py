@@ -1,25 +1,28 @@
-"""Generalized model-vs-anything evaluation entry point.
+"""Shared utilities for the model-evaluation stack.
 
-Resolves both players from a single string per slot (checkpoint path
-*or* baseline name), with team sources independently specified per
-slot (file *or* directory *or* format-default). Replaces the prior
-model-vs-model / model-vs-baseline split.
+Library-only module — no CLI. Holds five conceptual sections (each
+originally a separate file):
 
-Example
--------
-    python -m elitefurretai.rl.analyze.analysis_utils \
-        --player1 data/models/rl/may16-run/main_model_step_500.pt \
-        --player2 simple_heuristic \
-        --team1 data/teams/gen9vgc2024regg/constrained \
-        --team2 data/teams/gen9vgc2024regg/vgcbench.txt \
-        --battles 200 --workers 4 --launch-servers
+* eval_primitives — ``run_eval_parallel``, ``build_cells``,
+  ``EvalResult``, and worker-side dispatch.
+* eval_schema — ``BattleRecord``, ``TurnRecord``, parquet I/O, and
+  the run manifest.
+* eval_collector — ``TrajectoryCollector``, ``RecordingModelPlayer``;
+  written during Plan B trajectory-capture eval runs.
+* player_factory — ``parse_player_specification``,
+  ``launch_external_player``; resolves opponent names/checkpoints into
+  ``PlayerSpecification`` and (for externals) running subprocesses.
+* team_provider — ``parse_team_specification`` and the ``TeamProvider``
+  type, for file/directory/default team sources.
+
+Consumed by ``evaluate_model`` (sweep scoring + matchup investigation)
+and ``matchup_analysis`` (offline Q1–Q9 analyses), plus the
+round-robin script.
 """
 
 from __future__ import annotations
 
-import argparse
 import asyncio
-import datetime
 import gzip
 import hashlib
 import json
@@ -29,7 +32,6 @@ import os
 import random
 import subprocess
 import time
-import uuid
 from concurrent.futures import Executor, ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -40,14 +42,10 @@ from poke_env.player import MaxBasePowerPlayer, Player, RandomPlayer
 from poke_env.player.baselines import SimpleHeuristicsPlayer
 from poke_env.ps_client import AccountConfiguration, ServerConfiguration
 
-from elitefurretai.agents.foulplay_manager import FoulPlayManager
+from elitefurretai.agents import foulplay_manager
 from elitefurretai.agents.max_damage_player import MaxDamagePlayer
 from elitefurretai.agents.simple_model_player import SimpleModelPlayer
 from elitefurretai.agents.vgcbench_manager import VGCBenchManager
-from elitefurretai.engine.showdown_server_manager import (
-    launch_showdown_servers,
-    shutdown_showdown_servers,
-)
 from elitefurretai.etl import MDBO, TeamRepo, evaluate_position_advantage
 
 
@@ -96,17 +94,6 @@ def _aggregate_results(label: str, results: List[EvalResult]) -> EvalResult:
         player2_wins=sum(r.player2_wins for r in results),
         ties=sum(r.ties for r in results),
         battles_played=sum(r.battles_played for r in results),
-    )
-
-
-def _print_result(result: EvalResult, p1_label: str, p2_label: str) -> None:
-    print(
-        f"{p1_label:>20} vs {p2_label:<20} | "
-        f"Battles={result.battles_played:<5} "
-        f"P1Wins={result.player1_wins:<5} "
-        f"P2Wins={result.player2_wins:<5} "
-        f"Ties={result.ties:<3} "
-        f"P1WR={result.player1_win_rate * 100:6.2f}%"
     )
 
 
@@ -589,277 +576,6 @@ def build_cells(
     cells = [(a, b) for a in p1_strs for b in p2_strs]
     random.Random(42).shuffle(cells)
     return cells
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Generalized model/baseline evaluation runner"
-    )
-    parser.add_argument(
-        "--player1",
-        required=True,
-        type=str,
-        help="Player 1 specification: checkpoint path or baseline name "
-        "(max_damage, max_base_power, simple_heuristic, vgc_bench, random)",
-    )
-    parser.add_argument(
-        "--player2",
-        required=True,
-        type=str,
-        help="Player 2 specification (same accepted values as --player1)",
-    )
-    parser.add_argument(
-        "--team1",
-        type=str,
-        default=None,
-        help="Player 1 team source: file, directory, or omit for format default",
-    )
-    parser.add_argument(
-        "--team2",
-        type=str,
-        default=None,
-        help="Player 2 team source: file, directory, or omit for format default",
-    )
-    parser.add_argument(
-        "--battles",
-        type=int,
-        default=100,
-        help="Battles per (agent_team, opp_team) cell. In single-cell mode "
-        "(default) this is the total. With --cell-iteration this multiplies "
-        "by the matrix size.",
-    )
-    parser.add_argument(
-        "--cell-iteration",
-        action="store_true",
-        help="Iterate the full Cartesian product of --team1 × --team2 "
-        "directories, running --battles per cell. Players are reused across "
-        "cells via update_team so the model loads once per worker.",
-    )
-    parser.add_argument("--workers", type=int, default=4)
-    parser.add_argument(
-        "--executor",
-        choices=("process", "thread"),
-        default="process",
-        help="Worker dispatch model. 'process' (default) gives real CPU "
-        "parallelism via ProcessPoolExecutor+spawn — required at >1 "
-        "worker for the GIL-bound embedder + max_damage damage calc. "
-        "'thread' uses ThreadPoolExecutor (legacy path; ~3-4x slower at "
-        "workers=4 but no spawn cost, useful for tests).",
-    )
-    parser.add_argument("--num-servers", type=int, default=4)
-    parser.add_argument("--start-port", type=int, default=8000)
-    parser.add_argument("--server-base", type=str, default="localhost")
-    parser.add_argument(
-        "--launch-servers",
-        action="store_true",
-        help="Launch local Showdown servers automatically",
-    )
-    parser.add_argument("--device", type=str, default="cuda")
-    parser.add_argument("--battle-format", type=str, default="gen9vgc2024regg")
-    parser.add_argument(
-        "--vgc-bench-checkpoint-path",
-        type=str,
-        default="data/models/vgc-bench-bcsp-reg_all-seed1-98304000.zip",
-    )
-    parser.add_argument("--output", type=str, default=None)
-    parser.add_argument(
-        "--collect-trajectories",
-        type=str,
-        default=None,
-        metavar="RUN_DIR",
-        help="Enable Plan B trajectory collection. Writes parquet shards and "
-        "(sampled) Showdown replay logs under RUN_DIR. Requires one side to "
-        "be a model checkpoint; collection silently no-ops for baseline-vs-"
-        "baseline.",
-    )
-    parser.add_argument(
-        "--replay-sample-rate",
-        type=float,
-        default=1.0,
-        help="Fraction of battles whose Showdown protocol log is gzipped to "
-        "RUN_DIR/replays/. Battles cannot be re-played deterministically so "
-        "logs must be captured live. 0 disables; 1 saves all. Default: 1.0 "
-        "(replays are ~4 KB gzipped each — ~3 GB total across the full "
-        "4-opp_type 705k-battle schedule, well within disk budget).",
-    )
-    parser.add_argument(
-        "--eval-run-id",
-        type=str,
-        default=None,
-        help="Run identifier embedded in every parquet row. Auto-generated "
-        "(UUID4 prefix) when omitted.",
-    )
-    args = parser.parse_args()
-
-    p1 = parse_player_specification(
-        args.player1,
-        device=args.device,
-        battle_format=args.battle_format,
-        vgc_bench_checkpoint_path=args.vgc_bench_checkpoint_path,
-    )
-    p2 = parse_player_specification(
-        args.player2,
-        device=args.device,
-        battle_format=args.battle_format,
-        vgc_bench_checkpoint_path=args.vgc_bench_checkpoint_path,
-    )
-    t1 = parse_team_specification(args.team1, battle_format=args.battle_format)
-    t2 = parse_team_specification(args.team2, battle_format=args.battle_format)
-
-    # Resolve cell list before launching servers / collection — a bad
-    # CLI combination here should fail fast, not after Showdown is up.
-    cells = build_cells(
-        t1,
-        t2,
-        cell_iteration=args.cell_iteration,
-        team1_path=args.team1,
-        team2_path=args.team2,
-    )
-    total_battles = args.battles * len(cells)
-
-    run_tag = format(int(time.time() * 1000) % 65536, "04x")
-
-    # Resolve trajectory-collection settings up front so the manifest
-    # gets written before any battles fire (so a crash mid-eval still
-    # leaves audit metadata on disk).
-    collect_run_dir = args.collect_trajectories
-    eval_run_id = args.eval_run_id or f"run_{uuid.uuid4().hex[:8]}"
-    if collect_run_dir is not None:
-        os.makedirs(collect_run_dir, exist_ok=True)
-        _write_or_update_manifest(
-            run_dir=collect_run_dir,
-            eval_run_id=eval_run_id,
-            agent_ckpt_path=(p1.raw if p1.kind == "model" else p2.raw),
-            battle_format=args.battle_format,
-            replay_sample_rate=args.replay_sample_rate,
-            opp_player_name=(p2.name if p1.kind == "model" else p1.name),
-            battles=total_battles,
-        )
-
-    server_processes = []
-    if args.launch_servers:
-        server_processes = launch_showdown_servers(args.num_servers, args.start_port)
-
-    try:
-        server_urls = _build_server_urls(
-            args.server_base, args.num_servers, args.start_port
-        )
-
-        started = time.time()
-        print(f"\n=== Evaluation: {p1.name} vs {p2.name} ===")
-        if args.cell_iteration:
-            print(
-                f"    Cell iteration ON: {len(cells)} cells × "
-                f"{args.battles} battles = {total_battles} total"
-            )
-        if collect_run_dir is not None:
-            print(
-                f"    Collecting trajectories to {collect_run_dir} (run_id={eval_run_id})"
-            )
-        result = run_eval_parallel(
-            p1=p1,
-            p2=p2,
-            cells=cells,
-            battles_per_cell=args.battles,
-            server_urls=server_urls,
-            workers=args.workers,
-            run_tag=run_tag,
-            collect_run_dir=collect_run_dir,
-            eval_run_id=eval_run_id,
-            replay_sample_rate=args.replay_sample_rate,
-            executor=args.executor,
-        )
-        duration = time.time() - started
-        _print_result(result, p1.name, p2.name)
-
-        if collect_run_dir is not None:
-            _mark_manifest_finished(collect_run_dir)
-
-        if args.output:
-            payload: Dict[str, Any] = {
-                "p1": {"raw": p1.raw, "kind": p1.kind, "name": p1.name},
-                "p2": {"raw": p2.raw, "kind": p2.kind, "name": p2.name},
-                "team1_specification": args.team1,
-                "team2_specification": args.team2,
-                "battle_format": args.battle_format,
-                "duration_sec": round(duration, 2),
-                "result": asdict(result),
-                "result_p1_win_rate": result.player1_win_rate,
-                "eval_run_id": eval_run_id if collect_run_dir else None,
-                "collect_run_dir": collect_run_dir,
-            }
-            with open(args.output, "w") as f:
-                json.dump(payload, f, indent=2)
-            print(f"\nSaved evaluation results to {args.output}")
-    finally:
-        if server_processes:
-            shutdown_showdown_servers(server_processes)
-
-
-def _git_sha_or_empty() -> str:
-    """Best-effort current git SHA for audit. Returns empty string outside a repo."""
-    try:
-        out = subprocess.run(
-            ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=False
-        )
-        if out.returncode == 0:
-            return out.stdout.strip()
-    except Exception:
-        pass
-    return ""
-
-
-def _write_or_update_manifest(
-    *,
-    run_dir: str,
-    eval_run_id: str,
-    agent_ckpt_path: str,
-    battle_format: str,
-    replay_sample_rate: float,
-    opp_player_name: str,
-    battles: int,
-) -> None:
-    """Write a fresh manifest if absent, else append a ScheduleEntry.
-
-    Multiple ``evaluate.py`` invocations may share a run dir (one call
-    per opp_type in the user's 4-opp_type schedule). Each call appends
-    its slice to the manifest's ``schedule`` list so the audit trail
-    captures the full run.
-    """
-    manifest_path = os.path.join(run_dir, "manifest.json")
-    if os.path.exists(manifest_path):
-        manifest = read_manifest(run_dir)
-        manifest.schedule.append(
-            ScheduleEntry(opp_player_name=opp_player_name, battles_total=battles)
-        )
-    else:
-        manifest = EvalRunManifest(
-            eval_run_id=eval_run_id,
-            git_sha=_git_sha_or_empty(),
-            agent_ckpt_path=agent_ckpt_path,
-            battle_format=battle_format,
-            replay_sample_rate=replay_sample_rate,
-            schedule=[
-                ScheduleEntry(opp_player_name=opp_player_name, battles_total=battles)
-            ],
-            started_at=datetime.datetime.now().isoformat(),
-        )
-    write_manifest(manifest, run_dir)
-
-
-def _mark_manifest_finished(run_dir: str) -> None:
-    """Stamp ``finished_at`` on the manifest after a successful run."""
-
-    manifest_path = os.path.join(run_dir, "manifest.json")
-    if not os.path.exists(manifest_path):
-        return
-    manifest = read_manifest(run_dir)
-    manifest.finished_at = datetime.datetime.now().isoformat()
-    write_manifest(manifest, run_dir)
-
-
-if __name__ == "__main__":
-    main()
 
 
 # ============================================================================
@@ -1538,10 +1254,10 @@ def _launch_foulplay_subprocess(
 ) -> RunningExternal:
     """Spawn the foul-play-doubles subprocess and return a handle.
 
-    Single-shot CLI variant of ``FoulPlayManager.launch``: takes raw
-    parameters instead of a config object so the eval script doesn't
-    have to construct training config to use foul_play. The subprocess
-    args are kept identical to ``FoulPlayManager`` so any future fix to
+    Takes raw parameters instead of a config object so the eval script
+    doesn't have to construct training config to use foul_play. The
+    subprocess args borrow the constants and username helpers in
+    ``agents.foulplay_manager`` so any future fix to
     ``_foulplay_subprocess.py`` applies uniformly.
 
     Blocks for ``STARTUP_WAIT_S`` seconds before returning so the
@@ -1550,10 +1266,7 @@ def _launch_foulplay_subprocess(
 
     ``--n-challenges`` is set to a large constant here because the
     eval-side cell loop controls the actual number of challenges issued
-    (matching the long-lived FoulPlay-as-baseline pattern). The
-    training-loop variant of FoulPlay eval is bounded by
-    ``FoulplayEvalConfig.n_battles_per_format`` and goes through
-    ``FoulPlayManager`` directly, not this helper.
+    (matching the long-lived FoulPlay-as-baseline pattern).
     """
     if not os.path.exists(python_executable):
         raise FileNotFoundError(f"foul-play venv python not found: {python_executable}")
@@ -1561,8 +1274,7 @@ def _launch_foulplay_subprocess(
         raise FileNotFoundError(f"foul-play team pool not found: {team_pool_path}")
 
     port = int(server_url.rsplit(":", 1)[1])
-    base_username = FoulPlayManager.USERNAMES[0]  # "FOULPLAY"
-    username = FoulPlayManager.derive_username(base_username, port)
+    username = foulplay_manager.derive_username(foulplay_manager.BASE_USERNAME, port)
 
     log_dir = "data/logs/foulplay_runners_eval"
     os.makedirs(log_dir, exist_ok=True)
@@ -1572,7 +1284,7 @@ def _launch_foulplay_subprocess(
 
     command = [
         python_executable,
-        FoulPlayManager.SUBPROCESS_SCRIPT,
+        foulplay_manager.SUBPROCESS_SCRIPT,
         "--username",
         username,
         "--server",
@@ -1589,9 +1301,9 @@ def _launch_foulplay_subprocess(
         "--parallelism",
         str(parallelism),
         "--wait-for-server-timeout",
-        str(FoulPlayManager.WAIT_FOR_SERVER_TIMEOUT_S),
+        str(foulplay_manager.WAIT_FOR_SERVER_TIMEOUT_S),
     ]
-    if FoulPlayManager.ACCEPT_OPEN_TEAM_SHEET:
+    if foulplay_manager.ACCEPT_OPEN_TEAM_SHEET:
         command.append("--accept-open-team-sheet")
 
     process = subprocess.Popen(
@@ -1610,7 +1322,7 @@ def _launch_foulplay_subprocess(
     # (a Rust extension), poke_env 0.11, and completes a websocket
     # handshake. STARTUP_WAIT_S mirrors VGCBench's 10 s; less and the
     # first /challenge can hit a non-existent user.
-    time.sleep(FoulPlayManager.STARTUP_WAIT_S)
+    time.sleep(foulplay_manager.STARTUP_WAIT_S)
 
     def shutdown() -> None:
         if process.poll() is None:

@@ -703,51 +703,37 @@ class CurriculumConfig:
 
 
 @dataclass
-class FoulplayEvalConfig:
-    """Inline-during-training eval against the external foul-play-doubles bot.
-
-    Disabled by default: the subprocess requires a separately installed
-    ``../venv-foulplay`` (with ``poke-engine-doubles``, a Rust extension)
-    and runs at ~750 ms / move × 8 cores, which saturates the machine
-    during eval. See planning/stage2/2026-05-25-23-37-foulplay-eval-scope-confirmed.md.
-
-    Multi-format from v1: the eval driver iterates over the active
-    ``CurriculumConfig.battle_formats`` and runs one self-contained
-    FoulPlay cycle per format. ``n_battles_per_format`` is per-format,
-    so total wall-clock per eval pass scales linearly with the number
-    of active formats.
-
-    ``foulplay_team_pool_paths`` is the directory FoulPlay samples its
-    teams from, per format. When ``None``, the eval driver falls back
-    to the curriculum's ``opponent_team_pool_paths[fmt]`` so most users
-    don't need to configure a separate FoulPlay-side pool.
-    """
-
-    enabled: bool = False
-    eval_every_n_updates: int = 50
-    n_battles_per_format: int = 100
-    search_time_ms: int = 750
-    parallelism: int = 4
-    python_executable: Optional[str] = None
-    foulplay_team_pool_paths: Optional[Dict[str, str]] = None
-    model_probabilistic: bool = False
-
-
-@dataclass
 class OpponentEvalSpec:
     """Per-opponent eval config. Lives in EvalConfig.opponents keyed by
-    canonical opponent name. Fields apply across all curriculum formats:
-    n_battles is split per-format using curriculum.battle_formats weights.
+    canonical opponent name OR by checkpoint path (both resolved through
+    parse_player_specification). Fields apply across all curriculum
+    formats; n_battles is split per-format using curriculum.battle_formats
+    weights.
+
+    Team overrides (agent_team_path, opp_team_path) replace the
+    curriculum-resolved teams when set, mirroring the per-side --team1
+    / --team2 flags from the old standalone matchup CLI. Path type
+    drives iteration: a file is a single team; a directory expands to
+    every .txt under it. When both overrides point at directories the
+    eval runs n_battles per (agent_team, opp_team) cell across the
+    full Cartesian product — total battles = n_battles × N_agent ×
+    N_opp.
     """
 
     target: float
     weight: float
     n_battles: int
 
+    # Per-side team overrides. File → single team; directory → every
+    # .txt file under it (Cartesian product when both sides are dirs).
+    agent_team_path: Optional[str] = None
+    opp_team_path: Optional[str] = None
+
 
 @dataclass
 class EvalConfig:
-    """Inline-during-training multi-bucket eval (replaces FoulplayEvalConfig).
+    """Inline-during-training multi-bucket eval (replaces the former
+    single-opponent FoulPlay eval config).
 
     Drives a generic eval pass against every opponent in `opponents` whose
     weight > 0. The pass runs at checkpoint cadence (every
@@ -758,12 +744,26 @@ class EvalConfig:
     FoulPlay is one opponent in this dict. Its default weight is 0.0
     until the subprocess is stable; flipping the weight in YAML is the
     only thing needed to enable it.
+
+    Trajectory capture (collect_trajectories) writes parquet shards
+    that matchup_analysis.py consumes for Q1–Q9 offline analyses.
     """
 
     enabled: bool = False
     eval_every_n_updates: int = 500
     pause_training: bool = True
     surplus_alpha: float = 1.0
+
+    # Plan B trajectory capture. When set, run_eval_parallel writes
+    # battles.parquet / turns.parquet shards under this directory plus
+    # gzipped Showdown replay logs sampled at replay_sample_rate. None
+    # disables capture (the typical sweep-eval path).
+    collect_trajectories: Optional[str] = None
+    replay_sample_rate: float = 1.0
+    # Parallel battle workers per opponent bucket. Defaults to 1 because
+    # external opponents (vgc_bench, foul_play) saturate the box; raise
+    # for in-process baselines + cell_iteration matrix evals.
+    workers: int = 1
 
     opponents: Dict[str, OpponentEvalSpec] = field(
         default_factory=lambda: {
