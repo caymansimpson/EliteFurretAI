@@ -245,6 +245,7 @@ class _ShowdownBackend:
             agent_team_paths=cur.resolved_agent_team_paths() or None,
             max_concurrent_battles_per_player=hw.max_concurrent_battles_per_player,
             worker_inference_clients=worker_inference_clients,
+            open_team_sheets=config.open_team_sheets,
         )
 
     async def setup(self) -> None:
