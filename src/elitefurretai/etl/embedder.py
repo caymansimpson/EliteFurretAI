@@ -91,7 +91,10 @@ class Embedder:
         self._knowledge["Pokemon"] = set(GenData.from_gen(self._gen).pokedex.keys())
         self._pokedex = GenData.from_gen(self._gen).pokedex
         self._knowledge["Effect_VolatileStatus"] = TRACKED_EFFECTS
-        self._knowledge["Item"] = TRACKED_ITEMS
+        # Use the full union (TRACKED_ITEMS + Mega Stones) to match ITEM_TO_ID;
+        # otherwise any consumer that sizes from this set (e.g. an OHE) would
+        # diverge from the actual item-id index range, like num_items did.
+        self._knowledge["Item"] = _ALL_TRACKED_ITEMS
         self._knowledge["Target"] = TRACKED_TARGET_TYPES
         self._knowledge["Format"] = TRACKED_FORMATS
         self._knowledge["SideCondition"] = TRACKED_SIDE_CONDITIONS
@@ -345,8 +348,12 @@ class Embedder:
 
     @property
     def num_items(self) -> int:
-        """Returns the item vocabulary size including unknown token (index 0)."""
-        return len(TRACKED_ITEMS) + 1
+        """Returns the item vocabulary size including unknown token (index 0).
+
+        Includes Mega Stones (and any other items added via the
+        MEGA_STONE_TO_SPECIES union), matching ITEM_TO_ID exactly.
+        """
+        return NUM_ITEMS
 
     def feature_dict_to_vector(self, features: Dict[str, Any]) -> List[float]:
         """
