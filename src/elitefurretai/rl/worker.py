@@ -347,10 +347,7 @@ def mp_worker_process(
                         and consecutive_vgcbench_timeouts >= 2
                     ):
                         updated_curriculum = env.get_curriculum()
-                        if (
-                            updated_curriculum.get(OpponentPool.VGC_BENCH, 0.0)
-                            > 0.0
-                        ):
+                        if updated_curriculum.get(OpponentPool.VGC_BENCH, 0.0) > 0.0:
                             updated_curriculum[OpponentPool.VGC_BENCH] = 0.0
                             env.update_curriculum(updated_curriculum)
                             vgcbench_disabled_locally = True

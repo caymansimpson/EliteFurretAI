@@ -1149,10 +1149,7 @@ class WorkerOpponentFactory:
             )
             player._accept_open_team_sheet = accept_ots
 
-            if (
-                opp_type == OpponentPool.VGC_BENCH
-                and self.external_vgcbench_usernames
-            ):
+            if opp_type == OpponentPool.VGC_BENCH and self.external_vgcbench_usernames:
                 username = self.external_vgcbench_usernames[
                     (self._batch_count + i) % len(self.external_vgcbench_usernames)
                 ]
@@ -1165,20 +1162,13 @@ class WorkerOpponentFactory:
                 task = player.battle_against(
                     target_opponent, n_battles=num_battles_per_pair
                 )
-            elif (
-                opp_type == OpponentPool.RANDOM and self.random_opponents
-            ):
-                target_opponent = self.random_opponents[
-                    i % len(self.random_opponents)
-                ]
+            elif opp_type == OpponentPool.RANDOM and self.random_opponents:
+                target_opponent = self.random_opponents[i % len(self.random_opponents)]
                 target_opponent._accept_open_team_sheet = accept_ots
                 task = player.battle_against(
                     target_opponent, n_battles=num_battles_per_pair
                 )
-            elif (
-                opp_type == OpponentPool.MAX_BASE_POWER
-                and self.max_base_power_opponents
-            ):
+            elif opp_type == OpponentPool.MAX_BASE_POWER and self.max_base_power_opponents:
                 target_opponent = self.max_base_power_opponents[
                     i % len(self.max_base_power_opponents)
                 ]

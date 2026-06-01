@@ -197,9 +197,7 @@ def _run_worker(
     # vgc_bench is always run with Open Team Sheets on (its trained regime), so
     # force the in-process side ON for vgc_bench matchups regardless of the eval
     # flag — otherwise the OTS handshake mismatches and the battle drops.
-    open_team_sheets = (
-        open_team_sheets or p1.name == "vgc_bench" or p2.name == "vgc_bench"
-    )
+    open_team_sheets = open_team_sheets or p1.name == "vgc_bench" or p2.name == "vgc_bench"
     if not cells:
         return EvalResult(
             label=f"{p1.name}_vs_{p2.name}",
@@ -285,7 +283,11 @@ def _run_worker(
                     p2, server_url, open_team_sheets=open_team_sheets
                 )
                 player1 = _build_player(
-                    p1, first_agent_team, p1_account, server_config, collector,
+                    p1,
+                    first_agent_team,
+                    p1_account,
+                    server_config,
+                    collector,
                     accept_open_team_sheet=open_team_sheets,
                 )
             elif p1.kind == "external":
@@ -293,16 +295,28 @@ def _run_worker(
                     p1, server_url, open_team_sheets=open_team_sheets
                 )
                 player2 = _build_player(
-                    p2, first_opp_team, p2_account, server_config, collector,
+                    p2,
+                    first_opp_team,
+                    p2_account,
+                    server_config,
+                    collector,
                     accept_open_team_sheet=open_team_sheets,
                 )
             else:
                 player1 = _build_player(
-                    p1, first_agent_team, p1_account, server_config, collector,
+                    p1,
+                    first_agent_team,
+                    p1_account,
+                    server_config,
+                    collector,
                     accept_open_team_sheet=open_team_sheets,
                 )
                 player2 = _build_player(
-                    p2, first_opp_team, p2_account, server_config, None,
+                    p2,
+                    first_opp_team,
+                    p2_account,
+                    server_config,
+                    None,
                     accept_open_team_sheet=open_team_sheets,
                 )
 

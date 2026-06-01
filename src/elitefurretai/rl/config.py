@@ -86,8 +86,7 @@ def open_team_sheets_for_battle(
     if mode == "mixed":
         return mixed_roll
     raise ValueError(
-        f"invalid open_team_sheets mode {mode!r}; expected one of "
-        f"{OPEN_TEAM_SHEETS_MODES}"
+        f"invalid open_team_sheets mode {mode!r}; expected one of {OPEN_TEAM_SHEETS_MODES}"
     )
 
 
@@ -838,9 +837,7 @@ class EvalConfig:
 
     opponents: Dict[str, OpponentEvalSpec] = field(
         default_factory=lambda: {
-            "simple_heuristic": OpponentEvalSpec(
-                target=0.80, weight=1.0, n_battles=150
-            ),
+            "simple_heuristic": OpponentEvalSpec(target=0.80, weight=1.0, n_battles=150),
             "max_damage": OpponentEvalSpec(target=0.80, weight=1.0, n_battles=150),
             "vgc_bench": OpponentEvalSpec(target=0.60, weight=1.0, n_battles=100),
             "bc_player": OpponentEvalSpec(target=0.80, weight=1.0, n_battles=150),
