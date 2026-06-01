@@ -70,10 +70,10 @@ curriculum:
     exploiters: 0.0
     ghosts: 0.15
     max_damage: 0.15
-    random_baseline: 0
-    max_base_power_baseline: 0
-    simple_heuristic_baseline: 0.1
-    vgc_bench_baseline: 0.1
+    random: 0
+    max_base_power: 0
+    simple_heuristic: 0.1
+    vgc_bench: 0.1
     train_exploiter: 0.0  # off; bump to 0.20 to activate in-process exploiter co-training
   adaptive_agent_axis:
     enabled: false

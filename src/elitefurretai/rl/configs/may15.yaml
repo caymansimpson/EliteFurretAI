@@ -106,10 +106,10 @@ curriculum:
     exploiters: 0
     ghosts: 0.3
     max_damage: 0.05
-    random_baseline: 0
-    max_base_power_baseline: 0
-    simple_heuristic_baseline: 0.1
-    vgc_bench_baseline: 0.1
+    random: 0
+    max_base_power: 0
+    simple_heuristic: 0.1
+    vgc_bench: 0.1
     train_exploiter: 0
   adaptive_agent_axis:
     enabled: false

@@ -356,34 +356,45 @@ def test_create_agents_assigns_pair_formats_via_apportionment(monkeypatch):
     assert sorted(constructed_formats) == ["gen9vgc2024regg"] * 4 + ["gen9vgc2024regh"] * 4
 
 
-def test_open_team_sheets_threads_to_agents_and_baselines(monkeypatch):
-    """create_agents must pass accept_open_team_sheet=<factory.open_team_sheets>
-    to both the RLTrajectoryPlayer pair and every heuristic baseline."""
+def test_open_team_sheets_mode_seeds_initial_accept(monkeypatch):
+    """create_agents seeds each player's INITIAL accept_open_team_sheet from the
+    OTS mode: "on" -> True, "off"/"mixed" -> False. The real per-battle value is
+    set in prepare_batch_tasks (see config.open_team_sheets_for_battle), where
+    vgc_bench is forced on and "mixed" flips per batch."""
     import queue
     from typing import cast
-    from elitefurretai.rl.opponents import OpponentPool, WorkerOpponentFactory
 
-    recorded: list[bool] = []
+    from elitefurretai.rl.opponents import OpponentPool
 
-    class _StubPlayer:
-        def __init__(self, *, battle_format, accept_open_team_sheet=False, **kwargs):
-            self.battle_format = battle_format
-            recorded.append(accept_open_team_sheet)
+    def _accepts_for_mode(mode: str) -> "list[bool]":
+        recorded: list[bool] = []
 
-    monkeypatch.setattr("elitefurretai.rl.opponents.RLTrajectoryPlayer", _StubPlayer)
-    monkeypatch.setattr("elitefurretai.rl.opponents.MaxDamagePlayer", _StubPlayer)
+        class _StubPlayer:
+            def __init__(self, *, battle_format, accept_open_team_sheet=False, **kwargs):
+                self.battle_format = battle_format
+                recorded.append(accept_open_team_sheet)
 
-    factory = _make_factory(
-        curriculum={OpponentPool.SELF_PLAY: 0.5, OpponentPool.MAX_DAMAGE: 0.5},
-        battle_formats={"gen9vgc2024regg": 1.0},
-        worker_inference_clients=_clients_with("main"),
+        monkeypatch.setattr("elitefurretai.rl.opponents.RLTrajectoryPlayer", _StubPlayer)
+        monkeypatch.setattr("elitefurretai.rl.opponents.MaxDamagePlayer", _StubPlayer)
+        factory = _make_factory(
+            curriculum={OpponentPool.SELF_PLAY: 0.5, OpponentPool.MAX_DAMAGE: 0.5},
+            battle_formats={"gen9vgc2024regg": 1.0},
+            worker_inference_clients=_clients_with("main"),
+        )
+        factory.open_team_sheets = mode
+        factory.create_agents(
+            num_pairs=2, local_traj_queue=cast(queue.Queue, queue.Queue())
+        )
+        return recorded
+
+    on = _accepts_for_mode("on")
+    assert on and all(on), f"mode 'on' should seed accept=True, got {on}"
+    off = _accepts_for_mode("off")
+    assert off and not any(off), f"mode 'off' should seed accept=False, got {off}"
+    mixed = _accepts_for_mode("mixed")
+    assert mixed and not any(mixed), (
+        f"mode 'mixed' should seed accept=False initially, got {mixed}"
     )
-    factory.open_team_sheets = True
-
-    factory.create_agents(num_pairs=2, local_traj_queue=cast(queue.Queue, queue.Queue()))
-
-    assert recorded, "no players were constructed"
-    assert all(recorded), f"some players got accept_open_team_sheet=False: {recorded}"
 
 
 def test_randomize_all_teams_uses_pair_format_per_slot(monkeypatch):

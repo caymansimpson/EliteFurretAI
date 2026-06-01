@@ -195,4 +195,36 @@ making the baselines a majority of training mass.
 
 ## Updates
 
+### 2026-05-31 — criterion revised (supersedes the 60%×4 bar above)
+
+The graduation bar is no longer "≥60% against all four simultaneously." The
+current, authoritative criterion is:
+
+- **≥80%** vs `simple_heuristic`, `max_damage`, and `bc_player`
+- **≥60%** vs `vgc_bench`
+- **≥45%** vs `foul_play`
+
+…all simultaneously. Everything above this section describing a uniform 60%
+threshold is retained for historical context but is **superseded** by these
+numbers.
+
+Two notable shifts in intent:
+
+- **The heuristic bar moved up to 80%.** A genuinely strong agent should
+  *dominate* deterministic, exploitable opponents (max_damage, SHP), not merely
+  edge them. As of rosy-armadillo-80 (may31.yaml) the agent sits at ~20–27% on
+  exactly these two — the same pattern in every recent run (may22/25/26) — so
+  this bucket is the binding constraint and the central open problem (narrow
+  self-play population + reference/entropy regularization suppressing
+  exploitation).
+- **FoulPlay is now a requirement (≥45%), not just an informational signal.**
+  It is non-functional today, so that bucket is blocked until the opponent is
+  repaired.
+
+Baseline opponent identifiers were also standardized to **bare names** (no
+`_baseline` suffix): `random`, `max_base_power`, `simple_heuristic`,
+`vgc_bench`, alongside `max_damage` and `foul_play`. This matches the eval
+parser's canonical names and fixed a silent eval crash (`simple_heuristic_baseline`
+was not a resolvable eval spec).
+
 _(none yet)_

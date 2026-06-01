@@ -41,6 +41,55 @@ from typing import Any, Dict, List, Optional, Union
 
 import yaml
 
+# ── Open Team Sheets (OTS) modes ──────────────────────────────────────────────
+# OTS is a soft, opt-in rule in our formats (e.g. gen9vgc2024regg): at team
+# preview each side is prompted to reveal its full team; sheets are shown only
+# if BOTH sides accept. A mismatched accept/deny drops the battle, so the two
+# players in any battle must agree.
+#
+# Training (`CurriculumConfig.open_team_sheets`) accepts three modes:
+#   "off"   — never accept (closed sheets).
+#   "on"    — always accept (open sheets), for formats that offer it.
+#   "mixed" — per-batch coin flip: ~half the batches run open, half closed, so
+#             the agent is trained robust to both regimes (real ladder OTS is
+#             opt-in, so opponents vary). The flip is decided once per batch and
+#             applied to both sides + any shared in-process opponents, so no
+#             battle is ever dropped on a mismatch.
+# Eval (`EvalConfig.open_team_sheets`) accepts only "off"/"on" — an eval wants a
+# single, interpretable regime, not a blended average.
+#
+# In ALL modes, vgc_bench is always run with OTS ON: it was trained with open
+# sheets and is much stronger that way, so it's the faithful baseline. Any agent
+# facing vgc_bench is therefore forced ON for that battle to avoid a mismatch.
+# Forced-OTS (Bo3) and non-OTS formats ignore the accept flag entirely.
+OPEN_TEAM_SHEETS_MODES = ("off", "on", "mixed")
+EVAL_OPEN_TEAM_SHEETS_MODES = ("off", "on")
+
+
+def open_team_sheets_for_battle(
+    mode: str, *, is_vgc_bench: bool, mixed_roll: bool
+) -> bool:
+    """Resolve whether a single battle should accept Open Team Sheets.
+
+    Pure (no RNG): for ``"mixed"`` the caller passes ``mixed_roll`` — a coin flip
+    it makes ONCE per batch and reuses for both sides and any shared opponents,
+    so the two players always agree (a mismatch would drop the battle).
+
+    vgc_bench is always ON (its trained regime); ``is_vgc_bench`` short-circuits.
+    """
+    if is_vgc_bench:
+        return True
+    if mode == "on":
+        return True
+    if mode == "off":
+        return False
+    if mode == "mixed":
+        return mixed_roll
+    raise ValueError(
+        f"invalid open_team_sheets mode {mode!r}; expected one of "
+        f"{OPEN_TEAM_SHEETS_MODES}"
+    )
+
 
 @dataclass
 class AlgorithmConfig:
@@ -575,27 +624,34 @@ class CurriculumConfig:
             "ghosts": 0.15,
             "train_exploiter": 0.10,
             "max_damage": 0.05,
-            "vgc_bench_baseline": 0.05,
-            "simple_heuristic_baseline": 0.05,
-            "max_base_power_baseline": 0.05,
-            "random_baseline": 0.05,
+            "vgc_bench": 0.05,
+            "simple_heuristic": 0.05,
+            "max_base_power": 0.05,
+            "random": 0.05,
         }
     )
     # Exploiter and ghost model pool sizes (paths are derived from training.run_dir)
     max_exploiter_models: int = 10
     max_ghosts: int = 10
     # VGC bench external runner — launches a separate venv'd VGCBench
-    # instance and registers it under OpponentPool.VGC_BENCH_BASELINE.
+    # instance and registers it under OpponentPool.VGC_BENCH.
     # Usernames and startup wait are hardcoded module constants in
     # `engine.showdown_server_manager` (they don't vary across runs); the
     # paths here are environment-level and can change between machines.
     # Launch is triggered automatically when curriculum_weights gives
-    # vgc_bench_baseline a positive weight.
+    # vgc_bench a positive weight.
     external_vgcbench_python_executable: Optional[str] = None
     external_vgcbench_team_file: str = "data/teams/gen9vgc2024regg/vgcbench.txt"
     vgc_bench_checkpoint_path: str = (
         "data/models/vgc-bench-bcsp-reg_all-seed1-98304000.zip"
     )
+    # Training-side Open Team Sheets mode: "off" | "on" | "mixed" (default).
+    # "mixed" flips OTS on/off once per batch so the agent trains against both
+    # regimes; "on"/"off" are fixed. vgc_bench is always ON regardless (and the
+    # agent is forced ON for vgc_bench battles). Only meaningful in soft-OTS
+    # formats. See OPEN_TEAM_SHEETS_MODES / open_team_sheets_for_battle (module
+    # top) for the full semantics.
+    open_team_sheets: str = "mixed"
     # Adaptive curriculum: two axes, same algorithm, different defaults.
     # See `AdaptiveAxisConfig.{team,agent}_axis_defaults` and the shared
     # `rl_utils.adaptive_distribution` primitive for the algorithm itself.
@@ -607,6 +663,14 @@ class CurriculumConfig:
     )
 
     def __post_init__(self) -> None:
+        # YAML parses unquoted on/off as booleans (YAML 1.1); accept those too.
+        if isinstance(self.open_team_sheets, bool):
+            self.open_team_sheets = "on" if self.open_team_sheets else "off"
+        if self.open_team_sheets not in OPEN_TEAM_SHEETS_MODES:
+            raise ValueError(
+                f"curriculum.open_team_sheets must be one of "
+                f"{OPEN_TEAM_SHEETS_MODES}, got {self.open_team_sheets!r}"
+            )
         if not self.battle_formats:
             raise ValueError("battle_formats must not be empty")
         for fmt, weight in self.battle_formats.items():
@@ -753,11 +817,13 @@ class EvalConfig:
     eval_every_n_updates: int = 500
     pause_training: bool = True
     surplus_alpha: float = 1.0
-    # Open Team Sheets for the eval pass. When True, both the model under
-    # eval and every opponent (including the vgc_bench runner) accept the
-    # soft-OTS prompt. Independent of the training-side flag so you can eval
-    # open while training closed. False = closed (default).
-    open_team_sheets: bool = False
+    # Open Team Sheets for the eval pass: "on" (default) or "off". Independent
+    # of the training-side mode, so you can eval open while training closed (or
+    # mixed). "mixed" is intentionally NOT allowed here — an eval wants one
+    # interpretable regime. vgc_bench is always evaluated ON regardless (its
+    # trained regime), and the model facing it is forced ON for those battles.
+    # See OPEN_TEAM_SHEETS_MODES / open_team_sheets_for_battle at module top.
+    open_team_sheets: str = "on"
 
     # Plan B trajectory capture. When set, run_eval_parallel writes
     # battles.parquet / turns.parquet shards under this directory plus
@@ -772,7 +838,7 @@ class EvalConfig:
 
     opponents: Dict[str, OpponentEvalSpec] = field(
         default_factory=lambda: {
-            "simple_heuristic_baseline": OpponentEvalSpec(
+            "simple_heuristic": OpponentEvalSpec(
                 target=0.80, weight=1.0, n_battles=150
             ),
             "max_damage": OpponentEvalSpec(target=0.80, weight=1.0, n_battles=150),
@@ -879,6 +945,15 @@ def _make_eval_sub(data: dict) -> "EvalConfig":
             weight=opp_data.get("weight", existing.weight),
             n_battles=opp_data.get("n_battles", existing.n_battles),
         )
+    if "open_team_sheets" in data:
+        # YAML parses unquoted on/off as booleans (YAML 1.1); accept those too.
+        if isinstance(data["open_team_sheets"], bool):
+            data["open_team_sheets"] = "on" if data["open_team_sheets"] else "off"
+        if data["open_team_sheets"] not in EVAL_OPEN_TEAM_SHEETS_MODES:
+            raise ValueError(
+                f"eval.open_team_sheets must be one of {EVAL_OPEN_TEAM_SHEETS_MODES}, "
+                f"got {data['open_team_sheets']!r} (eval does not support 'mixed')"
+            )
     known = {f for f in EvalConfig.__dataclass_fields__}
     return EvalConfig(
         opponents=merged_opponents, **{k: v for k, v in data.items() if k in known}
@@ -907,14 +982,6 @@ class RNaDConfig:
     portfolio: PortfolioConfig = field(default_factory=PortfolioConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
     value_head: ValueHeadConfig = field(default_factory=ValueHeadConfig)
-
-    # Run-wide Open Team Sheets setting. When True, every agent built for
-    # this run (main + opponents + baselines + the vgc_bench runner) accepts
-    # the soft-OTS prompt in formats that offer it (e.g. gen9vgc2024regg), so
-    # both sides reveal sheets at team preview. False = closed (default;
-    # preserves prior behavior). Must be uniform across a run — a mismatched
-    # accept/deny handshake drops the battle. Forced/non-OTS formats ignore it.
-    open_team_sheets: bool = False
 
     # ── Computed properties (delegate to sub-configs) ──────────────────────────
 
@@ -1021,7 +1088,6 @@ class RNaDConfig:
             portfolio=_make_sub(PortfolioConfig, data.get("portfolio", {})),
             training=_make_sub(TrainingConfig, data.get("training", {})),
             value_head=_make_sub(ValueHeadConfig, data.get("value_head", {})),
-            open_team_sheets=bool(data.get("open_team_sheets", False)),
         )
 
     def __str__(self) -> str:
@@ -1066,11 +1132,11 @@ class RNaDConfig:
             )
 
         # External vgc-bench runners launch automatically when the
-        # curriculum gives vgc_bench_baseline positive weight.
-        if cur.curriculum_weights.get("vgc_bench_baseline", 0.0) > 0:
+        # curriculum gives vgc_bench positive weight.
+        if cur.curriculum_weights.get("vgc_bench", 0.0) > 0:
             assert cur.external_vgcbench_python_executable, (
                 "external_vgcbench_python_executable must be set when "
-                "curriculum_weights['vgc_bench_baseline'] > 0"
+                "curriculum_weights['vgc_bench'] > 0"
             )
             assert os.path.exists(cur.external_vgcbench_python_executable), (
                 f"external_vgcbench_python_executable not found: {cur.external_vgcbench_python_executable}"

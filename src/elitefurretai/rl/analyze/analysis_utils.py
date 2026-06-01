@@ -194,6 +194,12 @@ def _run_worker(
             "Cannot run two external players against each other — at least "
             "one side must be in-process to drive challenges."
         )
+    # vgc_bench is always run with Open Team Sheets on (its trained regime), so
+    # force the in-process side ON for vgc_bench matchups regardless of the eval
+    # flag — otherwise the OTS handshake mismatches and the battle drops.
+    open_team_sheets = (
+        open_team_sheets or p1.name == "vgc_bench" or p2.name == "vgc_bench"
+    )
     if not cells:
         return EvalResult(
             label=f"{p1.name}_vs_{p2.name}",

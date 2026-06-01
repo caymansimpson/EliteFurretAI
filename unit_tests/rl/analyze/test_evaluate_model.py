@@ -141,7 +141,7 @@ class TestEvalConfig:
         assert cfg.surplus_alpha == 1.0
         # All five expected canonical names present
         assert set(cfg.opponents.keys()) == {
-            "simple_heuristic_baseline",
+            "simple_heuristic",
             "max_damage",
             "vgc_bench",
             "bc_player",
@@ -150,10 +150,10 @@ class TestEvalConfig:
         # FoulPlay shipped off
         assert cfg.opponents["foul_play"].weight == 0.0
         # Other four shipped on with weight 1.0
-        for k in ["simple_heuristic_baseline", "max_damage", "vgc_bench", "bc_player"]:
+        for k in ["simple_heuristic", "max_damage", "vgc_bench", "bc_player"]:
             assert cfg.opponents[k].weight == 1.0
         # Targets match the design spec
-        assert cfg.opponents["simple_heuristic_baseline"].target == 0.80
+        assert cfg.opponents["simple_heuristic"].target == 0.80
         assert cfg.opponents["max_damage"].target == 0.80
         assert cfg.opponents["vgc_bench"].target == 0.60
         assert cfg.opponents["bc_player"].target == 0.80
@@ -188,7 +188,7 @@ class TestEvalConfig:
         assert cfg.eval.opponents["vgc_bench"].n_battles == 80
         # Other opponents fall back to defaults
         assert cfg.eval.opponents["foul_play"].weight == 0.0
-        assert cfg.eval.opponents["simple_heuristic_baseline"].weight == 1.0
+        assert cfg.eval.opponents["simple_heuristic"].weight == 1.0
 
 
 class TestResultDataclasses:
@@ -260,7 +260,7 @@ class TestOpponentKwargs:
     def test_inprocess_baseline_empty_kwargs(self):
         cfg = EvalConfig()
         assert _opponent_kwargs("max_damage", cfg) == {}
-        assert _opponent_kwargs("simple_heuristic_baseline", cfg) == {}
+        assert _opponent_kwargs("simple_heuristic", cfg) == {}
         assert _opponent_kwargs("bc_player", cfg) == {}
 
 

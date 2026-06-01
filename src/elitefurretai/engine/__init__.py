@@ -14,11 +14,16 @@ modules can be safely imported from `inference` without creating a
 circular dependency through `etl -> inference`.
 """
 
+from typing import TYPE_CHECKING
+
 from elitefurretai.engine.showdown_server_manager import (
     allocate_server_ports,
     launch_showdown_servers,
     shutdown_showdown_servers,
 )
+
+if TYPE_CHECKING:
+    from elitefurretai.engine.vgc_environment import VGCEnvironment
 
 __all__ = [
     "VGCEnvironment",

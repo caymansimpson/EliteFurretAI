@@ -191,9 +191,9 @@ class _ShowdownBackend:
         # on other servers can't challenge a user logged into a
         # different Showdown server, so:
         #   - the worker on the runner's server: derive the suffixed
-        #     username and keep the vgc_bench_baseline weight as-is.
+        #     username and keep the vgc_bench weight as-is.
         #   - workers on every other server: clear the username list AND
-        #     zero out the local vgc_bench_baseline weight so they don't
+        #     zero out the local vgc_bench weight so they don't
         #     sample an opponent they can't play. The freed mass falls
         #     through to self_play via OpponentPool.sample_opponent_type's
         #     un-normalized random.random() (anything past the cumulative
@@ -202,7 +202,7 @@ class _ShowdownBackend:
         # manager itself; we mirror it via `should_suffix_port` so the
         # two branches can't drift.
         external_vgcbench_usernames: List[str] = list(VGCBenchManager.USERNAMES)
-        vgc_bench_weight = cur.curriculum_weights.get(OpponentPool.VGC_BENCH_BASELINE, 0.0)
+        vgc_bench_weight = cur.curriculum_weights.get(OpponentPool.VGC_BENCH, 0.0)
         runner_port = hw.showdown_start_port + VGCBenchManager.RUNNER_SERVER_INDEX
         this_worker_has_runner = server_port == runner_port
         if (
@@ -217,16 +217,16 @@ class _ShowdownBackend:
                 ]
             else:
                 external_vgcbench_usernames = []
-                if self._curriculum.get(OpponentPool.VGC_BENCH_BASELINE, 0.0) > 0:
+                if self._curriculum.get(OpponentPool.VGC_BENCH, 0.0) > 0:
                     logger.info(
                         "worker %s on port %d has no vgcbench runner "
-                        "(runner_port=%d); zeroing local vgc_bench_baseline "
+                        "(runner_port=%d); zeroing local vgc_bench "
                         "weight and renormalizing across remaining slots",
                         worker_id,
                         server_port,
                         runner_port,
                     )
-                    self._curriculum[OpponentPool.VGC_BENCH_BASELINE] = 0.0
+                    self._curriculum[OpponentPool.VGC_BENCH] = 0.0
                     self._curriculum = normalize_curriculum(self._curriculum)
 
         self._factory = WorkerOpponentFactory(
@@ -245,7 +245,7 @@ class _ShowdownBackend:
             agent_team_paths=cur.resolved_agent_team_paths() or None,
             max_concurrent_battles_per_player=hw.max_concurrent_battles_per_player,
             worker_inference_clients=worker_inference_clients,
-            open_team_sheets=config.open_team_sheets,
+            open_team_sheets=config.curriculum.open_team_sheets,
         )
 
     async def setup(self) -> None:

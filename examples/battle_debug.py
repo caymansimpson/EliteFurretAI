@@ -1,8 +1,7 @@
 # -*- coding: utf-8 -*-
 """This module plays one player against another. This is what I use to examine and print what's
 happening in a battle to debug; the purpose of this file is to provide starter code for others.
-
-Now automatically launches and shuts down Showdown server, so no need to run it separately.
+Actual code and functions are used throughout this repo; this is a simple raw example of the flow.
 """
 
 import asyncio

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""Offline analysis CLI for Plan B trajectory collection runs.
+"""Offline analysis CLI for trajectory collection runs.
 
-Reads parquet shards produced by ``analysis_utils.py --collect-trajectories``
+Reads parquet shards produced by ``evaluate_model.py --collect-trajectories``
 and computes the answers to Q1–Q9 from
 ``planning/stage2/2026-05-17-...-plan-b-model-analysis.md``.
 

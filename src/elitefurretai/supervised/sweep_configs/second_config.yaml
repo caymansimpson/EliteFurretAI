@@ -49,6 +49,12 @@
 #   - 15 epochs/run × ~5 min/epoch = ~75 min/run
 #   - 15 runs × 75 min = ~19 hours
 #   - Hyperband kills poor runs after 4 epochs, salvaging budget
+#
+# NOTE (refreshed 2026-05-31): the `fixed:` backbone and the `variants:`
+# mappings below were synced to the current may24 trunk (raw mega-aware
+# featureset, 256/2048 encoder, 8 attention heads, ~30.9M-param scale). The
+# dark-sweep-15 numbers above came from the original `full`-featureset large
+# backbone, so treat them as sweep-strategy narrative, not reproducible targets.
 # ===========================================================================
 
 sweep:
@@ -155,10 +161,10 @@ sweep:
 # ---- Architecture variant mappings ----
 variants:
   late_layers:
-    medium: [1024, 1024]
+    medium: [512, 512]
 
   turn_head_layers:
-    medium: [1024, 512, 512]
+    medium: [512, 256, 256]
 
   teampreview_head_layers:
     none: []
@@ -177,16 +183,16 @@ fixed:
   max_grad_norm: 1.0
   optimizer: AdamW
   # Feature encoding
-  embedder_feature_set: full
+  embedder_feature_set: raw
   battle_format: gen9vgc2023regc
   max_seq_len: 40
-  # Encoder architecture
-  grouped_encoder_hidden_dim: 512
-  grouped_encoder_aggregated_dim: 4096
-  pokemon_attention_heads: 16
-  early_layers: [2048, 1024, 1024]
+  # Encoder architecture (matches the current may24 supervised trunk)
+  grouped_encoder_hidden_dim: 256
+  grouped_encoder_aggregated_dim: 2048
+  pokemon_attention_heads: 8
+  early_layers: [1024, 512, 512]
   # Transformer settings
-  transformer_heads: 16
+  transformer_heads: 8
   transformer_ff_dim: 2048
   transformer_dropout: 0.1
   use_decision_tokens: true

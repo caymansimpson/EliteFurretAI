@@ -334,7 +334,7 @@ def mp_worker_process(
                     # that opponent type locally so training keeps making progress.
                     if result.had_timeout:
                         timed_out_set = set(result.timed_out_types)
-                        if OpponentPool.VGC_BENCH_BASELINE in timed_out_set:
+                        if OpponentPool.VGC_BENCH in timed_out_set:
                             consecutive_vgcbench_timeouts += 1
                         else:
                             consecutive_vgcbench_timeouts = 0
@@ -348,10 +348,10 @@ def mp_worker_process(
                     ):
                         updated_curriculum = env.get_curriculum()
                         if (
-                            updated_curriculum.get(OpponentPool.VGC_BENCH_BASELINE, 0.0)
+                            updated_curriculum.get(OpponentPool.VGC_BENCH, 0.0)
                             > 0.0
                         ):
-                            updated_curriculum[OpponentPool.VGC_BENCH_BASELINE] = 0.0
+                            updated_curriculum[OpponentPool.VGC_BENCH] = 0.0
                             env.update_curriculum(updated_curriculum)
                             vgcbench_disabled_locally = True
 

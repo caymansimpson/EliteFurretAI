@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
-"""Multi-bucket eval driver, scoring, log payload, and standalone CLI."""
+"""Multi-bucket eval driver, scoring, log payload, and standalone CLI.
+Main file to run battles, save trajectories and calculate model efficacy.
+"""
 
 from __future__ import annotations
 
@@ -290,6 +292,9 @@ def _run_opponent_bucket(
             run_tag=run_tag,
             collect_run_dir=eval_cfg.collect_trajectories,
             replay_sample_rate=eval_cfg.replay_sample_rate,
+            # "on"/"off" only (eval has no "mixed"); _run_worker still forces
+            # vgc_bench matchups on regardless of this value.
+            open_team_sheets=(eval_cfg.open_team_sheets == "on"),
         )
         per_format[fmt] = fmt_result
 

@@ -26,6 +26,12 @@
 # target (current baseline ~43.5%, goal 66.7%). Teampreview generalization is
 # pursued through architectural choices (dropout, head size) tracked as
 # secondary metrics.
+#
+# NOTE (refreshed 2026-05-31): the `fixed:` backbone and the `variants:`
+# mappings below were synced to the current may24 trunk (raw mega-aware
+# featureset, 256/2048 encoder, 8 attention heads, ~30.9M-param scale). The
+# accuracy figures quoted above came from the original `full`-featureset large
+# backbone, so treat them as sweep-strategy narrative, not reproducible targets.
 # ===========================================================================
 
 # ---- W&B sweep configuration ----
@@ -229,19 +235,19 @@ sweep:
 # as named variants and decode in the training function.
 variants:
   late_layers:
-    medium: [1024, 1024]
-    large: [2048, 1024, 1024]
-    xlarge: [2048, 2048, 1024, 1024]
+    medium: [512, 512]
+    large: [768, 512, 512]
+    xlarge: [1024, 512, 512]
 
   turn_head_layers:
-    small: [512, 512]
-    medium: [1024, 512, 512]
-    large: [1024, 1024, 512]
+    small: [512, 256]
+    medium: [512, 256, 256]
+    large: [768, 512, 256]
 
   teampreview_head_layers:
     none: []
     small: [256]
-    medium: [512, 256]
+    medium: [256, 128]
 
 
 # ---- Fixed parameters — not worth sweeping (stable from prior experiments) ----
@@ -257,16 +263,16 @@ fixed:
   max_grad_norm: 1.0
   optimizer: AdamW
   # Feature encoding
-  embedder_feature_set: full
+  embedder_feature_set: raw
   battle_format: gen9vgc2023regc
   max_seq_len: 40
-  # Encoder architecture
-  grouped_encoder_hidden_dim: 512
-  grouped_encoder_aggregated_dim: 4096
-  pokemon_attention_heads: 16
-  early_layers: [2048, 1024, 1024]
+  # Encoder architecture (matches the current may24 supervised trunk)
+  grouped_encoder_hidden_dim: 256
+  grouped_encoder_aggregated_dim: 2048
+  pokemon_attention_heads: 8
+  early_layers: [1024, 512, 512]
   # Transformer settings
-  transformer_heads: 16
+  transformer_heads: 8
   transformer_ff_dim: 2048
   transformer_dropout: 0.1
   use_decision_tokens: true

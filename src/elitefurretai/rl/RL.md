@@ -32,10 +32,10 @@ The architecture is therefore IMPALA-style: one **trainer process** owns the lea
 - Backend: `showdown_websocket` (poke-env `Player` over local Showdown servers).
 - Inference: centralized via `ModelRegistry`. Services can run in-process (daemon thread inside trainer) or in dedicated subprocesses.
 - Algorithm: PPO + KL-to-reference + C51 distributional value, with portfolio regularization (multiple frozen reference models, regularize to the closest).
-- Current best supervised checkpoint feeding RL: `data/models/supervised/cool-bee-85-finetune_best.pt` (~26.7M params, raw featureset).
-- Current throughput on full curriculum (balmy-cloud-70, 48h continuous): **~8.5 traj/s overall**, per-update range ~6–10 traj/s.
-- Current optimal topology (sep_arch.yaml, used by balmy-cloud-70): `num_workers=4`, `num_players=16`, `num_servers=4`, `num_battles_per_pair=48`, `max_concurrent_battles_per_player=48`.
-- Stage II graduation criterion: simultaneously ≥60% win rate vs `vgc_bench_baseline`, `max_damage`, `bc_player`, and `simple_heuristic_baseline`. We're also exploring a 50% win rate against FoulPlay.
+- Current best supervised checkpoint feeding RL: `data/models/supervised/rose-sun-108-mega_best.pt` (~30.9M params, raw featureset, **mega-aware** — Mega Stones in item vocab + prospective mega-form features per mon, 5,374 input dims).
+- Current throughput on full curriculum (48h continuous run): **~8.5 traj/s overall**, per-update range ~6–10 traj/s.
+- Current optimal topology (sep_arch.yaml): `num_workers=4`, `num_players=16`, `num_servers=4`, `num_battles_per_pair=48`, `max_concurrent_battles_per_player=48`.
+- Stage II graduation criterion (revised 2026-05-31): simultaneously ≥80% win rate vs `simple_heuristic`, `max_damage`, and `bc_player`; ≥60% vs `vgc_bench`; and ≥45% vs `foul_play`. FoulPlay is non-functional today, so that bucket is blocked until the opponent is repaired.
 
 ## 2. Infrastructure & Hardware
 
@@ -91,7 +91,7 @@ These six choices follow directly from the two constraints above, and they end u
 
 **5. Trajectories are the IPC currency between worker and learner.** Rather than send raw battle state across processes, workers ship completed trajectory dicts (`steps`, `opponent_type`, `won`, `battle_length`, `forfeited`). This lets the learner stay agnostic about how a given trajectory was produced — it just sees `(state, action, reward)` tuples regardless of the opponent type.
 
-**6. The opponent pool and curriculum run inside each worker.** Self-play against a single opponent tends to collapse into a degenerate optimum, so `opponents.py` maintains a mix of types (`self`, `bc`, `max_damage`, `simple_heuristic_baseline`, `vgc_bench_baseline`, `ghosts`, `exploiters`, `train_exploiter`). Each worker has a `WorkerOpponentFactory` that picks an opponent per battle pair from curriculum weights the trainer pushes down. Because inference is centralized, switching opponents is essentially free — `opponent.inference_client = clients.get("bc")` re-points to a different model without reloading anything.
+**6. The opponent pool and curriculum run inside each worker.** Self-play against a single opponent tends to collapse into a degenerate optimum, so `opponents.py` maintains a mix of types (`self`, `bc`, `max_damage`, `simple_heuristic`, `vgc_bench`, `ghosts`, `exploiters`, `train_exploiter`). Each worker has a `WorkerOpponentFactory` that picks an opponent per battle pair from curriculum weights the trainer pushes down. Because inference is centralized, switching opponents is essentially free — `opponent.inference_client = clients.get("bc")` re-points to a different model without reloading anything.
 
 ---
 
@@ -166,7 +166,7 @@ Dispatch is split across two methods on `WorkerOpponentFactory`:
 
 ### Throughput (Current)
 
-Measured on `balmy-cloud-70` (sep_arch.yaml lineage, full curriculum: self_play / bc / ghosts / max_damage / simple_heuristic / vgc_bench / exploiters), 48h continuous run:
+Measured on the sep_arch.yaml topology, full curriculum (self_play / bc / ghosts / max_damage / simple_heuristic / vgc_bench / exploiters), 48h continuous run:
 
 | Metric | Value |
 |---|---|
@@ -261,10 +261,10 @@ Self-play with one opponent collapses into a degenerate optimum: the agent learn
 
 1. **Past selves (`ghosts`)** — keeps the agent honest against its own history; prevents cyclical strategy churn.
 2. **Behavioral cloning (`bc`)** — anchors to human-like play; prevents drift into RL-discovered nonsense that wouldn't survive against a real human.
-3. **Hand-crafted heuristics (`max_damage`, `simple_heuristic_baseline`) and external baselines (`vgc_bench_baseline`)** — catch agents that win against learned policies but lose to dumb deterministic ones (a common failure mode).
+3. **Hand-crafted heuristics (`max_damage`, `simple_heuristic`) and external baselines (`vgc_bench`)** — catch agents that win against learned policies but lose to dumb deterministic ones (a common failure mode).
 4. **Learned exploitation (`exploiters`)** — adversarial policies whose only goal is to beat the current main. They actively probe for weaknesses the other three buckets can't surface.
 
-The Stage II graduation criterion (≥60% vs `vgc_bench_baseline`, `max_damage`, `bc_player`, *and* `simple_heuristic_baseline` simultaneously) is structured around this same logic. It is fairly easy to clear one or two of those buckets in isolation by overfitting to that style of opponent, so demanding all four simultaneously forces the agent to be genuinely general rather than narrowly tuned.
+The Stage II graduation criterion (≥80% vs `simple_heuristic`, `max_damage`, `bc_player`; ≥60% vs `vgc_bench`; ≥45% vs `foul_play` — all simultaneously) is structured around this same logic. It is fairly easy to clear one or two of those buckets in isolation by overfitting to that style of opponent, so demanding all of them at once forces the agent to be genuinely general rather than narrowly tuned. The higher 80% bar on the hand-crafted heuristics reflects that a genuinely strong agent should dominate deterministic, exploitable opponents, not merely edge them.
 
 Exploiters specifically are **single-team and unregularized**:
 
@@ -320,8 +320,8 @@ Key knobs (in `RNaDConfig.exploiter_pipeline`):
 | `ghosts` | Past checkpoints of main, rotated into a slot pool (default `max_ghosts=10`). |
 | `exploiters` | Graduated adversarial policies, each with its specific training team. |
 | `max_damage` | Fixed heuristic: highest-damage move. Sanity baseline. |
-| `simple_heuristic_baseline` | poke-env's `SimpleHeuristicsPlayer`. |
-| `vgc_bench_baseline` | External SB3-trained agent (runs in its own venv — see below). |
+| `simple_heuristic` | poke-env's `SimpleHeuristicsPlayer`. |
+| `vgc_bench` | External SB3-trained agent (runs in its own venv — see below). |
 | `train_exploiter` | The active-generation exploiter, training in parallel. |
 
 Curriculum weights are configured in YAML (`opponents.curriculum`) and pushed down to workers via the trainer's control queue. Win rates are tracked per category and logged to WandB; sampling does NOT currently adapt to weaknesses automatically — graduation criteria are the feedback loop.
@@ -362,7 +362,7 @@ Design spec: `planning/stage2/2026-05-24-12-30-change7-team-axis-curriculum-desi
 
 `vgc-bench` depends on a different fork of `poke-env` than EliteFurretAI. You can't import both into one Python process without API conflicts.
 
-The fix: run `vgc-bench` in its own venv (`../venv-vgcbench/`) as a separate process. From the trainer side, we don't import `vgc-bench` code at all — we challenge the VGCBench player's hardcoded Showdown username over the Showdown server like any other opponent. From the VGCBench side, `agents/_vgcbench_subprocess.py` (spawned by `VGCBenchManager.launch()` when the curriculum gives `vgc_bench_baseline` positive weight) sits in a loop accepting challenges.
+The fix: run `vgc-bench` in its own venv (`../venv-vgcbench/`) as a separate process. From the trainer side, we don't import `vgc-bench` code at all — we challenge the VGCBench player's hardcoded Showdown username over the Showdown server like any other opponent. From the VGCBench side, `agents/_vgcbench_subprocess.py` (spawned by `VGCBenchManager.launch()` when the curriculum gives `vgc_bench` positive weight) sits in a loop accepting challenges.
 
 The pattern here is the same one that motivates multiprocessing in the first place: when shared state (Python GIL, conflicting package versions) makes two pieces of code unable to coexist in one process, you isolate them by process boundary and have them talk over a clean protocol. In this case the protocol is the Showdown WebSocket itself, which both sides already speak.
 
@@ -389,7 +389,7 @@ Usernames are class constants on `VGCBenchManager.USERNAMES` (`["VGCBENCH"]`).
 
 Like VGCBench, FoulPlay is isolated in its own venv (`../venv-foulplay/`) because it depends on `poke-engine-doubles` (a Rust extension) and an older `poke_env`. The same Showdown-as-protocol trick keeps the two Python worlds from colliding. From the trainer side, [`analyze/foulplay_eval.py`](analyze/foulplay_eval.py) iterates `CurriculumConfig.battle_formats` and runs one self-contained cycle per format via the existing `kind="external"` flow ([`launch_external_player`](analyze/player_factory.py) dispatches to `_launch_foulplay_subprocess`). Trajectory parquet + gzipped replays land in the same place as every other eval — so if FoulPlay BC or distillation ever becomes worth doing, the data is on disk for free.
 
-Design and scoping rationale: [`planning/stage2/2026-05-25-23-37-foulplay-eval-scope-confirmed.md`](../../../planning/stage2/2026-05-25-23-37-foulplay-eval-scope-confirmed.md). FoulPlay is currently an informational signal, not a Stage II graduation requirement.
+Design and scoping rationale: [`planning/stage2/2026-05-25-23-37-foulplay-eval-scope-confirmed.md`](../../../planning/stage2/2026-05-25-23-37-foulplay-eval-scope-confirmed.md). As of 2026-05-31 FoulPlay is a Stage II graduation requirement (≥45% win rate), but the opponent is non-functional today, so that bucket is blocked until it is repaired.
 
 #### One-time setup
 
@@ -457,8 +457,8 @@ python -m elitefurretai.rl.analyze.foulplay_eval \
 ### Model
 
 - **Backbone**: `TransformerThreeHeadedModel` — `TransformerEncoder` over a growing sequence of encoded battle states, with learned `[ACTOR]` / `[CRITIC]` / `[FIELD]` decision tokens prepended. ACTOR → turn head, CRITIC → value head.
-- **Parameters**: ~26.7M (cool-bee-85-finetune; raw featureset).
-- **Embedding dimensions**: 9,223 input features.
+- **Parameters**: ~30.9M (rose-sun-108-mega; raw mega-aware featureset).
+- **Embedding dimensions**: 5,374 input features.
 - **Action space**: 2,025 turn actions + 90 teampreview actions.
 - **Value head**: C51 distributional — predicts a categorical distribution over 51 bins spanning [-1, 1], trained with cross-entropy against two-hot encoded targets. This gives the value head a richer gradient signal than a scalar MSE head would. The actor side does not need the full distribution, so it consumes the scalar expected value computed as `(softmax(logits) * support).sum(-1)`.
 - **Hidden state**: a context tensor of past encoded features that grows by one position each turn as new state is appended. The tensor is held trainer-side in `RealModelBatchHandler.hidden_states`, so workers only need to carry the lightweight battle_tag identifying which context to use.
@@ -571,7 +571,7 @@ See [Section 5](#5-exploiters--curriculum) for the design.
 Logged per-update:
 
 - **Loss components**: `policy_loss`, `value_loss`, `entropy`, `rnad_loss`.
-- **Win rates**: per opponent type — `win_rate/self_play`, `win_rate/bc`, `win_rate/exploiters`, `win_rate/ghosts`, `win_rate/max_damage`, `win_rate/simple_heuristic_baseline`, `win_rate/vgc_bench_baseline`.
+- **Win rates**: per opponent type — `win_rate/self_play`, `win_rate/bc`, `win_rate/exploiters`, `win_rate/ghosts`, `win_rate/max_damage`, `win_rate/simple_heuristic`, `win_rate/vgc_bench`.
 - **Curriculum weights**: current sampling probabilities per opp type.
 - **Throughput**: `traj/s`, `learner_steps/s`, `batches_per_sec`.
 
@@ -598,7 +598,7 @@ python src/elitefurretai/rl/train.py --config config.yaml
 ### Minimal Config (Testing)
 
 ```yaml
-checkpoint_path: "data/models/supervised/cool-bee-85-finetune_best.pt"
+checkpoint_path: "data/models/supervised/rose-sun-108-mega_best.pt"
 hardware:
   num_workers: 2
   num_servers: 2
@@ -616,7 +616,7 @@ exploiter_pipeline:
 ### Production Config (Approximate Current Optimum)
 
 ```yaml
-checkpoint_path: "data/models/supervised/cool-bee-85-finetune_best.pt"
+checkpoint_path: "data/models/supervised/rose-sun-108-mega_best.pt"
 
 curriculum:
   battle_formats:

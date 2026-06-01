@@ -241,7 +241,7 @@ class VGCBenchManager:
     # PolicyPlayer runner costs ~1.2 GB resident PSS; launching one per
     # server (the pre-2026-05-16 layout) cost ~4.8 GB just for an
     # opponent that plays ~20% of battles. Workers on other servers
-    # detect this and zero out their local vgc_bench_baseline weight.
+    # detect this and zero out their local vgc_bench weight.
     # See planning/stage2/2026-05-16-08-13-update100-cliff-was-vgcbench-not-ghosts.md.
     RUNNER_SERVER_INDEX: ClassVar[int] = 0
 
@@ -343,8 +343,12 @@ class VGCBenchManager:
                 "--wait-for-server-timeout",
                 str(self.WAIT_FOR_SERVER_TIMEOUT_S),
             ]
-            if self._config.open_team_sheets:
-                command.append("--accept-open-team-sheet")
+            # vgc_bench is ALWAYS run with Open Team Sheets on — it was trained
+            # with open sheets and is much stronger that way, so it's the
+            # faithful baseline regardless of the run's `open_team_sheets` mode.
+            # The agent facing it is forced ON for those battles (see
+            # opponents.py prepare_batch_tasks) so the handshake matches.
+            command.append("--accept-open-team-sheet")
 
             process = subprocess.Popen(
                 command,

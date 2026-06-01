@@ -41,10 +41,10 @@ Glossary of opponent types
 - exploiters         — Adversarially-trained policies whose only goal was to
                        beat a previous version of the agent. Patches blind spots.
 - max_damage         — Fixed heuristic (highest damage move). Sanity baseline.
-- random_baseline    — Random legal action.
+- random    — Random legal action.
 - max_base_power     — Heuristic: highest base-power move regardless of target.
 - simple_heuristic   — poke-env's built-in SimpleHeuristicsPlayer.
-- vgc_bench_baseline — External SB3-trained agent we compare against.
+- vgc_bench — External SB3-trained agent we compare against.
 """
 
 import asyncio
@@ -64,6 +64,7 @@ from poke_env.teambuilder import ConstantTeambuilder
 
 from elitefurretai.agents.max_damage_player import MaxDamagePlayer
 from elitefurretai.etl import Embedder, TeamRepo
+from elitefurretai.rl.config import open_team_sheets_for_battle
 from elitefurretai.rl.inference_worker import WorkerInferenceClients
 from elitefurretai.rl.rl_trajectory_player import RLTrajectoryPlayer
 from elitefurretai.rl.rl_utils import list_pt_files, normalize_curriculum
@@ -146,10 +147,10 @@ class OpponentPool:
     EXPLOITERS = "exploiters"
     GHOSTS = "ghosts"
     MAX_DAMAGE = "max_damage"
-    RANDOM_BASELINE = "random_baseline"
-    MAX_BASE_POWER_BASELINE = "max_base_power_baseline"
-    SIMPLE_HEURISTIC_BASELINE = "simple_heuristic_baseline"
-    VGC_BENCH_BASELINE = "vgc_bench_baseline"
+    RANDOM = "random"
+    MAX_BASE_POWER = "max_base_power"
+    SIMPLE_HEURISTIC = "simple_heuristic"
+    VGC_BENCH = "vgc_bench"
     # Exploiter-vs-victim battles whose trajectories feed the in-process
     # exploiter learner (separate from EXPLOITERS, which is main fighting
     # frozen exploiter snapshots from disk).
@@ -164,10 +165,10 @@ class OpponentPool:
         GHOSTS,
         TRAIN_EXPLOITER,
         MAX_DAMAGE,
-        RANDOM_BASELINE,
-        MAX_BASE_POWER_BASELINE,
-        SIMPLE_HEURISTIC_BASELINE,
-        VGC_BENCH_BASELINE,
+        RANDOM,
+        MAX_BASE_POWER,
+        SIMPLE_HEURISTIC,
+        VGC_BENCH,
     )
 
     def __init__(
@@ -238,10 +239,10 @@ class OpponentPool:
                 OpponentPool.EXPLOITERS: [],
                 OpponentPool.GHOSTS: [],
                 OpponentPool.MAX_DAMAGE: [],
-                OpponentPool.RANDOM_BASELINE: [],
-                OpponentPool.MAX_BASE_POWER_BASELINE: [],
-                OpponentPool.SIMPLE_HEURISTIC_BASELINE: [],
-                OpponentPool.VGC_BENCH_BASELINE: [],
+                OpponentPool.RANDOM: [],
+                OpponentPool.MAX_BASE_POWER: [],
+                OpponentPool.SIMPLE_HEURISTIC: [],
+                OpponentPool.VGC_BENCH: [],
                 OpponentPool.TRAIN_EXPLOITER: [],
             },
         )
@@ -665,7 +666,7 @@ class WorkerOpponentFactory:
         external_vgcbench_usernames: Optional[List[str]] = None,
         agent_team_paths: Optional[Dict[str, str]] = None,
         max_concurrent_battles_per_player: Optional[int] = None,
-        open_team_sheets: bool = False,
+        open_team_sheets: str = "off",
     ):
         self.team_repo = team_repo
         self.battle_formats = dict(battle_formats)
@@ -681,7 +682,10 @@ class WorkerOpponentFactory:
         self.worker_id = worker_id
         self.run_id = run_id
         self.max_battle_steps = max_battle_steps
+        # OTS mode ("off"|"on"|"mixed"); resolved per battle in prepare_batch_tasks.
+        # _ots_rng makes the "mixed" per-batch coin flip reproducible per worker.
         self.open_team_sheets = open_team_sheets
+        self._ots_rng = random.Random(f"{run_id}:{worker_id}:ots")
 
         # Per-format agent team strings. Keys match self.battle_formats; each
         # value is the list of team strings loaded from disk for that format
@@ -718,9 +722,9 @@ class WorkerOpponentFactory:
         self.players: List[RLTrajectoryPlayer] = []
         self.opponents: List[RLTrajectoryPlayer] = []
         self.max_damage_opponents: List[MaxDamagePlayer] = []
-        self.random_baseline_opponents: List[RandomPlayer] = []
-        self.max_base_power_baseline_opponents: List[MaxBasePowerPlayer] = []
-        self.simple_heuristic_baseline_opponents: List[Player] = []
+        self.random_opponents: List[RandomPlayer] = []
+        self.max_base_power_opponents: List[MaxBasePowerPlayer] = []
+        self.simple_heuristic_opponents: List[Player] = []
         self._active_ghost_slots: Set[int] = set()
         self._active_exploiter_slots: Set[int] = set()
         self._batch_count = 0
@@ -866,7 +870,9 @@ class WorkerOpponentFactory:
                 ),
                 server_configuration=self.server_config,
                 team=self.sample_team(fmt)[0],
-                accept_open_team_sheet=self.open_team_sheets,
+                # Initial value; prepare_batch_tasks sets the real per-batch
+                # accept on whichever baseline a player actually battles.
+                accept_open_team_sheet=(self.open_team_sheets == "on"),
             )
             for i, fmt in enumerate(pair_formats)
         ]
@@ -893,7 +899,9 @@ class WorkerOpponentFactory:
         # Conditionally pass `max_concurrent_battles` so when the config
         # leaves it None we don't override poke-env's default of 1.
         extra_player_kwargs: Dict[str, Any] = {
-            "accept_open_team_sheet": self.open_team_sheets,
+            # Initial value; prepare_batch_tasks sets the real per-batch accept
+            # on both the player and its opponent before each batch's battles.
+            "accept_open_team_sheet": self.open_team_sheets == "on",
         }
         if self.max_concurrent_battles_per_player is not None:
             extra_player_kwargs["max_concurrent_battles"] = (
@@ -966,17 +974,17 @@ class WorkerOpponentFactory:
         self.max_damage_opponents = self._make_baseline_pool(
             OpponentPool.MAX_DAMAGE, MaxDamagePlayer, "MaxD", self.pair_formats
         )
-        self.random_baseline_opponents = self._make_baseline_pool(
-            OpponentPool.RANDOM_BASELINE, RandomPlayer, "Rand", self.pair_formats
+        self.random_opponents = self._make_baseline_pool(
+            OpponentPool.RANDOM, RandomPlayer, "Rand", self.pair_formats
         )
-        self.max_base_power_baseline_opponents = self._make_baseline_pool(
-            OpponentPool.MAX_BASE_POWER_BASELINE,
+        self.max_base_power_opponents = self._make_baseline_pool(
+            OpponentPool.MAX_BASE_POWER,
             MaxBasePowerPlayer,
             "MaxB",
             self.pair_formats,
         )
-        self.simple_heuristic_baseline_opponents = self._make_baseline_pool(
-            OpponentPool.SIMPLE_HEURISTIC_BASELINE,
+        self.simple_heuristic_opponents = self._make_baseline_pool(
+            OpponentPool.SIMPLE_HEURISTIC,
             SimpleHeuristicsPlayer,
             "Heur",
             self.pair_formats,
@@ -1125,11 +1133,24 @@ class WorkerOpponentFactory:
         tasks: List[Any] = []
         batch_opponent_types: List[str] = []
 
+        # Open Team Sheets: resolve the per-battle accept. "mixed" rolls once
+        # per batch so every (non-vgc_bench) battle this batch shares the same
+        # regime — both sides and any SHARED heuristic opponent agree, so a
+        # mismatch never drops a battle. vgc_bench is always ON, so the agent
+        # facing it is forced ON for that battle.
+        batch_ots_roll = self.open_team_sheets == "mixed" and self._ots_rng.random() < 0.5
+
         for i, player in enumerate(self.players):
             opp_type = self.sample_opp_type_for(player)
+            accept_ots = open_team_sheets_for_battle(
+                self.open_team_sheets,
+                is_vgc_bench=(opp_type == OpponentPool.VGC_BENCH),
+                mixed_roll=batch_ots_roll,
+            )
+            player._accept_open_team_sheet = accept_ots
 
             if (
-                opp_type == OpponentPool.VGC_BENCH_BASELINE
+                opp_type == OpponentPool.VGC_BENCH
                 and self.external_vgcbench_usernames
             ):
                 username = self.external_vgcbench_usernames[
@@ -1140,35 +1161,39 @@ class WorkerOpponentFactory:
                 target_opponent = self.max_damage_opponents[
                     i % len(self.max_damage_opponents)
                 ]
+                target_opponent._accept_open_team_sheet = accept_ots
                 task = player.battle_against(
                     target_opponent, n_battles=num_battles_per_pair
                 )
             elif (
-                opp_type == OpponentPool.RANDOM_BASELINE and self.random_baseline_opponents
+                opp_type == OpponentPool.RANDOM and self.random_opponents
             ):
-                target_opponent = self.random_baseline_opponents[
-                    i % len(self.random_baseline_opponents)
+                target_opponent = self.random_opponents[
+                    i % len(self.random_opponents)
                 ]
+                target_opponent._accept_open_team_sheet = accept_ots
                 task = player.battle_against(
                     target_opponent, n_battles=num_battles_per_pair
                 )
             elif (
-                opp_type == OpponentPool.MAX_BASE_POWER_BASELINE
-                and self.max_base_power_baseline_opponents
+                opp_type == OpponentPool.MAX_BASE_POWER
+                and self.max_base_power_opponents
             ):
-                target_opponent = self.max_base_power_baseline_opponents[
-                    i % len(self.max_base_power_baseline_opponents)
+                target_opponent = self.max_base_power_opponents[
+                    i % len(self.max_base_power_opponents)
                 ]
+                target_opponent._accept_open_team_sheet = accept_ots
                 task = player.battle_against(
                     target_opponent, n_battles=num_battles_per_pair
                 )
             elif (
-                opp_type == OpponentPool.SIMPLE_HEURISTIC_BASELINE
-                and self.simple_heuristic_baseline_opponents
+                opp_type == OpponentPool.SIMPLE_HEURISTIC
+                and self.simple_heuristic_opponents
             ):
-                target_opponent = self.simple_heuristic_baseline_opponents[
-                    i % len(self.simple_heuristic_baseline_opponents)
+                target_opponent = self.simple_heuristic_opponents[
+                    i % len(self.simple_heuristic_opponents)
                 ]
+                target_opponent._accept_open_team_sheet = accept_ots
                 task = player.battle_against(
                     target_opponent, n_battles=num_battles_per_pair
                 )
@@ -1178,6 +1203,7 @@ class WorkerOpponentFactory:
                 # client and battle it; `apply_opp_type_to_pair` may
                 # further fall back to SELF_PLAY if a client is missing.
                 opponent = self.opponents[i]
+                opponent._accept_open_team_sheet = accept_ots
                 opp_type = self.apply_opp_type_to_pair(player, opponent, opp_type)
                 task = player.battle_against(opponent, n_battles=num_battles_per_pair)
 
@@ -1213,17 +1239,17 @@ class WorkerOpponentFactory:
             team_string, _ = self.sample_team(fmt)
             md_opp._team = ConstantTeambuilder(team_string)
 
-        for i, random_opp in enumerate(self.random_baseline_opponents):
+        for i, random_opp in enumerate(self.random_opponents):
             fmt = self.pair_formats[i]
             team_string, _ = self.sample_team(fmt)
             random_opp._team = ConstantTeambuilder(team_string)
 
-        for i, maxbp_opp in enumerate(self.max_base_power_baseline_opponents):
+        for i, maxbp_opp in enumerate(self.max_base_power_opponents):
             fmt = self.pair_formats[i]
             team_string, _ = self.sample_team(fmt)
             maxbp_opp._team = ConstantTeambuilder(team_string)
 
-        for i, heuristic_opp in enumerate(self.simple_heuristic_baseline_opponents):
+        for i, heuristic_opp in enumerate(self.simple_heuristic_opponents):
             fmt = self.pair_formats[i]
             team_string, _ = self.sample_team(fmt)
             heuristic_opp._team = ConstantTeambuilder(team_string)
@@ -1245,9 +1271,9 @@ class WorkerOpponentFactory:
         # teardown_runtime; attempt a generic listener stop when available.
         for participant in (
             self.max_damage_opponents
-            + self.random_baseline_opponents
-            + self.max_base_power_baseline_opponents
-            + self.simple_heuristic_baseline_opponents
+            + self.random_opponents
+            + self.max_base_power_opponents
+            + self.simple_heuristic_opponents
         ):
             stop_fn = getattr(participant, "stop_listening", None)
             if stop_fn is None:
@@ -1314,9 +1340,9 @@ class WorkerOpponentFactory:
         self.players.clear()
         self.opponents.clear()
         self.max_damage_opponents.clear()
-        self.random_baseline_opponents.clear()
-        self.max_base_power_baseline_opponents.clear()
-        self.simple_heuristic_baseline_opponents.clear()
+        self.random_opponents.clear()
+        self.max_base_power_opponents.clear()
+        self.simple_heuristic_opponents.clear()
 
         # Force a GC cycle to reclaim memory from the old objects.
         gc.collect()
@@ -1347,13 +1373,13 @@ class WorkerOpponentFactory:
         for md_opp in self.max_damage_opponents:
             md_opp.reset_battles()
 
-        for random_opp in self.random_baseline_opponents:
+        for random_opp in self.random_opponents:
             random_opp.reset_battles()
 
-        for maxbp_opp in self.max_base_power_baseline_opponents:
+        for maxbp_opp in self.max_base_power_opponents:
             maxbp_opp.reset_battles()
 
-        for heuristic_opp in self.simple_heuristic_baseline_opponents:
+        for heuristic_opp in self.simple_heuristic_opponents:
             heuristic_opp.reset_battles()
 
 

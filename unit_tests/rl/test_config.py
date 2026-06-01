@@ -79,10 +79,10 @@ def test_default_curriculum_uses_correct_keys():
         OpponentPool.GHOSTS,
         OpponentPool.TRAIN_EXPLOITER,
         OpponentPool.MAX_DAMAGE,
-        OpponentPool.RANDOM_BASELINE,
-        OpponentPool.MAX_BASE_POWER_BASELINE,
-        OpponentPool.SIMPLE_HEURISTIC_BASELINE,
-        OpponentPool.VGC_BENCH_BASELINE,
+        OpponentPool.RANDOM,
+        OpponentPool.MAX_BASE_POWER,
+        OpponentPool.SIMPLE_HEURISTIC,
+        OpponentPool.VGC_BENCH,
     }
 
     extra = actual_keys - valid_keys
@@ -712,7 +712,7 @@ def _eval_test_config(tmp_path) -> RNaDConfig:
     config.curriculum.opponent_team_pool_path = None
     config.curriculum.bc_model_path = None
     # Existing vgcbench validator fires when the baseline has positive weight.
-    config.curriculum.curriculum_weights = {"vgc_bench_baseline": 0.0}
+    config.curriculum.curriculum_weights = {"vgc_bench": 0.0}
     # Zero out all opponent weights so only the one under test triggers.
     for spec in config.eval.opponents.values():
         spec.weight = 0.0
@@ -855,22 +855,70 @@ def test_curriculum_config_yaml_round_trip_with_nested_axes(tmp_path):
     assert cfg.curriculum.adaptive_agent_axis.base_blend == 0.25
 
 
-def test_open_team_sheets_defaults_false_and_loads_from_dict():
+def test_curriculum_open_team_sheets_mode_default_and_loads():
+    from elitefurretai.rl.config import OPEN_TEAM_SHEETS_MODES, RNaDConfig
+
+    # Lives on CurriculumConfig now (not top-level); default is "mixed".
+    assert RNaDConfig().curriculum.open_team_sheets == "mixed"
+    for mode in OPEN_TEAM_SHEETS_MODES:
+        cfg = RNaDConfig.from_dict({"curriculum": {"open_team_sheets": mode}})
+        assert cfg.curriculum.open_team_sheets == mode
+        # round-trips through to_dict/from_dict
+        assert RNaDConfig.from_dict(cfg.to_dict()).curriculum.open_team_sheets == mode
+    # YAML parses unquoted on/off as booleans — coerced back to strings.
+    assert (
+        RNaDConfig.from_dict(
+            {"curriculum": {"open_team_sheets": True}}
+        ).curriculum.open_team_sheets
+        == "on"
+    )
+    assert (
+        RNaDConfig.from_dict(
+            {"curriculum": {"open_team_sheets": False}}
+        ).curriculum.open_team_sheets
+        == "off"
+    )
+    with pytest.raises(ValueError):
+        RNaDConfig.from_dict({"curriculum": {"open_team_sheets": "bogus"}})
+
+
+def test_eval_open_team_sheets_default_on_and_rejects_mixed():
     from elitefurretai.rl.config import RNaDConfig
 
-    assert RNaDConfig().open_team_sheets is False
-    cfg = RNaDConfig.from_dict({"open_team_sheets": True})
-    assert cfg.open_team_sheets is True
-    # round-trips through to_dict/from_dict
-    assert RNaDConfig.from_dict(cfg.to_dict()).open_team_sheets is True
+    assert RNaDConfig().eval.open_team_sheets == "on"
+    assert (
+        RNaDConfig.from_dict({"eval": {"open_team_sheets": "off"}}).eval.open_team_sheets
+        == "off"
+    )
+    # unquoted on/off booleans coerced
+    assert (
+        RNaDConfig.from_dict({"eval": {"open_team_sheets": False}}).eval.open_team_sheets
+        == "off"
+    )
+    with pytest.raises(ValueError):
+        RNaDConfig.from_dict({"eval": {"open_team_sheets": "mixed"}})
 
 
-def test_eval_open_team_sheets_defaults_false_and_loads_from_dict():
-    from elitefurretai.rl.config import RNaDConfig
+def test_open_team_sheets_for_battle_resolution():
+    from elitefurretai.rl.config import open_team_sheets_for_battle
 
-    assert RNaDConfig().eval.open_team_sheets is False
-    cfg = RNaDConfig.from_dict({"eval": {"open_team_sheets": True}})
-    assert cfg.eval.open_team_sheets is True
+    assert (
+        open_team_sheets_for_battle("off", is_vgc_bench=False, mixed_roll=False) is False
+    )
+    assert open_team_sheets_for_battle("on", is_vgc_bench=False, mixed_roll=False) is True
+    assert (
+        open_team_sheets_for_battle("mixed", is_vgc_bench=False, mixed_roll=True) is True
+    )
+    assert (
+        open_team_sheets_for_battle("mixed", is_vgc_bench=False, mixed_roll=False) is False
+    )
+    # vgc_bench is always ON regardless of mode
+    for mode in ("off", "on", "mixed"):
+        assert (
+            open_team_sheets_for_battle(mode, is_vgc_bench=True, mixed_roll=False) is True
+        )
+    with pytest.raises(ValueError):
+        open_team_sheets_for_battle("bogus", is_vgc_bench=False, mixed_roll=False)
 
 
 if __name__ == "__main__":

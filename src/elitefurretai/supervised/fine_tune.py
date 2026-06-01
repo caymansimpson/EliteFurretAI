@@ -186,9 +186,7 @@ def load_model_and_config(model_path: str, device: str):
         for k, v in state_dict.items()
         if k in model_state and v.shape == model_state[k].shape
     }
-    dropped = sorted(
-        k for k in state_dict if k in model_state and k not in filtered_state
-    )
+    dropped = sorted(k for k in state_dict if k in model_state and k not in filtered_state)
     if dropped:
         print(
             f"Warning: Dropped {len(dropped)} shape-mismatched keys (will use random init): {dropped}"

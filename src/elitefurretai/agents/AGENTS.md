@@ -1,6 +1,6 @@
 # `agents/` — EliteFurretAI Battle Participants
 
-> **⚠️ FoulPlay is currently broken.** `FoulPlayManager` and `_foulplay_subprocess.py` are checked in but the underlying `foul-play-doubles` integration does not produce a usable battle in its current form — see [planning/stage2/2026-05-28-06-30-foulplay-ots-investigation.md](../../../planning/stage2/2026-05-28-06-30-foulplay-ots-investigation.md). FoulPlay eval is disabled in [`may26.yaml`](../rl/configs/may26.yaml). Do not enable it until the three layered issues below are resolved.
+> **⚠️ FoulPlay is currently broken.** `foulplay_manager.py` (subprocess constants + username helpers) and `_foulplay_subprocess.py` are checked in but the underlying `foul-play-doubles` integration does not produce a usable battle in its current form — see [planning/stage2/2026-05-28-06-30-foulplay-ots-investigation.md](../../../planning/stage2/2026-05-28-06-30-foulplay-ots-investigation.md). FoulPlay eval is disabled in [`may26.yaml`](../rl/configs/may26.yaml). Do not enable it until the three layered issues below are resolved.
 
 This directory holds **user-facing, instantiable agents** — the things you grab to run a battle in EFA. Eval/analysis players, heuristic baselines, the behavior-cloned player, the human-in-the-loop player, and the subprocess managers that wrap external bots (vgc-bench, foul-play).
 
@@ -16,9 +16,9 @@ It is **not** for classes that subclass `poke_env.player.Player` for training-pl
 | [`bc_player.py`](bc_player.py) | `BCPlayer` | Player loading a supervised (behavior-cloned) checkpoint. Maintains an across-turn trajectory tensor; used as a curriculum opponent and as one of the four Stage II graduation baselines. |
 | [`human_player.py`](human_player.py) | `HumanPlayer` | Terminal-driven manual control. Used by `rl/analyze/play_human_vs_model.py` so a human can battle a trained checkpoint locally. |
 | [`vgcbench_manager.py`](vgcbench_manager.py) | `VGCBenchManager` | Launches and supervises the external vgc-bench subprocess. EFA challenges by Showdown username. Also exports `_create_vgc_bench_player`, `_temporary_cwd`, `_resolve_vgc_bench_root` for in-process construction under a venv whose poke_env vintage matches vgc-bench's. |
-| [`foulplay_manager.py`](foulplay_manager.py) | `FoulPlayManager` | Same shape as `VGCBenchManager`, for the foul-play-doubles search bot. **Currently broken** — see the FoulPlayManager section below and [planning/stage2/2026-05-28-06-30-foulplay-ots-investigation.md](../../../planning/stage2/2026-05-28-06-30-foulplay-ots-investigation.md). |
+| [`foulplay_manager.py`](foulplay_manager.py) | — (constants + helpers) | Subprocess script path, base username, timing constants, and the `derive_username`/`should_suffix_port` helpers for the foul-play-doubles search bot. The live launch path is `rl/analyze/analysis_utils._launch_foulplay_subprocess`. **Currently broken** — see the FoulPlay section below and [planning/stage2/2026-05-28-06-30-foulplay-ots-investigation.md](../../../planning/stage2/2026-05-28-06-30-foulplay-ots-investigation.md). |
 | [`_vgcbench_subprocess.py`](_vgcbench_subprocess.py) | — (script) | Subprocess entry point launched by `VGCBenchManager` under `../venv-vgcbench-bcsp/bin/python`. Not user-invokable; the leading underscore is the signal. |
-| [`_foulplay_subprocess.py`](_foulplay_subprocess.py) | — (script) | Same shape, for foul-play. Broken alongside `FoulPlayManager`. |
+| [`_foulplay_subprocess.py`](_foulplay_subprocess.py) | — (script) | Same shape, for foul-play. Broken alongside the foul-play integration. |
 
 ## How to use each agent
 
@@ -115,23 +115,23 @@ manager.shutdown()             # SIGTERM, close log files
 ```
 
 Gotchas:
-- Requires `../venv-vgcbench-bcsp/` to exist with vgc-bench installed against the cameronangliss/poke-env fork @ `b3956ae58` (configured via `config.curriculum.external_vgcbench_python_executable`). See planning/stage2/2026-05-29-22-00-vgcbench-latest-checkpoint-migration.md.
+- Requires `../venv-vgcbench-bcsp/` to exist with vgc-bench installed against the cameronangliss/poke-env fork `@vgc-bench` branch tip (currently `e9b61cdf`) — install via `pip install "poke-env @ git+https://github.com/cameronangliss/poke-env.git@vgc-bench"` (configured via `config.curriculum.external_vgcbench_python_executable`). See planning/stage2/2026-05-29-22-00-vgcbench-latest-checkpoint-migration.md.
 - Subprocess logs go to `data/logs/vgcbench_runners/runner_*.log` — first place to check if challenges aren't being accepted.
 - `WAIT_FOR_SERVER_TIMEOUT_S=180.0` and `STARTUP_WAIT_S=10.0` are the timing parameters; the trainer waits up to `STARTUP_WAIT_S` for the subprocess to log in before issuing the first challenge.
 
-### `FoulPlayManager` — **currently broken, do not enable**
+### FoulPlay — **currently broken, do not enable**
 
-Shape mirrors `VGCBenchManager`: subprocess lifecycle wrapper around `foul-play-doubles` running under `../venv-foulplay/`. The orchestration plumbing (server boot, subprocess launch, `launch_external_player`, win-rate accounting) is validated, but the foul-play side does not produce a usable battle in its current form. Three layered issues stack up as a smoke proceeds (full details in [planning/stage2/2026-05-28-06-30-foulplay-ots-investigation.md](../../../planning/stage2/2026-05-28-06-30-foulplay-ots-investigation.md)):
+The foul-play-doubles search bot runs as a subprocess under `../venv-foulplay/`. `foulplay_manager.py` holds the subprocess script path, base username, timing constants, and the `derive_username`/`should_suffix_port` helpers; the live launch path is `rl/analyze/analysis_utils._launch_foulplay_subprocess`, driven by `EvalConfig`'s `foulplay_*` fields. The orchestration plumbing (server boot, subprocess launch, `launch_external_player`, win-rate accounting) is validated, but the foul-play side does not produce a usable battle in its current form. Three layered issues stack up as a smoke proceeds (full details in [planning/stage2/2026-05-28-06-30-foulplay-ots-investigation.md](../../../planning/stage2/2026-05-28-06-30-foulplay-ots-investigation.md)):
 
 1. **`SmogonSets._get_pokemon_information` crashes.** `foul-play-doubles/data/pkmn_sets.py:238` reads `counter_information["p"]` but the cached Smogon stats JSON stores `Checks and Counters` values in the standard chaos format `[n, p, d]` — needs `counter_information[1]`. Direct fix in `foul-play-doubles`; not a monkey-patch.
 2. **Missing `|showteam|` empties `opponent.reserve` → empty MCTS policy.** Foul-play's `start_standard_battle` populates `battle.opponent` from a `|showteam|` line that Showdown only emits under Open Team Sheets. The fix is to handle the OTS handshake (`|uhtml|otsrequest` → `/acceptopenteamsheets <room>` → buffer until `|showteam|`) on the foul-play side. The eval side needs `_opponent_requires_ots` flipped to True for `foul_play` so poke-env sends `/acceptopenteamsheets`.
 3. **Unsolved: any subprocess monkey-patch of `start_standard_battle` suppresses `/challenge` delivery.** All four monkey-patch variants tried (and the equivalent direct edits to `fp/run_battle.py`) cause max_damage's `/challenge` PM to never reach foul-play's `accept_challenge` loop. Mechanism is unknown. Bisect this first before any more OTS work — see the planning doc for the suggested incremental bisect plan.
 
-Until all three are resolved, leave `foulplay_eval.enabled: false` in the configs. The default in [`may26.yaml`](../rl/configs/may26.yaml) reflects this.
+Until all three are resolved, leave the `foul_play` opponent at `weight: 0.0` in `EvalConfig.opponents`. The default in [`may26.yaml`](../rl/configs/may26.yaml) reflects this.
 
 ```python
-# Do not call yet — kept for shape reference only
-from elitefurretai.agents import FoulPlayManager
+# Constants + username helpers only; no manager class.
+from elitefurretai.agents import foulplay_manager
 ```
 
 ## How to add a new agent

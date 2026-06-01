@@ -798,7 +798,7 @@ def main():
 
     # Auto-launch external vgc-bench runners based on curriculum
     vgcbench_manager: Optional[VGCBenchManager] = None
-    if config.curriculum.curriculum_weights.get(OpponentPool.VGC_BENCH_BASELINE, 0.0) > 0:
+    if config.curriculum.curriculum_weights.get(OpponentPool.VGC_BENCH, 0.0) > 0:
         vgcbench_manager = VGCBenchManager(config, server_ports)
         vgcbench_manager.launch()
 

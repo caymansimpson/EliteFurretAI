@@ -7,7 +7,8 @@ The leading underscore in the filename signals "internal".
 Why this exists as a separate script
 ------------------------------------
 vgc-bench depends on the cameronangliss/poke-env fork (pinned to commit
-``b3956ae58``, a 0.15.0 build whose VGC enums yield a 764-wide observation),
+the ``@vgc-bench`` branch tip, currently ``e9b61cdf``, a 0.15.0 build whose
+VGC enums yield a 764-wide observation),
 which cannot coexist with EFA's own poke-env in one interpreter. To isolate
 them, the trainer spawns this script in vgc-bench's own venv
 (``../venv-vgcbench-bcsp/`` by convention, configured via
@@ -19,17 +20,13 @@ How it plugs into training
 --------------------------
 ``OpponentPool.external_vgcbench_usernames`` (``rl/opponents.py``) holds the
 usernames these runners log in as, populated by ``VGCBenchManager.launch()``.
-When ``VGC_BENCH_BASELINE`` is sampled from the curriculum, EFA workers route
+When ``VGC_BENCH`` is sampled from the curriculum, EFA workers route
 the battle to one of those usernames via ``/challenge`` instead of
 constructing an in-process ``PolicyPlayer``.
 
 Relationship to ``rl/players.py:_create_vgc_bench_player``
 ----------------------------------------------------------
-This file deliberately re-implements ``_temporary_cwd``,
-``_resolve_vgc_bench_root``, and the ``PolicyPlayer`` construction that also
-live in ``rl/players.py`` (``_create_vgc_bench_player``, the in-process
-evaluation path used by ``analyze/player_factory.py``). The duplication is
-intentional: this script runs in a separate venv that cannot import
+This script runs in a separate venv that cannot import
 ``elitefurretai``. Keep the two in sync if vgc-bench's loader contract
 changes — they are siblings, not the same code path.
 

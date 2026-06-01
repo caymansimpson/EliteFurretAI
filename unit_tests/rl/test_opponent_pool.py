@@ -66,9 +66,9 @@ def test_opponent_pool_custom_curriculum(temp_exploiters_dir, temp_ghosts_dir):
         "exploiters": 0.05,
         "ghosts": 0.05,
         "max_damage": 0.0,
-        "random_baseline": 0.0,
-        "max_base_power_baseline": 0.0,
-        "simple_heuristic_baseline": 0.0,
+        "random": 0.0,
+        "max_base_power": 0.0,
+        "simple_heuristic": 0.0,
     }
     pool = _make_pool(
         temp_exploiters_dir,

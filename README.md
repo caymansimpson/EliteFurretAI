@@ -47,11 +47,14 @@ Ultimately, we think that Search-based will be the quickest way to get to peak h
 There is quite a lot of complexity in the above, and we encourage you to check out [the doc linked above](https://docs.google.com/document/d/14menCHw8z06KJWZ5F_K-MjgWVo_b7PESR7RlG-em4ic/edit#heading=h.p6dz1cv0mnpx) to learn more.
 
 ### What I've Done
-Currently, I've built a [supervised deep learning model](./src/elitefurretai/supervised/SUPERVISED.md) ([`TransformerThreeHeadedModel`](./src/elitefurretai/supervised/model_archs.py)) that predicts a human's action. The current **Stage II RL handoff** is `rose-sun-108_best.pt` — a ~30.5M-param model trained on the RAW featureset with **active-slot positional features** that resolve which active Pokémon owns each [MDBO](./src/elitefurretai/etl/encoder.py) slot:
+Currently, I've built a [supervised deep learning model](./src/elitefurretai/supervised/SUPERVISED.md) ([`TransformerThreeHeadedModel`](./src/elitefurretai/supervised/model_archs.py)) that predicts a human's action. The current **Stage II RL handoff** is `rose-sun-108-mega_best.pt` — a ~30.9M-param model on the RAW featureset with **active-slot positional features** that resolve which active Pokémon owns each [MDBO](./src/elitefurretai/etl/encoder.py) slot, **plus mega-evolution support** (Mega Stones in the item vocab and a prospective mega-form feature block per mon, so the policy can reason about mega anticipatorily).
 
-*   **Overall Top-1/3/5 Action Accuracy**: **55% / 84% / 88%**
-*   **Top-1 Teampreview Accuracy**: 99.9%
-*   **Brier Score on Advantage**: **0.185** (against true advantage score; see [SUPERVISED.md](./src/elitefurretai/supervised/SUPERVISED.md#current-state-and-findings))
+*   **Overall Top-1 / 3 Action Accuracy**: **55.0% / 83.5%**
+*   **SWITCH / FORCE_SWITCH / Teampreview Top-1**: 99.6% / 99.7% / 99.9%
+*   **Advantage → win correlation**: **0.60**
+*   **Invalid predictions**: 0 — mask, embedder, and mega vocab aligned end-to-end.
+
+See [SUPERVISED.md](./src/elitefurretai/supervised/SUPERVISED.md#current-state-and-findings) for the full diagnostics table.
 
 
 **Primary Learnings**:

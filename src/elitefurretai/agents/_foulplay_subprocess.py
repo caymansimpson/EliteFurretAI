@@ -8,7 +8,7 @@ uses package-relative imports that assume the repo root is cwd.
 
 Leading underscore in the filename signals "internal subprocess
 entry — not user-invocable directly." Spawned by
-:class:`FoulPlayManager.launch`.
+``analyze.analysis_utils._launch_foulplay_subprocess``.
 
 Pinned to foul-play-doubles commit ``8550b93``; later commits use
 ``poke_engine.TeamPreviewFilters``, which is not exported by

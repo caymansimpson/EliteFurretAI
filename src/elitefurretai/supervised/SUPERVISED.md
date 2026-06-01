@@ -3,8 +3,8 @@
 ## Executive summary
 
 - This folder holds code to train a behavioral clone on millions of human VGC battles to (1) warm-start Stage II r-NaD RL and (2) provide a policy + value backbone for the Stage V search agent.
-- **Current best model**: `data/models/supervised/rose-sun-108_best.pt` (ask me for weights) — [30.5M param transformer model with three heads (turn action 2025-way, teampreview 90-way, distributional C51 value), grouped features, action/critic/field tokens](model_archs.py), trained for 30 epochs of 460K 1500+ VGC Regulation C non-omniscient battles ([config here](configs/may24.yaml)) at ~5m per epoch due to [optimized training and pre-computed features](#operating-notes).
-- **Model Performance**: It can predict player actions Top-1/3 = 55.1% / 84.1%, Teampreview Top-1 = 99.9% (overfit; players are consistent with their teampreview selections on showdown), advantage prediction correlates with probability of winning w/ correlation coefficient of 0.55. Full table in [Current state](#current-state-and-findings).
+- **Current best model**: `data/models/supervised/rose-sun-108-mega_best.pt` (ask me for weights) — [~30.9M param transformer model with three heads (turn action 2025-way, teampreview 90-way, distributional C51 value), grouped features, action/critic/field tokens](model_archs.py), trained on the **mega-aware featureset** (Mega Stones in the item vocab and a prospective mega-form feature block per mon) on `data/battles/mega_final_v1/` — 460K 1500+ VGC Regulation C non-omniscient battles ([config here](configs/may24.yaml)).
+- **Model Performance**: Overall Top-1 / 3 = **55.0% / 83.5%**, Teampreview Top-1 = 99.9% (overfit; players are consistent with their teampreview selections on Showdown), SWITCH Top-1 = 99.6%, FORCE_SWITCH Top-1 = 99.7%. Advantage prediction correlates with probability of winning at **0.60**, and the model emits **zero invalid actions** — confirming the mega vocab + feature block are wired end-to-end correctly. Full diagnostics table in [Current state](#current-state-and-findings).
 - **Main entry points**: [`train.py`](train.py) (BC from scratch), [`fine_tune.py`](fine_tune.py) (continue from a checkpoint), [`agents/bc_player.py`](../agents/bc_player.py) (play / RL-evaluate via poke-env).
 
 
@@ -100,26 +100,31 @@ You can run [`./analyze/action_model_diagnostics.py`](analyze/action_model_diagn
 
 ## Current state and findings
 
-### Production checkpoint: `rose-sun-108_best.pt`
+### Production checkpoint: `rose-sun-108-mega_best.pt`
 > *This model is not pushed. You can ask me for the weights if you'd like.*
 
 - **Config**: [`configs/may24.yaml`](configs/may24.yaml).
-- **Architecture (~30.5M params, 117MB)**: transformer 4 layers × 8 heads, ff_dim=2048, agg=2048, hidden=256, early=[1024, 512, 512], late=[512, 512], turn_head=[512, 256, 256], teampreview_head=[256, 128].
-- **Featureset**: `raw` featureset in `Embedding` class (5056 input dims). 
-- **Data**: `data/battles/regc_final_v5/` — 90/5/5 train/val/test chunks at 512 trajectories/chunk.
+- **Architecture (~30.9M params, 124MB)**: transformer 4 layers × 8 heads, ff_dim=2048, agg=2048, hidden=256, early=[1024, 512, 512], late=[512, 512], turn_head=[512, 256, 256], teampreview_head=[256, 128].
+- **Featureset**: `raw` featureset in `Embedder` class, **5,374 input dims**. Includes the prospective mega-form feature block (`MEGA_STAT:*`, multi-hot `MEGA_TYPE:*`, `mega_ability_id`) per mon plus scalar `is_mega_evolved` / `can_mega` / `can_tera` / `gimmick_spent` flags. On tera-format data these features are constant (-1 / unknown) and behave inertly; they only carry signal in the mega format.
+- **Vocab**: `ITEM_TO_ID` includes 91 Mega Stones (derived from `requiredItem` on mega formes in gen9 GenData); the item embedding is sized **132**.
+- **Data**: `data/battles/mega_final_v1/` — 460K-battle regC corpus with the mega-aware embedder; 90/5/5 train/val/test chunks at 512 trajectories/chunk.
 
-Diagnostic metrics (200-batch run, ~55K predictions on the test split):
+Diagnostic metrics (full test split, `data/battles/mega_final_v1/test`, 676 batches × 64):
 
 | Metric | Value |
 |---|---:|
-| Overall Action Top-1 / 3 / 5 / 10 | **55.09% / 84.11% / 87.67% / 96.54%** |
-| MOVE Top-1 / 3 / 5 (where player chose attacks) | **44.93% / 80.45% / 84.72%** |
-| BOTH Top-1 / 3 (where player switched + attacks) | **77.18% / 91.35%** |
-| SWITCH Top-1 / 3 (where player switched) | 97.29% / 99.81% |
-| FORCE_SWITCH Top-1 (where player was forced to switch) | 94.12% |
-| Teampreview Top-1 | 99.9% |
-| Win Correlation (advantage prediction correlated with winning battles) | 0.548 |
-| Brier Score (against true advantage score) | 0.185 |
+| **Overall Action Top-1 / 3** (incl. teampreview) | **55.0% / 83.5%** |
+| Overall Action Top-1 / 3 / 5 / 10 (turn actions only, excl. TP) | 49.14% / 81.35% / 90.79% / 95.86% |
+| MOVE Top-1 / 3 / 5 / 10 | 34.55% / 76.19% / 86.96% / 94.18% |
+| BOTH Top-1 / 3 / 5 (both slots act) | 45.83% / 78.47% / 98.46% |
+| SWITCH Top-1 / 3 | 99.56% / 99.97% |
+| FORCE_SWITCH Top-1 | 99.71% |
+| Teampreview Top-1 | 99.88% |
+| Move-id correct (move-vs-move pairs) | 81.87% |
+| **Win Correlation** (advantage → win) | **0.601** |
+| **Invalid predictions** | **0** (0.00%) |
+
+Teampreview / SWITCH / FORCE_SWITCH saturate near 100% (deterministic decisions). MOVE is the genuine hard problem with the right move in top-5 ~87% of the time. The model emits **zero invalid actions** — confirming the mega vocab and feature block are wired end-to-end correctly through embedder → model → mask.
 
 
 ## Operating notes
