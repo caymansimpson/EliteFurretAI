@@ -115,3 +115,13 @@ This workflow gathers and prepares competitive teams for the AI to use in self-p
 #### `team_repo.py` (`TeamRepo`)
 *   **Purpose**: Organized access to team files.
 *   **How it works**: Scans the `data/teams` directory. It can optionally spin up a local Showdown process to validate that the teams are legal for their format.
+
+#### `self_play.py` (`merge_input_logs`, `battle_order_to_input`, `build_self_play_battle_data`)
+*   **Purpose**: Serialize a *self-play* battle into a replayable `BattleData`. Showdown only writes a server-side `inputLog` for battles it hosts, so for our own agent-vs-agent games we reconstruct it from the orders each player made.
+*   **How it works**: `battle_order_to_input` / `teampreview_order_to_input` convert a poke-env order into the `">pX ..."` line format used by `BattleData.input_logs`. `merge_input_logs` interleaves the two players' separately-recorded inputs into one correctly-ordered list, driving the interleave off `BattleIterator`'s protocol walk so it stays correct across pivots, force switches, and revival blessing. `build_self_play_battle_data` ties it together with `BattleData.from_self_play`.
+*   **Design Choice**: Each player records only its own inputs (see `input_log_recorder.py`); the merge derives the interleaving from the protocol rather than guessing. Misalignment detection is best-effort — it raises on over-supply and on a mid-battle gap, but a missing *final* input is indistinguishable from the game's trailing decision and is not caught.
+
+#### `input_log_recorder.py` (`InputLogRecorder`)
+*   **Purpose**: Capture each order a player makes during self-play so it can be serialized — the "record" half of the self-play pipeline above.
+*   **How it works**: A mixin for a poke-env `Player` (e.g. `class Rec(InputLogRecorder, MaxDamagePlayer)`) that intercepts `choose_move`/`teampreview` and stores each order, keyed by `battle_tag`, in `">pX ..."` form. Works for both synchronous and async players.
+*   **Design Choice**: It lives in `etl/` rather than `agents/` because it is data-generation tooling for the self-play pipeline, not a battle agent you instantiate to play.

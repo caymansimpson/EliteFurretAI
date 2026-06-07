@@ -13,6 +13,10 @@ Feature Engineering:
     - embedder: Convert game state to neural network features
     - encoder: MDBO action space encoding/decoding
 
+Self-Play Serialization:
+    - self_play: Reconstruct/merge self-play orders into a replayable BattleData
+    - input_log_recorder: Player mixin that records each order as it is made
+
 Validation & Utilities:
     - battle_order_validator: Validate BattleOrders are legal
     - evaluate_state: Heuristic position evaluation
@@ -42,6 +46,15 @@ from elitefurretai.etl.compress_utils import load_compressed, save_compressed
 from elitefurretai.etl.embedder import Embedder
 from elitefurretai.etl.encoder import MDBO, MoveOrderEncoder
 from elitefurretai.etl.evaluate_state import evaluate_position_advantage
+
+# Self-play serialization
+from elitefurretai.etl.input_log_recorder import InputLogRecorder
+from elitefurretai.etl.self_play import (
+    battle_order_to_input,
+    build_self_play_battle_data,
+    merge_input_logs,
+    teampreview_order_to_input,
+)
 from elitefurretai.etl.team_repo import TeamRepo
 
 __all__ = [
@@ -61,4 +74,10 @@ __all__ = [
     "TeamRepo",
     "load_compressed",
     "save_compressed",
+    # Self-play serialization
+    "InputLogRecorder",
+    "battle_order_to_input",
+    "teampreview_order_to_input",
+    "merge_input_logs",
+    "build_self_play_battle_data",
 ]

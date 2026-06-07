@@ -25,6 +25,7 @@ class BattleIterator:
         self._perspective = perspective
         self._omniscient = omniscient
         self._last_input_type: Optional[str] = None
+        self._last_input_owners: List[str] = []
 
     def __str__(self):
         return f"""
@@ -98,9 +99,12 @@ class BattleIterator:
         if self._is_pivot_trigger():
             self._input_nums = [self._input_nums[1], self._input_nums[1] + 1]
             self._last_input_type = MDBO.FORCE_SWITCH
+            # Owner is the actor of the pivot-triggering log line
+            self._last_input_owners = [self.log.split("|")[2][:2]]
         elif self._is_teampreview():
             self._input_nums = [self._input_nums[1], self._input_nums[1] + 2]
             self._last_input_type = MDBO.TEAMPREVIEW
+            self._last_input_owners = ["p1", "p2"]
 
             # if omniscient, populate opponent teampreview
             if self._omniscient:
@@ -123,16 +127,22 @@ class BattleIterator:
             self._input_nums = [self._input_nums[1], self._input_nums[1] + 2]
             self._prev_turn_index = self._index
             self._last_input_type = MDBO.TURN
+            self._last_input_owners = ["p1", "p2"]
         elif self._is_revival_blessing():
             self._input_nums = [self._input_nums[1], self._input_nums[1] + 1]
             self._last_input_type = MDBO.FORCE_SWITCH
+            # Owner is the actor of the Revival Blessing log line
+            self._last_input_owners = [self.log.split("|")[2][:2]]
         # Can either be two or one, depending on who faints; we deduce whether we need
         # two or one by the order of the player inputs in the player log
         elif self._is_preturn_switch():
-            if self._need_switch("p1") and self._need_switch("p2"):
+            need_p1, need_p2 = self._need_switch("p1"), self._need_switch("p2")
+            if need_p1 and need_p2:
                 self._input_nums = [self._input_nums[1], self._input_nums[1] + 2]
+                self._last_input_owners = ["p1", "p2"]
             else:
                 self._input_nums = [self._input_nums[1], self._input_nums[1] + 1]
+                self._last_input_owners = ["p1"] if need_p1 else ["p2"]
             self._last_input_type = MDBO.FORCE_SWITCH
 
         # If I hit a new request for my perspective, I should simulate the request to fill in the
@@ -233,6 +243,16 @@ class BattleIterator:
     @property
     def last_input_type(self) -> Optional[str]:
         return self._last_input_type
+
+    @property
+    def last_input_owners(self) -> List[str]:
+        """Owners (p1/p2) of the inputs in the current input_nums slice, in slot order."""
+        return self._last_input_owners
+
+    @property
+    def input_nums(self) -> List[int]:
+        """[start, end) slice into bd.input_logs for the current decision."""
+        return self._input_nums
 
     @property
     def last_opponent_input(self) -> Optional[str]:
